@@ -71,8 +71,6 @@ export type CoreOptions = typeof CoreOptions.Type
 export const DrizzleOptions = Schema.Struct({
 	/** The leaf files that may write Drizzle `sql` templates. */
 	sqlLeafOwnersOnly: Schema.Struct({ owners: Paths }),
-	/** The leaf files that may render a `::` cast. */
-	sqlCastOwner: Schema.Struct({ owners: Paths }),
 	/** The leaf files that may render JSON operators and expansions. */
 	sqlJsonOwner: Schema.Struct({ owners: Paths }),
 	/** The top-level arrow functions that may build a table from a computed column map: session-local relations
@@ -183,7 +181,6 @@ export const CORE_FIXTURE_OPTIONS: CoreOptions = {}
 /** The drizzle pack's options for its fixtures: names that point into each rule's own fixture directory. */
 export const DRIZZLE_FIXTURE_OPTIONS: DrizzleOptions = {
 	sqlLeafOwnersOnly: { owners: ["sql-leaf-owners-only/clean.ts"] },
-	sqlCastOwner: { owners: ["sql-cast-owner/clean.ts"] },
 	sqlJsonOwner: { owners: ["sql-json-owner/clean.ts"] },
 	sqlDynamicSchema: {
 		tableFactories: [{ owner: "sql-dynamic-schema/clean.ts", declaration: "stageOf" }]

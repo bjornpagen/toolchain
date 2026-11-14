@@ -303,7 +303,7 @@ const PLACES = {
 	"no-overload": { part: "core", scope: "every file" },
 	"no-pointless-type-alias": { part: "core", scope: "every file" },
 	"no-raw-regexp": { part: "core", scope: "every file" },
-	"no-raw-sql": { part: "grizzle", scope: "every file" },
+	"no-raw-sql": { part: "core", scope: "every file" },
 	"no-send-beacon": { part: "web", scope: "every file" },
 	"no-svg-paint": { part: "web", scope: "tailwind apps" },
 	"no-svg-without-title": { part: "web", scope: "every file" },

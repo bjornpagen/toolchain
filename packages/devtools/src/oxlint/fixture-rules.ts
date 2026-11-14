@@ -78,7 +78,7 @@ export const FIXTURE_RULES: FixtureRules<typeof plugin, "no-comment"> = {
 	"no-overload": null,
 	"no-pointless-type-alias": null,
 	"no-raw-regexp": null,
-	"no-raw-sql": { sources: ["no-raw-sql"], writers: [] },
+	"no-raw-sql": { sources: ["no-raw-sql"], writers: ["no-raw-sql/drizzle/clean.tsx"] },
 	"no-send-beacon": null,
 	"no-svg-paint": null,
 	"no-svg-without-title": null,

@@ -1,14 +1,16 @@
 import { Array as Arr, Schema, String as Str } from "effect"
 import { configured, isFileAt } from "#oxlint/rule.ts"
 
-/** The source directories whose code holds no SQL text, and the modules there that write it. */
+/** The source directories, by repository-relative path, whose code writes no SQL cast as text, and the modules there
+ * that may: grizzle's printer and lexer, a Drizzle repository's cast leaves. */
 const Options = Schema.Struct({
 	sources: Schema.Array(Schema.String),
 	writers: Schema.Array(Schema.String)
 })
 
-const MESSAGE =
-	"SQL is printed from an AST by the engine's printer, never written as text: this string holds a cast as SQL text spells it, outside any quoted SQL string, identifier or comment."
+/** The report, naming the writers a cast belongs in. */
+const messageOf = (writers: ReadonlyArray<string>): string =>
+	`This string holds a \`::\` cast as SQL text spells it, outside any quoted SQL string, identifier or comment. A cast is written as text only by this rule's writers (${Arr.isReadonlyArrayNonEmpty(writers) ? Arr.join(writers, ", ") : "none in this repository"}): print the SQL from an AST, or call a typed cast function of a cast leaf.`
 
 /** The position after the quote that closes a quoted run opened before `from`: a doubled quote is the quote itself. */
 const closing = (text: string, from: number, quote: string): number => {
@@ -132,9 +134,12 @@ const isUnder = (filename: string, directories: ReadonlyArray<string>): boolean 
 	)
 
 /**
- * SQL written as text in a source: a string literal or a template literal whose text, its interpolations standing for
- * one neutral character each, holds a cast as PostgreSQL's scanner reads it. Every SQL text a source sends or shows is
- * printed from an AST by the engine's printer, which is the one writer, beside the lexer that reads it.
+ * SQL written as text in a source: a string literal or a template literal (a Drizzle `sql` template's among them) whose
+ * text, its interpolations standing for one neutral character each, holds a cast as PostgreSQL's scanner reads it. A
+ * cast is written only by the writers: grizzle prints every SQL text a source sends or shows from an AST, its printer
+ * the one writer beside the lexer that reads it, and a Drizzle repository renders a cast only in its cast leaves, which
+ * hold the PostgreSQL type registry and its typed cast functions. The rule is the core's, since both kinds of
+ * repository run it; one with no SQL lists no sources.
  */
 export const noRawSql = configured(Options, (context, options) => {
 	if (
@@ -143,10 +148,11 @@ export const noRawSql = configured(Options, (context, options) => {
 	) {
 		return {}
 	}
+	const message = messageOf(options.writers)
 	return {
 		Literal: (node) => {
 			if (typeof node.value === "string" && holdsCast(node.value)) {
-				context.report({ node, message: MESSAGE })
+				context.report({ node, message })
 			}
 		},
 		TemplateLiteral: (node) => {
@@ -158,7 +164,7 @@ export const noRawSql = configured(Options, (context, options) => {
 					)
 				)
 			) {
-				context.report({ node, message: MESSAGE })
+				context.report({ node, message })
 			}
 		}
 	}
