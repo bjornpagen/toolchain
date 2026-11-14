@@ -2,9 +2,11 @@
 
 The dev tools and the testing library that Bjorn's TypeScript repositories share, as one pnpm workspace:
 
-- `@bjornpagen/devtools` (`packages/devtools`): the oxlint preset and plugin, the tsconfig bases, the repository-wide
-  checks, the fixtures that prove every rule, and the commands `toolchain-gate`, `toolchain-typecheck` and
-  `toolchain-oxlint`.
+- `@bjornpagen/devtools` (`packages/devtools`): the oxlint preset and plugin (every lint rule, each reading syntax
+  alone), the tsconfig bases, the fixtures that prove every rule, and the commands `toolchain-gate`,
+  `toolchain-typecheck`, `toolchain-oxlint`, `workspace-gate` (the repository-wide tsconfig, manifest and file-name
+  checks) and `superstyle` (a Tailwind app's stylesheet contract). No check builds a TypeScript program but the
+  typecheck.
 - `@bjornpagen/testing` (`packages/testing`): the choice-stream testing library on Effect and Vitest.
 
 A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at a commit; its pnpm workspace lists
@@ -14,8 +16,8 @@ its own decisions in `toolchain.config.ts`. How the checks run is in CONTRIBUTIN
 ## Consumer migration: the check pipeline (2026-11-14)
 
 What a repository changes to take the toolchain from the check-pipeline plan on (Bjorn's plan and decisions of
-2026-11-14). Each part names the commit that brings it. Do the parts in order; the last part, superlint's retirement,
-comes from the plan's finalizer.
+2026-11-14). Each part names the commits that bring it. Pin `vendor/toolchain` at a commit whose README holds this
+whole section, and do every part: the parts are one migration, in the order a repository can typecheck them.
 
 ### 1. Dependencies (ad8d0ec)
 
@@ -130,8 +132,214 @@ compiler), which fallow reports once no package names them. For a repository wit
   script and turbo task and `react-compiler` from the root's `check`. Each app keeps `babel-plugin-react-compiler`, which
   `next build` loads, and `REACT_COMPILER_OPTIONS` stays at `@bjornpagen/devtools/react-compiler`.
 
-### 5. superlint's retirement
+### 5. superlint's retirement (b8b08f3, 6c9424e, 88e839b, d06393c, d252e0a, 7434219, cbc4adc, 603d066, 7d4ce11, 2e5f998)
 
-The finalizer of the plan completes this part: every superlint rule's new home (an oxlint rule, a mapping or a
-deletion), the config keys each repository drops from `toolchain.config.ts`, and the removal of the superlint tasks,
-scripts and dependencies.
+superlint is gone: its command and bin, its engine (a `tsgo --api` program per package, one of the three to five
+programs a check built per package), its fixtures and its tasks. Every rule it ran reads syntax through oxlint,
+maps to built-in oxlint rules, runs in the testing library's reporter or the workspace gate, or is deleted. The rules
+that moved into oxlint are AST-only, so the commit gate's `oxlint.ast.config.ts` (part 3) runs them too.
+
+#### Where each rule went
+
+| superlint rule (its pack)                                                                                                                                                                                                                                                          | Now                                                                                                                                                                   |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| no-module-state, no-null-undefined-union, no-spread-argument (core)                                                                                                                                                                                                                | `devtools/no-module-state`, `devtools/no-null-undefined-union`, `devtools/no-spread-argument` (option `tuples`), the core, every file                                 |
+| unchecked-vocabulary-literal (core)                                                                                                                                                                                                                                                | deleted                                                                                                                                                               |
+| effect-free-packages, its per-file import part                                                                                                                                                                                                                                     | `devtools/effect-free-imports`, on the `effectFree` directories                                                                                                       |
+| rejected-diagnostics, diagnostic-roster, effect-plugin-block, effect-free-packages (tsconfigs and manifests), ts-only-extensions (root)                                                                                                                                            | the `workspace-gate` command, which reads JSON and git's file list; same rule names, messages and toolchain.config.ts keys                                            |
+| no-drizzle-write-without-where (drizzle)                                                                                                                                                                                                                                           | `devtools/no-drizzle-write-without-where` (ported: eslint-plugin-drizzle does not load under oxlint as published), option `receivers`                                 |
+| no-implicit-select-all, no-bare-materialized-view-joins, sql-aliased-table-reference, sql-distinct-window, sql-dynamic-schema, sql-executor-contract, sql-json-owner, sql-leaf-owners-only, sql-number-decoder, sql-query-deadline, sql-raw-execution, sql-raw-statement (drizzle) | `devtools/<the same id>`, the drizzle part, every file                                                                                                                |
+| sql-cast-owner (drizzle)                                                                                                                                                                                                                                                           | `devtools/no-raw-sql`, now in the core: its `writers` are the old cast owners                                                                                         |
+| sql-array-parameter, sql-case-arm-cast (drizzle)                                                                                                                                                                                                                                   | deleted                                                                                                                                                               |
+| no-case-list (grizzle)                                                                                                                                                                                                                                                             | `devtools/no-case-list`, the grizzle part, every file                                                                                                                 |
+| no-environment (grizzle)                                                                                                                                                                                                                                                           | the preset's environment bans: `environment` in `lintConfig` turns on node/no-process-env and eslint/no-restricted-imports, -properties and -globals over the library |
+| test-case-is-search (grizzle)                                                                                                                                                                                                                                                      | the testing library's Vitest reporter, at run time: `examples` in `defineTestConfig`                                                                                  |
+| limit-evidence, no-optional-public-input, sql-text-assertion, tuple-identity (grizzle)                                                                                                                                                                                             | deleted; oxc/bad-object-literal-comparison, on through the correctness category, keeps tuple-identity's literal case                                                  |
+
+#### toolchain.config.ts
+
+- Delete `core: { ... }` and `own: [ ... ]`. A key no `Toolchain` holds is now a type error, so `pnpm types` names
+  any that is left.
+- `grizzle({ ... })` becomes `grizzle()`, and `drizzle({ ... })` becomes `drizzle()`. Their options move to
+  oxlint.config.ts or to the Vitest configs, as below; `uncheckedVocabularyLiteral`, `sqlTextAssertion`,
+  `limitEvidence`, `testCaseIsSearch`'s `scaffolds` and `noCaseList`'s `files` and `dictionaries` have no successor.
+- `exceptions` names the workspace gate's rules alone: `rejected-diagnostics`, `diagnostic-roster`,
+  `effect-plugin-block`, `effect-free-packages` and `ts-only-extensions`. Any other rule id is a type error, and the
+  workspace gate refuses to read the toolchain. Move each other entry as "Every exemption's new home" says.
+- `rejected.rules["eslint/prefer-spread"]`'s reason names the dev tools' no-spread-argument (an oxlint rule), not
+  superlint.
+- `@bjornpagen/devtools/config` exports `toolchain`, `drizzle`, `grizzle` and `web` (and the types): `ownRules` and
+  `OwnRules` are gone.
+
+#### oxlint.config.ts
+
+`lintConfig`'s `Project` and the plugin's options are typed, so tsc lists each field that is missing.
+
+- `environment: { library, readers }`, required. `library`: the directories that read no environment, as `effectFree`
+  names them (repository-relative, no trailing "/"); `readers`: the files among them that may, by path. Write
+  `{ library: [], readers: [] }` where there is nothing to guard. The library is held to node/no-process-env and to
+  restricted imports, properties and globals: `process`'s environment and its default export, `os`, v8's heap
+  readings, Effect's `Config` and `ConfigProvider` (type imports allowed), `globalThis.process` and `navigator`, beside
+  the repository's own lists; Math.random stays banned where the library is also Effect-free. An imported value is
+  refused at its import, and `import.meta.main` is no longer read, so an entry module that reads argv or the working
+  directory is listed in `readers`. An override that calls `restrictedImports` or `restrictedProperties` replaces the
+  environment lists for its files.
+- `plugin`, the shared plugin's names for the parts the repository runs:
+  - `"no-spread-argument": { tuples: [{ module, names }] }`, every repository; `{ tuples: [] }` is fine. A spread
+    passes when its length is written in source (a spread-free array literal, an `as const` tuple, a binding with a
+    written tuple type, the function's own rest parameter, a same-file function with a fixed-tuple return type), or
+    when it is the result of an imported function `tuples` names, by import specifier as the code writes it.
+  - `"no-raw-sql": { sources, writers }`, every repository, since the rule is in the core now: `sources`, the
+    directories whose code writes SQL; `writers`, the files that may write a `::` cast as text (the old
+    sqlCastOwner owners). It reads every string and template under `sources`, not only Drizzle's `sql`, so a `::` in
+    a regular expression or an ARN needs its file among `writers` or an override.
+  - grizzle pack (grizzle, den, the toolchain): `"no-case-list": { searches, generators, cases }`. Searches and
+    generators are named by the module the code imports them from, not by repository path:
+    `searches: [{ module: "@bjornpagen/testing/explore", name: "exhaust", space: "generator" }, { module:
+    "@bjornpagen/testing/explore", name: "explore", space: "draw" }]`; `generators`: `@bjornpagen/testing/gen`'s
+    `element` draws `"list"`, `constant` `"value"`, `map` and `span` `"each"`, `oneOf`, `weighted` and `proportional`
+    `"union"`, and `@bjornpagen/testing/explore`'s `drawn` and `sketched` `"each"`, each as
+    `{ module, names, draws }`; `cases`, the old `cases` list (a directory ending in "/", or a file). A list
+    imported from another module passes, so `dictionaries` goes; the rule runs on every file, so `files` goes. The
+    toolchain's own oxlint.config.ts is a worked example.
+  - drizzle pack (superstarter, edullm), each from the old `drizzle({ ... })` option:
+    - `"sql-leaf-owners-only": { owners }` from `sqlLeafOwnersOnly`;
+    - `"sql-json-owner": { owners }` from `sqlJsonOwner`;
+    - `"sql-dynamic-schema": { tableFactories }` from `sqlDynamicSchema`, same shape;
+    - `"sql-raw-execution"` from `sqlRawExecution` and `"sql-raw-statement"` from `sqlRawStatement`, same shapes;
+    - `"sql-query-deadline"` from `sqlQueryDeadline`, except that an admitted `value: { module, constant }` becomes
+      `value: { specifier, constant }`, the specifier the owner imports the constant by; the constant is imported,
+      not declared in the owner (edullm: `{ specifier: "#postgres/limits.ts", constant:
+      "SILVER_READER_TIMEOUT_MILLISECONDS" }`);
+    - new `"no-drizzle-write-without-where": { receivers }`, the names of Drizzle handles the file cannot trace
+      (superstarter `["database", "builder", "tx", "db"]`, edullm `["db", "database", "tx"]`);
+    - new `"no-bare-materialized-view-joins": { modules: [{ specifiers, views }] }`, the materialized views other
+      modules export; `{ modules: [] }` where there are none;
+    - no-implicit-select-all, sql-aliased-table-reference, sql-distinct-window, sql-executor-contract and
+      sql-number-decoder take no options: the drizzle part turns them on.
+- `overrides`: a lint rule's exception is a block, `{ files, rules: active({ "devtools/<rule>": "off" }) }`, with a
+  JSDoc reason on the rule, never a toolchain.config.ts entry.
+
+#### Tests: the runtime search check
+
+- Every `defineTestConfig` call takes the new required field `examples`. Where superlint ran test-case-is-search
+  (grizzle, den), write `examples: { kind: "banned", exempt: [{ files, reason }] }`; elsewhere (superstarter, edullm
+  with qti-pie, effect-openapi-cli-generator) `examples: { kind: "allowed" }`, or `"banned"` to adopt the check.
+- `exempt` paths are relative to the Vitest root (the config's directory); one ending in "/" names a directory, any
+  other one file. Each group keeps the reason it had in `testCaseIsSearch.exempt`.
+- A test counts as a search when it starts `explore`, `exhaust` or `interleave`, through any helper, so tests change
+  nothing. A config that names `@bjornpagen/testing/vitest/reporter` itself passes
+  `["@bjornpagen/testing/vitest/reporter", { examples }]`; banning examples needs `defineTestConfig`, which installs
+  the setup file that counts searches. Passing `--reporter` on the command line replaces the configured reporters and
+  so drops the check.
+
+#### package.json, turbo.json, lefthook.yml, tsconfig, fallow
+
+- Every package's package.json: delete the `"superlint"` script, and `"fixtures:superlint"` where a repository proved
+  its own superlint rules (edullm).
+- The root package.json: delete `"superlint"`; add `"workspace-gate": "workspace-gate"`; in `check`, drop `superlint`
+  and `fixtures:superlint` and add `workspace-gate`.
+- turbo.json: delete the `superlint`, `//#superlint` and `fixtures:superlint` tasks, and any task input that names
+  superlint's files; add `"//#workspace-gate": { "cache": false }` (it reads the whole tree in about a second, which a
+  cache would have to hash).
+- Run `pnpm install` after the manifests change: the dev tools' bins change, and pnpm's `verifyDepsBeforeRun` refuses
+  every script, the hooks' included, until they are relinked.
+- lefthook.yml: the gate of part 3, which runs no superlint; delete any comment that still names it (grizzle's
+  pre-push comment does).
+- tsconfig: nothing changes for superlint itself; drop an `include` or `exclude` that names superlint's fixtures
+  (edullm's `packages/platform/lint/src/superlint/fixtures`).
+- fallow: drop entry points and ignore patterns that name superlint's files.
+
+#### Imports that go
+
+- `@bjornpagen/devtools/superlint/finding`, `/superlint/paths`, `/superlint/sql`, `/superlint/types`, and `ownRules`
+  and `OwnRules` from `/config`. `Finding` stays importable from `@bjornpagen/devtools/style`.
+- `@bjornpagen/devtools/native-api` keeps `nativeSession` and `openProject`, for a repository's own tools that parse
+  with the native compiler (grizzle's `scripts/dev/shared/native-syntax.ts`); `withProgram` and `RoundTrip` go.
+  No toolchain check opens a session.
+- `@bjornpagen/devtools/devtool`, `/run`, `/oxlint/rule`, `/oxlint/syntax` and `/oxlint/fixtures` stay.
+
+#### A repository's own superlint rules (edullm)
+
+edullm's `timeback-provider-boundary` (`packages/platform/lint/src/superlint/`) was the one own superlint rule, and it
+read the checker. It becomes a rule of edullm's own oxlint plugin, made with `ownPlugin` from
+`@bjornpagen/devtools/preset`, written with `@bjornpagen/devtools/oxlint/rule` and `/oxlint/syntax` and proven with
+`/oxlint/fixtures`: from syntax and scope, it refuses the `fetch`, `URL` and `Request` globals (unshadowed) and
+`HttpClientRequest` imported from Effect outside its `adapters`, and the provider's `addresses` and the `constants` its
+options name (`TIMEBACK_*SERVER_URL`, `TIMEBACK_*TOKEN_URL`) outside them, or it is deleted. Then
+`own: [edullmRules(...)]`, `packages/platform/lint/src/superlint/`, its `fixtures:superlint` task and the
+`PROVIDER_ADDRESSES` exception go; the exception becomes an override of the new rule on `toolchain.config.ts`.
+
+#### Every exemption's new home
+
+- **grizzle**
+  - `exceptions` no-module-state on `packages/engine/src/query/build/scope.ts` and `test/pg/serverless/support.ts`:
+    an override with `"devtools/no-module-state": "off"`; `test/support/substrate/shared.ts` drops (the syntactic
+    rule finds nothing there).
+  - `exceptions` no-spread-argument on `test/unit/deps/runtime-probe.ts`: an override with
+    `"devtools/no-spread-argument": "off"`.
+  - `exceptions` limit-evidence: deleted with the rule.
+  - `exceptions` ts-only-extensions on `upstream/v8-unicode-end-anchor-astral-class/repro.js`: stays, the workspace
+    gate's.
+  - `noEnvironment`: `environment: { library: ["packages/engine/src", "packages/grizzle/src"], readers:
+    ["packages/grizzle/src/adapter/connection/environment.ts"] }`.
+  - `noCaseList`: `"no-case-list"` with the searches and generators above and `cases: ["test/"]`; its dictionaries go.
+  - no-spread-argument's `tuples`: `[{ module: "#test/support/list.ts", names: ["argumentsOf", "nonEmptyArgumentsOf"]
+    }, { module: "#compiler/allen/atoms.ts", names: ["atomOperands"] }]`.
+  - `testCaseIsSearch.exempt`: its five groups, with their reasons, become `examples.exempt` in `vitest.config.ts`
+    and `vitest.network.config.ts` (both at the root, so the paths stay): the README mirror's blocks and examples
+    tests, `test/unit/dev/package.test.ts`, `test/pg/bench/`, the type batch's population runners and the cost
+    gates; add `test/pg/migrate/backfill-cost.test.ts`, a growth-cost gate that starts no search, which the lint's
+    static reach let through. Its `scaffolds` (runSchedule) have no successor: a hand schedule run through
+    `interleave` counts as a search. Decide what `scripts/dev/mutate/vitest.config.ts` states.
+  - `uncheckedVocabularyLiteral`, `sqlTextAssertion` and `limitEvidence`: deleted.
+  - New finding: `test/pg/compute/catalogue.test.ts:140-142` spreads `...integerRanges.int2` (and int4, int8), a
+    property of an imported object the syntax cannot size: pass the two elements by index, or destructure them first.
+- **den**
+  - `core` and the grizzle pack's options: deleted, `grizzle()`.
+  - `noCaseList`: `"no-case-list"` with its old `cases` list.
+  - `testCaseIsSearch` (no exemptions): each package's Vitest config (den, den-vercel, den-model, edullm and the
+    network config) takes `examples: { kind: "banned", exempt: [] }`.
+  - `noEnvironment` named no files: `environment: { library: [], readers: [] }`.
+- **superstarter**
+  - `core`: deleted. `drizzle({ ... })`: `drizzle()`, its options moved as above.
+  - `"no-raw-sql": { sources: ["packages/database/src"], writers: ["packages/database/src/postgres/rds.ts"] }` (the
+    IAM ARN regular expression holds `::`).
+  - `examples: { kind: "allowed" }` in each Vitest config.
+- **edullm**
+  - `core`: deleted. `drizzle({ ... })`: `drizzle()`, its options moved as above.
+  - `"no-raw-sql": { sources: ["packages/data/database/src"], writers: ["packages/data/database/src/sql/cast.ts",
+    "packages/data/database/src/archive/load.ts"] }` (load.ts's ISO_INSTANT regular expression holds `(?::`), or an
+    override with its reason.
+  - `QTI_PIE_SETTINGS` (`effect-free-packages` on `packages/qti-pie/`): stays, the workspace gate's.
+  - `PROVIDER_ADDRESSES` and `own`: as "A repository's own superlint rules" says.
+  - If the root oxlint reaches `packages/qti-pie`, sql-raw-execution refuses the pg `client.query` at
+    `pantry/src/cli/timeout.db.test.ts:108`: add the file to `nativeClientOwners`, or leave qti-pie to its own config.
+  - `examples: { kind: "allowed" }` in each Vitest config, qti-pie's included.
+- **effect-openapi-cli-generator**
+  - `core`: deleted. `plugin` gains `"no-raw-sql": { sources: [], writers: [] }` and `"no-spread-argument":
+    { tuples: [] }`; `environment: { library: [], readers: [] }`; `examples: { kind: "allowed" }`.
+
+#### What the rules see now that they read syntax alone
+
+- no-module-state judges a module-level binding by what is written: a `let` or `var`; a constant holding an array
+  literal, an object literal with a writable property, a `new Map` or `new Set`, or a regular expression with the g
+  or y flag, unless a readonly type, `as const` or `Object.freeze` says otherwise; a write to the global object the
+  file does not declare. It follows the file's own aliases and interfaces and takes another module's type at its
+  word, so `const pool = new Pool()` passes.
+- no-null-undefined-union reads written types (parameters, properties, return types) through the file's own aliases,
+  no longer inferred returns or aliases from other modules.
+- no-case-list no longer follows lists imported from support modules.
+- The drizzle rules know Drizzle by import: a `sql` template is Drizzle's when its tag is imported from drizzle-orm,
+  and a value is Drizzle's or pg's when the file traces it to such a call, instance or annotated type. A value
+  imported from another module cannot be followed (name views through no-bare-materialized-view-joins' `modules`,
+  handles through no-drizzle-write-without-where's `receivers`), and `sql<Alias>` is read as written.
+- The environment bans refuse an imported value at its import rather than where it is read, and ban
+  `globalThis.process` and `navigator` in the library wholesale.
+- Scans of today's trees with the final rules: den and superstarter 0 findings; grizzle 3 to fix (catalogue.test.ts
+  above) beside the ones its overrides cover; effect-openapi-cli-generator 35 (27 no-spread-argument, such as
+  `Math.max(...rows.map(...))` and `pending.push(...Arr.reverse(...))` in emit/ and runtime-src/; 7 no-module-state,
+  `new Set`, `new Map` and g-flag regular expressions in runtime-src/runtime/sequential.ts, client.ts and output.ts,
+  to annotate ReadonlySet or ReadonlyMap or unflag; 1 no-null-undefined-union, test/names/flatten.test.ts:19);
+  edullm about 1,935, of which about 1,290 are in the .agents, .claude and .cursor skill copies (ignore patterns) and
+  583 in qti-pie.

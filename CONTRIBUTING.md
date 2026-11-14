@@ -38,7 +38,7 @@ directory of the tsconfig being checked, so each package, and the root, keeps it
 The build info is no turbo output. A turbo hit replays the diagnostics and needs no build info; a miss reads whatever
 build info the directory holds, and tsrs proves it against the files' hashes and the options, the Effect plugin's
 included, so any build info is safe to start from. Caching it would store a new copy, megabytes in a large package, for
-every content change. Nothing else writes it: oxlint's tsgolint and superlint read the tsconfig but emit nothing.
+every content change. Nothing else writes it: oxlint's tsgolint reads the tsconfig but emits nothing.
 
 `typecheck:full` is a turbo task of its own, so the push's typecheck never replays a hit of the incremental one.
 
@@ -79,6 +79,23 @@ The exact commands:
 | Full, one package    | `toolchain-oxlint` in the package (its `oxlint` task)                              |
 | Full, every package  | `pnpm exec turbo run oxlint`, which `pnpm check` runs                              |
 | AST-only, some files | `pnpm exec oxlint -c oxlint.ast.config.ts --no-error-on-unmatched-pattern <files>` |
+
+## Where a rule goes
+
+No check builds a TypeScript program but the typecheck: superlint, which built one per package, is retired, and the
+style linter and the workspace gate read files as text. A new rule goes, in this order of preference:
+
+- to an Effect diagnostic or a TypeScript option, when the compiler can own it;
+- to oxlint's built-in rules, turned on in the preset (`packages/devtools/src/preset.ts`), with their type-aware rules
+  among them (tsgolint runs those in `pnpm check` only);
+- to the devtools oxlint plugin (`packages/devtools/src/oxlint/rules/`), reading one file's syntax and scopes, with
+  its `clean.tsx` and `violating.tsx` fixtures under `src/oxlint/fixtures/<rule>/`, its fixture options in
+  `src/oxlint/fixture-rules.ts` and its place in the preset's `PLACES`; a rule for one repository only goes to that
+  repository's own plugin (`ownPlugin`);
+- to the workspace gate (`packages/devtools/src/workspace/`), when it reads the repository's JSON or file names;
+- to the testing library's reporter, when it judges what a test did at run time.
+
+A rule that needs the checker and fits none of these is a decision for the owner, not a new program.
 
 ## The gate: snapshots
 
