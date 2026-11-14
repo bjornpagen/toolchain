@@ -7,7 +7,6 @@ import {
 	FileSystem,
 	Option,
 	Path,
-	Record,
 	Result,
 	String as Str
 } from "effect"
@@ -25,14 +24,12 @@ import {
 import { isAtAny } from "#lint/paths.ts"
 import { CORE_RULES, DRIZZLE_RULES, GRIZZLE_RULES } from "#lint/rules/index.ts"
 import { surfaceOf } from "#lint/surface.ts"
-import { tsconfigFindings, workspaceFixtureMismatches } from "#lint/tsconfigs.ts"
 import type { BoundRule, FileContext, Visitor } from "#lint/types.ts"
 import { invocationOf } from "#shared/arguments.ts"
 import { repositoryToolchain } from "#shared/config.ts"
 import { DevtoolFailure } from "#shared/devtool.ts"
 import { type Finding, findingAt, renderFindings, statusOf } from "#shared/finding.ts"
 import { fixtureMismatchesOf, renderFixtureMismatches } from "#shared/fixtures.ts"
-import { gitFilesUnder } from "#shared/git.ts"
 import { type RoundTrip, withProgram } from "#shared/native-api.ts"
 import { everyNode, preorder } from "#shared/nodes.ts"
 import {
@@ -46,11 +43,12 @@ import {
 import { runDevtool } from "#shared/run.ts"
 import { selectFiles } from "#shared/selection.ts"
 import { prepareSemantics } from "#shared/semantic.ts"
+import { WORKSPACE_RULES } from "#workspace/rules.ts"
 
 /**
  * Superlint: the repository's opinionated type-aware rules that oxlint has no rule for. It lints the package in the
  * working directory: each workspace package's `superlint` task runs it in the package, and the repository root's runs
- * it at the root, where it also runs the tsconfig gate (`#lint/tsconfigs.ts`) and refuses a JavaScript file. The
+ * it at the root; the checks of the repository as a whole are the workspace gate's (`workspace-gate.ts`). The
  * repository's decisions come from its toolchain.config.ts: the core, the packs it runs beside it with their names, its
  * own rules, and its exceptions. Explicit paths lint the files at or under them (a file the tsconfig excludes is added
  * to the program); `--fixtures` runs every rule against its fixtures instead (or, given fixtures directories laid out
@@ -65,18 +63,6 @@ import { prepareSemantics } from "#shared/semantic.ts"
 
 const inspectionFailure = (subject: string) => (cause: unknown) =>
 	DevtoolFailure.make({ detail: `${subject} could not be inspected`, cause })
-
-/**
- * The rules superlint runs over the repository as a whole rather than per file. The repository's exceptions name them
- * as they name the per-file rules, and excuse the files they list from them.
- */
-const REPOSITORY_RULES: ReadonlyArray<string> = [
-	"rejected-diagnostics",
-	"diagnostic-roster",
-	"effect-plugin-block",
-	"effect-free-packages",
-	"ts-only-extensions"
-]
 
 /** The rules a repository's toolchain runs: the core, each pack it names beside it, and its own. */
 const rulesOf = (config: Toolchain): ReadonlyArray<BoundRule> => [
@@ -102,8 +88,8 @@ const SHARED_FIXTURE_RULES: ReadonlyArray<BoundRule> = [
 ]
 
 /**
- * The repository's toolchain, checked against the rules it runs: an exception names a rule the toolchain runs or a
- * repository-wide one, and every module a pack's options name for existence is in the tree. A failure names what
+ * The repository's toolchain, checked against the rules it runs: an exception names a rule the toolchain runs or one
+ * of the workspace gate's, and every module a pack's options name for existence is in the tree. A failure names what
  * to fix in toolchain.config.ts.
  */
 const projectToolchain = Effect.gen(function* () {
@@ -114,7 +100,7 @@ const projectToolchain = Effect.gen(function* () {
 	const unknown = Arr.filter(
 		config.exceptions,
 		(exception) =>
-			!Arr.contains(ids, exception.rule) && !Arr.contains(REPOSITORY_RULES, exception.rule)
+			!Arr.contains(ids, exception.rule) && !Arr.contains(WORKSPACE_RULES, exception.rule)
 	)
 	if (Arr.isReadonlyArrayNonEmpty(unknown)) {
 		return yield* DevtoolFailure.make({
@@ -212,26 +198,6 @@ const configOf = (
 		}
 		return yield* configOf(parent)
 	})
-
-/** JavaScript's own extensions. */
-const JAVASCRIPT_EXTENSIONS: ReadonlyArray<string> = [".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"]
-
-/** Every file git shows that holds code is TypeScript: a JavaScript extension is refused. */
-const tsOnlyExtensionFindings = Effect.gen(function* () {
-	const { root } = yield* Repository
-	const files = yield* gitFilesUnder(root)
-	return Arr.filterMap(files, (file): Result.Result<Finding, void> =>
-		Arr.some(JAVASCRIPT_EXTENSIONS, (extension) => Str.endsWith(extension)(file))
-			? Result.succeed({
-					file,
-					line: 1,
-					column: 1,
-					rule: "ts-only-extensions",
-					message: "Source files are TypeScript: give this file a .ts or .tsx extension."
-				})
-			: Result.failVoid
-	)
-})
 
 /** The source files of the package's program that the package owns. */
 const ownedSourcesOf = (
@@ -461,7 +427,6 @@ const DEVTOOLS_ROOT = `${import.meta.dirname}/..`
 /**
  * The fixtures a repository proves: its own rules' fixtures, and the shared packs' when the dev tools are the
  * repository's own package rather than vendored under its vendor/ directory (where the toolchain's gate proves them).
- * The shared run also proves the tsconfig gate against its workspace fixtures.
  */
 const checkFixtures = Effect.gen(function* () {
 	const path = yield* Path.Path
@@ -493,27 +458,7 @@ const checkFixtures = Effect.gen(function* () {
 		(shared ? SHARED_FIXTURE_RULES.length + SHARED_FILE_CHECKS.length : 0) +
 		Arr.reduce(config.own, 0, (count, own) => count + own.fixtureRules.length)
 	yield* Console.log(renderFixtureMismatches({ tool: "superlint", root, rules, mismatches }))
-	if (!shared) {
-		return statusOf(mismatches)
-	}
-	const workspaces = yield* workspaceFixtureMismatches
-	const shown = relativeTo(root)
-	yield* Console.log(
-		Arr.isReadonlyArrayNonEmpty(workspaces.mismatches)
-			? Arr.join(
-					[
-						...Arr.map(
-							workspaces.mismatches,
-							(mismatch) =>
-								`${shown(mismatch.workspace)}: missing [${Arr.join(Arr.map(mismatch.missing, shown), ", ")}] unexpected [${Arr.join(Arr.map(mismatch.unexpected, shown), ", ")}]`
-						),
-						`superlint fixtures: ${String(workspaces.mismatches.length)} workspace(s) disagree with the tsconfig gate`
-					],
-					"\n"
-				)
-			: `superlint fixtures: the tsconfig gate agrees with its ${String(workspaces.workspaces)} workspaces`
-	)
-	return statusOf([...mismatches, ...workspaces.mismatches])
+	return statusOf(mismatches)
 })
 
 /**
@@ -614,22 +559,8 @@ const main = Effect.gen(function* () {
 				)
 			})
 	)
-	const repository =
-		packageRoot === root
-			? Arr.filter(
-					[
-						...(yield* tsconfigFindings({
-							effectFree: config.effectFree,
-							rejectedDiagnostics: Record.keys(config.rejected.diagnostics)
-						})),
-						...(yield* tsOnlyExtensionFindings)
-					],
-					(finding) => !isExcepted(config.exceptions, root, finding)
-				)
-			: []
-	const reported = [...findings, ...repository]
-	yield* Console.log(renderFindings({ tool: "superlint", root, findings: reported }))
-	return statusOf(reported)
+	yield* Console.log(renderFindings({ tool: "superlint", root, findings }))
+	return statusOf(findings)
 })
 
 runDevtool(main)

@@ -1,5 +1,5 @@
 {
-	"superlint": {
+	"toolchain": {
 		"effectFree": [
 			"packages/plain"
 		]

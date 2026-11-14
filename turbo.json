@@ -48,6 +48,7 @@
 		"fixtures:style": {},
 		"fixtures:oxlint": {},
 		"fixtures:react-compiler": {},
+		"fixtures:workspace-gate": {},
 		"test": {
 			"description": "Every test that uses no network. Each run draws fresh rotating seeds, so a test never replays from cache; the run's seed, a replay, a fuzz run and the worker cap come through the environment.",
 			"cache": false,
@@ -61,6 +62,10 @@
 		},
 		"//#typecheck": {},
 		"//#superlint": {},
+		"//#workspace-gate": {
+			"description": "The repository-wide checks: every tsconfig and package manifest, and every file name git shows. It reads the whole tree and opens no TypeScript program, so it costs about a second, and a cache would have to hash the whole tree to know it could skip it.",
+			"cache": false
+		},
 		"//#oxlint": {},
 		"//#format": {},
 		"//#dead-code": {},

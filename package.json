@@ -16,9 +16,10 @@
 	},
 	"scripts": {
 		"prepare": "effect-tsgo patch",
-		"check": "turbo run typecheck superlint oxlint format dead-code dedupe fixtures:superlint fixtures:style fixtures:oxlint fixtures:react-compiler --continue=dependencies-successful",
+		"check": "turbo run typecheck superlint oxlint format dead-code dedupe workspace-gate fixtures:superlint fixtures:style fixtures:oxlint fixtures:react-compiler fixtures:workspace-gate --continue=dependencies-successful",
 		"typecheck": "effect-tsgo tsrs",
 		"superlint": "superlint",
+		"workspace-gate": "workspace-gate",
 		"oxlint": "oxlint oxlint.config.ts",
 		"format": "oxfmt --check .",
 		"format:write": "oxfmt .",

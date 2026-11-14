@@ -1,7 +1,7 @@
 {
 	"name": "@bjornpagen/devtools",
 	"private": true,
-	"description": "The dev tools every repository shares: superlint (type-aware rules on TypeScript 7's native API, in packs), the Tailwind style linter, the React Compiler check, the oxlint preset and plugin, and the tsconfig bases, each proven against fixtures. A repository takes it from GitHub by commit and keeps its own decisions in toolchain.config.ts.",
+	"description": "The dev tools every repository shares: superlint (type-aware rules on TypeScript 7's native API, in packs), the Tailwind style linter, the React Compiler check, the oxlint preset and plugin, the workspace gate (the repository-wide tsconfig, manifest and file-name checks, which open no TypeScript program), and the tsconfig bases, each proven against fixtures. A repository takes it from GitHub by commit and keeps its own decisions in toolchain.config.ts.",
 	"type": "module",
 	"imports": {
 		"#*": "./src/*"
@@ -27,7 +27,8 @@
 	"bin": {
 		"superlint": "./src/lint.ts",
 		"superstyle": "./src/style.ts",
-		"react-compiler": "./src/react-compiler.ts"
+		"react-compiler": "./src/react-compiler.ts",
+		"workspace-gate": "./src/workspace-gate.ts"
 	},
 	"scripts": {
 		"typecheck": "effect-tsgo tsrs",
@@ -37,6 +38,7 @@
 		"fixtures:style": "node src/style.ts --fixtures",
 		"fixtures:oxlint": "node src/oxlint/fixtures.ts",
 		"fixtures:react-compiler": "node src/react-compiler.ts --fixtures",
+		"fixtures:workspace-gate": "node src/workspace-gate.ts --fixtures",
 		"test": "vitest run"
 	},
 	"devDependencies": {

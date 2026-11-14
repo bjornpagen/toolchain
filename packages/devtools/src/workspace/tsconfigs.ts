@@ -15,10 +15,11 @@ import type { Finding } from "#shared/finding.ts"
 import { covers, relativeTo, Repository } from "#shared/repository.ts"
 
 /**
- * The repository's tsconfig gate, run by superlint at the repository root: the Effect diagnostics every tsconfig
- * sets, the shared base's list held to the installed @effect/tsgo's roster, the one plugin block the root tsconfig
- * declares, and the Effect-free packages the repository's toolchain lists. A workspace package under the root's
- * vendor/ is another repository's, checked by that repository's own gate, so the gate leaves it alone.
+ * The repository's tsconfig gate, run by the workspace gate at the repository root: the Effect diagnostics every
+ * tsconfig sets, the shared base's list held to the installed @effect/tsgo's roster, the one plugin block the root
+ * tsconfig declares, and the Effect-free packages the repository's toolchain lists. It reads JSON alone and opens no
+ * TypeScript program. A workspace package under the root's vendor/ is another repository's, checked by that
+ * repository's own gate, so the gate leaves it alone.
  */
 
 const inspectionFailure = (subject: string) => (cause: unknown) =>
@@ -312,8 +313,7 @@ const namedIn = (field: Readonly<Record<string, string>> | undefined): ReadonlyA
  * The Effect packages an Effect-free package's manifest names where its code would load them at run time: in its
  * dependencies or optional dependencies, or in its dev dependencies without the peer they serve in its own workspace.
  * A peer is the one place Effect may stand: an Effect-free package that names Effect's types (`import type`) declares
- * the peer its declarations need, and superlint, run in the package, holds every Effect import of its sources to
- * `import type`.
+ * the peer its declarations need, and the linters hold every Effect import of its sources to `import type`.
  */
 const loadedEffectOf = (manifest: typeof PackageManifest.Type): ReadonlyArray<string> => {
 	const peers = namedIn(manifest.peerDependencies)
@@ -610,12 +610,12 @@ export const tsconfigFindings = (
 
 /** The workspaces that prove the workspace gate: in each `violating-*` one the root and every package draw a finding,
  * and in each `clean-*` one nothing does. */
-const WORKSPACE_FIXTURES = `${import.meta.dirname}/fixtures/workspaces`
+const WORKSPACE_FIXTURES = `${import.meta.dirname}/fixtures`
 
 /** A fixture workspace's root package.json: the Effect-free list, as the repository's names it. */
 const FixtureManifest = Schema.fromJsonString(
 	Schema.Struct({
-		superlint: Schema.Struct({ effectFree: EffectFree })
+		toolchain: Schema.Struct({ effectFree: EffectFree })
 	})
 )
 
@@ -640,7 +640,7 @@ const fixtureWorkspaceOf = (root: string) =>
 			.pipe(Effect.mapError(inspectionFailure(manifestFile)))
 		const manifest = yield* decodeFixtureManifest(text).pipe(
 			Effect.mapError((cause) =>
-				DevtoolFailure.make({ detail: `${manifestFile} needs a superlint.effectFree list`, cause })
+				DevtoolFailure.make({ detail: `${manifestFile} needs a toolchain.effectFree list`, cause })
 			)
 		)
 		const directory = `${root}/packages`
@@ -654,7 +654,7 @@ const fixtureWorkspaceOf = (root: string) =>
 			Arr.map(Arr.sort(names, Str.Order), (name) => `${directory}/${name}`),
 			(leaf) => fs.exists(`${leaf}/package.json`).pipe(Effect.mapError(inspectionFailure(leaf)))
 		)
-		return { root, packages, effectFree: manifest.superlint.effectFree }
+		return { root, packages, effectFree: manifest.toolchain.effectFree }
 	})
 
 /** Every fixture workspace against the gate, directory for directory. No fixture workspace of either kind is a
