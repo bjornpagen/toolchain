@@ -1,7 +1,7 @@
 import { Array as Arr, Option } from "effect"
 import * as ts from "typescript/ast"
 import { type Symbol as NativeSymbol, SymbolFlags } from "typescript/sync"
-import { declaredValuesOf, lackedValuesOf, missingValueMessage } from "#lint/declared.ts"
+import { declaredValuesOf, unexportedValueMessage } from "#lint/declared.ts"
 import type { Draws, GrizzleOptions } from "#lint/options.ts"
 import { isAtAny } from "#lint/paths.ts"
 import type { RuleContext, Start } from "#lint/types.ts"
@@ -106,11 +106,11 @@ export const noCaseList: Start<GrizzleOptions> = ({ checker }) => {
 				])
 			),
 			misconfigured: [
-				...Arr.map(lackedValuesOf(searches), (missing) =>
-					missingValueMessage("noCaseList.searches", missing)
+				...Arr.map(searches.unexported, (missing) =>
+					unexportedValueMessage("noCaseList.searches", missing)
 				),
-				...Arr.map(lackedValuesOf(generators), (missing) =>
-					missingValueMessage("noCaseList.generators", missing)
+				...Arr.map(generators.unexported, (missing) =>
+					unexportedValueMessage("noCaseList.generators", missing)
 				)
 			]
 		}

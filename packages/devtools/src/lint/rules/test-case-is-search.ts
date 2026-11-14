@@ -6,12 +6,7 @@ import {
 	type Symbol as NativeSymbol,
 	SymbolFlags
 } from "typescript/sync"
-import {
-	declaredValuesOf,
-	lackedValuesOf,
-	missingValueMessage,
-	unexportedValueMessage
-} from "#lint/declared.ts"
+import { declaredValuesOf, unexportedValueMessage } from "#lint/declared.ts"
 import type { GrizzleOptions } from "#lint/options.ts"
 import { isAtAny, isOwnSourcePath, isPackagePath } from "#lint/paths.ts"
 import type { Start } from "#lint/types.ts"
@@ -400,8 +395,8 @@ export const testCaseIsSearch: Start<GrizzleOptions> = ({ checker }) => {
 			),
 			scaffolds: new Set(Arr.map(scaffolds.found, ({ symbol }) => symbol.id)),
 			misconfigured: [
-				...Arr.map(lackedValuesOf(values), (missing) =>
-					missingValueMessage("testCaseIsSearch.searches", missing)
+				...Arr.map(values.unexported, (missing) =>
+					unexportedValueMessage("testCaseIsSearch.searches", missing)
 				),
 				...Arr.map(scaffolds.unexported, (missing) =>
 					unexportedValueMessage("testCaseIsSearch.scaffolds", missing)

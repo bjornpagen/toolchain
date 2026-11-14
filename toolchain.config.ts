@@ -207,7 +207,7 @@ export default toolchain({
 			},
 			noEnvironment: { files: [], readers: [], sources: [], entryReads: [] },
 			testCaseIsSearch: {
-				files: ["packages/testing/src/"],
+				files: ["packages/devtools/src/", "packages/testing/src/"],
 				registrars: [
 					{ package: "@effect/vitest", declarations: ["Test", "each", "prop"] },
 					{
@@ -229,7 +229,7 @@ export default toolchain({
 				]
 			},
 			noCaseList: {
-				files: ["packages/testing/src/"],
+				files: ["packages/devtools/src/", "packages/testing/src/"],
 				cases: [],
 				dictionaries: [],
 				searches: [

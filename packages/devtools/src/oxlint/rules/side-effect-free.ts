@@ -49,10 +49,10 @@ const Options = Schema.Struct({
 })
 
 /** The leads that mark a function as having no side effects, as bundlers read them. */
-const MARKS: ReadonlyArray<string> = ["@__NO_SIDE_EFFECTS__", "#__NO_SIDE_EFFECTS__"]
+export const MARKS: ReadonlyArray<string> = ["@__NO_SIDE_EFFECTS__", "#__NO_SIDE_EFFECTS__"]
 
 /** Math's functions, every one but `random`, which draws from state it changes. */
-const MATH_FUNCTIONS: ReadonlyArray<string> = [
+export const MATH_FUNCTIONS: ReadonlyArray<string> = [
 	"abs",
 	"acos",
 	"acosh",
@@ -94,7 +94,7 @@ const MATH_FUNCTIONS: ReadonlyArray<string> = [
  * result from its arguments and calls none of them. Object.freeze changes its argument, so it is proven only on a
  * literal the call itself builds.
  */
-const BUILTIN_CALLS: ReadonlyMap<string, ReadonlyArray<string>> = new Map([
+export const BUILTIN_CALLS: ReadonlyMap<string, ReadonlyArray<string>> = new Map([
 	["Object", ["freeze", "is"]],
 	["Number", ["isFinite", "isInteger", "isNaN", "isSafeInteger"]],
 	["Array", ["isArray"]],
@@ -102,13 +102,13 @@ const BUILTIN_CALLS: ReadonlyMap<string, ReadonlyArray<string>> = new Map([
 ])
 
 /** The language's conversions a proven function may call by name: each answers a primitive of its argument. */
-const CALLABLE_GLOBALS: ReadonlyArray<string> = ["BigInt", "Number", "String"]
+export const CALLABLE_GLOBALS: ReadonlyArray<string> = ["BigInt", "Number", "String"]
 
 /**
  * The globals a proven function may read: the language's constants, the objects of its proven calls and its
  * conversions.
  */
-const PURE_GLOBALS: ReadonlyArray<string> = [
+export const PURE_GLOBALS: ReadonlyArray<string> = [
 	"undefined",
 	"NaN",
 	"Infinity",
@@ -117,7 +117,7 @@ const PURE_GLOBALS: ReadonlyArray<string> = [
 ]
 
 /** The syntax a proven function never holds, by node type, each with what it does that no proof covers. */
-const FORBIDDEN: ReadonlyMap<string, string> = new Map([
+export const FORBIDDEN: ReadonlyMap<string, string> = new Map([
 	["ThisExpression", "reads `this`, which its caller binds"],
 	["Super", "reads `super`, which its class binds"],
 	["AwaitExpression", "awaits, which runs whatever the awaited value schedules"],

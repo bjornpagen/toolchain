@@ -36,11 +36,15 @@
 		"fixtures:superlint": "node src/lint.ts --fixtures",
 		"fixtures:style": "node src/style.ts --fixtures",
 		"fixtures:oxlint": "node src/oxlint/fixtures.ts",
-		"fixtures:react-compiler": "node src/react-compiler.ts --fixtures"
+		"fixtures:react-compiler": "node src/react-compiler.ts --fixtures",
+		"test": "vitest run"
 	},
 	"devDependencies": {
+		"@bjornpagen/testing": "workspace:*",
+		"@effect/vitest": "catalog:",
 		"@types/babel__core": "catalog:",
-		"@types/node": "catalog:"
+		"@types/node": "catalog:",
+		"vitest": "catalog:"
 	},
 	"dependencies": {
 		"@babel/core": "catalog:",

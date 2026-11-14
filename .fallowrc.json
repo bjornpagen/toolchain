@@ -17,6 +17,10 @@
 	"boundaries": {
 		"zones": [
 			{
+				"name": "devtools-suites",
+				"patterns": ["packages/devtools/src/**/*.test.ts", "packages/devtools/vitest.config.ts"]
+			},
+			{
 				"name": "testing",
 				"patterns": ["packages/testing/**"]
 			},
@@ -30,6 +34,10 @@
 			}
 		],
 		"rules": [
+			{
+				"from": "devtools-suites",
+				"allow": ["devtools", "testing"]
+			},
 			{
 				"from": "testing",
 				"allow": []

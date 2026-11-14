@@ -213,16 +213,6 @@ export const declaredValuesOf = <A extends DeclaredValue>(
 	}
 }
 
-/** The report text for a declared value the linted file's program does not hold. */
-export const missingValueMessage = (option: string, declared: DeclaredValue): string =>
-	`The superlint option ${option} names the value ${declared.name} of ${declared.module}, which this file's program does not hold.`
-
 /** The report text for a declared value whose module the linted file's program holds without exporting it. */
 export const unexportedValueMessage = (option: string, declared: DeclaredValue): string =>
 	`The superlint option ${option} names the value ${declared.name} of ${declared.module}, which that module does not export.`
-
-/** Every declared value the program lacks: its module unheld, or the value unexported. */
-export const lackedValuesOf = <A>(values: DeclaredValues<A>): ReadonlyArray<A> => [
-	...values.unexported,
-	...values.unheld
-]
