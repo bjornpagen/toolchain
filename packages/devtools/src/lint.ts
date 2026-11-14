@@ -378,13 +378,14 @@ const checkFixtures = Effect.gen(function* () {
 	const config = yield* repositoryToolchain
 	const devtools = path.resolve(DEVTOOLS_ROOT)
 	const shared = !covers({ selected: `${root}/vendor`, file: devtools })
-	const sharedMismatches = shared
-		? yield* fixtureMismatchesIn({
-				fixtures: FIXTURES_ROOT,
-				rules: SHARED_FIXTURE_RULES,
-				exceptions: FIXTURE_EXCEPTIONS
-			})
-		: []
+	const sharedMismatches =
+		shared && Arr.isReadonlyArrayNonEmpty(SHARED_FIXTURE_RULES)
+			? yield* fixtureMismatchesIn({
+					fixtures: FIXTURES_ROOT,
+					rules: SHARED_FIXTURE_RULES,
+					exceptions: FIXTURE_EXCEPTIONS
+				})
+			: []
 	const ownMismatches = yield* Effect.forEach(
 		config.own,
 		(own) =>

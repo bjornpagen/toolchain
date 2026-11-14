@@ -19,6 +19,7 @@ export default defineConfig(
 		restrictedGlobals: [],
 		restrictedProperties: [],
 		unassignedImports: [],
+		environment: { library: [], readers: [] },
 		ceremony: ["packages/devtools/**"],
 		plugin: {
 			"bearer-owners": { owners: [] },

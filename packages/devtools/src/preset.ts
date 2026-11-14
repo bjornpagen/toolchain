@@ -2,6 +2,11 @@ import { Array as Arr, Option, Record, Result, String as Str } from "effect"
 import type { DummyRule, DummyRuleMap, OxlintConfig, OxlintOverride } from "oxlint"
 import type { PackName, Toolchain } from "#config.ts"
 import plugin from "#oxlint-plugin.ts"
+import {
+	ENVIRONMENT_GLOBALS,
+	ENVIRONMENT_IMPORTS,
+	ENVIRONMENT_PROPERTIES
+} from "#oxlint/environment.ts"
 import type { OptionsOf, Plugin } from "#oxlint/rule.ts"
 import { TEST_SUFFIXES } from "#shared/tests.ts"
 import type { AppStyleOptions } from "#style/options.ts"
@@ -9,8 +14,9 @@ import type { AppStyleOptions } from "#style/options.ts"
 /**
  * The shared lint preset. A repository's root oxlint.config.ts calls `standard` with its toolchain.config.ts, which
  * says what the repository rejects, where Effect does not run and which packs it runs beside the core, and then the
- * `lintConfig` it gets back with its own lists: ignored paths, restricted modules, the files where no-shadow is
- * ceremony, the plugin's names, its own plugins and its exception blocks. Everything else is the standard.
+ * `lintConfig` it gets back with its own lists: ignored paths, restricted modules, the library that reads no
+ * environment, the files where no-shadow is ceremony, the plugin's names, its own plugins and its exception blocks.
+ * Everything else is the standard.
  */
 
 /** The core, which every repository runs, or a pack a repository runs beside it. */
@@ -272,6 +278,35 @@ const EFFECT_FREE_BANS = {
 	"node/no-process-env": "error"
 } as const satisfies DummyRuleMap
 
+/** Where a repository's library reads no environment, which is its caller's to hand it: the library's directories, by
+ * repository-relative path without a trailing "/" (as toolchain.config.ts's effectFree names them), and the sanctioned
+ * readers among them, by file. A program's entry module that reads its arguments or working directory is a reader. */
+export type Environment = Readonly<{
+	library: ReadonlyArray<string>
+	readers: ReadonlyArray<string>
+}>
+
+/** Whether a repository-relative path is a directory or lies beneath it. */
+const isWithin = (path: string, directory: string): boolean =>
+	path === directory || Str.startsWith(`${directory}/`)(path)
+
+/** The library's directories that are Effect-free code: each library directory within an Effect-free one, and each
+ * Effect-free directory within a library one. */
+const effectFreeLibraryOf = (
+	library: ReadonlyArray<string>,
+	effectFree: ReadonlyArray<string>
+): ReadonlyArray<string> =>
+	Arr.dedupe(
+		Arr.flatMap(library, (directory) =>
+			Arr.filterMap(effectFree, (free): Result.Result<string, void> => {
+				if (isWithin(directory, free)) {
+					return Result.succeed(directory)
+				}
+				return isWithin(free, directory) ? Result.succeed(free) : Result.failVoid
+			})
+		)
+	)
+
 /** The built-in rules the preset builds from a repository's lists. */
 type ListedRule =
 	| "eslint/no-restricted-globals"
@@ -485,6 +520,9 @@ export type Project<Rejected extends string, P extends Part> = Readonly<{
 	restrictedProperties: ReadonlyArray<RestrictedProperty>
 	/** The side-effect imports a project allows (`server-only`, stylesheets). */
 	unassignedImports: ReadonlyArray<string>
+	/** The library that reads no environment, and its sanctioned readers; both empty where there is no library to
+	 * guard. */
+	environment: Environment
 	/** Tests, scripts and bench: no-shadow guards long passes and is ceremony there. */
 	ceremony: ReadonlyArray<string>
 	/** The shared plugin's names for the parts the repository runs, one options object per rule that takes them. */
@@ -574,6 +612,62 @@ export const standard = <const T extends Toolchain>(
 		lintConfig: (project) => {
 			const names: Readonly<Record<string, unknown>> = project.plugin
 			const testing = testingAdds(project.tests)
+			const { library, readers } = project.environment
+			const globals = ["error", ...project.restrictedGlobals, TEMPORAL] as const
+			/** The readers in Effect-free code, where node/no-process-env stays on, as everywhere there. */
+			const freeReaders = Arr.filter(readers, (reader) =>
+				Arr.some(toolchain.effectFree, (directory) => isWithin(reader, directory))
+			)
+			/** The library's blocks, after the Effect-free code's: the environment bans on its directories beside the
+			 * repository's own lists, which a block's lists replace, so each block restates them; Math.random's ban again
+			 * where the library is Effect-free code; and the repository's lists alone in the sanctioned readers. */
+			const environment: ReadonlyArray<OxlintOverride> = [
+				...block(
+					Arr.map(library, (directory) => `${directory}/**`),
+					{
+						"node/no-process-env": "error",
+						"eslint/no-restricted-globals": [...globals, ...ENVIRONMENT_GLOBALS],
+						"eslint/no-restricted-imports": restrictedImports({
+							paths: [...project.restrictedImports.paths, ...ENVIRONMENT_IMPORTS.paths],
+							patterns: project.restrictedImports.patterns
+						}),
+						"eslint/no-restricted-properties": restrictedProperties([
+							...project.restrictedProperties,
+							...ENVIRONMENT_PROPERTIES
+						])
+					}
+				),
+				...block(
+					Arr.map(
+						effectFreeLibraryOf(library, toolchain.effectFree),
+						(directory) => `${directory}/**`
+					),
+					{
+						"eslint/no-restricted-properties": restrictedProperties([
+							...project.restrictedProperties,
+							...ENVIRONMENT_PROPERTIES,
+							MATH_RANDOM
+						])
+					}
+				),
+				...block(
+					Arr.filter(readers, (reader) => !Arr.contains(freeReaders, reader)),
+					{
+						"node/no-process-env": "off",
+						"eslint/no-restricted-globals": [...globals],
+						"eslint/no-restricted-imports": restrictedImports(project.restrictedImports),
+						"eslint/no-restricted-properties": restrictedProperties(project.restrictedProperties)
+					}
+				),
+				...block(freeReaders, {
+					"eslint/no-restricted-globals": [...globals],
+					"eslint/no-restricted-imports": restrictedImports(project.restrictedImports),
+					"eslint/no-restricted-properties": restrictedProperties([
+						...project.restrictedProperties,
+						MATH_RANDOM
+					])
+				})
+			]
 			return {
 				plugins: [...plugins],
 				jsPlugins: [
@@ -592,7 +686,7 @@ export const standard = <const T extends Toolchain>(
 				ignorePatterns: [...project.ignorePatterns],
 				rules: {
 					...generic,
-					"eslint/no-restricted-globals": ["error", ...project.restrictedGlobals, TEMPORAL],
+					"eslint/no-restricted-globals": [...globals],
 					"eslint/no-restricted-imports": restrictedImports(project.restrictedImports),
 					"eslint/no-restricted-properties": restrictedProperties(project.restrictedProperties),
 					"import/no-unassigned-import": ["error", { allow: [...project.unassignedImports] }],
@@ -618,6 +712,7 @@ export const standard = <const T extends Toolchain>(
 							]
 						}
 					),
+					...environment,
 					...Arr.flatMap(tailwindAppsOf(toolchain), ([app, options]) => appBlocks(app, options)),
 					{
 						files: [...TEST_FILES],

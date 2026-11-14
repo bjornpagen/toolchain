@@ -109,10 +109,6 @@ export default toolchain({
 	},
 	exceptions: [],
 	effectFree: [],
-	packs: [
-		grizzle({
-			noEnvironment: { files: [], readers: [], sources: [], entryReads: [] }
-		})
-	],
+	packs: [grizzle({})],
 	own: []
 })
