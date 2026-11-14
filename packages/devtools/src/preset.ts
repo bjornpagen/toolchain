@@ -58,7 +58,10 @@ const PLUGINS = [
 
 /** The built-in rules the preset turns on everywhere, with their generic options, by the part that runs them: the
  * correctness category's reviewed additions. Lists that name a repository's own modules or files come from the
- * repository. */
+ * repository. The web part holds React code to the React Compiler as `next build` does at panicThreshold all_errors:
+ * the correctness category holds the compiler's correctness rules, and react/todo, react/unsupported-syntax,
+ * react/syntax and react/invariant refuse a component or hook the compiler cannot compile, which it would otherwise
+ * leave unmemoized. */
 export const GENERIC_RULES = {
 	core: {
 		"eslint/array-callback-return": ["error", { checkForEach: true }],
@@ -188,6 +191,7 @@ export const GENERIC_RULES = {
 		"react/exhaustive-effect-dependencies": "error",
 		"react/hooks": "error",
 		"react/iframe-missing-sandbox": "error",
+		"react/invariant": "error",
 		"react/jsx-no-comment-textnodes": "error",
 		"react/jsx-no-script-url": "error",
 		"react/jsx-no-target-blank": "error",
@@ -196,7 +200,10 @@ export const GENERIC_RULES = {
 		"react/no-danger": "error",
 		"react/no-namespace": "error",
 		"react/self-closing-comp": "error",
-		"react/style-prop-object": "error"
+		"react/style-prop-object": "error",
+		"react/syntax": "error",
+		"react/todo": "error",
+		"react/unsupported-syntax": "error"
 	}
 } as const satisfies Readonly<Record<Part, DummyRuleMap>>
 
@@ -787,3 +794,13 @@ export const standard = <const T extends Toolchain>(
 		}
 	}
 }
+
+/**
+ * A configuration's AST-only twin, for the commit gate (oxlint.ast.config.ts): the same plugins, rules and blocks, but
+ * typeAware off, so oxlint skips every type-aware rule and starts no tsgolint, and lints without building a program.
+ * Every rule of the JavaScript plugins stays, since a JavaScript plugin reads syntax and scope only.
+ */
+export const astOnly = (config: OxlintConfig): OxlintConfig => ({
+	...config,
+	options: { ...config.options, typeAware: false }
+})

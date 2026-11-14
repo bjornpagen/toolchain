@@ -1,6 +1,7 @@
 {
 	"$schema": "./node_modules/fallow/schema.json",
 	"entry": [
+		"oxlint.ast.config.ts",
 		"packages/devtools/src/oxlint/fixtures.config.ts",
 		"packages/devtools/src/style/classes.config.ts",
 		"packages/testing/src/vitest/coverage.ts",
@@ -11,9 +12,9 @@
 	// out/ is where a proof run builds a consumer, with a pnpm workspace of its own: not this repository's code.
 	"ignorePatterns": ["packages/devtools/src/*/fixtures/**", "out/**"],
 	// The dev tools' fixtures, which fallow does not read, are these packages' only importers: Drizzle and pg for the
-	// SQL rules, @effect/vitest's declarations for the test rules, React's types for the React Compiler's and the style
-	// linter's, and Tailwind for the style linter's. The tsconfigs' @effect/language-service plugin is no package: it is
-	// @effect/tsgo's, patched into TypeScript.
+	// SQL rules, @effect/vitest's declarations for the test rules, React's types for the oxlint plugin's TSX, and
+	// Tailwind for the class rules', which resolve it from their fixtures. The tsconfigs' @effect/language-service
+	// plugin is no package: it is @effect/tsgo's, patched into TypeScript.
 	"ignoreDependencies": [
 		"@effect/language-service",
 		"@effect/vitest",
@@ -41,7 +42,7 @@
 			},
 			{
 				"name": "configs",
-				"patterns": ["oxlint.config.ts", "toolchain.config.ts"]
+				"patterns": ["oxlint.config.ts", "oxlint.ast.config.ts", "toolchain.config.ts"]
 			}
 		],
 		"rules": [

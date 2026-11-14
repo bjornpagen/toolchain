@@ -121,7 +121,7 @@ case $mode in
 		# shellcheck disable=SC2086
 		[ -z "$staged" ] || started format pnpm exec oxfmt --check --no-error-on-unmatched-pattern $staged
 		# shellcheck disable=SC2086
-		[ -z "$lintable" ] || started lint pnpm exec oxlint -c oxlint.ast.config.ts $lintable
+		[ -z "$lintable" ] || started lint pnpm exec oxlint -c oxlint.ast.config.ts --no-error-on-unmatched-pattern $lintable
 		unset IFS
 		set +f
 		report types
