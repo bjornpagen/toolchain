@@ -58,11 +58,14 @@ const fileCorpus = (fileSystem: FileSystem.FileSystem, suite: string): Corpus =>
 				return []
 			}
 			const names = yield* fileSystem.readDirectory(directory)
-			const tapes = yield* Effect.forEach(names, (name) =>
-				Effect.map(fileSystem.readFileString(`${directory}/${name}`), (text) => {
-					const [header, token] = Str.split(Str.trim(text), "\n")
-					return header === CORPUS_HEADER && token !== undefined ? [valuesFromToken(token)] : []
-				})
+			const tapes = yield* Effect.forEach(
+				names,
+				(name) =>
+					Effect.map(fileSystem.readFileString(`${directory}/${name}`), (text) => {
+						const [header, token] = Str.split(Str.trim(text), "\n")
+						return header === CORPUS_HEADER && token !== undefined ? [valuesFromToken(token)] : []
+					}),
+				{ concurrency: 1 }
 			)
 			return Arr.sort(
 				Arr.flatten(tapes),

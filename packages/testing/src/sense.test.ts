@@ -78,7 +78,7 @@ describe("a guided file's block coverage", () => {
 									c.note("two skips in a row")
 								}
 							})
-							const traces = yield* Effect.forEach(takes, perceivedOnce)
+							const traces = yield* Effect.forEach(takes, perceivedOnce, { concurrency: 1 })
 							const firstOf = (taken: boolean) =>
 								Arr.findFirst(traces, (_trace, at) => Arr.getUnsafe(takes, at) === taken)
 							deepStrictEqual(

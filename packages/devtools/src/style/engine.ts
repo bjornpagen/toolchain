@@ -91,7 +91,9 @@ const readText = (file: string) =>
 	)
 
 const readTexts = (files: ReadonlyArray<string>) =>
-	Effect.forEach(files, (file) => Effect.map(readText(file), (text) => ({ file, text })))
+	Effect.forEach(files, (file) => Effect.map(readText(file), (text) => ({ file, text })), {
+		concurrency: 1
+	})
 
 const isStylesheetPath = Str.endsWith(".css")
 
@@ -227,8 +229,10 @@ const styleFindingsOf = Effect.fn("styleFindingsOf")(function* (run: StyleRun) {
 	}
 	const { checker } = run.project
 	const find = finderOf(run.programSources)
-	const prepared = yield* Effect.forEach(run.own, (own) =>
-		own.prepare({ checker, find, stylesheet: run.options.stylesheet })
+	const prepared = yield* Effect.forEach(
+		run.own,
+		(own) => own.prepare({ checker, find, stylesheet: run.options.stylesheet }),
+		{ concurrency: 1 }
 	)
 	const read = yield* Effect.try({
 		try: () => {
@@ -255,7 +259,8 @@ const styleFindingsOf = Effect.fn("styleFindingsOf")(function* (run: StyleRun) {
 	})
 	const lists = yield* Effect.forEach(
 		Arr.flatMap(read, (file) => file.lists),
-		run.system.explain
+		run.system.explain,
+		{ concurrency: 1 }
 	)
 	const classRules = [...CLASS_RULES, ...Arr.flatMap(prepared, (own) => own.classRules)]
 	const classFindings = Arr.flatMap(lists, (list) =>
@@ -274,7 +279,7 @@ const styleFindingsOf = Effect.fn("styleFindingsOf")(function* (run: StyleRun) {
 			})
 		)
 	)
-	const sheets = yield* Effect.forEach(run.stylesheets, roleOf(run))
+	const sheets = yield* Effect.forEach(run.stylesheets, roleOf(run), { concurrency: 1 })
 	const unnamed = Arr.filterMap(sheets, (sheet) =>
 		Option.isNone(sheet.role) ? Result.succeed(sheet.file) : Result.failVoid
 	)
@@ -285,7 +290,8 @@ const styleFindingsOf = Effect.fn("styleFindingsOf")(function* (run: StyleRun) {
 				onSome: (role) => Result.succeed({ file: sheet.file, role })
 			})
 		),
-		(sheet) => sheetFindingsOf(run, prepared, sheet)
+		(sheet) => sheetFindingsOf(run, prepared, sheet),
+		{ concurrency: 1 }
 	)
 	const ownFindings = Arr.filter(
 		Arr.map(

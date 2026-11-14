@@ -232,7 +232,8 @@ describe("a steered search", () => {
 								),
 								Effect.provideService(Run, Run.of({ ...processRun, seed }))
 							)
-						})
+						}),
+					{ concurrency: 1 }
 				)
 				const [first, ...rest] = searches
 				for (const search of rest) {

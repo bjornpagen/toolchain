@@ -214,8 +214,11 @@ export const loadDesignSystem = Effect.fn("loadDesignSystem")(function* (
 	}
 	const colorEntries = yield* namespaceOf(theme, "--color")
 	const variables = yield* themeVariablesOf(theme)
-	const hinted = yield* Effect.forEach(HINT_NAMESPACES, (prefix) =>
-		Effect.map(namespaceOf(theme, prefix), (entries) => [prefix, tokenNamesOf(entries)] as const)
+	const hinted = yield* Effect.forEach(
+		HINT_NAMESPACES,
+		(prefix) =>
+			Effect.map(namespaceOf(theme, prefix), (entries) => [prefix, tokenNamesOf(entries)] as const),
+		{ concurrency: 1 }
 	)
 	const explain = Effect.fnUntraced(function* (list: ClassList) {
 		const compiled = yield* compile(Arr.map(list, (token) => token.text))

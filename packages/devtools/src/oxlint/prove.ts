@@ -195,18 +195,21 @@ export const proveFixtures = (input: PluginFixtures) =>
 		const rules = Record.keys(input.rules)
 		/** Each rule's fixture files, relative to the fixtures' directory: the files of its own directory and of every
 		 * directory beneath it, none when it has no directory. */
-		const filesOf = yield* Effect.forEach(rules, (rule) =>
-			Effect.map(
-				Effect.option(fs.readDirectory(`${input.fixtures}/${rule}`, { recursive: true })),
-				(entries) =>
-					Arr.map(
-						Arr.filter(
-							Option.getOrElse(entries, () => []),
-							Str.endsWith(EXTENSION)
-						),
-						(entry) => path.join(rule, entry)
-					)
-			)
+		const filesOf = yield* Effect.forEach(
+			rules,
+			(rule) =>
+				Effect.map(
+					Effect.option(fs.readDirectory(`${input.fixtures}/${rule}`, { recursive: true })),
+					(entries) =>
+						Arr.map(
+							Arr.filter(
+								Option.getOrElse(entries, () => []),
+								Str.endsWith(EXTENSION)
+							),
+							(entry) => path.join(rule, entry)
+						)
+				),
+			{ concurrency: 1 }
 		)
 		const files = Arr.flatten(filesOf)
 		/** The fixture sets, each a directory relative to the fixtures' directory whose first segment is its rule: every
@@ -250,11 +253,21 @@ export const proveFixtures = (input: PluginFixtures) =>
 			reported,
 			(diagnostic) => !Arr.some(rules, (rule) => isReportOf(diagnostic, rule))
 		)
-		const texts = yield* Effect.forEach(sets, (set) =>
-			Effect.forEach(["violating", "clean"], (role) => {
-				const file = `${input.fixtures}/${set}/${role}${EXTENSION}`
-				return Effect.map(Effect.option(fs.readFileString(file)), (text) => [file, text] as const)
-			})
+		const texts = yield* Effect.forEach(
+			sets,
+			(set) =>
+				Effect.forEach(
+					["violating", "clean"],
+					(role) => {
+						const file = `${input.fixtures}/${set}/${role}${EXTENSION}`
+						return Effect.map(
+							Effect.option(fs.readFileString(file)),
+							(text) => [file, text] as const
+						)
+					},
+					{ concurrency: 1 }
+				),
+			{ concurrency: 1 }
 		)
 		const textOf = new Map(Arr.flatten(texts))
 		const mismatches = fixtureMismatchesOf({
