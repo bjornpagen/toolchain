@@ -99,8 +99,10 @@ comes from the plan's finalizer.
 
 ### 4. Style and the React Compiler (fab3181, 2820eb3, 0540524, 2af41b6)
 
-Neither the style linter nor the React Compiler check opens a TypeScript program any more. For a repository with a web
-pack (superstarter, edullm):
+Neither the style linter nor the React Compiler check opens a TypeScript program any more. Every repository's catalog
+takes `eslint-plugin-better-tailwindcss: 4.11.0`, which the dev tools name with `catalog:`, so an install fails without
+it, and drops `@tailwindcss/node` and `@babel/core` (and `babel-plugin-react-compiler` where no app builds with the
+compiler), which fallow reports once no package names them. For a repository with a web pack (superstarter, edullm):
 
 - web.ts: the web pack takes `root: import.meta.dirname` (web.ts sits at the root; `superstyle` refuses another value),
   and each app `entryPoint`, the stylesheet its components.json names in `tailwind.css`, and `vendored`, the directory
