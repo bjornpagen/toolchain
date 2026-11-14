@@ -161,9 +161,7 @@
 					{
 						"target": "service",
 						"pattern": "default",
-						"skipLeadingPath": [
-							"src/"
-						]
+						"skipLeadingPath": ["src/"]
 					},
 					{
 						"target": "error",
@@ -172,23 +170,17 @@
 					{
 						"target": "custom",
 						"pattern": "default",
-						"skipLeadingPath": [
-							"src/"
-						]
+						"skipLeadingPath": ["src/"]
 					}
 				],
-				"barrelImportPackages": [
-					"effect"
-				],
+				"barrelImportPackages": ["effect"],
 				"namespaceImportPackages": [],
 				"allowedUnstableApis": [],
 				"allowedExperimentalApis": [],
 				"allowedDuplicatedPackages": [],
 				"overrides": [
 					{
-						"include": [
-							"packages/testing/src/vitest/run.ts"
-						],
+						"include": ["packages/testing/src/vitest/run.ts"],
 						"options": {
 							"diagnosticSeverity": {
 								"strictEffectProvide": "off"
@@ -199,8 +191,5 @@
 			}
 		]
 	},
-	"include": [
-		"oxlint.config.ts",
-		"toolchain.config.ts"
-	]
+	"include": ["oxlint.config.ts", "toolchain.config.ts"]
 }

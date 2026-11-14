@@ -17,7 +17,5 @@
 		"newlinesBetween": false,
 		"partitionByNewline": true
 	},
-	"ignorePatterns": [
-		"packages/devtools/src/*/fixtures/**"
-	]
+	"ignorePatterns": ["packages/devtools/src/*/fixtures/**"]
 }

@@ -1,0 +1,10 @@
+{
+	"extends": "@bjornpagen/devtools/tsconfig.effect-free.json",
+	"compilerOptions": {
+		"plugins": [
+			{
+				"name": "@effect/language-service"
+			}
+		]
+	}
+}

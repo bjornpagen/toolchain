@@ -1,0 +1,3 @@
+{
+	"extends": "@bjornpagen/devtools/tsconfig.base.json"
+}

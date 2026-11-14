@@ -1,0 +1,57 @@
+{
+	"$schema": "./node_modules/fallow/schema.json",
+	"entry": [
+		"packages/devtools/src/oxlint/fixtures.config.ts",
+		"packages/testing/src/vitest/coverage.ts",
+		"packages/testing/src/vitest/mutated-setup.ts",
+		"packages/testing/src/witness.fixtures.ts"
+	],
+	"ignorePatterns": ["packages/devtools/src/*/fixtures/**"],
+	// The dev tools' fixtures, which fallow does not read, are these packages' only importers: Drizzle and pg for the
+	// SQL rules, Vitest's declarations for the test rules, React's types for the React Compiler's and the style
+	// linter's, and Tailwind for the style linter's.
+	"ignoreDependencies": [
+		"@effect/vitest",
+		"@types/react",
+		"drizzle-orm",
+		"pg",
+		"tailwindcss",
+		"vitest"
+	],
+	"rules": {
+		"require-suppression-reason": "error"
+	},
+	"boundaries": {
+		"zones": [
+			{
+				"name": "testing",
+				"patterns": ["packages/testing/**"]
+			},
+			{
+				"name": "devtools",
+				"patterns": ["packages/devtools/**"]
+			},
+			{
+				"name": "configs",
+				"patterns": ["oxlint.config.ts", "toolchain.config.ts"]
+			}
+		],
+		"rules": [
+			{
+				"from": "testing",
+				"allow": []
+			},
+			{
+				"from": "devtools",
+				"allow": []
+			},
+			{
+				"from": "configs",
+				"allow": ["devtools", "testing"]
+			}
+		],
+		"coverage": {
+			"requireAllFiles": true
+		}
+	}
+}

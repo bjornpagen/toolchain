@@ -8,8 +8,19 @@
 	},
 	"exports": {
 		"./config": "./src/config.ts",
+		"./devtool": "./src/shared/devtool.ts",
+		"./native-api": "./src/shared/native-api.ts",
+		"./oxlint/fixtures": "./src/oxlint/prove.ts",
+		"./oxlint/rule": "./src/oxlint/rule.ts",
+		"./oxlint/syntax": "./src/oxlint/syntax.ts",
 		"./preset": "./src/preset.ts",
 		"./react-compiler": "./src/react-compiler/options.ts",
+		"./run": "./src/shared/run.ts",
+		"./style": "./src/style/own.ts",
+		"./superlint/finding": "./src/shared/finding.ts",
+		"./superlint/paths": "./src/lint/paths.ts",
+		"./superlint/sql": "./src/lint/sql.ts",
+		"./superlint/types": "./src/lint/types.ts",
 		"./tsconfig.base.json": "./tsconfig.base.json",
 		"./tsconfig.effect-free.json": "./tsconfig.effect-free.json"
 	},
@@ -27,15 +38,16 @@
 		"fixtures:oxlint": "node src/oxlint/fixtures.ts",
 		"fixtures:react-compiler": "node src/react-compiler.ts --fixtures"
 	},
-	"peerDependencies": {
-		"@effect/platform-node": "catalog:",
-		"effect": "catalog:",
-		"oxlint": "catalog:",
-		"typescript": "catalog:"
-	},
 	"devDependencies": {
+		"@types/babel__core": "catalog:",
+		"@types/node": "catalog:"
+	},
+	"dependencies": {
+		"@babel/core": "catalog:",
 		"@effect/platform-node": "catalog:",
-		"@types/node": "catalog:",
+		"@effect/tsgo": "catalog:",
+		"@tailwindcss/node": "catalog:",
+		"babel-plugin-react-compiler": "catalog:",
 		"effect": "catalog:",
 		"oxlint": "catalog:",
 		"typescript": "catalog:"

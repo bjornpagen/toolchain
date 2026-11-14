@@ -1,0 +1,12 @@
+@layer theme, base, module, components, utilities;
+@import "tailwindcss";
+@import "./module.css" layer(module);
+@custom-variant dark (&:is(.dark *));
+
+:root {
+	--paper: oklch(0.99 0.01 100);
+}
+
+@theme inline {
+	--color-paper: var(--paper);
+}

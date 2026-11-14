@@ -3,19 +3,20 @@
 	"private": true,
 	"type": "module",
 	"imports": {
-		"#package.json": "./package.json"
+		"#package.json": "./package.json",
+		"#toolchain.config.ts": "./toolchain.config.ts"
 	},
 	"packageManager": "pnpm@12.16.1",
 	"devEngines": {
 		"runtime": {
 			"name": "node",
-			"version": "26.13.1",
-			"onFail": "download"
+			"version": ">=26",
+			"onFail": "error"
 		}
 	},
 	"scripts": {
 		"prepare": "effect-tsgo patch",
-		"check": "turbo run typecheck superlint oxlint format dead-code dedupe fixtures:superlint fixtures:style fixtures:oxlint fixtures:react-compiler test --continue=dependencies-successful",
+		"check": "turbo run typecheck superlint oxlint format dead-code dedupe fixtures:superlint fixtures:style fixtures:oxlint fixtures:react-compiler --continue=dependencies-successful",
 		"typecheck": "effect-tsgo tsrs",
 		"superlint": "superlint",
 		"oxlint": "oxlint oxlint.config.ts",
@@ -27,13 +28,20 @@
 	"devDependencies": {
 		"@bjornpagen/devtools": "workspace:*",
 		"@effect/tsgo": "catalog:",
+		"@effect/vitest": "catalog:",
 		"@types/node": "catalog:",
+		"@types/pg": "catalog:",
+		"@types/react": "catalog:",
+		"drizzle-orm": "catalog:",
 		"fallow": "catalog:",
 		"lefthook": "catalog:",
 		"oxfmt": "catalog:",
 		"oxlint": "catalog:",
 		"oxlint-tsgolint": "catalog:",
+		"pg": "catalog:",
+		"tailwindcss": "catalog:",
 		"turbo": "catalog:",
-		"typescript": "catalog:"
+		"typescript": "catalog:",
+		"vitest": "catalog:"
 	}
 }

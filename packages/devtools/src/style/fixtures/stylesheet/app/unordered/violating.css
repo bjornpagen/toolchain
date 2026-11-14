@@ -1,0 +1,3 @@
+@import "tailwindcss";
+@layer theme, base, module, components, utilities; /* // violation */
+@import "./module.css" layer(module); /* // violation */

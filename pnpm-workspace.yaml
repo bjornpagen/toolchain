@@ -29,7 +29,6 @@ catalog:
   "@types/node": 26.6.6
   "@types/pg": 8.23.1
   "@types/react": 19.3.0
-  arkregex: 0.0.14
   babel-plugin-react-compiler: 1.0.0
   drizzle-orm: 1.0.0-rc.5
   effect: 4.1.4
@@ -42,7 +41,6 @@ catalog:
   tailwindcss: 4.3.4
   turbo: 2.11.10
   typescript: 7.1.0-beta
-  vite: 8.3.5
   vitest: 5.1.0
 permissions:
   fallow:
