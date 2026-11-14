@@ -1,0 +1,43 @@
+{
+	"name": "@bjornpagen/devtools",
+	"private": true,
+	"description": "The dev tools every repository shares: superlint (type-aware rules on TypeScript 7's native API, in packs), the Tailwind style linter, the React Compiler check, the oxlint preset and plugin, and the tsconfig bases, each proven against fixtures. A repository takes it from GitHub by commit and keeps its own decisions in toolchain.config.ts.",
+	"type": "module",
+	"imports": {
+		"#*": "./src/*"
+	},
+	"exports": {
+		"./config": "./src/config.ts",
+		"./preset": "./src/preset.ts",
+		"./react-compiler": "./src/react-compiler/options.ts",
+		"./tsconfig.base.json": "./tsconfig.base.json",
+		"./tsconfig.effect-free.json": "./tsconfig.effect-free.json"
+	},
+	"bin": {
+		"superlint": "./src/lint.ts",
+		"superstyle": "./src/style.ts",
+		"react-compiler": "./src/react-compiler.ts"
+	},
+	"scripts": {
+		"typecheck": "effect-tsgo tsrs",
+		"superlint": "node src/lint.ts",
+		"oxlint": "oxlint",
+		"fixtures:superlint": "node src/lint.ts --fixtures",
+		"fixtures:style": "node src/style.ts --fixtures",
+		"fixtures:oxlint": "node src/oxlint/fixtures.ts",
+		"fixtures:react-compiler": "node src/react-compiler.ts --fixtures"
+	},
+	"peerDependencies": {
+		"@effect/platform-node": "catalog:",
+		"effect": "catalog:",
+		"oxlint": "catalog:",
+		"typescript": "catalog:"
+	},
+	"devDependencies": {
+		"@effect/platform-node": "catalog:",
+		"@types/node": "catalog:",
+		"effect": "catalog:",
+		"oxlint": "catalog:",
+		"typescript": "catalog:"
+	}
+}

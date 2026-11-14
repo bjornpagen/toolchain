@@ -1,0 +1,39 @@
+{
+	"name": "toolchain",
+	"private": true,
+	"type": "module",
+	"imports": {
+		"#package.json": "./package.json"
+	},
+	"packageManager": "pnpm@12.16.1",
+	"devEngines": {
+		"runtime": {
+			"name": "node",
+			"version": "26.13.1",
+			"onFail": "download"
+		}
+	},
+	"scripts": {
+		"prepare": "effect-tsgo patch",
+		"check": "turbo run typecheck superlint oxlint format dead-code dedupe fixtures:superlint fixtures:style fixtures:oxlint fixtures:react-compiler test --continue=dependencies-successful",
+		"typecheck": "effect-tsgo tsrs",
+		"superlint": "superlint",
+		"oxlint": "oxlint oxlint.config.ts",
+		"format": "oxfmt --check .",
+		"format:write": "oxfmt .",
+		"dead-code": "fallow dead-code",
+		"dedupe": "pnpm dedupe --check"
+	},
+	"devDependencies": {
+		"@bjornpagen/devtools": "workspace:*",
+		"@effect/tsgo": "catalog:",
+		"@types/node": "catalog:",
+		"fallow": "catalog:",
+		"lefthook": "catalog:",
+		"oxfmt": "catalog:",
+		"oxlint": "catalog:",
+		"oxlint-tsgolint": "catalog:",
+		"turbo": "catalog:",
+		"typescript": "catalog:"
+	}
+}

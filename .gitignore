@@ -1,0 +1,9 @@
+# Unanchored, so each also matches inside every workspace package.
+node_modules/
+dist/
+*.tsbuildinfo
+.turbo/
+.fallow/
+.vitest/
+out/
+.DS_Store
