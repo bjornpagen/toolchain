@@ -42,7 +42,6 @@
 	"devDependencies": {
 		"@bjornpagen/testing": "workspace:*",
 		"@effect/vitest": "catalog:",
-		"@types/babel__core": "catalog:",
 		"@types/node": "catalog:",
 		"vitest": "catalog:"
 	},

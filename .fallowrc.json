@@ -6,11 +6,20 @@
 		"packages/testing/src/vitest/mutated-setup.ts",
 		"packages/testing/src/witness.fixtures.ts"
 	],
-	"ignorePatterns": ["packages/devtools/src/*/fixtures/**"],
+	// out/ is where a proof run builds a consumer, with a pnpm workspace of its own: not this repository's code.
+	"ignorePatterns": ["packages/devtools/src/*/fixtures/**", "out/**"],
 	// The dev tools' fixtures, which fallow does not read, are these packages' only importers: Drizzle and pg for the
 	// SQL rules, @effect/vitest's declarations for the test rules, React's types for the React Compiler's and the style
-	// linter's, and Tailwind for the style linter's.
-	"ignoreDependencies": ["@effect/vitest", "@types/react", "drizzle-orm", "pg", "tailwindcss"],
+	// linter's, and Tailwind for the style linter's. The tsconfigs' @effect/language-service plugin is no package: it is
+	// @effect/tsgo's, patched into TypeScript.
+	"ignoreDependencies": [
+		"@effect/language-service",
+		"@effect/vitest",
+		"@types/react",
+		"drizzle-orm",
+		"pg",
+		"tailwindcss"
+	],
 	"rules": {
 		"require-suppression-reason": "error"
 	},

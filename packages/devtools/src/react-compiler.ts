@@ -1,6 +1,6 @@
 #!/usr/bin/env -S node
 
-import { type TransformOptions, transformSync } from "@babel/core"
+import { type InputOptions, transformSync } from "@babel/core"
 import type {
 	Logger,
 	LoggerEvent,
@@ -117,7 +117,7 @@ const findingOf =
  * and JSX exactly in a .tsx file as TypeScript does, and the compiler is the one plugin. */
 const transformOptionsOf = (
 	input: Readonly<{ compiler: string; file: string; logger: Logger }>
-): TransformOptions => ({
+): InputOptions => ({
 	filename: input.file,
 	babelrc: false,
 	configFile: false,
@@ -174,12 +174,15 @@ const compileAll = (
 	input: Readonly<{ compiler: string; files: ReadonlyArray<string> }>
 ): Effect.Effect<ReadonlyArray<Compiled>, DevtoolFailure, FileSystem.FileSystem> =>
 	Effect.flatMap(FileSystem.FileSystem, (fs) =>
-		Effect.forEach(input.files, (file) =>
-			Effect.gen(function* () {
-				const text = yield* fs.readFileString(file).pipe(Effect.mapError(inspectionFailure(file)))
-				const findings = yield* compile({ compiler: input.compiler, file, text })
-				return { file, text, findings } satisfies Compiled
-			})
+		Effect.forEach(
+			input.files,
+			(file) =>
+				Effect.gen(function* () {
+					const text = yield* fs.readFileString(file).pipe(Effect.mapError(inspectionFailure(file)))
+					const findings = yield* compile({ compiler: input.compiler, file, text })
+					return { file, text, findings } satisfies Compiled
+				}),
+			{ concurrency: 1 }
 		)
 	)
 

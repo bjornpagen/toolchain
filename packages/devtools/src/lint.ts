@@ -289,7 +289,9 @@ const startRules = (
 	Effect.gen(function* () {
 		const { root } = yield* Repository
 		const readsSurface = Arr.some(input.rules, (rule) => rule.starting.reads === "surface")
-		const surfaces = readsSurface ? yield* Effect.forEach(input.manifests, surfaceOf) : []
+		const surfaces = readsSurface
+			? yield* Effect.forEach(input.manifests, surfaceOf, { concurrency: 1 })
+			: []
 		const surface = Arr.flatten(surfaces)
 		const held = yield* Effect.try({
 			try: () => input.project.program.getSourceFileNames(),
@@ -475,13 +477,16 @@ const checkFixtures = Effect.gen(function* () {
 				exceptions: FIXTURE_EXCEPTIONS
 			})
 		: []
-	const ownMismatches = yield* Effect.forEach(config.own, (own) =>
-		fixtureMismatchesIn({
-			fixtures: own.fixtures,
-			rules: own.fixtureRules,
-			fileChecks: [],
-			exceptions: []
-		})
+	const ownMismatches = yield* Effect.forEach(
+		config.own,
+		(own) =>
+			fixtureMismatchesIn({
+				fixtures: own.fixtures,
+				rules: own.fixtureRules,
+				fileChecks: [],
+				exceptions: []
+			}),
+		{ concurrency: 1 }
 	)
 	const mismatches = [...sharedMismatches, ...Arr.flatten(ownMismatches)]
 	const rules =
@@ -520,29 +525,32 @@ const checkFixturesAt = (directories: ReadonlyArray<string>) =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem
 		const { root } = yield* Repository
-		const perDirectory = yield* Effect.forEach(directories, (fixtures) =>
-			Effect.gen(function* () {
-				const rules = yield* Effect.filter(SHARED_FIXTURE_RULES, (rule) =>
-					fs
-						.exists(`${fixtures}/${rule.id}`)
-						.pipe(Effect.mapError(inspectionFailure(`${fixtures}/${rule.id}`)))
-				)
-				const mismatches = yield* fixtureMismatchesIn({
-					fixtures,
-					rules,
-					fileChecks: [],
-					exceptions: FIXTURE_EXCEPTIONS
-				})
-				yield* Console.log(
-					renderFixtureMismatches({
-						tool: `superlint fixtures at ${relativeTo(root)(fixtures)}`,
-						root,
-						rules: rules.length,
-						mismatches
+		const perDirectory = yield* Effect.forEach(
+			directories,
+			(fixtures) =>
+				Effect.gen(function* () {
+					const rules = yield* Effect.filter(SHARED_FIXTURE_RULES, (rule) =>
+						fs
+							.exists(`${fixtures}/${rule.id}`)
+							.pipe(Effect.mapError(inspectionFailure(`${fixtures}/${rule.id}`)))
+					)
+					const mismatches = yield* fixtureMismatchesIn({
+						fixtures,
+						rules,
+						fileChecks: [],
+						exceptions: FIXTURE_EXCEPTIONS
 					})
-				)
-				return mismatches
-			})
+					yield* Console.log(
+						renderFixtureMismatches({
+							tool: `superlint fixtures at ${relativeTo(root)(fixtures)}`,
+							root,
+							rules: rules.length,
+							mismatches
+						})
+					)
+					return mismatches
+				}),
+			{ concurrency: 1 }
 		)
 		return statusOf(Arr.flatten(perDirectory))
 	})
@@ -584,18 +592,21 @@ const main = Effect.gen(function* () {
 					manifests: [`${packageRoot}/package.json`]
 				})
 				const effectFree = Arr.contains(config.effectFree, relativeTo(root)(packageRoot))
-				const perSource = yield* Effect.forEach(sources, (source) =>
-					Effect.try({
-						try: () => [
-							...findingsOf(source, { rules, exceptions: config.exceptions, root }),
-							...(effectFree ? effectFreeFindingsOf(source.sourceFile) : [])
-						],
-						catch: (cause) =>
-							DevtoolFailure.make({
-								detail: `superlint failed while collecting findings in ${relativeTo(root)(source.sourceFile.fileName)}`,
-								cause
-							})
-					})
+				const perSource = yield* Effect.forEach(
+					sources,
+					(source) =>
+						Effect.try({
+							try: () => [
+								...findingsOf(source, { rules, exceptions: config.exceptions, root }),
+								...(effectFree ? effectFreeFindingsOf(source.sourceFile) : [])
+							],
+							catch: (cause) =>
+								DevtoolFailure.make({
+									detail: `superlint failed while collecting findings in ${relativeTo(root)(source.sourceFile.fileName)}`,
+									cause
+								})
+						}),
+					{ concurrency: 1 }
 				)
 				return Arr.filter(
 					Arr.flatten(perSource),
