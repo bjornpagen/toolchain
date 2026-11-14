@@ -201,25 +201,6 @@ export const hasJsonOperator = (authored: string): boolean =>
 	Arr.some(JSON_OPERATORS, (operator) => Str.includes(operator)(authored)) ||
 	Arr.some(JSON_FUNCTIONS, (name) => hasWord(authored, name))
 
-const isIdentifierStart = (character: string): boolean =>
-	(character >= "a" && character <= "z") ||
-	(character >= "A" && character <= "Z") ||
-	character === "_"
-
-/** Whether a template part opens with an array cast, `::name[]`, after any whitespace. */
-export const opensWithArrayCast = (text: string): boolean => {
-	const trimmed = Str.trimStart(text)
-	if (!Str.startsWith("::")(trimmed)) {
-		return false
-	}
-	const characters = Str.split("")(Str.slice(2)(trimmed))
-	if (!Option.exists(Arr.head(characters), isIdentifierStart)) {
-		return false
-	}
-	const rest = Arr.dropWhile(Arr.drop(characters, 1), isWordCharacter)
-	return Str.startsWith("[]")(Arr.join(rest, ""))
-}
-
 /** Whether a template part ends, before any whitespace, with one of the words, in any case. */
 export const closesWithWord = (text: string, words: ReadonlyArray<string>): boolean => {
 	const trimmed = Str.toLowerCase(Str.trimEnd(text))
@@ -230,18 +211,6 @@ export const closesWithWord = (text: string, words: ReadonlyArray<string>): bool
 		const start = trimmed.length - word.length
 		return start === 0 || !isWordCharacter(Str.slice(start - 1, start)(trimmed))
 	})
-}
-
-/** Whether a template part opens, after any whitespace, with one of the words or with nothing at all, in any case. */
-export const opensWithWordOrEnd = (text: string, words: ReadonlyArray<string>): boolean => {
-	const trimmed = Str.toLowerCase(Str.trimStart(text))
-	return (
-		Str.isEmpty(trimmed) ||
-		Arr.some(words, (word) => {
-			const after = Str.slice(word.length, word.length + 1)(trimmed)
-			return Str.startsWith(word)(trimmed) && (Str.isEmpty(after) || !isWordCharacter(after))
-		})
-	)
 }
 
 /** The text with every run of whitespace written as one space, and none at either end. */

@@ -8,8 +8,6 @@ import { noModuleState } from "#lint/rules/no-module-state.ts"
 import { noSpreadArgument } from "#lint/rules/no-spread-argument.ts"
 import { noNullUndefinedUnion } from "#lint/rules/null-undefined-union.ts"
 import { sqlAliasedTableReference } from "#lint/rules/sql-aliased-table-reference.ts"
-import { sqlArrayParameter } from "#lint/rules/sql-array-parameter.ts"
-import { sqlCaseArmCast } from "#lint/rules/sql-case-arm-cast.ts"
 import { sqlCastOwner } from "#lint/rules/sql-cast-owner.ts"
 import { sqlDistinctWindow } from "#lint/rules/sql-distinct-window.ts"
 import { sqlDynamicSchema } from "#lint/rules/sql-dynamic-schema.ts"
@@ -63,8 +61,6 @@ export const DRIZZLE_RULES: ReadonlyArray<Rule<DrizzleOptions>> = [
 		starting: { reads: "file", visit: sqlAliasedTableReference },
 		gate: "on"
 	},
-	{ id: "sql-array-parameter", starting: { reads: "file", visit: sqlArrayParameter }, gate: "on" },
-	{ id: "sql-case-arm-cast", starting: { reads: "file", visit: sqlCaseArmCast }, gate: "on" },
 	{ id: "sql-cast-owner", starting: { reads: "file", visit: sqlCastOwner }, gate: "on" },
 	{ id: "sql-distinct-window", starting: { reads: "file", visit: sqlDistinctWindow }, gate: "on" },
 	{ id: "sql-dynamic-schema", starting: { reads: "file", visit: sqlDynamicSchema }, gate: "on" },
