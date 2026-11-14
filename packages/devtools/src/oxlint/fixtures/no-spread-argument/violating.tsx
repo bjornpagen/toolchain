@@ -1,9 +1,13 @@
+import { argumentsOf } from "#fixture/other.ts"
+import { imported, listOf } from "#fixture/lists.ts"
+
 type NonEmptyReadonlyArray<A> = readonly [A, ...Array<A>]
 
 declare const lines: ReadonlyArray<string>
 declare const rows: Array<{ readonly width: number }>
 declare const points: ReadonlyArray<number>
 declare const handles: NonEmptyReadonlyArray<string>
+declare const named: readonly [first: string, ...rest: Array<string>]
 declare const name: string
 declare const seen: ReadonlySet<string>
 declare const sum: (...values: ReadonlyArray<number>) => number
@@ -20,6 +24,10 @@ class Chunk {
 
 const out: Array<string> = []
 
+const letters = ["a", "b"]
+
+const widths = (): ReadonlyArray<number> => [1, 2]
+
 out.push(...lines) // violation
 
 export const widest = Math.max(...rows.map((row) => row.width)) // violation
@@ -28,11 +36,17 @@ export const text = String.fromCodePoint(...points) // violation
 
 out.push(...handles) // violation
 
+out.push(...named) // violation
+
 export const largest = <T extends ReadonlyArray<number>>(values: T): number => sum(...values) // violation
 
 out.push(...name) // violation
 
 out.push(...seen) // violation
+
+out.push(...letters) // violation
+
+out.push(...imported) // violation
 
 export const applied = join.apply(undefined, parts) // violation
 
@@ -45,3 +59,13 @@ export const built = new Chunk(...lines) // violation
 export const constructed = Reflect.construct(Chunk, lines) // violation
 
 out.push(...[...lines, "end"]) // violation
+
+out.push(...listOf()) // violation
+
+out.push(...argumentsOf(lines)) // violation
+
+export const largestWidth = Math.max(...widths()) // violation
+
+const unlisted = listOf()
+
+out.push(...unlisted) // violation

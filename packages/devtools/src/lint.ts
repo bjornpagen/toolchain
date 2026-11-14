@@ -13,15 +13,9 @@ import {
 import type * as ts from "typescript/ast"
 import type { Checker, Project } from "typescript/sync"
 import { bindRules, type Toolchain } from "#config.ts"
-import { effectFreeFindingsOf } from "#lint/effect-free.ts"
-import {
-	CORE_FIXTURE_OPTIONS,
-	type Exceptions,
-	FIXTURE_EXCEPTIONS,
-	GRIZZLE_FIXTURE_OPTIONS
-} from "#lint/options.ts"
+import { type Exceptions, FIXTURE_EXCEPTIONS, GRIZZLE_FIXTURE_OPTIONS } from "#lint/options.ts"
 import { isAtAny } from "#lint/paths.ts"
-import { CORE_RULES, GRIZZLE_RULES } from "#lint/rules/index.ts"
+import { GRIZZLE_RULES } from "#lint/rules/index.ts"
 import { surfaceOf } from "#lint/surface.ts"
 import type { BoundRule, FileContext, Visitor } from "#lint/types.ts"
 import { invocationOf } from "#shared/arguments.ts"
@@ -65,7 +59,6 @@ const inspectionFailure = (subject: string) => (cause: unknown) =>
 
 /** The rules a repository's toolchain runs: the core, each pack it names beside it, and its own. */
 const rulesOf = (config: Toolchain): ReadonlyArray<BoundRule> => [
-	...bindRules(CORE_RULES, config.core),
 	...Arr.flatMap(config.packs, (pack): ReadonlyArray<BoundRule> => {
 		switch (pack.pack) {
 			case "grizzle":
@@ -80,7 +73,6 @@ const rulesOf = (config: Toolchain): ReadonlyArray<BoundRule> => [
 
 /** Every shared rule, bound to its pack's fixture options: what the shared fixtures prove. */
 const SHARED_FIXTURE_RULES: ReadonlyArray<BoundRule> = [
-	...bindRules(CORE_RULES, CORE_FIXTURE_OPTIONS),
 	...bindRules(GRIZZLE_RULES, GRIZZLE_FIXTURE_OPTIONS)
 ]
 
@@ -331,8 +323,6 @@ const fixtureMismatchesIn = (
 	input: Readonly<{
 		fixtures: string
 		rules: ReadonlyArray<BoundRule>
-		/** Checks of a file alone that run beside the rules, each with its own fixture set: the Effect-free imports. */
-		fileChecks: ReadonlyArray<FileCheck>
 		exceptions: Exceptions
 	}>
 ) =>
@@ -348,23 +338,17 @@ const fixtureMismatchesIn = (
 					fixtureMismatchesOf({
 						root: input.fixtures,
 						extensionOf: () => ".ts",
-						rules: [
-							...fixtureSetsOf(input.fixtures, input.rules, project.program.getSourceFileNames()),
-							...Arr.map(input.fileChecks, (check) => check.id)
-						],
+						rules: fixtureSetsOf(input.fixtures, input.rules, project.program.getSourceFileNames()),
 						runOf: ({ rule: set, file }) =>
 							Option.map(
 								Option.fromUndefinedOr(project.program.getSourceFile(file)),
 								(sourceFile) => ({
 									text: sourceFile.text,
 									reported: Arr.filterMap(
-										[
-											...findingsOf(
-												{ sourceFile, checker: project.checker, roundTrip },
-												{ rules, exceptions: input.exceptions, root: input.fixtures }
-											),
-											...Arr.flatMap(input.fileChecks, (check) => check.findingsOf(sourceFile))
-										],
+										findingsOf(
+											{ sourceFile, checker: project.checker, roundTrip },
+											{ rules, exceptions: input.exceptions, root: input.fixtures }
+										),
 										(finding) =>
 											finding.rule === ruleOfSet(set)
 												? Result.succeed(finding.line)
@@ -377,17 +361,6 @@ const fixtureMismatchesIn = (
 			})
 		})
 	)
-
-/** A check of one file alone, by the id its findings carry. */
-type FileCheck = Readonly<{
-	id: string
-	findingsOf: (sourceFile: ts.SourceFile) => ReadonlyArray<Finding>
-}>
-
-/** The file checks the shared fixtures prove beside the packs' rules. */
-const SHARED_FILE_CHECKS: ReadonlyArray<FileCheck> = [
-	{ id: "effect-free-packages", findingsOf: effectFreeFindingsOf }
-]
 
 /** The shared packs' fixtures, which compile in their own program; no other tool reads them. */
 const FIXTURES_ROOT = `${import.meta.dirname}/lint/fixtures`
@@ -409,7 +382,6 @@ const checkFixtures = Effect.gen(function* () {
 		? yield* fixtureMismatchesIn({
 				fixtures: FIXTURES_ROOT,
 				rules: SHARED_FIXTURE_RULES,
-				fileChecks: SHARED_FILE_CHECKS,
 				exceptions: FIXTURE_EXCEPTIONS
 			})
 		: []
@@ -419,14 +391,13 @@ const checkFixtures = Effect.gen(function* () {
 			fixtureMismatchesIn({
 				fixtures: own.fixtures,
 				rules: own.fixtureRules,
-				fileChecks: [],
 				exceptions: []
 			}),
 		{ concurrency: 1 }
 	)
 	const mismatches = [...sharedMismatches, ...Arr.flatten(ownMismatches)]
 	const rules =
-		(shared ? SHARED_FIXTURE_RULES.length + SHARED_FILE_CHECKS.length : 0) +
+		(shared ? SHARED_FIXTURE_RULES.length : 0) +
 		Arr.reduce(config.own, 0, (count, own) => count + own.fixtureRules.length)
 	yield* Console.log(renderFixtureMismatches({ tool: "superlint", root, rules, mismatches }))
 	return statusOf(mismatches)
@@ -453,7 +424,6 @@ const checkFixturesAt = (directories: ReadonlyArray<string>) =>
 					const mismatches = yield* fixtureMismatchesIn({
 						fixtures,
 						rules,
-						fileChecks: [],
 						exceptions: FIXTURE_EXCEPTIONS
 					})
 					yield* Console.log(
@@ -507,15 +477,11 @@ const main = Effect.gen(function* () {
 					rules: Arr.filter(rulesOf(config), (rule) => pending || rule.gate === "on"),
 					manifests: [`${packageRoot}/package.json`]
 				})
-				const effectFree = Arr.contains(config.effectFree, relativeTo(root)(packageRoot))
 				const perSource = yield* Effect.forEach(
 					sources,
 					(source) =>
 						Effect.try({
-							try: () => [
-								...findingsOf(source, { rules, exceptions: config.exceptions, root }),
-								...(effectFree ? effectFreeFindingsOf(source.sourceFile) : [])
-							],
+							try: () => findingsOf(source, { rules, exceptions: config.exceptions, root }),
 							catch: (cause) =>
 								DevtoolFailure.make({
 									detail: `superlint failed while collecting findings in ${relativeTo(root)(source.sourceFile.fileName)}`,

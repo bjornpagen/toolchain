@@ -6,6 +6,8 @@ import type { Duration } from "effect"
 
 export { Array } from "effect" // violation
 export type { Order } from "effect"
+export * from "effect/Function" // violation
+export * as Stream from "effect/Stream" // violation
 
 export const program: Effect.Effect<Option.Option<Duration.Duration>> = Effect.succeed(
 	Schema.decodeUnknownOption(Schema.Duration)(0)

@@ -1,9 +1,11 @@
 import type { Rule } from "#oxlint/rule.ts"
 import { bearerOwners } from "#oxlint/rules/bearer-owners.ts"
 import { brandsSoleMint } from "#oxlint/rules/brands-sole-mint.ts"
+import { effectFreeImports } from "#oxlint/rules/effect-free-imports.ts"
 import { importDoors } from "#oxlint/rules/import-doors.ts"
 import { markup } from "#oxlint/rules/markup.ts"
 import { noBareMaterializedViewJoins } from "#oxlint/rules/no-bare-materialized-view-joins.ts"
+import { noCaseList } from "#oxlint/rules/no-case-list.ts"
 import { noCollation } from "#oxlint/rules/no-collation.ts"
 import { noComment } from "#oxlint/rules/no-comment.ts"
 import { noDefaultParameter } from "#oxlint/rules/no-default-parameter.ts"
@@ -11,7 +13,9 @@ import { noDrizzleWriteWithoutWhere } from "#oxlint/rules/no-drizzle-write-witho
 import { noDynamicImports } from "#oxlint/rules/no-dynamic-imports.ts"
 import { noImplicitSelectAll } from "#oxlint/rules/no-implicit-select-all.ts"
 import { noInlineSuppression } from "#oxlint/rules/no-inline-suppression.ts"
+import { noModuleState } from "#oxlint/rules/no-module-state.ts"
 import { noNewError } from "#oxlint/rules/no-new-error.ts"
+import { noNullUndefinedUnion } from "#oxlint/rules/no-null-undefined-union.ts"
 import { noOptionBridge } from "#oxlint/rules/no-option-bridge.ts"
 import { noOptionalParameter } from "#oxlint/rules/no-optional-parameter.ts"
 import { noOverload } from "#oxlint/rules/no-overload.ts"
@@ -19,6 +23,7 @@ import { noPointlessTypeAlias } from "#oxlint/rules/no-pointless-type-alias.ts"
 import { noRawRegexp } from "#oxlint/rules/no-raw-regexp.ts"
 import { noRawSql } from "#oxlint/rules/no-raw-sql.ts"
 import { noSendBeacon } from "#oxlint/rules/no-send-beacon.ts"
+import { noSpreadArgument } from "#oxlint/rules/no-spread-argument.ts"
 import { noSvgPaint } from "#oxlint/rules/no-svg-paint.ts"
 import { noSvgWithoutTitle } from "#oxlint/rules/no-svg-without-title.ts"
 import { noSwitchDefaultBailout } from "#oxlint/rules/no-switch-default-bailout.ts"
@@ -44,9 +49,11 @@ import { testNoSpelledNames } from "#oxlint/rules/test-no-spelled-names.ts"
 const PLUGIN_RULES = {
 	"bearer-owners": bearerOwners,
 	"brands-sole-mint": brandsSoleMint,
+	"effect-free-imports": effectFreeImports,
 	"import-doors": importDoors,
 	markup,
 	"no-bare-materialized-view-joins": noBareMaterializedViewJoins,
+	"no-case-list": noCaseList,
 	"no-collation": noCollation,
 	"no-comment": noComment,
 	"no-default-parameter": noDefaultParameter,
@@ -54,7 +61,9 @@ const PLUGIN_RULES = {
 	"no-dynamic-imports": noDynamicImports,
 	"no-implicit-select-all": noImplicitSelectAll,
 	"no-inline-suppression": noInlineSuppression,
+	"no-module-state": noModuleState,
 	"no-new-error": noNewError,
+	"no-null-undefined-union": noNullUndefinedUnion,
 	"no-option-bridge": noOptionBridge,
 	"no-optional-parameter": noOptionalParameter,
 	"no-overload": noOverload,
@@ -62,6 +71,7 @@ const PLUGIN_RULES = {
 	"no-raw-regexp": noRawRegexp,
 	"no-raw-sql": noRawSql,
 	"no-send-beacon": noSendBeacon,
+	"no-spread-argument": noSpreadArgument,
 	"no-svg-paint": noSvgPaint,
 	"no-svg-without-title": noSvgWithoutTitle,
 	"no-switch-default-bailout": noSwitchDefaultBailout,

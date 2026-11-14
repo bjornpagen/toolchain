@@ -18,6 +18,7 @@ export const FIXTURE_RULES: FixtureRules<typeof plugin, "no-comment"> = {
 			{ doors: ["brands-sole-mint/grizzle/clean.tsx"], brands: ["SqlText"] }
 		]
 	},
+	"effect-free-imports": null,
 	"import-doors": {
 		doors: [
 			{
@@ -69,6 +70,23 @@ export const FIXTURE_RULES: FixtureRules<typeof plugin, "no-comment"> = {
 	"no-bare-materialized-view-joins": {
 		modules: [{ specifiers: ["#fixture/views.ts"], views: ["ledgerTotals"] }]
 	},
+	"no-case-list": {
+		searches: [
+			{ module: "#fixture/testing.ts", name: "exhaust", space: "generator" },
+			{ module: "#fixture/testing.ts", name: "explore", space: "draw" }
+		],
+		generators: [
+			{ module: "#fixture/testing.ts", names: ["element"], draws: "list" },
+			{ module: "#fixture/testing.ts", names: ["constant"], draws: "value" },
+			{
+				module: "#fixture/testing.ts",
+				names: ["map", "span", "drawn", "sketched"],
+				draws: "each"
+			},
+			{ module: "#fixture/testing.ts", names: ["oneOf", "weighted"], draws: "union" }
+		],
+		cases: ["no-case-list/violating.tsx", "no-case-list/clean.tsx"]
+	},
 	"no-collation": null,
 	"no-default-parameter": null,
 	"no-drizzle-write-without-where": { receivers: ["db"] },
@@ -77,7 +95,9 @@ export const FIXTURE_RULES: FixtureRules<typeof plugin, "no-comment"> = {
 	},
 	"no-implicit-select-all": null,
 	"no-inline-suppression": null,
+	"no-module-state": null,
 	"no-new-error": null,
+	"no-null-undefined-union": null,
 	"no-option-bridge": null,
 	"no-optional-parameter": null,
 	"no-overload": null,
@@ -85,6 +105,7 @@ export const FIXTURE_RULES: FixtureRules<typeof plugin, "no-comment"> = {
 	"no-raw-regexp": null,
 	"no-raw-sql": { sources: ["no-raw-sql"], writers: ["no-raw-sql/drizzle/clean.tsx"] },
 	"no-send-beacon": null,
+	"no-spread-argument": { tuples: [{ module: "#fixture/list.ts", names: ["argumentsOf"] }] },
 	"no-svg-paint": null,
 	"no-svg-without-title": null,
 	"no-switch-default-bailout": null,

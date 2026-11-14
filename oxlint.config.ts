@@ -29,8 +29,34 @@ export default defineConfig(
 				]
 			},
 			"import-doors": { doors: [] },
+			"no-case-list": {
+				searches: [
+					{ module: "@bjornpagen/testing/explore", name: "exhaust", space: "generator" },
+					{ module: "@bjornpagen/testing/explore", name: "explore", space: "draw" },
+					{ module: "#explore.ts", name: "exhaust", space: "generator" },
+					{ module: "#explore.ts", name: "explore", space: "draw" }
+				],
+				generators: [
+					{ module: "@bjornpagen/testing/gen", names: ["element"], draws: "list" },
+					{ module: "@bjornpagen/testing/gen", names: ["constant"], draws: "value" },
+					{ module: "@bjornpagen/testing/gen", names: ["map", "span"], draws: "each" },
+					{
+						module: "@bjornpagen/testing/gen",
+						names: ["oneOf", "weighted", "proportional"],
+						draws: "union"
+					},
+					{ module: "@bjornpagen/testing/explore", names: ["drawn", "sketched"], draws: "each" },
+					{ module: "#gen.ts", names: ["element"], draws: "list" },
+					{ module: "#gen.ts", names: ["constant"], draws: "value" },
+					{ module: "#gen.ts", names: ["map", "span"], draws: "each" },
+					{ module: "#gen.ts", names: ["oneOf", "weighted", "proportional"], draws: "union" },
+					{ module: "#explore.ts", names: ["drawn", "sketched"], draws: "each" }
+				],
+				cases: []
+			},
 			"no-dynamic-imports": { allowed: [] },
 			"no-raw-sql": { sources: ["packages/testing/src"], writers: [] },
+			"no-spread-argument": { tuples: [] },
 			"side-effect-free": { modules: [] },
 			"test-no-prose-search": {
 				fields: ["capability", "what"],

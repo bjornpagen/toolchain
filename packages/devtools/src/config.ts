@@ -1,5 +1,5 @@
 import { Array as Arr, Data } from "effect"
-import type { CoreOptions, Exceptions, GrizzleOptions } from "#lint/options.ts"
+import type { Exceptions, GrizzleOptions } from "#lint/options.ts"
 import type { BoundRule, Rule } from "#lint/types.ts"
 import type { WebOptions } from "#style/options.ts"
 
@@ -121,8 +121,6 @@ export type Toolchain = Readonly<{
 	exceptions: Exceptions
 	/** The workspace packages that use no Effect, by repository-relative directory without a trailing "/". */
 	effectFree: ReadonlyArray<string>
-	/** The core pack's names: every repository runs the core. */
-	core: CoreOptions
 	/** The packs the repository runs beside the core, each at most once. */
 	packs: ReadonlyArray<Pack>
 	/** The repository's own superlint rules. */

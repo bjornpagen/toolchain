@@ -1,5 +1,5 @@
 import { Effect } from "effect"
-import { CASES } from "#lint/fixtures/no-case-list/cases.ts"
+import * as testing from "#fixture/testing.ts"
 import {
 	constant,
 	drawn,
@@ -11,15 +11,16 @@ import {
 	sketched,
 	span,
 	weighted
-} from "#lint/fixtures/no-case-list/testing.ts"
+} from "#fixture/testing.ts"
 
 const rows = [
 	{ input: 1, expected: 2 },
 	{ input: 2, expected: 3 }
 ] as const
 
-const nonEmpty = <A>(items: ReadonlyArray<A>, why: string): ReadonlyArray<A> =>
-	why === "" ? [] : items
+function nonEmpty<A>(items: ReadonlyArray<A>, why: string): ReadonlyArray<A> {
+	return why === "" ? [] : items
+}
 
 export const inline = exhaust(
 	{
@@ -33,14 +34,6 @@ export const held = exhaust(
 	{
 		suite: "held",
 		generator: element(rows) // violation
-	},
-	() => Effect.void
-)
-
-export const imported = exhaust(
-	{
-		suite: "imported",
-		generator: element(CASES) // violation
 	},
 	() => Effect.void
 )
@@ -124,3 +117,15 @@ export const fromSpec = exhaust(spec, () => Effect.void)
 const generator = element(rows)
 
 export const shorthand = exhaust({ suite: "shorthand", generator }, () => Effect.void) // violation
+
+export const namespaced = testing.exhaust(
+	{ suite: "namespaced", generator: testing.element(rows) }, // violation
+	() => Effect.void
+)
+
+const SPACES = { names: ["a", "b"] } as const
+
+export const property = exhaust(
+	{ suite: "property", generator: element(SPACES.names) }, // violation
+	() => Effect.void
+)

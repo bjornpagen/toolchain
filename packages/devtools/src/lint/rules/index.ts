@@ -1,32 +1,16 @@
-import type { CoreOptions, GrizzleOptions } from "#lint/options.ts"
-import { noCaseList } from "#lint/rules/no-case-list.ts"
+import type { GrizzleOptions } from "#lint/options.ts"
 import { noEnvironment } from "#lint/rules/no-environment.ts"
-import { noModuleState } from "#lint/rules/no-module-state.ts"
-import { noSpreadArgument } from "#lint/rules/no-spread-argument.ts"
-import { noNullUndefinedUnion } from "#lint/rules/null-undefined-union.ts"
 import type { Rule } from "#lint/types.ts"
 
 /**
- * superlint's rules, by pack. Every repository runs the core, and a repository runs the grizzle pack when its toolchain
- * names it, each with the repository's names for it; the drizzle pack's rules are the oxlint plugin's (src/oxlint). A
- * rule whose options name nothing to guard in a repository is inert there. Every rule visits every owned file, test
- * files included.
+ * superlint's rules, by pack: a repository runs the grizzle pack when its toolchain names it, with the repository's
+ * names for it. Every rule that reads syntax alone is the oxlint plugin's (src/oxlint-plugin.ts): the core's
+ * no-module-state, no-null-undefined-union and no-spread-argument, the Effect-free imports, the drizzle pack's rules
+ * and grizzle's no-case-list; whether a test case runs a search is the testing library's reporter's to judge, at run
+ * time.
  */
 
-/** The rules every repository runs. */
-export const CORE_RULES: ReadonlyArray<Rule<CoreOptions>> = [
-	{ id: "no-module-state", starting: { reads: "file", visit: noModuleState }, gate: "on" },
-	{
-		id: "no-null-undefined-union",
-		starting: { reads: "file", visit: noNullUndefinedUnion },
-		gate: "on"
-	},
-	{ id: "no-spread-argument", starting: { reads: "file", visit: noSpreadArgument }, gate: "on" }
-]
-
-/** grizzle's rules: a search's space that is never a list of cases, and a library that reads no environment; whether
- * a test case runs a search is the testing library's reporter's to judge, at run time. */
+/** grizzle's rules: a library that reads no environment. */
 export const GRIZZLE_RULES: ReadonlyArray<Rule<GrizzleOptions>> = [
-	{ id: "no-case-list", starting: { reads: "program", start: noCaseList }, gate: "on" },
 	{ id: "no-environment", starting: { reads: "file", visit: noEnvironment }, gate: "on" }
 ]

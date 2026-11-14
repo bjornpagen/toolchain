@@ -42,7 +42,7 @@ export default toolchain({
 			"eslint/prefer-regex-literals":
 				"it pushes toward regex literals, and arkregex's regex() is the only regex form",
 			"eslint/prefer-spread":
-				"it turns f.apply(this, list) into f(...list), a variable-length list on the call stack, which superlint's no-spread-argument refuses",
+				"it turns f.apply(this, list) into f(...list), a variable-length list on the call stack, which the dev tools' no-spread-argument refuses",
 			"eslint/preserve-caught-error": "try/catch is Effect's tryCatchInEffectGen's",
 			"eslint/require-await": "async is banned, and Effect's asyncFunction owns it",
 			"import/no-absolute-path": "it came only with the suspicious category, which is off",
@@ -107,36 +107,11 @@ export default toolchain({
 			unstableApiUsage: "Effect's whole Node platform layer is marked unstable"
 		}
 	},
-	exceptions: [{ rule: "no-module-state", files: ["packages/testing/src/vitest/coverage.ts"] }],
+	exceptions: [],
 	effectFree: [],
-	core: {},
 	packs: [
 		grizzle({
-			noEnvironment: { files: [], readers: [], sources: [], entryReads: [] },
-			noCaseList: {
-				files: ["packages/devtools/src/", "packages/testing/src/"],
-				cases: [],
-				dictionaries: [],
-				searches: [
-					{ module: "packages/testing/src/explore.ts", name: "exhaust", space: "generator" },
-					{ module: "packages/testing/src/explore.ts", name: "explore", space: "draw" }
-				],
-				generators: [
-					{ module: "packages/testing/src/gen.ts", names: ["element"], draws: "list" },
-					{ module: "packages/testing/src/gen.ts", names: ["constant"], draws: "value" },
-					{ module: "packages/testing/src/gen.ts", names: ["map", "span"], draws: "each" },
-					{
-						module: "packages/testing/src/explore.ts",
-						names: ["drawn", "sketched"],
-						draws: "each"
-					},
-					{
-						module: "packages/testing/src/gen.ts",
-						names: ["oneOf", "weighted", "proportional"],
-						draws: "union"
-					}
-				]
-			}
+			noEnvironment: { files: [], readers: [], sources: [], entryReads: [] }
 		})
 	],
 	own: []

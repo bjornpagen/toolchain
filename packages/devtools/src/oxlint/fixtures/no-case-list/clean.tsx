@@ -1,6 +1,8 @@
 import { Effect } from "effect"
-import { KINDS } from "#lint/fixtures/no-case-list/dictionary.ts"
-import { ROSTER } from "#lint/fixtures/no-case-list/roster.ts"
+import { CASES } from "#fixture/cases.ts"
+import { KINDS } from "#fixture/dictionary.ts"
+import { element as listed } from "#fixture/other.ts"
+import { ROSTER } from "#fixture/roster.ts"
 import {
 	array,
 	constant,
@@ -15,7 +17,7 @@ import {
 	record,
 	sketched,
 	weighted
-} from "#lint/fixtures/no-case-list/testing.ts"
+} from "#fixture/testing.ts"
 
 const rangeOf = (from: number, to: number): ReadonlyArray<number> =>
 	Array.from({ length: to - from }, (_, at) => from + at)
@@ -85,3 +87,7 @@ export const sketch = explore(
 )
 
 export const other = notASearch({ generator: element(rows) })
+
+export const imported = exhaust({ suite: "imported", generator: element(CASES) }, () => Effect.void)
+
+export const unnamed = exhaust({ suite: "unnamed", generator: listed(rows) }, () => Effect.void)
