@@ -1,5 +1,5 @@
 import localFont from "next/font/local"
-import { coverMotion } from "#style/fixtures/support/motion.ts"
+import { coverMotion } from "#fixture/motion.ts"
 
 const box = { width: 10 }
 

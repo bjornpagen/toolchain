@@ -78,7 +78,7 @@ const Operand = Schema.Union([
 ])
 
 /** The doors the markup rule leaves open, each at the files that own it. */
-const MarkupOptions = Schema.Struct({
+export const MarkupOptions = Schema.Struct({
 	/** The inline `style` objects a file may write: each CSS property with the operands it may hold, measured
 	 * layout or authored motion values, never static styling. */
 	measuredStyles: Schema.Array(
@@ -173,19 +173,6 @@ const fixtureSheet = (path: string): ScopedSheetOption => ({
 
 const PASSTHROUGH_TEXT = '@import "../../support/theme.css";'
 
-const fixtureMeasured = (path: string): MarkupOption["measuredStyles"][number] => ({
-	path,
-	properties: {
-		width: [
-			{ kind: "expression", text: "box.width" },
-			{ kind: "expression", text: "share" }
-		],
-		transform: [
-			{ kind: "export", module: "#style/fixtures/support/motion.ts", name: "coverMotion" }
-		]
-	}
-})
-
 const fixtureBridge = (path: string): MarkupOption["styleBridges"][number] => ({
 	path,
 	function: "mergeSurfaceProps",
@@ -228,18 +215,13 @@ export const FIXTURE_OPTIONS: RuleOptions = {
 		]
 	},
 	markup: {
-		measuredStyles: [
-			fixtureMeasured(`${FIXTURES}/markup/clean.tsx`),
-			fixtureMeasured(`${FIXTURES}/markup/violating.tsx`)
-		],
+		measuredStyles: [],
 		styleBridges: [
-			fixtureBridge(`${FIXTURES}/markup/clean.tsx`),
-			fixtureBridge(`${FIXTURES}/markup/violating.tsx`),
 			fixtureBridge(`${FIXTURES}/class-extraction/clean.tsx`),
 			fixtureBridge(`${FIXTURES}/class-extraction/violating.tsx`)
 		],
-		htmlTemplates: [`${FIXTURES}/markup/clean.tsx`],
-		stylesheetConstructors: [`${FIXTURES}/markup/clean.tsx`]
+		htmlTemplates: [],
+		stylesheetConstructors: []
 	}
 }
 

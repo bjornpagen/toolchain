@@ -1,9 +1,10 @@
-import { Array as Arr, Option, Record } from "effect"
+import { Array as Arr, Option, Record, Result, String as Str } from "effect"
 import type { DummyRule, DummyRuleMap, OxlintConfig, OxlintOverride } from "oxlint"
 import type { PackName, Toolchain } from "#config.ts"
 import plugin from "#oxlint-plugin.ts"
 import type { OptionsOf, Plugin } from "#oxlint/rule.ts"
 import { TEST_SUFFIXES } from "#shared/tests.ts"
+import type { AppStyleOptions } from "#style/options.ts"
 
 /**
  * The shared lint preset. A repository's root oxlint.config.ts calls `standard` with its toolchain.config.ts, which
@@ -281,14 +282,16 @@ type ListedRule =
 type PluginRule = keyof typeof plugin.rules
 
 /** Where a plugin rule runs: on every file, only on the Effect-free code (where Effect's diagnostics, which own the
- * ban elsewhere, do not run), or only on test files. */
-type Scope = "every file" | "effect-free code" | "test files"
+ * ban elsewhere, do not run), only on test files, or only on the files of the web pack's Tailwind apps, with the app's
+ * own options. */
+type Scope = "every file" | "effect-free code" | "test files" | "tailwind apps"
 
 /** Each plugin rule's part, which a repository runs or not, and the files it runs on there. */
 const PLACES = {
 	"bearer-owners": { part: "core", scope: "every file" },
 	"brands-sole-mint": { part: "core", scope: "every file" },
 	"import-doors": { part: "core", scope: "every file" },
+	markup: { part: "web", scope: "tailwind apps" },
 	"no-collation": { part: "drizzle", scope: "every file" },
 	"no-comment": { part: "core", scope: "every file" },
 	"no-default-parameter": { part: "core", scope: "every file" },
@@ -302,6 +305,7 @@ const PLACES = {
 	"no-raw-regexp": { part: "core", scope: "every file" },
 	"no-raw-sql": { part: "grizzle", scope: "every file" },
 	"no-send-beacon": { part: "web", scope: "every file" },
+	"no-svg-paint": { part: "web", scope: "tailwind apps" },
 	"no-svg-without-title": { part: "web", scope: "every file" },
 	"no-switch-default-bailout": { part: "core", scope: "every file" },
 	"no-try": { part: "core", scope: "effect-free code" },
@@ -313,14 +317,38 @@ const PLACES = {
 	"test-no-spelled-names": { part: "grizzle", scope: "test files" }
 } as const satisfies { readonly [R in PluginRule]: Readonly<{ part: Part; scope: Scope }> }
 
-/** The plugin rules of the parts `P` that take a repository's names. */
+/** The plugin rules of the parts `P` that take a repository's names in its oxlint.config.ts. A rule of a Tailwind app
+ * takes the app's names from the web pack instead. */
 type NamedRule<P extends Part> = {
 	[R in PluginRule]: (typeof PLACES)[R]["part"] extends P
-		? OptionsOf<(typeof plugin.rules)[R]> extends null
+		? (typeof PLACES)[R]["scope"] extends "tailwind apps"
 			? never
-			: R
+			: OptionsOf<(typeof plugin.rules)[R]> extends null
+				? never
+				: R
 		: never
 }[PluginRule]
+
+/** The plugin rules that run on the files of a Tailwind app. */
+type AppRule = {
+	[R in PluginRule]: (typeof PLACES)[R]["scope"] extends "tailwind apps" ? R : never
+}[PluginRule]
+
+/** How each rule of a Tailwind app takes the app's options from the web pack. */
+const APP_RULES: { readonly [R in AppRule]: (app: AppStyleOptions) => DummyRule } = {
+	markup: (app) => ["error", app.markup],
+	"no-svg-paint": () => "error"
+}
+
+/** A path of the style options (repository-relative; one ending in "/" names a directory) as an oxlint glob. */
+const globOf = (path: string): string => (Str.endsWith("/")(path) ? `${path}**` : path)
+
+/** The web pack's Tailwind apps, by their package root relative to the repository's, with their style options; none
+ * for a repository without a web pack. */
+const tailwindAppsOf = (toolchain: Toolchain): ReadonlyArray<readonly [string, AppStyleOptions]> =>
+	Arr.flatMap(toolchain.packs, (pack) =>
+		pack.pack === "web" ? Record.toEntries(pack.options.apps) : []
+	)
 
 /** The plugin's names for the parts `P`: one options object for each of their rules that takes them, and none for a
  * rule of a part the repository does not run. */
@@ -491,6 +519,32 @@ export const standard = <const T extends Toolchain>(
 				(rule) => entryOf(plugin.meta.name, names, rule)
 			)
 		)
+	/** Each Tailwind app's block, which runs the app's rules on its files with its options, and the blocks of its
+	 * style exceptions that name an oxlint rule, which turn that rule off on the files they name. */
+	const appBlocks = (app: string, options: AppStyleOptions): ReadonlyArray<OxlintOverride> => [
+		{
+			files: [`${app}/**`],
+			rules: {
+				...Record.fromEntries(
+					Arr.map(Record.keys(APP_RULES), (rule) => [
+						`${plugin.meta.name}/${rule}`,
+						APP_RULES[rule](options)
+					])
+				),
+				...off
+			}
+		},
+		...Arr.filterMap(options.exceptions, (exception): Result.Result<OxlintOverride, void> => {
+			const turnedOff: DummyRule = "off"
+			return Arr.contains<string>(Record.keys(APP_RULES), exception.rule) &&
+				Arr.isReadonlyArrayNonEmpty(exception.files)
+				? Result.succeed({
+						files: Arr.map(exception.files, globOf),
+						rules: { [`${plugin.meta.name}/${exception.rule}`]: turnedOff, ...off }
+					})
+				: Result.failVoid
+		})
+	]
 	/** A file group's block, its rejected rules off after its own, and none when the repository has no such files. */
 	const block = (
 		files: ReadonlyArray<string>,
@@ -546,6 +600,7 @@ export const standard = <const T extends Toolchain>(
 							]
 						}
 					),
+					...Arr.flatMap(tailwindAppsOf(toolchain), ([app, options]) => appBlocks(app, options)),
 					{
 						files: [...TEST_FILES],
 						plugins: [...plugins, "vitest"],

@@ -1,3 +1,4 @@
+import { Array as Arr } from "effect"
 import type plugin from "#oxlint-plugin.ts"
 import type { FixtureRules } from "#oxlint/prove.ts"
 
@@ -45,6 +46,26 @@ export const FIXTURE_RULES: FixtureRules<typeof plugin, "no-comment"> = {
 			}
 		]
 	},
+	markup: {
+		measuredStyles: Arr.map(["markup/clean.tsx", "markup/violating.tsx"], (path) => ({
+			path,
+			properties: {
+				width: [
+					{ kind: "expression", text: "box.width" },
+					{ kind: "expression", text: "share" }
+				],
+				transform: [{ kind: "export", module: "#fixture/motion.ts", name: "coverMotion" }]
+			}
+		})),
+		styleBridges: Arr.map(["markup/clean.tsx", "markup/violating.tsx"], (path) => ({
+			path,
+			function: "mergeSurfaceProps",
+			base: "baseProps",
+			overlay: "props"
+		})),
+		htmlTemplates: ["markup/clean.tsx"],
+		stylesheetConstructors: ["markup/clean.tsx"]
+	},
 	"no-collation": null,
 	"no-default-parameter": null,
 	"no-dynamic-imports": {
@@ -59,6 +80,7 @@ export const FIXTURE_RULES: FixtureRules<typeof plugin, "no-comment"> = {
 	"no-raw-regexp": null,
 	"no-raw-sql": { sources: ["no-raw-sql"], writers: [] },
 	"no-send-beacon": null,
+	"no-svg-paint": null,
 	"no-svg-without-title": null,
 	"no-switch-default-bailout": null,
 	"no-try": null,

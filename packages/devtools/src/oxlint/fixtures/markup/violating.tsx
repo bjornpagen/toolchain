@@ -1,4 +1,4 @@
-import { coverMotion } from "#style/fixtures/support/motion.ts"
+import { coverMotion } from "#fixture/motion.ts"
 
 const Tag = "section"
 

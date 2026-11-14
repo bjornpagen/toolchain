@@ -17,6 +17,11 @@ export const STYLE_RULES = [
 
 export type StyleRule = (typeof STYLE_RULES)[number]
 
+/** The style rules oxlint runs on a Tailwind app's files, through the preset, with the app's options from the web pack:
+ * the style linter reads their exceptions but runs them nowhere itself. Standalone HTML, which oxlint does not read, is
+ * still the style linter's, under markup. */
+export const OXLINT_RULES: ReadonlyArray<StyleRule> = ["markup", "no-svg-paint"]
+
 /** One class as written: its text and where it starts, 1-based. */
 export type ClassToken = Readonly<{ text: string; file: string; line: number; column: number }>
 

@@ -44,9 +44,7 @@ import type {
 import { isNamedBy, isNamedByAny } from "#style/paths.ts"
 import { noConflictingClasses } from "#style/rules/class-lists.ts"
 import { noInvalidColor } from "#style/rules/colors.ts"
-import { markup, STANDALONE_HTML } from "#style/rules/markup.ts"
 import { noArbitraryValue } from "#style/rules/no-arbitrary-value.ts"
-import { noSvgPaint } from "#style/rules/no-svg-paint.ts"
 import { noUnresolvedClass } from "#style/rules/no-unresolved-class.ts"
 import {
 	SECOND_STYLESHEET,
@@ -54,7 +52,10 @@ import {
 	sheetRolesOf,
 	stylesheet
 } from "#style/rules/stylesheet.ts"
-import { type ClassRule, STYLE_RULES, type StyleRule } from "#style/types.ts"
+import { type ClassRule, OXLINT_RULES, STYLE_RULES, type StyleRule } from "#style/types.ts"
+
+/** Standalone HTML is not a maintained application surface: the app renders JSX. */
+const STANDALONE_HTML = "Standalone HTML is not a maintained application surface; use JSX."
 
 /**
  * The style engine: one app's run and the fixture runs. A run reads the app's program with its own checker against
@@ -217,8 +218,7 @@ const finderOf =
 				)
 	}
 
-/** Every rule over a run: what the extractor found unreadable, the markup and paint rules over every source, every
- * class rule over every class list, the stylesheet contract over every stylesheet the options give a role, every
+/** Every rule over a run: what the extractor found unreadable, every class rule over every class list, the stylesheet contract over every stylesheet the options give a role, every
  * other stylesheet and HTML file, and what the repository's own rules report on the program. */
 const styleFindingsOf = Effect.fn("styleFindingsOf")(function* (run: StyleRun) {
 	const unmatched = Arr.filter(run.named, (path) => !Arr.some(run.known, isNamedBy(path)))
@@ -244,14 +244,7 @@ const styleFindingsOf = Effect.fn("styleFindingsOf")(function* (run: StyleRun) {
 			return Arr.map(run.files, (sourceFile) => {
 				const semantics = prepareSemantics({ sourceFile, checker, roundTrip: run.roundTrip })
 				const classes = extract({ sourceFile, semantics })
-				return {
-					lists: classes.lists,
-					findings: [
-						...classes.findings,
-						...Arr.map(markup({ sourceFile, options: run.options.markup }), stamped("markup")),
-						...Arr.map(noSvgPaint({ sourceFile, semantics }), stamped("no-svg-paint"))
-					]
-				}
+				return { lists: classes.lists, findings: classes.findings }
 			})
 		},
 		catch: (cause) =>
@@ -452,7 +445,9 @@ const SHARED_SUITE: FixtureSuite = {
 	own: [],
 	cases: [
 		...Arr.filterMap(STYLE_RULES, (rule): Result.Result<FixtureCase, void> =>
-			rule === "stylesheet" ? Result.failVoid : Result.succeed({ directory: rule, rule })
+			Arr.contains<string>(OXLINT_RULES, rule) || rule === "stylesheet"
+				? Result.failVoid
+				: Result.succeed({ directory: rule, rule })
 		),
 		...Arr.map(
 			["app", "app/layered", "app/unordered", "scoped", "scoped/layered", "passthrough", "unnamed"],

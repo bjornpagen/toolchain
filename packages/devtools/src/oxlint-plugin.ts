@@ -2,6 +2,7 @@ import type { Rule } from "#oxlint/rule.ts"
 import { bearerOwners } from "#oxlint/rules/bearer-owners.ts"
 import { brandsSoleMint } from "#oxlint/rules/brands-sole-mint.ts"
 import { importDoors } from "#oxlint/rules/import-doors.ts"
+import { markup } from "#oxlint/rules/markup.ts"
 import { noCollation } from "#oxlint/rules/no-collation.ts"
 import { noComment } from "#oxlint/rules/no-comment.ts"
 import { noDefaultParameter } from "#oxlint/rules/no-default-parameter.ts"
@@ -15,6 +16,7 @@ import { noPointlessTypeAlias } from "#oxlint/rules/no-pointless-type-alias.ts"
 import { noRawRegexp } from "#oxlint/rules/no-raw-regexp.ts"
 import { noRawSql } from "#oxlint/rules/no-raw-sql.ts"
 import { noSendBeacon } from "#oxlint/rules/no-send-beacon.ts"
+import { noSvgPaint } from "#oxlint/rules/no-svg-paint.ts"
 import { noSvgWithoutTitle } from "#oxlint/rules/no-svg-without-title.ts"
 import { noSwitchDefaultBailout } from "#oxlint/rules/no-switch-default-bailout.ts"
 import { noTry } from "#oxlint/rules/no-try.ts"
@@ -30,6 +32,7 @@ const PLUGIN_RULES = {
 	"bearer-owners": bearerOwners,
 	"brands-sole-mint": brandsSoleMint,
 	"import-doors": importDoors,
+	markup,
 	"no-collation": noCollation,
 	"no-comment": noComment,
 	"no-default-parameter": noDefaultParameter,
@@ -43,6 +46,7 @@ const PLUGIN_RULES = {
 	"no-raw-regexp": noRawRegexp,
 	"no-raw-sql": noRawSql,
 	"no-send-beacon": noSendBeacon,
+	"no-svg-paint": noSvgPaint,
 	"no-svg-without-title": noSvgWithoutTitle,
 	"no-switch-default-bailout": noSwitchDefaultBailout,
 	"no-try": noTry,
