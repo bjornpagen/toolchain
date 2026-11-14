@@ -1,12 +1,6 @@
 import { Array as Arr, Effect, FileSystem, Path, Schema } from "effect"
 import { OwnRules, type Toolchain } from "#config.ts"
-import {
-	CoreOptions,
-	DrizzleOptions,
-	EffectFree,
-	Exceptions,
-	GrizzleOptions
-} from "#lint/options.ts"
+import { CoreOptions, EffectFree, Exceptions, GrizzleOptions } from "#lint/options.ts"
 import { DevtoolFailure, failureFrom } from "#shared/devtool.ts"
 import { Repository } from "#shared/repository.ts"
 import { WebOptions } from "#style/options.ts"
@@ -26,7 +20,7 @@ const ToolchainSchema = Schema.Struct({
 	core: CoreOptions,
 	packs: Schema.Array(
 		Schema.Union([
-			Schema.Struct({ pack: Schema.Literal("drizzle"), options: DrizzleOptions }),
+			Schema.Struct({ pack: Schema.Literal("drizzle") }),
 			Schema.Struct({ pack: Schema.Literal("grizzle"), options: GrizzleOptions }),
 			Schema.Struct({ pack: Schema.Literal("web"), options: WebOptions })
 		])

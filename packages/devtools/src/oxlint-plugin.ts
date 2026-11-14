@@ -3,10 +3,13 @@ import { bearerOwners } from "#oxlint/rules/bearer-owners.ts"
 import { brandsSoleMint } from "#oxlint/rules/brands-sole-mint.ts"
 import { importDoors } from "#oxlint/rules/import-doors.ts"
 import { markup } from "#oxlint/rules/markup.ts"
+import { noBareMaterializedViewJoins } from "#oxlint/rules/no-bare-materialized-view-joins.ts"
 import { noCollation } from "#oxlint/rules/no-collation.ts"
 import { noComment } from "#oxlint/rules/no-comment.ts"
 import { noDefaultParameter } from "#oxlint/rules/no-default-parameter.ts"
+import { noDrizzleWriteWithoutWhere } from "#oxlint/rules/no-drizzle-write-without-where.ts"
 import { noDynamicImports } from "#oxlint/rules/no-dynamic-imports.ts"
+import { noImplicitSelectAll } from "#oxlint/rules/no-implicit-select-all.ts"
 import { noInlineSuppression } from "#oxlint/rules/no-inline-suppression.ts"
 import { noNewError } from "#oxlint/rules/no-new-error.ts"
 import { noOptionBridge } from "#oxlint/rules/no-option-bridge.ts"
@@ -24,6 +27,16 @@ import { noUnoptimizedNextImage } from "#oxlint/rules/no-unoptimized-next-image.
 import { noUselessContinue } from "#oxlint/rules/no-useless-continue.ts"
 import { preferEarlyReturn } from "#oxlint/rules/prefer-early-return.ts"
 import { sideEffectFree } from "#oxlint/rules/side-effect-free.ts"
+import { sqlAliasedTableReference } from "#oxlint/rules/sql-aliased-table-reference.ts"
+import { sqlDistinctWindow } from "#oxlint/rules/sql-distinct-window.ts"
+import { sqlDynamicSchema } from "#oxlint/rules/sql-dynamic-schema.ts"
+import { sqlExecutorContract } from "#oxlint/rules/sql-executor-contract.ts"
+import { sqlJsonOwner } from "#oxlint/rules/sql-json-owner.ts"
+import { sqlLeafOwnersOnly } from "#oxlint/rules/sql-leaf-owners-only.ts"
+import { sqlNumberDecoder } from "#oxlint/rules/sql-number-decoder.ts"
+import { sqlQueryDeadline } from "#oxlint/rules/sql-query-deadline.ts"
+import { sqlRawExecution } from "#oxlint/rules/sql-raw-execution.ts"
+import { sqlRawStatement } from "#oxlint/rules/sql-raw-statement.ts"
 import { testNoProseSearch } from "#oxlint/rules/test-no-prose-search.ts"
 import { testNoSpelledNames } from "#oxlint/rules/test-no-spelled-names.ts"
 
@@ -33,10 +46,13 @@ const PLUGIN_RULES = {
 	"brands-sole-mint": brandsSoleMint,
 	"import-doors": importDoors,
 	markup,
+	"no-bare-materialized-view-joins": noBareMaterializedViewJoins,
 	"no-collation": noCollation,
 	"no-comment": noComment,
 	"no-default-parameter": noDefaultParameter,
+	"no-drizzle-write-without-where": noDrizzleWriteWithoutWhere,
 	"no-dynamic-imports": noDynamicImports,
+	"no-implicit-select-all": noImplicitSelectAll,
 	"no-inline-suppression": noInlineSuppression,
 	"no-new-error": noNewError,
 	"no-option-bridge": noOptionBridge,
@@ -54,6 +70,16 @@ const PLUGIN_RULES = {
 	"no-useless-continue": noUselessContinue,
 	"prefer-early-return": preferEarlyReturn,
 	"side-effect-free": sideEffectFree,
+	"sql-aliased-table-reference": sqlAliasedTableReference,
+	"sql-distinct-window": sqlDistinctWindow,
+	"sql-dynamic-schema": sqlDynamicSchema,
+	"sql-executor-contract": sqlExecutorContract,
+	"sql-json-owner": sqlJsonOwner,
+	"sql-leaf-owners-only": sqlLeafOwnersOnly,
+	"sql-number-decoder": sqlNumberDecoder,
+	"sql-query-deadline": sqlQueryDeadline,
+	"sql-raw-execution": sqlRawExecution,
+	"sql-raw-statement": sqlRawStatement,
 	"test-no-prose-search": testNoProseSearch,
 	"test-no-spelled-names": testNoSpelledNames
 } as const satisfies Readonly<Record<string, Rule>>

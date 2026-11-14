@@ -66,11 +66,16 @@ export const FIXTURE_RULES: FixtureRules<typeof plugin, "no-comment"> = {
 		htmlTemplates: ["markup/clean.tsx"],
 		stylesheetConstructors: ["markup/clean.tsx"]
 	},
+	"no-bare-materialized-view-joins": {
+		modules: [{ specifiers: ["#fixture/views.ts"], views: ["ledgerTotals"] }]
+	},
 	"no-collation": null,
 	"no-default-parameter": null,
+	"no-drizzle-write-without-where": { receivers: ["db"] },
 	"no-dynamic-imports": {
 		allowed: [{ file: "no-dynamic-imports/clean.tsx", specifier: "#config/user.ts" }]
 	},
+	"no-implicit-select-all": null,
 	"no-inline-suppression": null,
 	"no-new-error": null,
 	"no-option-bridge": null,
@@ -98,6 +103,52 @@ export const FIXTURE_RULES: FixtureRules<typeof plugin, "no-comment"> = {
 					{ name: "derive", returns: "values", invokes: [{ parameter: 0, property: "compute" }] }
 				],
 				constants: ["limit"]
+			}
+		]
+	},
+	"sql-aliased-table-reference": null,
+	"sql-distinct-window": null,
+	"sql-dynamic-schema": {
+		tableFactories: [{ owner: "sql-dynamic-schema/clean.tsx", declaration: "stageOf" }]
+	},
+	"sql-executor-contract": null,
+	"sql-json-owner": { owners: ["sql-json-owner/clean.tsx"] },
+	"sql-leaf-owners-only": { owners: ["sql-leaf-owners-only/clean.tsx"] },
+	"sql-number-decoder": null,
+	"sql-query-deadline": {
+		files: ["sql-query-deadline/"],
+		properties: ["statement_timeout", "queryTimeoutMs"],
+		refusals: ["budget-exhausted"],
+		admitted: [
+			{
+				owner: "sql-query-deadline/clean.tsx",
+				property: "statement_timeout",
+				construction: "Pool",
+				guard: { subject: "username", principals: "PRINCIPALS", principal: "reader" },
+				value: { specifier: "#fixture/limits.ts", constant: "READER_TIMEOUT_MILLISECONDS" }
+			}
+		]
+	},
+	"sql-raw-execution": {
+		statementOwners: ["sql-raw-execution/clean.tsx"],
+		copyStreamOwners: ["sql-raw-execution/clean.tsx"],
+		nativeClientOwners: ["sql-raw-execution/clean.tsx"],
+		declaredExecutions: [
+			{
+				owner: "sql-raw-execution/clean.tsx",
+				executor: "createStaging",
+				statement: "stagingDefinition"
+			}
+		]
+	},
+	"sql-raw-statement": {
+		recursiveEnvelopeOwners: ["sql-raw-statement/clean.tsx"],
+		projectionEnvelopeOwners: ["sql-raw-statement/clean.tsx"],
+		declaredStatements: [
+			{
+				owner: "sql-raw-statement/clean.tsx",
+				declaration: "truncation",
+				grammar: "truncate ? cascade"
 			}
 		]
 	},

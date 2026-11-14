@@ -7,10 +7,6 @@ const Names = Schema.Array(Schema.String)
 
 const PackageDirectories = Schema.Array(Schema.String)
 
-/** A top-level declaration of a repository module: the module by its repository-relative path, the declaration by
- * its name. */
-const Declaration = Schema.Struct({ owner: Schema.String, declaration: Schema.String })
-
 /** Files a rule does not read, and the reason it leaves them, which the repository states beside them. */
 const Exemption = Schema.Struct({ files: Paths, reason: Schema.NonEmptyString })
 
@@ -50,67 +46,6 @@ export const EffectFree = PackageDirectories
 export const CoreOptions = Schema.Struct({})
 
 export type CoreOptions = typeof CoreOptions.Type
-
-/**
- * The drizzle pack's options, for a repository that owns an application database: owner paths and declared
- * statements. Every field is required: a rule with nothing to admit states it with an empty list.
- */
-export const DrizzleOptions = Schema.Struct({
-	/** The leaf files that may write Drizzle `sql` templates. */
-	sqlLeafOwnersOnly: Schema.Struct({ owners: Paths }),
-	/** The leaf files that may render JSON operators and expansions. */
-	sqlJsonOwner: Schema.Struct({ owners: Paths }),
-	/** The top-level arrow functions that may build a table from a computed column map: session-local relations
-	 * derived from static declarations. */
-	sqlDynamicSchema: Schema.Struct({ tableFactories: Schema.Array(Declaration) }),
-	/** Where database deadlines are refused: the files read, the property names that set a deadline, the string
-	 * literals that refuse work by elapsed time, and the deadlines admitted. An admitted deadline is the property set
-	 * in its owner, inside `new construction(…)`, to `subject === principals.principal ? constant : false`, where the
-	 * constant is declared in its module. */
-	sqlQueryDeadline: Schema.Struct({
-		files: Paths,
-		properties: Names,
-		refusals: Names,
-		admitted: Schema.Array(
-			Schema.Struct({
-				owner: Schema.String,
-				property: Schema.String,
-				construction: Schema.String,
-				guard: Schema.Struct({
-					subject: Schema.String,
-					principals: Schema.String,
-					principal: Schema.String
-				}),
-				value: Schema.Struct({ module: Schema.String, constant: Schema.String })
-			})
-		)
-	}),
-	/** Who may execute statements: the statement-custody files that run native builders and prepared queries, the
-	 * files that may run a pg-copy-streams COPY, the files that hold a native client and may call pg's `query`, and the
-	 * executors whose one reviewed statement may run through Drizzle's `execute`: in the executor declared at the top
-	 * level of the owner, `execute(statement(…))` with the statement declared in the same owner. */
-	sqlRawExecution: Schema.Struct({
-		statementOwners: Paths,
-		copyStreamOwners: Paths,
-		nativeClientOwners: Paths,
-		declaredExecutions: Schema.Array(
-			Schema.Struct({ owner: Schema.String, executor: Schema.String, statement: Schema.String })
-		)
-	}),
-	/** The statement grammar admitted in a `sql` template: the files that hold the recursive envelope
-	 * (`with recursive ${join} ${builder}`) and the projection envelope (`${builder.getSQL()} offset 0`), and the
-	 * declared statements, each a top-level declaration of its owner whose templates' authored grammar, whitespace
-	 * collapsed, is exactly its grammar. */
-	sqlRawStatement: Schema.Struct({
-		recursiveEnvelopeOwners: Paths,
-		projectionEnvelopeOwners: Paths,
-		declaredStatements: Schema.Array(
-			Schema.Struct({ owner: Schema.String, declaration: Schema.String, grammar: Schema.String })
-		)
-	})
-})
-
-export type DrizzleOptions = typeof DrizzleOptions.Type
 
 /**
  * The grizzle pack's options: exempt paths, helper names and vocabularies. Every field is required: a repository
@@ -153,52 +88,6 @@ export const FIXTURE_EXCEPTIONS: Exceptions = []
 
 /** The core pack's options for its fixtures. */
 export const CORE_FIXTURE_OPTIONS: CoreOptions = {}
-
-/** The drizzle pack's options for its fixtures: names that point into each rule's own fixture directory. */
-export const DRIZZLE_FIXTURE_OPTIONS: DrizzleOptions = {
-	sqlLeafOwnersOnly: { owners: ["sql-leaf-owners-only/clean.ts"] },
-	sqlJsonOwner: { owners: ["sql-json-owner/clean.ts"] },
-	sqlDynamicSchema: {
-		tableFactories: [{ owner: "sql-dynamic-schema/clean.ts", declaration: "stageOf" }]
-	},
-	sqlQueryDeadline: {
-		files: ["sql-query-deadline/"],
-		properties: ["statement_timeout", "queryTimeoutMs"],
-		refusals: ["budget-exhausted"],
-		admitted: [
-			{
-				owner: "sql-query-deadline/clean.ts",
-				property: "statement_timeout",
-				construction: "Pool",
-				guard: { subject: "username", principals: "PRINCIPALS", principal: "reader" },
-				value: { module: "sql-query-deadline/clean.ts", constant: "READER_TIMEOUT_MILLISECONDS" }
-			}
-		]
-	},
-	sqlRawExecution: {
-		statementOwners: ["sql-raw-execution/clean.ts"],
-		copyStreamOwners: ["sql-raw-execution/clean.ts"],
-		nativeClientOwners: ["sql-raw-execution/clean.ts"],
-		declaredExecutions: [
-			{
-				owner: "sql-raw-execution/clean.ts",
-				executor: "createStaging",
-				statement: "stagingDefinition"
-			}
-		]
-	},
-	sqlRawStatement: {
-		recursiveEnvelopeOwners: ["sql-raw-statement/clean.ts"],
-		projectionEnvelopeOwners: ["sql-raw-statement/clean.ts"],
-		declaredStatements: [
-			{
-				owner: "sql-raw-statement/clean.ts",
-				declaration: "truncation",
-				grammar: "truncate ? cascade"
-			}
-		]
-	}
-}
 
 /** The grizzle pack's options for its fixtures: names that point into each rule's own fixture directory. */
 export const GRIZZLE_FIXTURE_OPTIONS: GrizzleOptions = {

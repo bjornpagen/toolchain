@@ -1,5 +1,5 @@
 import { Array as Arr, Data } from "effect"
-import type { CoreOptions, DrizzleOptions, Exceptions, GrizzleOptions } from "#lint/options.ts"
+import type { CoreOptions, Exceptions, GrizzleOptions } from "#lint/options.ts"
 import type { BoundRule, Rule } from "#lint/types.ts"
 import type { WebOptions } from "#style/options.ts"
 
@@ -20,9 +20,10 @@ export type Rejected = Readonly<{
 
 /** A pack beside the core: the SQL and Drizzle rules of a repository that owns an application database, grizzle's rules,
  * or the web rules of a repository with React apps (the React, jsx-a11y and Next plugins, the browser rules, the style
- * linter and the React Compiler check), each with the repository's names for it. */
+ * linter and the React Compiler check). The grizzle and web packs carry the repository's names for them; the drizzle
+ * pack's names are its oxlint.config.ts's. */
 export type Pack =
-	| Readonly<{ pack: "drizzle"; options: DrizzleOptions }>
+	| Readonly<{ pack: "drizzle" }>
 	| Readonly<{ pack: "grizzle"; options: GrizzleOptions }>
 	| Readonly<{ pack: "web"; options: WebOptions }>
 
@@ -32,11 +33,9 @@ export type PackName = Pack["pack"]
 /** The one pack of a name, so a repository's config keeps which packs it runs in its type. */
 type PackOf<N extends PackName> = Extract<Pack, Readonly<{ pack: N }>>
 
-/** The drizzle pack, with the repository's owner paths and declared statements. */
-export const drizzle = (options: DrizzleOptions): PackOf<"drizzle"> => ({
-	pack: "drizzle",
-	options
-})
+/** The drizzle pack. Its rules are the oxlint plugin's, so the repository's names for them are its oxlint.config.ts's,
+ * given to the preset's `lintConfig`, and the pack takes none here. */
+export const drizzle = (): PackOf<"drizzle"> => ({ pack: "drizzle" })
 
 /** The grizzle pack, with the repository's exempt paths, helper names and vocabularies. */
 export const grizzle = (options: GrizzleOptions): PackOf<"grizzle"> => ({

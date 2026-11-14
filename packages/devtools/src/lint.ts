@@ -16,13 +16,12 @@ import { bindRules, type Toolchain } from "#config.ts"
 import { effectFreeFindingsOf } from "#lint/effect-free.ts"
 import {
 	CORE_FIXTURE_OPTIONS,
-	DRIZZLE_FIXTURE_OPTIONS,
 	type Exceptions,
 	FIXTURE_EXCEPTIONS,
 	GRIZZLE_FIXTURE_OPTIONS
 } from "#lint/options.ts"
 import { isAtAny } from "#lint/paths.ts"
-import { CORE_RULES, DRIZZLE_RULES, GRIZZLE_RULES } from "#lint/rules/index.ts"
+import { CORE_RULES, GRIZZLE_RULES } from "#lint/rules/index.ts"
 import { surfaceOf } from "#lint/surface.ts"
 import type { BoundRule, FileContext, Visitor } from "#lint/types.ts"
 import { invocationOf } from "#shared/arguments.ts"
@@ -69,10 +68,9 @@ const rulesOf = (config: Toolchain): ReadonlyArray<BoundRule> => [
 	...bindRules(CORE_RULES, config.core),
 	...Arr.flatMap(config.packs, (pack): ReadonlyArray<BoundRule> => {
 		switch (pack.pack) {
-			case "drizzle":
-				return bindRules(DRIZZLE_RULES, pack.options)
 			case "grizzle":
 				return bindRules(GRIZZLE_RULES, pack.options)
+			case "drizzle":
 			case "web":
 				return []
 		}
@@ -83,7 +81,6 @@ const rulesOf = (config: Toolchain): ReadonlyArray<BoundRule> => [
 /** Every shared rule, bound to its pack's fixture options: what the shared fixtures prove. */
 const SHARED_FIXTURE_RULES: ReadonlyArray<BoundRule> = [
 	...bindRules(CORE_RULES, CORE_FIXTURE_OPTIONS),
-	...bindRules(DRIZZLE_RULES, DRIZZLE_FIXTURE_OPTIONS),
 	...bindRules(GRIZZLE_RULES, GRIZZLE_FIXTURE_OPTIONS)
 ]
 
