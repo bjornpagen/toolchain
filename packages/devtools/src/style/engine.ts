@@ -27,7 +27,13 @@ import { selectFiles } from "#shared/selection.ts"
 import { prepareSemantics } from "#shared/semantic.ts"
 import { classExtractor } from "#style/class-extractor.ts"
 import { type DesignSystem, loadDesignSystem } from "#style/design-system.ts"
-import { type AppStyleOptions, FIXTURE_OPTIONS, pathsOf, type RuleOptions } from "#style/options.ts"
+import {
+	type AppStyleOptions,
+	FIXTURE_OPTIONS,
+	pathsOf,
+	type RuleOptions,
+	RUNTIME_FIXTURE_OPTIONS
+} from "#style/options.ts"
 import type {
 	FixtureCase,
 	OwnStyleRules,
@@ -449,6 +455,17 @@ const SHARED_SUITE: FixtureSuite = {
 	]
 }
 
+/** The stylesheet rule under a runtime layer: an app sheet whose `@layer` statement names it first, beside Tailwind's
+ * layers and the layered import, is admitted, and one that leaves it out or names it later is refused. It reads the
+ * shared fixtures' tree, so its one case is the only directory it judges. */
+const RUNTIME_SUITE: FixtureSuite = {
+	name: "style, runtime layers",
+	root: FIXTURES_ROOT,
+	options: RUNTIME_FIXTURE_OPTIONS,
+	own: [],
+	cases: [{ directory: "stylesheet/app/runtime", rule: "stylesheet" }]
+}
+
 /** An own rule set's suite: a case for each id it reports under, in the id's directory, and the set's other cases. */
 const ownSuiteOf = (rules: OwnStyleRules): FixtureSuite => ({
 	name: `style ${rules.name}`,
@@ -525,13 +542,13 @@ const suiteMismatchesOf = Effect.fn("suiteMismatchesOf")(function* (suite: Fixtu
 	)
 })
 
-/** The fixture suites to run, all at once: the shared rules' when the dev tools run as the repository's own package,
- * and each own rule set's; each with its name, its root, how many rules it proves and its mismatches. */
+/** The fixture suites to run, all at once: the shared rules' (and the stylesheet rule's under a runtime layer) when the
+ * dev tools run as the repository's own package, and each own rule set's; each with its name, its root, how many rules it proves and its mismatches. */
 export const fixtureRuns = (
 	input: Readonly<{ shared: boolean; own: ReadonlyArray<OwnStyleRules> }>
 ) =>
 	Effect.forEach(
-		[...(input.shared ? [SHARED_SUITE] : []), ...Arr.map(input.own, ownSuiteOf)],
+		[...(input.shared ? [SHARED_SUITE, RUNTIME_SUITE] : []), ...Arr.map(input.own, ownSuiteOf)],
 		(suite) =>
 			Effect.map(suiteMismatchesOf(suite), (mismatches) => ({
 				name: suite.name,

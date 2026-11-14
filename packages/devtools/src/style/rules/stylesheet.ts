@@ -183,13 +183,16 @@ type AtRuleCheck = (
 	place: Readonly<{ context: Context; rule: AtRule; ancestors: ReadonlyArray<CssNode> }>
 ) => boolean
 
-/** The one `@layer` statement the app's stylesheet may hold: Tailwind's layers, with each layered import's layer
- * between base and components in the options' order; none when the options name no layered import. */
+/** The one `@layer` statement the app's stylesheet may hold: the runtime layers first, then Tailwind's layers, with
+ * each layered import's layer between base and components in the options' order; none when the options name neither a
+ * runtime layer nor a layered import. */
 const layerOrderOf = (context: Context): Option.Option<string> =>
-	Arr.isReadonlyArrayNonEmpty(context.options.layeredImports)
+	Arr.isReadonlyArrayNonEmpty(context.options.layeredImports) ||
+	Arr.isReadonlyArrayNonEmpty(context.options.runtimeLayers)
 		? Option.some(
 				Arr.join(
 					[
+						...context.options.runtimeLayers,
 						"theme",
 						"base",
 						...Arr.map(context.options.layeredImports, ({ layer }) => layer),

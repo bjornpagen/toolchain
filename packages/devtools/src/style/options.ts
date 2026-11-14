@@ -42,6 +42,11 @@ const StylesheetOptions = Schema.Struct({
 	layeredImports: Schema.Array(
 		Schema.Struct({ module: Schema.NonEmptyString, layer: Schema.NonEmptyString })
 	),
+	/** The layers a library writes into at run time, as UI SDK writes its reset into `ui-sdk` once a component mounts,
+	 * which the `@layer` statement names ahead of Tailwind's, in this order: a layer the page has not named when its
+	 * first rule arrives follows every other, so unnamed it would override the app's utilities and the layered
+	 * imports' rules. */
+	runtimeLayers: Schema.Array(Schema.NonEmptyString),
 	/** The `@custom-variant` rules any sheet may declare, as written after the at-rule's name. */
 	customVariants: Schema.Array(Schema.NonEmptyString),
 	/** The selectors whose top-level rules hold the palette, each with the color-scheme it may declare. */
@@ -190,11 +195,12 @@ const fixtureBridge = (path: string): MarkupOption["styleBridges"][number] => ({
 
 /** The options the fixtures run under: names that point into each rule's own fixture directory. The one layered
  * import is proven by the app sheets under stylesheet/app/layered/ and stylesheet/app/unordered/, and refused in a
- * scoped sheet under stylesheet/scoped/layered/. */
+ * scoped sheet under stylesheet/scoped/layered/. They name no runtime layer; RUNTIME_FIXTURE_OPTIONS name one. */
 export const FIXTURE_OPTIONS: RuleOptions = {
 	stylesheet: {
 		imports: ["tailwindcss"],
 		layeredImports: [{ module: "./module.css", layer: "module" }],
+		runtimeLayers: [],
 		customVariants: ["dark (&:is(.dark *))"],
 		themeSelectors: [
 			{ selector: ":root", scheme: "light" },
@@ -235,4 +241,10 @@ export const FIXTURE_OPTIONS: RuleOptions = {
 		htmlTemplates: [`${FIXTURES}/markup/clean.tsx`],
 		stylesheetConstructors: [`${FIXTURES}/markup/clean.tsx`]
 	}
+}
+
+/** The fixtures' options with one runtime layer, which the app sheets under stylesheet/app/runtime/ order first. */
+export const RUNTIME_FIXTURE_OPTIONS: RuleOptions = {
+	...FIXTURE_OPTIONS,
+	stylesheet: { ...FIXTURE_OPTIONS.stylesheet, runtimeLayers: ["runtime"] }
 }
