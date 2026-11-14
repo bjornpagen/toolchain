@@ -19,8 +19,9 @@ export type Rejected = Readonly<{
 }>
 
 /** A pack beside the core: the SQL and Drizzle rules of a repository that owns an application database, grizzle's rules,
- * or the web rules of a repository with React apps (the React, jsx-a11y and Next plugins, the browser rules, the style
- * linter and the React Compiler check). The grizzle and web packs carry the repository's names for them; the drizzle
+ * or the web rules of a repository with React apps (the React, jsx-a11y and Next plugins with the React Compiler's
+ * rules, the browser rules, each Tailwind app's class, markup and paint rules, and the style linter's stylesheet
+ * contract). The grizzle and web packs carry the repository's names for them; the drizzle
  * pack's names are its oxlint.config.ts's. */
 export type Pack =
 	| Readonly<{ pack: "drizzle" }>

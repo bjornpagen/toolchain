@@ -59,7 +59,6 @@
 		"fixtures:superlint": {},
 		"fixtures:style": {},
 		"fixtures:oxlint": {},
-		"fixtures:react-compiler": {},
 		"fixtures:workspace-gate": {},
 		"test": {
 			"description": "Every test that uses no network. Each run draws fresh rotating seeds, so a test never replays from cache; the run's seed, a replay, a fuzz run and the worker cap come through the environment.",
