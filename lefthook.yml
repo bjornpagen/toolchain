@@ -1,17 +1,19 @@
 # The hooks run only the pinned lefthook: without this, the generated script searches a dozen
 # places for a lefthook binary and lets the commit through when it finds none.
 lefthook: pnpm exec lefthook
-# One check-only gate: the hooks never format or stage files, they only refuse. The commit's gate checks exactly what
-# the index holds (scripts/check-staged.sh), so one lane's unfinished files never fail another's commit. A merge or
-# rebase skips pre-commit, so the push runs the gate again over the working tree it pushes from.
+# Check-only gates: the hooks never format or stage files, they only refuse. Each runs on a snapshot of exactly what it
+# lets through, never on the working tree (packages/devtools/bin/gate.sh), so one lane's unfinished files never fail
+# another's commit or push. The commit's gate checks what the index holds; the push's gate runs `pnpm check` on each
+# commit the push sends, which git names on stdin. A merge or rebase skips pre-commit; the push gate covers it.
 pre-commit:
   skip:
     - merge
     - rebase
   jobs:
-    - name: check
-      run: sh scripts/check-staged.sh
+    - name: gate
+      run: sh packages/devtools/bin/gate.sh run index pnpm check
 pre-push:
   jobs:
-    - name: check
-      run: pnpm check
+    - name: gate
+      run: sh packages/devtools/bin/gate.sh push
+      use_stdin: true
