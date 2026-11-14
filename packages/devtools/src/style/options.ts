@@ -113,6 +113,10 @@ const AppStyleOptions = Schema.Struct({
 	/** The stylesheet components.json names in tailwind.css, repository-relative: the entry of the design system the
 	 * class rules read. The style linter holds it to components.json. */
 	entryPoint: RepositoryPath,
+	/** The directory components.json's aliases.ui resolves to, repository-relative and ending in "/": shadcn's
+	 * vendored components, reinstalled from upstream and never edited, which the app's rules leave alone. The style
+	 * linter holds it to components.json. */
+	vendored: RepositoryPath,
 	/** The app's exceptions: files where a rule's reports are not the repository's to fix, by the rule's id, a shared
 	 * rule's or one of the app's own rules'. Exceptions live here, never inline: the preset turns an oxlint rule off on
 	 * them, and the style linter drops its own findings there. */
@@ -158,7 +162,8 @@ export const stylesheetPathsOf = (options: RuleOptions): ReadonlyArray<string> =
 ]
 
 /** Every path an app's options name, the markup rule's doors and the exceptions' files among them: oxlint does not
- * notice a path that names no file, so the style linter checks them all. */
+ * notice a path that names no file, so the style linter checks them all. The vendored directory, whose files it does
+ * not read, it holds to components.json instead. */
 export const appPathsOf = (options: AppStyleOptions): ReadonlyArray<string> => [
 	options.entryPoint,
 	...stylesheetPathsOf(options),

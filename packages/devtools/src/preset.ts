@@ -629,8 +629,9 @@ export const standard = <const T extends Toolchain>(
 				(rule) => entryOf(plugin.meta.name, names, rule)
 			)
 		)
-	/** Each Tailwind app's block, which runs the app's rules and its class rules on its files with its options, and
-	 * the blocks of its style exceptions that name an oxlint rule, which lift that rule on the files they name. */
+	/** Each Tailwind app's block, which runs the app's rules and its class rules on its files with its options, its
+	 * vendored components aside, and the blocks of its style exceptions that name an oxlint rule, which lift that rule
+	 * on the files they name. */
 	const appBlocks = ({ root, app, options }: TailwindApp): ReadonlyArray<OxlintOverride> => {
 		const source: ClassSource = {
 			cwd: `${root}/${app}`,
@@ -639,6 +640,7 @@ export const standard = <const T extends Toolchain>(
 		return [
 			{
 				files: [`${app}/**`],
+				excludeFiles: [globOf(options.vendored)],
 				rules: {
 					...Record.fromEntries(
 						Arr.map(Record.keys(APP_RULES), (rule) => [

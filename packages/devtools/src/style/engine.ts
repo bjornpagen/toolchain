@@ -226,7 +226,8 @@ const checkedOptions = (
  * to the paths the command line names, less the app's exceptions. The files outside the app that the own rules'
  * options name (a table another workspace package owns) are reported on too. `name` names the app in a failure: its
  * package root relative to the repository's. The options' entry point must be the stylesheet components.json names,
- * which the class rules load the design system from.
+ * which the class rules load the design system from, and their vendored directory the one its aliases.ui resolves
+ * to.
  */
 export const appFindings = Effect.fn("appFindings")(function* (
 	input: Readonly<{
@@ -239,10 +240,14 @@ export const appFindings = Effect.fn("appFindings")(function* (
 ) {
 	const { app, invocation } = input
 	const options = yield* checkedOptions({ app: input.name, options: input.options })
-	const entryPoint = `${input.root}/${options.entryPoint}`
-	if (entryPoint !== app.stylesheet) {
+	if (`${input.root}/${options.entryPoint}` !== app.stylesheet) {
 		return yield* DevtoolFailure.make({
 			detail: `The style options of ${input.name} name ${options.entryPoint} as the app's entry point, and components.json names ${app.stylesheet}`
+		})
+	}
+	if (`${input.root}/${options.vendored}` !== `${app.vendored}/`) {
+		return yield* DevtoolFailure.make({
+			detail: `The style options of ${input.name} name ${options.vendored} as the app's vendored components, and components.json's aliases.ui resolves to ${app.vendored}/`
 		})
 	}
 	const own = Arr.map(options.own, (rules) => rules.set)
