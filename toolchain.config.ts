@@ -113,28 +113,6 @@ export default toolchain({
 	packs: [
 		grizzle({
 			noEnvironment: { files: [], readers: [], sources: [], entryReads: [] },
-			testCaseIsSearch: {
-				files: ["packages/devtools/src/", "packages/testing/src/"],
-				registrars: [
-					{ package: "@effect/vitest", declarations: ["Test", "each", "prop"] },
-					{
-						package: "vitest",
-						declarations: ["TestCollectorCallable", "EachFunctionReturn", "TestForFunctionReturn"]
-					}
-				],
-				searches: [
-					{ module: "packages/testing/src/explore.ts", names: ["explore", "exhaust"] },
-					{ module: "packages/testing/src/interleave.ts", names: ["interleave"] }
-				],
-				scaffolds: [],
-				exempt: [
-					{
-						files: ["packages/testing/src/engine.bench.ts"],
-						reason:
-							"The testing library's engine bench: it measures what generating, replaying, enumerating, shrinking and exploring cost, a performance measure, never a verdict a person wrote."
-					}
-				]
-			},
 			noCaseList: {
 				files: ["packages/devtools/src/", "packages/testing/src/"],
 				cases: [],

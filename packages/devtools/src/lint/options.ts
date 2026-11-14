@@ -11,21 +11,8 @@ const PackageDirectories = Schema.Array(Schema.String)
  * its name. */
 const Declaration = Schema.Struct({ owner: Schema.String, declaration: Schema.String })
 
-/** Values a repository module exports, by the module's repository-relative path and the values' names. */
-const DeclaredValues = Schema.Struct({ module: Schema.String, names: Names })
-
-/** Declarations of an installed package, by the package's name and the declarations' names. */
-const PackageDeclarations = Schema.Struct({ package: Schema.String, declarations: Names })
-
 /** Files a rule does not read, and the reason it leaves them, which the repository states beside them. */
 const Exemption = Schema.Struct({ files: Paths, reason: Schema.NonEmptyString })
-
-/** Values of a repository module a rule does not count, and the reason, which the repository states beside them. */
-const Scaffolds = Schema.Struct({
-	module: Schema.String,
-	names: Names,
-	reason: Schema.NonEmptyString
-})
 
 /** A search of a repository module, by its module and name, and the property of its spec that holds its space
  * (`exhaust`'s `generator`, `explore`'s `draw`). */
@@ -144,17 +131,6 @@ export const GrizzleOptions = Schema.Struct({
 			})
 		),
 		entryReads: Names
-	}),
-	/** Where every test case runs a search: the files whose cases are read, the declarations of the installed packages
-	 * whose signatures register a test case (`it`, `it.effect`, `test`), the searches a case's body must reach, the
-	 * scaffolds that run a search around a scenario a person wrote and so are no way to one, and the files exempt, each
-	 * scaffold and each set of files with its reason. */
-	testCaseIsSearch: Schema.Struct({
-		files: Paths,
-		registrars: Schema.Array(PackageDeclarations),
-		searches: Schema.Array(DeclaredValues),
-		scaffolds: Schema.Array(Scaffolds),
-		exempt: Schema.Array(Exemption)
 	}),
 	/** Where a search's space is never a list of cases: the files whose searches are read; the files among them where
 	 * every list written is a list of cases, beside the test files, whose lists always are (elsewhere a list is a roster
@@ -282,33 +258,6 @@ export const GRIZZLE_FIXTURE_OPTIONS: GrizzleOptions = {
 			{ package: "effect", module: "ConfigProvider", reads: { kind: "module" } }
 		],
 		entryReads: ["argv", "cwd"]
-	},
-	testCaseIsSearch: {
-		files: ["test-case-is-search/"],
-		registrars: [
-			{ package: "@effect/vitest", declarations: ["Test", "each", "prop"] },
-			{
-				package: "vitest",
-				declarations: ["TestCollectorCallable", "EachFunctionReturn", "TestForFunctionReturn"]
-			}
-		],
-		searches: [
-			{ module: "test-case-is-search/testing.ts", names: ["explore", "exhaust", "interleave"] }
-		],
-		scaffolds: [
-			{
-				module: "test-case-is-search/support.ts",
-				names: ["scripted"],
-				reason: "A scaffold's fixture: it searches a box around a scenario its caller writes."
-			}
-		],
-		exempt: [
-			{
-				files: ["test-case-is-search/exempt/clean.ts"],
-				reason:
-					"An exempt file's fixture: its cases stay as they are, for the reason its exemption states."
-			}
-		]
 	},
 	noCaseList: {
 		files: [

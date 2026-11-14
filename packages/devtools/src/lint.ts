@@ -89,12 +89,9 @@ const SHARED_FIXTURE_RULES: ReadonlyArray<BoundRule> = [
 
 /**
  * The repository's toolchain, checked against the rules it runs: an exception names a rule the toolchain runs or one
- * of the workspace gate's, and every module a pack's options name for existence is in the tree. A failure names what
- * to fix in toolchain.config.ts.
+ * of the workspace gate's. A failure names what to fix in toolchain.config.ts.
  */
 const projectToolchain = Effect.gen(function* () {
-	const fs = yield* FileSystem.FileSystem
-	const { root } = yield* Repository
 	const config = yield* repositoryToolchain
 	const ids = Arr.map(rulesOf(config), (rule) => rule.id)
 	const unknown = Arr.filter(
@@ -106,29 +103,6 @@ const projectToolchain = Effect.gen(function* () {
 		return yield* DevtoolFailure.make({
 			detail: `toolchain.config.ts lists exceptions for rules this repository does not run: ${Arr.join(
 				Arr.map(unknown, (exception) => exception.rule),
-				", "
-			)}`
-		})
-	}
-	const named = Arr.flatMap(config.packs, (pack) =>
-		pack.pack === "grizzle"
-			? Arr.map(pack.options.testCaseIsSearch.scaffolds, (scaffold) => ({
-					option: "grizzle's testCaseIsSearch.scaffolds",
-					module: scaffold.module
-				}))
-			: []
-	)
-	const absent = yield* Effect.filter(named, ({ module }) =>
-		fs
-			.exists(`${root}/${module}`)
-			.pipe(
-				Effect.mapBoth({ onFailure: inspectionFailure(module), onSuccess: (exists) => !exists })
-			)
-	)
-	if (Arr.isReadonlyArrayNonEmpty(absent)) {
-		return yield* DevtoolFailure.make({
-			detail: `toolchain.config.ts names paths the repository does not have: ${Arr.join(
-				Arr.dedupe(Arr.map(absent, ({ option, module }) => `${module} (${option})`)),
 				", "
 			)}`
 		})

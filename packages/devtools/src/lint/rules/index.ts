@@ -17,7 +17,6 @@ import { sqlNumberDecoder } from "#lint/rules/sql-number-decoder.ts"
 import { sqlQueryDeadline } from "#lint/rules/sql-query-deadline.ts"
 import { sqlRawExecution } from "#lint/rules/sql-raw-execution.ts"
 import { sqlRawStatement } from "#lint/rules/sql-raw-statement.ts"
-import { testCaseIsSearch } from "#lint/rules/test-case-is-search.ts"
 import type { Rule } from "#lint/types.ts"
 
 /**
@@ -75,13 +74,9 @@ export const DRIZZLE_RULES: ReadonlyArray<Rule<DrizzleOptions>> = [
 	{ id: "sql-raw-statement", starting: { reads: "file", visit: sqlRawStatement }, gate: "on" }
 ]
 
-/** grizzle's rules: tests that are searches, and the rest of its standard. */
+/** grizzle's rules: a search's space that is never a list of cases, and a library that reads no environment; whether
+ * a test case runs a search is the testing library's reporter's to judge, at run time. */
 export const GRIZZLE_RULES: ReadonlyArray<Rule<GrizzleOptions>> = [
 	{ id: "no-case-list", starting: { reads: "program", start: noCaseList }, gate: "on" },
-	{ id: "no-environment", starting: { reads: "file", visit: noEnvironment }, gate: "on" },
-	{
-		id: "test-case-is-search",
-		starting: { reads: "program", start: testCaseIsSearch },
-		gate: "on"
-	}
+	{ id: "no-environment", starting: { reads: "file", visit: noEnvironment }, gate: "on" }
 ]
