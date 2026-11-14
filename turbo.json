@@ -49,9 +49,15 @@
 		"fixtures:oxlint": {},
 		"fixtures:react-compiler": {},
 		"test": {
-			"description": "Every test that uses no network. Each run draws fresh rotating seeds, so a test never replays from cache; the run's seed, a replay and a fuzz run come through the environment.",
+			"description": "Every test that uses no network. Each run draws fresh rotating seeds, so a test never replays from cache; the run's seed, a replay, a fuzz run and the worker cap come through the environment.",
 			"cache": false,
-			"passThroughEnv": ["TEST_SEED", "TEST_REPLAY", "TEST_FUZZ", "TEST_FUZZTIME"]
+			"passThroughEnv": [
+				"TEST_SEED",
+				"TEST_REPLAY",
+				"TEST_FUZZ",
+				"TEST_FUZZTIME",
+				"TOOLCHAIN_TEST_WORKERS"
+			]
 		},
 		"//#typecheck": {},
 		"//#superlint": {},

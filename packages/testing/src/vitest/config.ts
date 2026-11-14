@@ -62,10 +62,10 @@ export type TestConfig = Readonly<{
 
 /**
  * A package's Vitest config. Tests run as Node runs the code: native ESM by type stripping, never through Vite's
- * module runner or loader, so no transform changes what a module means; one process per file, as many at once as the
- * machine has cores, where Vitest's own default leaves one idle; the hardened flags; the run seed chosen once by global
- * setup; and the residual table at the end. A fuzz run lifts every timeout: its budget is its own, and each case's hang
- * guard still catches a case that stops.
+ * module runner or loader, so no transform changes what a module means; one process per file, as many at once as
+ * testWorkers holds (one a core, where Vitest's own default leaves one idle, unless TOOLCHAIN_TEST_WORKERS caps it); the
+ * hardened flags; the run seed chosen once by global setup; and the residual table at the end. A fuzz run lifts every
+ * timeout: its budget is its own, and each case's hang guard still catches a case that stops.
  */
 export const defineTestConfig = (config: TestConfig) => {
 	const fuzzing = Option.isSome(Effect.runSync(Config.option(Config.String("TEST_FUZZ"))))
