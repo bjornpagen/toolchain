@@ -36,7 +36,8 @@
 		"./vitest/reporter": "./src/vitest/reporter.ts",
 		"./vitest/run": "./src/vitest/run.ts",
 		"./pattern": "./src/pattern.ts",
-		"./oxlint": "./src/oxlint/plugin.ts"
+		"./oxlint": "./src/oxlint/plugin.ts",
+		"./workers": "./src/workers.ts"
 	},
 	"bin": {
 		"bjornpagen-mutate": "./scripts/mutate.sh"

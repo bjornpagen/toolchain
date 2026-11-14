@@ -280,9 +280,6 @@ const extendedOf = (config: typeof Tsconfig.Type): ReadonlyArray<string> => {
 	return typeof named === "string" ? [named] : named
 }
 
-/** The tsconfig an Effect-free package extends, by the specifier it writes: the dev tools' base with no plugin. */
-const EFFECT_FREE_BASE = "@bjornpagen/devtools/tsconfig.effect-free.json"
-
 /** The dependency fields of a package.json, each by package name. */
 const Dependencies = Schema.optionalKey(Schema.Record(Schema.String, Schema.String))
 
@@ -298,19 +295,109 @@ const PackageManifest = Schema.fromJsonString(
 
 const decodePackageManifest = Schema.decodeUnknownEffect(PackageManifest)
 
-/** The packages a package.json names in any dependency field. */
-const dependenciesOf = (manifest: typeof PackageManifest.Type): ReadonlyArray<string> =>
-	Arr.dedupe(
-		Arr.flatMap(
-			[
-				manifest.dependencies,
-				manifest.devDependencies,
-				manifest.peerDependencies,
-				manifest.optionalDependencies
-			],
-			(field) => (field === undefined ? [] : Record.keys(field))
-		)
+/** The packages one dependency field names. */
+const namedIn = (field: Readonly<Record<string, string>> | undefined): ReadonlyArray<string> =>
+	field === undefined ? [] : Record.keys(field)
+
+/**
+ * The Effect packages an Effect-free package's manifest names where its code would load them at run time: in its
+ * dependencies or optional dependencies, or in its dev dependencies without the peer they serve in its own workspace.
+ * A peer is the one place Effect may stand: an Effect-free package that names Effect's types (`import type`) declares
+ * the peer its declarations need, and superlint, run in the package, holds every Effect import of its sources to
+ * `import type`.
+ */
+const loadedEffectOf = (manifest: typeof PackageManifest.Type): ReadonlyArray<string> => {
+	const peers = namedIn(manifest.peerDependencies)
+	return Arr.filter(
+		Arr.dedupe([
+			...namedIn(manifest.dependencies),
+			...namedIn(manifest.optionalDependencies),
+			...Arr.filter(namedIn(manifest.devDependencies), (name) => !Arr.contains(peers, name))
+		]),
+		isEffectPackage
 	)
+}
+
+/** Where a tsconfig's plugins come from: the config that declares them, nearest first along its extends chain (its own
+ * declaration, else its extends from last to first, as TypeScript lets a later one override an earlier), and the
+ * plugins' names; none when no config of the chain declares any. */
+type PluginBlock = Option.Option<Readonly<{ file: string; names: ReadonlyArray<string> }>>
+
+/** A tsconfig a config extends, found as TypeScript finds it: a path relative to the config, or a package's file looked
+ * up in the node_modules above it; a name without `.json` is tried with it, and a package with its tsconfig.json. */
+const extendedFile = (from: string, specifier: string) =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		const path = yield* Path.Path
+		const directory = path.dirname(from)
+		const candidatesAt = (target: string): ReadonlyArray<string> =>
+			Str.endsWith(".json")(target) ? [target] : [`${target}.json`, `${target}/tsconfig.json`]
+		const candidates =
+			Str.startsWith(".")(specifier) || Str.startsWith("/")(specifier)
+				? candidatesAt(path.resolve(directory, specifier))
+				: Arr.flatMap(
+						Arr.map(directoriesUp(directory), (above) => `${above}/node_modules/${specifier}`),
+						candidatesAt
+					)
+		const found = yield* Effect.filter(candidates, (candidate) =>
+			fs.exists(candidate).pipe(Effect.mapError(inspectionFailure(candidate)))
+		)
+		return Arr.head(found)
+	})
+
+/** A directory and each one above it, nearest first. */
+const directoriesUp = (directory: string): ReadonlyArray<string> => {
+	const segments = Str.split("/")(directory)
+	return Arr.map(Arr.take(segments, segments.length - 1), (_, index) =>
+		Arr.join(Arr.take(segments, segments.length - index), "/")
+	)
+}
+
+/** A tsconfig's plugin block, resolved through its extends chain; an extends that names no file, or a chain that comes
+ * back to a config it holds, is reported where it is written. */
+const pluginBlockOf = (
+	config: string,
+	held: ReadonlyArray<string>
+): Effect.Effect<
+	Result.Result<PluginBlock, Readonly<{ file: string; message: string }>>,
+	DevtoolFailure,
+	FileSystem.FileSystem | Path.Path
+> =>
+	Effect.gen(function* () {
+		if (Arr.contains(held, config)) {
+			return Result.fail({
+				file: config,
+				message: `${config} extends itself, through ${Arr.join(held, ", ")}.`
+			})
+		}
+		const decoded = yield* readTsconfig(config)
+		const plugins = decoded.compilerOptions?.plugins
+		if (plugins !== undefined) {
+			return Result.succeed(
+				Option.some({ file: config, names: Arr.map(plugins, (plugin) => plugin.name) })
+			)
+		}
+		const extended = Arr.reverse(extendedOf(decoded))
+		const resolved = yield* Effect.forEach(extended, (specifier) =>
+			Effect.map(extendedFile(config, specifier), (file) => ({ specifier, file }))
+		)
+		const unresolved = Arr.findFirst(resolved, ({ file }) => Option.isNone(file))
+		if (Option.isSome(unresolved)) {
+			return Result.fail({
+				file: config,
+				message: `${config} extends ${unresolved.value.specifier}, which names no tsconfig the gate finds.`
+			})
+		}
+		for (const { file } of resolved) {
+			if (Option.isSome(file)) {
+				const block = yield* pluginBlockOf(file.value, [...held, config])
+				if (Result.isFailure(block) || Option.isSome(block.success)) {
+					return block
+				}
+			}
+		}
+		return Result.succeed(Option.none())
+	})
 
 /** Effect itself, or a package of its `@effect` scope. */
 const isEffectPackage = (name: string): boolean =>
@@ -365,19 +452,24 @@ const listedFindings = (workspace: Workspace): ReadonlyArray<Finding> =>
 				)
 	)
 
+/** A tsconfig an Effect-free package may extend: the dev tools' base with no plugin. A repository's own base that sets no
+ * plugin serves as well, as the gate judges what a tsconfig resolves to, never which file it names. */
+const EFFECT_FREE_BASE = "@bjornpagen/devtools/tsconfig.effect-free.json"
+
 /**
  * One package's tsconfig and manifest against the one plugin block and the Effect-free list. Every package has a
- * tsconfig.json that declares no plugin of its own. A listed package's extends the dev tools' Effect-free base and its
- * package.json depends on nothing of Effect's; any other package's extends the root tsconfig.json, which carries the
- * Effect plugin.
+ * tsconfig.json that declares no plugin of its own. The gate follows its extends chain to the plugin block it resolves
+ * to: a listed package's carries no Effect plugin, and any other package's is the root tsconfig.json's, which holds the
+ * Effect plugin. A listed package's package.json names Effect only as a peer (with the dev copy that serves it in the
+ * repository's workspace), the one form a package that is Effect-free at run time and names Effect's types needs.
  */
 const packageFindings = (workspace: Workspace, leaf: string) =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem
-		const path = yield* Path.Path
 		const shown = relativeTo(workspace.root)(leaf)
 		const listed = Arr.contains(workspace.effectFree, shown)
 		const config = `${leaf}/tsconfig.json`
+		const rootConfig = `${workspace.root}/tsconfig.json`
 		const present = yield* fs.exists(config).pipe(Effect.mapError(inspectionFailure(config)))
 		if (!present) {
 			return [
@@ -386,55 +478,68 @@ const packageFindings = (workspace: Workspace, leaf: string) =>
 					rule: "effect-plugin-block",
 					message: `${shown} has no tsconfig.json, so nothing type-checks it.`,
 					suggestion: listed
-						? `Give it a tsconfig.json that extends ${EFFECT_FREE_BASE}.`
+						? `Give it a tsconfig.json that extends one with no Effect plugin, such as ${EFFECT_FREE_BASE}.`
 						: "Give it a tsconfig.json that extends the root tsconfig.json."
 				})
 			]
 		}
 		const decoded = yield* readTsconfig(config)
-		const declaresPlugins = decoded.compilerOptions?.plugins !== undefined
-		const extended = extendedOf(decoded)
-		const extendsRoot = Arr.some(
-			extended,
-			(target) => path.resolve(leaf, target) === `${workspace.root}/tsconfig.json`
-		)
-		const extendsEffectFree = Arr.contains(extended, EFFECT_FREE_BASE)
-		const plugins = declaresPlugins
-			? [
-					workspaceFinding({
-						file: config,
-						rule: "effect-plugin-block",
-						message: `${shown}/tsconfig.json declares compiler plugins; the root tsconfig.json holds the one Effect plugin block.`,
-						suggestion: listed
-							? `Drop the plugins: ${EFFECT_FREE_BASE} sets none.`
-							: "Drop the plugins and move any per-file override into the root tsconfig.json, its include relative to the root."
-					})
-				]
-			: []
-		const base = listed
-			? extendsEffectFree
+		const plugins =
+			decoded.compilerOptions?.plugins === undefined
 				? []
 				: [
 						workspaceFinding({
 							file: config,
-							rule: "effect-free-packages",
-							message: `${shown} is Effect-free, but its tsconfig.json does not extend ${EFFECT_FREE_BASE}.`,
-							suggestion: `Extend ${EFFECT_FREE_BASE}, or take it off toolchain.config.ts's effectFree if it uses Effect.`
+							rule: "effect-plugin-block",
+							message: `${shown}/tsconfig.json declares compiler plugins; the root tsconfig.json holds the one Effect plugin block.`,
+							suggestion: listed
+								? "Drop the plugins: an Effect-free package carries none."
+								: "Drop the plugins and move any per-file override into the root tsconfig.json, its include relative to the root."
 						})
 					]
-			: extendsRoot
-				? []
-				: [
-						workspaceFinding({
-							file: config,
-							rule: "effect-free-packages",
-							message: `${shown}/tsconfig.json does not extend the root tsconfig.json, so it does not carry the Effect plugin.`,
-							suggestion:
-								"Extend the root tsconfig.json, or list the package in toolchain.config.ts's effectFree if it uses no Effect."
-						})
-					]
+		const resolved = yield* pluginBlockOf(config, [])
+		const shownFile = relativeTo(workspace.root)
+		const block = Result.match(resolved, {
+			onFailure: (unread) => [
+				workspaceFinding({
+					file: unread.file,
+					rule: "effect-plugin-block",
+					message: unread.message,
+					suggestion:
+						"Extend a tsconfig that exists: a path relative to this one, or a package's file."
+				})
+			],
+			onSuccess: (found) => {
+				const carriesEffect = Option.exists(found, ({ names }) =>
+					Arr.contains(names, EFFECT_PLUGIN)
+				)
+				if (listed) {
+					return carriesEffect
+						? [
+								workspaceFinding({
+									file: config,
+									rule: "effect-free-packages",
+									message: `${shown} is Effect-free, but its tsconfig.json carries the Effect plugin, from ${Option.match(found, { onNone: () => "nowhere", onSome: ({ file }) => shownFile(file) })}.`,
+									suggestion: `Extend a tsconfig that sets no Effect plugin, such as ${EFFECT_FREE_BASE} or a base of the repository's own, or take it off toolchain.config.ts's effectFree if it uses Effect.`
+								})
+							]
+						: []
+				}
+				return Option.exists(found, ({ file }) => file === rootConfig)
+					? []
+					: [
+							workspaceFinding({
+								file: config,
+								rule: "effect-free-packages",
+								message: `${shown}/tsconfig.json does not take its plugins from the root tsconfig.json, so it does not carry the Effect plugin block.`,
+								suggestion:
+									"Extend the root tsconfig.json, or list the package in toolchain.config.ts's effectFree if it uses no Effect."
+							})
+						]
+			}
+		})
 		if (!listed) {
-			return [...plugins, ...base]
+			return [...plugins, ...block]
 		}
 		const manifestFile = `${leaf}/package.json`
 		const text = yield* fs
@@ -448,19 +553,19 @@ const packageFindings = (workspace: Workspace, leaf: string) =>
 				})
 			)
 		)
-		const effectDependencies = Arr.filter(dependenciesOf(manifest), isEffectPackage)
-		const dependencies = Arr.isReadonlyArrayNonEmpty(effectDependencies)
+		const loaded = loadedEffectOf(manifest)
+		const dependencies = Arr.isReadonlyArrayNonEmpty(loaded)
 			? [
 					workspaceFinding({
 						file: manifestFile,
 						rule: "effect-free-packages",
-						message: `${shown} is Effect-free, but its package.json depends on ${Arr.join(effectDependencies, ", ")}.`,
+						message: `${shown} is Effect-free, but its package.json names ${Arr.join(loaded, ", ")} where its code would load it at run time.`,
 						suggestion:
-							"Drop the dependency, or take the package off toolchain.config.ts's effectFree."
+							"Drop the dependency, or state it as a peer (with the dev copy that serves it) if the package names its types alone, or take the package off toolchain.config.ts's effectFree."
 					})
 				]
 			: []
-		return [...plugins, ...base, ...dependencies]
+		return [...plugins, ...block, ...dependencies]
 	})
 
 /** Every finding of the one plugin block and the Effect-free list over a workspace. */
