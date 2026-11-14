@@ -11,8 +11,9 @@ import type { Exceptions } from "#workspace/rules.ts"
 
 /** Lint rules and Effect diagnostics the repository rejects on purpose, each with why it is off. A rejected rule is off
  * in every block of every configuration the preset builds, naming one in a block is a type error, and turning one back
- * on needs the owner. The shared tsconfig base sets every diagnostic to error; the repository's root tsconfig sets
- * exactly these to off, and the workspace gate holds every tsconfig of the repository to that. */
+ * on needs the owner. The shared tsconfig base sets every diagnostic to error, or off where the toolchain drops it for
+ * every repository (the workspace gate's DROPPED_DIAGNOSTICS); the repository's root tsconfig sets exactly these and the
+ * dropped ones to off, and the workspace gate holds every tsconfig of the repository to that. */
 export type Rejected = Readonly<{
 	rules: Readonly<Record<string, string>>
 	diagnostics: Readonly<Record<string, string>>

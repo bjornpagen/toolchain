@@ -116,7 +116,7 @@
 					"missedPipeableOpportunity": "error",
 					"missingEffectContext": "error",
 					"missingEffectError": "error",
-					"missingConcurrencyOption": "error",
+					"missingConcurrencyOption": "off",
 					"missingEffectServiceDependency": "error",
 					"missingLayerContext": "error",
 					"missingPipeableSignature": "error",

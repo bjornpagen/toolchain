@@ -62,9 +62,19 @@ const severitiesIn = (
 	)
 }
 
-/** The tsconfig base the dev tools ship, which sets every diagnostic of the installed @effect/tsgo to error: each
- * repository's root tsconfig restates the plugin once with its own rejections off. */
+/** The tsconfig base the dev tools ship, which sets every diagnostic of the installed @effect/tsgo to error, or off where
+ * the toolchain drops it: each repository's root tsconfig restates the plugin once with its own rejections off too. */
 const TSCONFIG_BASE = `${import.meta.dirname}/../../tsconfig.base.json`
+
+/**
+ * The Effect diagnostics the toolchain turns off for every repository, each with why. The shared base lists each at
+ * off, and so does every tsconfig that restates the plugin, so no repository is asked to obey one or rejects it on its
+ * own.
+ */
+const DROPPED_DIAGNOSTICS: Readonly<Record<string, string>> = {
+	missingConcurrencyOption:
+		"Effect.forEach and Effect.all run one effect at a time when no concurrency is stated, so the option it demands restates the default as { concurrency: 1 }, and a width is a limit that answers to its evidence where it is written, not to a diagnostic (Bjorn, 2026-11-14)"
+}
 
 const readTsconfig = (config: string) =>
 	Effect.gen(function* () {
@@ -108,10 +118,10 @@ const workspaceTsconfigs = Effect.gen(function* () {
 
 /**
  * Every Effect diagnostic the shared base lists is set the same way in every tsconfig that declares the plugin. The
- * base sets each to error, since a rejection is a repository's own; the repository's tsconfigs set it off exactly when
- * the repository's toolchain rejects it, with its reason, and error otherwise. So a diagnostic is rejected with its
- * reason or not at all, and the root tsconfig, which restates the plugin with the repository's rejections and its
- * per-file overrides, cannot drift from the standard.
+ * base sets each to error, or off where the toolchain drops it, since a rejection is a repository's own; the repository's
+ * tsconfigs set it off exactly when the toolchain drops it or the repository's toolchain rejects it, with its reason,
+ * and error otherwise. So a diagnostic is turned off with its reason or not at all, and the root tsconfig, which
+ * restates the plugin with the repository's rejections and its per-file overrides, cannot drift from the standard.
  */
 const standardFindings = (rejected: ReadonlyArray<string>) =>
 	Effect.gen(function* () {
@@ -119,20 +129,21 @@ const standardFindings = (rejected: ReadonlyArray<string>) =>
 		const shown = relativeTo(root)
 		const { base, listed } = yield* listedDiagnostics
 		const workspace = yield* workspaceTsconfigs
+		const dropped = Record.keys(DROPPED_DIAGNOSTICS)
 		const held = [
-			{ config: base, rejected: [] },
-			...Arr.map(workspace, (config) => ({ config, rejected }))
+			{ config: base, off: dropped },
+			...Arr.map(workspace, (config) => ({ config, off: Arr.union(dropped, rejected) }))
 		]
 		const findings = yield* Effect.forEach(
 			held,
 			(standard) =>
 				Effect.map(readTsconfig(standard.config), (decoded) => {
 					const expected = (diagnostic: string): string =>
-						Arr.contains(standard.rejected, diagnostic) ? "off" : "error"
+						Arr.contains(standard.off, diagnostic) ? "off" : "error"
 					const { config } = standard
 					return Arr.flatMap(severitiesIn(decoded), (severities) => [
 						...Arr.filterMap(
-							Arr.dedupe([...listed, ...standard.rejected]),
+							Arr.dedupe([...listed, ...standard.off]),
 							(diagnostic): Result.Result<Finding, void> => {
 								const set = Record.get(severities, diagnostic)
 								if (Option.contains(set, expected(diagnostic))) {
@@ -147,9 +158,11 @@ const standardFindings = (rejected: ReadonlyArray<string>) =>
 										onNone: () => "does not list",
 										onSome: (severity) => `sets ${severity} for`
 									})} the Effect diagnostic ${diagnostic}, which the standard sets to ${expected(diagnostic)}.`,
-									suggestion: Arr.contains(standard.rejected, diagnostic)
-										? "The repository's toolchain rejects it: set it to off."
-										: "Set it to error, or reject it in toolchain.config.ts's rejected.diagnostics with its reason, which needs the owner."
+									suggestion: Arr.contains(dropped, diagnostic)
+										? "The toolchain drops it for every repository: set it to off."
+										: Arr.contains(standard.off, diagnostic)
+											? "The repository's toolchain rejects it: set it to off."
+											: "Set it to error, or reject it in toolchain.config.ts's rejected.diagnostics with its reason, which needs the owner."
 								})
 							}
 						),
