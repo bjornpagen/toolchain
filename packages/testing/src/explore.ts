@@ -72,6 +72,7 @@ import {
 	wordsOf
 } from "#random.ts"
 import { type Drawn, type Replay, ReplayCase, replayTokenOf } from "#replay.ts"
+import { searchStarted } from "#searches.ts"
 import { seedsOf } from "#seeds.ts"
 import { notesOnly, type Sense } from "#sense.ts"
 import {
@@ -224,7 +225,7 @@ type Life = Readonly<{
  * it stops is awaited before the search returns, however it ends, its cut, its hang and its interruption included.
  * Should a stopped case still be cleaning up when the search fails, the failure's report is printed first, so a
  * deadline that arrives during the wait cannot lose it. A cleanup that never ends holds the search, and its test's own
- * timeout names the leak.
+ * timeout names the leak. Its start is counted as a search's (searchStarted), so the test that runs it is a search.
  */
 const withCaseLives = <A, R>(
 	body: (run: Context.Service.Shape<typeof Run>, life: Life) => Effect.Effect<A, SearchFailure, R>
@@ -235,6 +236,7 @@ const withCaseLives = <A, R>(
 			Arr.some(Arr.fromIterable(stopped), (fiber) => fiber.pollUnsafe() === undefined)
 		return Effect.scoped(
 			Effect.gen(function* () {
+				yield* searchStarted
 				const run = yield* Run
 				yield* Effect.addFinalizer(() =>
 					Effect.forEach(stopped, (fiber) => Fiber.await(fiber), { concurrency: 1, discard: true })

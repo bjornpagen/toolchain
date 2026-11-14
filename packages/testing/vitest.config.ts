@@ -9,5 +9,15 @@ export default defineTestConfig({
 		test: { kind: "bounded", millis: 60_000 },
 		hook: { kind: "bounded", millis: 60_000 }
 	},
-	smallStack: []
+	smallStack: [],
+	examples: {
+		kind: "banned",
+		exempt: [
+			{
+				files: ["src/engine.bench.ts"],
+				reason:
+					"The testing library's engine bench: it measures what generating, replaying, enumerating, shrinking and exploring cost, a performance measure, never a verdict a person wrote."
+			}
+		]
+	}
 })

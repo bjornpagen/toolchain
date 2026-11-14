@@ -9,5 +9,6 @@ export default defineTestConfig({
 		test: { kind: "bounded", millis: 60_000 },
 		hook: { kind: "bounded", millis: 60_000 }
 	},
-	smallStack: []
+	smallStack: [],
+	examples: { kind: "banned", exempt: [] }
 })

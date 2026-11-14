@@ -1,6 +1,6 @@
 import { Array as Arr, Config, Effect, Option } from "effect"
 import { defineConfig } from "vitest/config"
-import { residualReporter } from "#vitest/reporter.ts"
+import { type Examples, residualReporter } from "#vitest/reporter.ts"
 import { testWorkers } from "#workers.ts"
 
 export { testWorkers }
@@ -39,6 +39,10 @@ export type Timeout =
  */
 const SMALL_STACK = "--stack-size=160"
 
+/** The setup every project's test processes run, which leaves on each test whether it ran a search, for the reporter
+ * that fails an example where the package bans them. */
+const SEARCHES_SETUP = `${import.meta.dirname}/searches-setup.ts`
+
 /** Vitest's form of a timeout, where zero means none. */
 const millisOf = (timeout: Timeout) => (timeout.kind === "unbounded" ? 0 : timeout.millis)
 
@@ -48,8 +52,10 @@ const millisOf = (timeout: Timeout) => (timeout.kind === "unbounded" ? 0 : timeo
  * the library's, beside the run seed; the export conditions its code resolves with; how long a test and a hook may
  * take; and `smallStack`, the files whose suites run a second time under SMALL_STACK, about a sixth of Node's default
  * stack, so a per-element use of the stack (a spread argument, a recursion over a list) fails at the widths ordinary
- * generators reach. A package with none of a list states it empty. The guided and small-stack lists are projects of
- * their own, so each names its files outright: a glob there reaches every file it matches, inside `include` or not.
+ * generators reach; and `examples`, whether every test case must run a search, and the files exempt from it, each set
+ * with its reason, relative to the Vitest root (the config's directory). A package with none of a list states it empty.
+ * The guided and small-stack lists are projects of their own, so each names its files outright: a glob there reaches
+ * every file it matches, inside `include` or not.
  */
 export type TestConfig = Readonly<{
 	include: ReadonlyArray<string>
@@ -58,13 +64,16 @@ export type TestConfig = Readonly<{
 	conditions: ReadonlyArray<string>
 	timeouts: Readonly<{ test: Timeout; hook: Timeout }>
 	smallStack: ReadonlyArray<string>
+	examples: Examples
 }>
 
 /**
  * A package's Vitest config. Tests run as Node runs the code: native ESM by type stripping, never through Vite's
  * module runner or loader, so no transform changes what a module means; one process per file, as many at once as
  * testWorkers holds (one a core, where Vitest's own default leaves one idle, unless TOOLCHAIN_TEST_WORKERS caps it); the
- * hardened flags; the run seed chosen once by global setup; and the residual table at the end. A fuzz run lifts every
+ * hardened flags; the run seed chosen once by global setup; and the residual table at the end, whose reporter fails
+ * the run for every passing test case that ran no search where the package bans examples, as each project's setup
+ * records the searches every test ran. A fuzz run lifts every
  * timeout: its budget is its own, and each case's hang guard still catches a case that stops.
  */
 export const defineTestConfig = (config: TestConfig) => {
@@ -87,7 +96,8 @@ export const defineTestConfig = (config: TestConfig) => {
 					test: {
 						name: "parallel",
 						include: Arr.copy(config.include),
-						exclude: Arr.copy(config.guided)
+						exclude: Arr.copy(config.guided),
+						setupFiles: [SEARCHES_SETUP]
 					}
 				},
 				...(Arr.isReadonlyArrayNonEmpty(config.guided)
@@ -97,7 +107,7 @@ export const defineTestConfig = (config: TestConfig) => {
 								test: {
 									name: "guided",
 									include: Arr.copy(config.guided),
-									setupFiles: [`${import.meta.dirname}/coverage.ts`]
+									setupFiles: [`${import.meta.dirname}/coverage.ts`, SEARCHES_SETUP]
 								}
 							}
 						]
@@ -109,14 +119,15 @@ export const defineTestConfig = (config: TestConfig) => {
 								test: {
 									name: "small-stack",
 									include: Arr.copy(config.smallStack),
-									execArgv: Arr.append(execArgv, SMALL_STACK)
+									execArgv: Arr.append(execArgv, SMALL_STACK),
+									setupFiles: [SEARCHES_SETUP]
 								}
 							}
 						]
 					: [])
 			],
 			maxWorkers: testWorkers,
-			reporters: ["default", residualReporter()],
+			reporters: ["default", residualReporter(config.examples)],
 			testTimeout: timeoutOf(config.timeouts.test),
 			hookTimeout: timeoutOf(config.timeouts.hook)
 		}

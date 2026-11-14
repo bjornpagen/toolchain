@@ -1,5 +1,6 @@
 import { Array as Arr, Effect, Exit, Fiber, Formatter, Option, Order, Schema, Struct } from "effect"
 import { array, type Gen, int, shuffled } from "#gen.ts"
+import { searchStarted } from "#searches.ts"
 import type { Observed } from "#source.ts"
 
 /**
@@ -387,7 +388,8 @@ type Live<S extends string, M, O, W> = Readonly<{
  * observations of waits and its quiescence are the only clocks, and a run is bounded by the case's hang guard. A
  * session seen waiting is not moved again until its move ends, so orders that differ only in where its later moves go
  * are one execution and run once. A defect or an interruption of a move ends the run as a defect, never as an outcome.
- * However a run ends, every session it started is released before the next run's reset (Driver's `release`).
+ * However a run ends, every session it started is released before the next run's reset (Driver's `release`). Its start
+ * is counted as a search's (searchStarted), whatever its strategy, so the test that runs it is a search.
  */
 export const interleave = <S extends string, M, O, Q, A, W, E, R, F, RJ>(
 	driver: Driver<S, M, O, Q, A, W, E, R>,
@@ -396,6 +398,7 @@ export const interleave = <S extends string, M, O, Q, A, W, E, R, F, RJ>(
 	judge: (run: Interleaving<S, M, O, Q, A, W>) => Effect.Effect<void, F, RJ>
 ): Effect.Effect<InterleavingReport, E | F | AfterCycle | InterleavingFailed, R | RJ> =>
 	Effect.gen(function* () {
+		yield* searchStarted
 		const names = Struct.keys(spec.sessions)
 		const cyclic = afterCycleOf(spec.sessions)
 		if (Option.isSome(cyclic)) {

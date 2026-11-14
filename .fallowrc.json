@@ -4,6 +4,7 @@
 		"packages/devtools/src/oxlint/fixtures.config.ts",
 		"packages/testing/src/vitest/coverage.ts",
 		"packages/testing/src/vitest/mutated-setup.ts",
+		"packages/testing/src/vitest/searches-setup.ts",
 		"packages/testing/src/witness.fixtures.ts"
 	],
 	// out/ is where a proof run builds a consumer, with a pnpm workspace of its own: not this repository's code.

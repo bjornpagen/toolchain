@@ -22,6 +22,7 @@ import {
 	type TestConfig,
 	type Timeout
 } from "#vitest/config.ts"
+import type { Examples } from "#vitest/reporter.ts"
 import { searched } from "#vitest/searched.ts"
 
 /** The file names a drawn config lists, from a small roster so the lists overlap. */
@@ -35,6 +36,23 @@ const timeout: Gen<Timeout> = (source) =>
 		? { kind: "bounded", millis: source.draw(int(1, 120_000)) }
 		: { kind: "unbounded" }
 
+/** A package's stance on examples: allowed, or banned outside the files an exemption names. */
+const examples: Gen<Examples> = (source) =>
+	source.draw(boolean)
+		? {
+				kind: "banned",
+				exempt: source.draw(
+					array(
+						(inner) => ({
+							files: [inner.draw(element(FILES)), ...files(inner)],
+							reason: "a drawn exemption"
+						}),
+						{ min: 0, max: 2 }
+					)
+				)
+			}
+		: { kind: "allowed" }
+
 /** A package's test config, every field drawn. */
 const testConfig: Gen<TestConfig> = (source) => ({
 	include: files(source),
@@ -44,7 +62,8 @@ const testConfig: Gen<TestConfig> = (source) => ({
 		array(element(["development", "production"] as const), { min: 0, max: 2 })
 	),
 	timeouts: { test: source.draw(timeout), hook: source.draw(timeout) },
-	smallStack: files(source)
+	smallStack: files(source),
+	examples: source.draw(examples)
 })
 
 /** Vitest's form of a timeout, from the config's contract: zero is none, and a fuzz run has none. */

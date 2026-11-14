@@ -67,7 +67,7 @@ const CONSUMER: ReadonlyArray<readonly [path: string, text: string]> = [
 	],
 	[
 		"vitest.config.ts",
-		`import { defineConfig } from "vitest/config"\nexport default defineConfig({ test: { include: ["src/**/*.test.ts"], globalSetup: ["@bjornpagen/testing/vitest/global-setup"], reporters: ["default", "@bjornpagen/testing/vitest/reporter"] } })\n`
+		`import { defineConfig } from "vitest/config"\nexport default defineConfig({ test: { include: ["src/**/*.test.ts"], globalSetup: ["@bjornpagen/testing/vitest/global-setup"], reporters: ["default", ["@bjornpagen/testing/vitest/reporter", { examples: { kind: "allowed" } }]] } })\n`
 	],
 	[
 		"vitest.loops.config.ts",
