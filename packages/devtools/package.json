@@ -1,7 +1,7 @@
 {
 	"name": "@bjornpagen/devtools",
 	"private": true,
-	"description": "The dev tools every repository shares: superlint (type-aware rules on TypeScript 7's native API, in packs), the Tailwind stylesheet linter (superstyle, which reads files as text), the oxlint preset (with each Tailwind app's class rules, through eslint-plugin-better-tailwindcss, and oxlint's React Compiler rules) and plugin, the workspace gate (the repository-wide tsconfig, manifest and file-name checks, which open no TypeScript program), and the tsconfig bases, each proven against fixtures. A repository takes it from GitHub by commit and keeps its own decisions in toolchain.config.ts.",
+	"description": "The dev tools every repository shares: the oxlint preset and plugin (every lint rule, each reading syntax alone, with each Tailwind app's class rules through eslint-plugin-better-tailwindcss and oxlint's React Compiler rules), the Tailwind stylesheet linter (superstyle, which reads files as text), the workspace gate (the repository-wide tsconfig, manifest and file-name checks), the tsconfig bases and the hook, typecheck and oxlint commands, each proven against fixtures; no check opens a TypeScript program but the typecheck. A repository takes it from GitHub by commit and keeps its own decisions in toolchain.config.ts.",
 	"type": "module",
 	"imports": {
 		"#*": "./src/*"
@@ -17,15 +17,10 @@
 		"./react-compiler": "./src/react-compiler/options.ts",
 		"./run": "./src/shared/run.ts",
 		"./style": "./src/style/own.ts",
-		"./superlint/finding": "./src/shared/finding.ts",
-		"./superlint/paths": "./src/lint/paths.ts",
-		"./superlint/sql": "./src/lint/sql.ts",
-		"./superlint/types": "./src/lint/types.ts",
 		"./tsconfig.base.json": "./tsconfig.base.json",
 		"./tsconfig.effect-free.json": "./tsconfig.effect-free.json"
 	},
 	"bin": {
-		"superlint": "./src/lint.ts",
 		"toolchain-gate": "./bin/gate.sh",
 		"toolchain-oxlint": "./bin/oxlint.sh",
 		"toolchain-typecheck": "./bin/typecheck.sh",
@@ -35,9 +30,7 @@
 	"scripts": {
 		"typecheck": "toolchain-typecheck",
 		"typecheck:full": "toolchain-typecheck --incremental false",
-		"superlint": "node src/lint.ts",
 		"oxlint": "toolchain-oxlint",
-		"fixtures:superlint": "node src/lint.ts --fixtures",
 		"fixtures:style": "node src/style.ts --fixtures",
 		"fixtures:oxlint": "node src/oxlint/fixtures.ts",
 		"fixtures:workspace-gate": "node src/workspace-gate.ts --fixtures",

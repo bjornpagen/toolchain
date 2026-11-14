@@ -1,9 +1,9 @@
 import { Array as Arr, Effect, FileSystem, Path, Schema } from "effect"
-import { OwnRules, type Toolchain } from "#config.ts"
-import { EffectFree, Exceptions, GrizzleOptions } from "#lint/options.ts"
+import type { Toolchain } from "#config.ts"
 import { DevtoolFailure, failureFrom } from "#shared/devtool.ts"
 import { Repository } from "#shared/repository.ts"
 import { WebOptions } from "#style/options.ts"
+import { EffectFree, Exceptions } from "#workspace/rules.ts"
 
 /** The file every repository holds its toolchain in, at its root. */
 const CONFIG_FILE = "toolchain.config.ts"
@@ -12,7 +12,7 @@ const CONFIG_FILE = "toolchain.config.ts"
 const Reasons = Schema.Record(Schema.String, Schema.NonEmptyString)
 
 /** A repository's toolchain, as its toolchain.config.ts's default export is decoded: the data through each pack's
- * schema, the repository's own rules as the values ownRules makes. */
+ * schema. */
 const ToolchainSchema = Schema.Struct({
 	rejected: Schema.Struct({ rules: Reasons, diagnostics: Reasons }),
 	exceptions: Exceptions,
@@ -20,11 +20,10 @@ const ToolchainSchema = Schema.Struct({
 	packs: Schema.Array(
 		Schema.Union([
 			Schema.Struct({ pack: Schema.Literal("drizzle") }),
-			Schema.Struct({ pack: Schema.Literal("grizzle"), options: GrizzleOptions }),
+			Schema.Struct({ pack: Schema.Literal("grizzle") }),
 			Schema.Struct({ pack: Schema.Literal("web"), options: WebOptions })
 		])
-	),
-	own: Schema.Array(Schema.instanceOf(OwnRules))
+	)
 })
 
 /** The module a toolchain.config.ts is, as far as the loader reads it: its default export. */

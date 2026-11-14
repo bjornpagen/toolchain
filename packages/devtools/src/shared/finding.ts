@@ -1,9 +1,9 @@
 import { Array as Arr, Order } from "effect"
-import type * as ts from "typescript/ast"
 import { relativeTo } from "#shared/repository.ts"
 
-/** One report of a repository linter: the rule that fired, where, what is wrong, and how to fix it when the rule
- * knows. Lines and columns are 1-based, as an editor shows them. */
+/** One report of a dev tool (the workspace gate, the style linter, a repository's own style rules): the rule that
+ * fired, where, what is wrong, and how to fix it when the rule knows. Lines and columns are 1-based, as an editor shows
+ * them. */
 export type Finding = Readonly<{
 	file: string
 	line: number
@@ -12,27 +12,6 @@ export type Finding = Readonly<{
 	message: string
 	suggestion?: string
 }>
-
-/** What a rule says at a node; the engine that ran the rule stamps its id and locates it. */
-export type Report = Readonly<{ node: ts.Node; message: string; suggestion?: string }>
-
-/** A report located at its node's first token. */
-export const findingAt = (
-	input: Readonly<{ sourceFile: ts.SourceFile; rule: string; report: Report }>
-): Finding => {
-	const { report, sourceFile } = input
-	const { line, character } = sourceFile.getLineAndCharacterOfPosition(
-		report.node.getStart(sourceFile)
-	)
-	const located = {
-		file: sourceFile.fileName,
-		line: line + 1,
-		column: character + 1,
-		rule: input.rule,
-		message: report.message
-	}
-	return report.suggestion === undefined ? located : { ...located, suggestion: report.suggestion }
-}
 
 const byLocation = Order.combineAll<Finding>([
 	Order.mapInput(Order.String, (finding: Finding) => finding.file),

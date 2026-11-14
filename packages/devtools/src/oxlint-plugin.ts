@@ -95,8 +95,9 @@ const PLUGIN_RULES = {
 } as const satisfies Readonly<Record<string, Rule>>
 
 /**
- * The shared oxlint plugin: the syntactic rules oxlint has no built-in rule for. Each rule reads syntax alone;
- * type-aware rules live in superlint (src/lint.ts). The preset (src/preset.ts) loads it through `jsPlugins`, enables
+ * The shared oxlint plugin: the rules oxlint has no built-in rule for. Each reads one file's syntax and scopes alone,
+ * as an oxlint JavaScript plugin gets no types, so none builds a TypeScript program; a type-aware check is oxlint's
+ * built-in type-aware rules' or an Effect diagnostic. The preset (src/preset.ts) loads it through `jsPlugins`, enables
  * the rules of the packs a repository runs and passes the repository's names as rule options; Node strips its types.
  */
 const plugin: Readonly<{ meta: Readonly<{ name: "devtools" }>; rules: typeof PLUGIN_RULES }> = {

@@ -1,14 +1,13 @@
 #!/usr/bin/env -S node
 
 import { Array as Arr, Console, Effect, Record, String as Str } from "effect"
-import type { Exceptions } from "#lint/options.ts"
 import { invocationOf } from "#shared/arguments.ts"
 import { repositoryToolchain } from "#shared/config.ts"
 import { type Finding, renderFindings, statusOf } from "#shared/finding.ts"
 import { relativeTo, Repository } from "#shared/repository.ts"
 import { runDevtool } from "#shared/run.ts"
 import { tsOnlyExtensionFindings } from "#workspace/extensions.ts"
-import { WORKSPACE_RULES } from "#workspace/rules.ts"
+import type { Exceptions } from "#workspace/rules.ts"
 import { tsconfigFindings, workspaceFixtureMismatches } from "#workspace/tsconfigs.ts"
 
 /**
@@ -19,12 +18,12 @@ import { tsconfigFindings, workspaceFixtureMismatches } from "#workspace/tsconfi
  * plugin block every package inherits (effect-plugin-block), each Effect-free package's tsconfig and manifest to
  * carrying no Effect (effect-free-packages), and every file git shows to a TypeScript extension (ts-only-extensions).
  * The repository's decisions come from its toolchain.config.ts: its rejected diagnostics, its Effect-free packages, and
- * its exceptions, which excuse the files they list from a rule they name. `--fixtures` runs the tsconfig gate against
- * its fixture workspaces instead. Exit status 1 means findings, 2 that the gate itself failed.
+ * its exceptions, which excuse the files they list from one of these rules and name no other. `--fixtures` runs the
+ * tsconfig gate against its fixture workspaces instead. Exit status 1 means findings, 2 that the gate itself failed.
  */
 
 /** Whether an exception's path, relative to `root`, names the file or a directory above it: a path that ends in "/"
- * names a directory, any other one file, compared case-insensitively, as the linters match their exceptions. */
+ * names a directory, any other one file, compared case-insensitively. */
 const isAt =
 	(root: string, file: string) =>
 	(path: string): boolean => {
@@ -73,12 +72,9 @@ const checkRepository = Effect.gen(function* () {
 		rejectedDiagnostics: Record.keys(config.rejected.diagnostics)
 	})
 	const extensions = yield* tsOnlyExtensionFindings
-	const exceptions = Arr.filter(config.exceptions, (exception) =>
-		Arr.contains(WORKSPACE_RULES, exception.rule)
-	)
 	const findings = Arr.filter(
 		[...tsconfigs, ...extensions],
-		(finding) => !isExcepted(exceptions, root, finding)
+		(finding) => !isExcepted(config.exceptions, root, finding)
 	)
 	yield* Console.log(renderFindings({ tool: "workspace-gate", root, findings }))
 	return statusOf(findings)

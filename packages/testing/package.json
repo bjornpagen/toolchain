@@ -45,7 +45,6 @@
 	"scripts": {
 		"typecheck": "toolchain-typecheck",
 		"typecheck:full": "toolchain-typecheck --incremental false",
-		"superlint": "superlint",
 		"oxlint": "toolchain-oxlint",
 		"test": "vitest run",
 		"bench": "vitest bench --run",

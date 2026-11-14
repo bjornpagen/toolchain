@@ -9,10 +9,10 @@ import {
 	Schema,
 	String as Str
 } from "effect"
-import { EffectFree } from "#lint/options.ts"
 import { DevtoolFailure } from "#shared/devtool.ts"
 import type { Finding } from "#shared/finding.ts"
 import { covers, relativeTo, Repository } from "#shared/repository.ts"
+import { EffectFree } from "#workspace/rules.ts"
 
 /**
  * The repository's tsconfig gate, run by the workspace gate at the repository root: the Effect diagnostics every

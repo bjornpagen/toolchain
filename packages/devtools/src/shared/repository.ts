@@ -47,13 +47,6 @@ export class Repository extends Context.Service<
 /** Files under these directory segments are generated or installed, never maintained source. */
 const GENERATED_SEGMENTS: ReadonlyArray<string> = ["node_modules", ".next", ".git", ".turbo"]
 
-/** The directory a file sits in. */
-export const directoryOf = (file: string): string =>
-	Option.match(Str.lastIndexOf("/")(file), {
-		onNone: () => ".",
-		onSome: (index) => Str.slice(0, index)(file)
-	})
-
 /** A path relative to `root`; a file outside it keeps its absolute path. */
 export const relativeTo =
 	(root: string) =>
@@ -71,10 +64,6 @@ export const covers = (input: Readonly<{ selected: string; file: string }>): boo
 	}
 	return Str.startsWith(`${input.selected}/`)(input.file)
 }
-
-/** TypeScript and TSX sources, declaration files included; callers decide about declarations. */
-export const isTypeScriptPath = (file: string): boolean =>
-	Arr.some([".ts", ".tsx"], (extension) => Str.endsWith(extension)(file))
 
 /** Vendored code (shadcn's components, under each app's aliases.ui) is reinstalled from upstream, never edited, so the
  * linters leave it alone. */
