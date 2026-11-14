@@ -15,7 +15,13 @@ import { noCoverage, required } from "#features.ts"
 import { array, boolean, element, type Gen, int } from "#gen.ts"
 import { notesOnly } from "#sense.ts"
 import { boundedShrink } from "#shrink.ts"
-import { defineTestConfig, HARDENED_FLAGS, type TestConfig, type Timeout } from "#vitest/config.ts"
+import {
+	defineTestConfig,
+	HARDENED_FLAGS,
+	testWorkers,
+	type TestConfig,
+	type Timeout
+} from "#vitest/config.ts"
 import { searched } from "#vitest/searched.ts"
 
 /** The file names a drawn config lists, from a small roster so the lists overlap. */
@@ -35,7 +41,7 @@ const testConfig: Gen<TestConfig> = (source) => ({
 	guided: files(source),
 	setup: files(source),
 	conditions: source.draw(
-		array(element(["bjornpagen-source", "development"] as const), { min: 0, max: 2 })
+		array(element(["development", "production"] as const), { min: 0, max: 2 })
 	),
 	timeouts: { test: source.draw(timeout), hook: source.draw(timeout) },
 	smallStack: files(source)
@@ -110,7 +116,8 @@ describe("the Vitest adapter", () => {
 							Arr.getUnsafe(HARDENED_FLAGS, source.draw(int(0, HARDENED_FLAGS.length - 1))),
 						literal: Formatter.format,
 						coverage: noCoverage,
-						caseHang: Duration.minutes(1)
+						caseHang: Duration.minutes(1),
+						concurrency: 1
 					},
 					(flag) =>
 						Effect.sync(() =>
@@ -209,7 +216,7 @@ describe("the Vitest adapter", () => {
 								execArgv: Option.some(execArgv),
 								viteModuleRunner: Option.some(false),
 								nodeLoader: Option.some(false),
-								maxWorkers: Option.some("100%"),
+								maxWorkers: Option.some(testWorkers),
 								testTimeout: Option.some(millisOf(config.timeouts.test, fuzzing)),
 								hookTimeout: Option.some(millisOf(config.timeouts.hook, fuzzing)),
 								projects: Arr.map(

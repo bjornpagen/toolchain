@@ -14,7 +14,14 @@ import {
 	Schema,
 	String as Str
 } from "effect"
-import { type Branch, firstBranch, nextBranch, sizeOf } from "#enumerate.ts"
+import {
+	type Branch,
+	type Enumerated,
+	enumerated,
+	firstBranch,
+	nextBranch,
+	sizeOf
+} from "#enumerate.ts"
 import { failureText } from "#failure.ts"
 import {
 	type Coverage,
@@ -35,7 +42,10 @@ import {
 	situationsOf,
 	type Tally,
 	type TallyBuilder,
+	type Turns,
 	tallyOf,
+	turnOf,
+	turnsOf,
 	unreachedOf
 } from "#features.ts"
 import type { Corpus, Fuzz, FuzzBudget } from "#fuzz.ts"
@@ -583,11 +593,19 @@ const underOf = <F extends string>(situations: ReadonlyArray<Reached<F>>, how: D
 	}
 }
 
-/** Cases drawn under the requirements no case of these steering tallies reached. */
+/**
+ * What each case of a window of `cases` cases is drawn under, by its offset in the window: the requirements no case of
+ * these steering tallies reached, the case aimed at its turn among them in its stream's `turns`.
+ */
 const steeredBy = <F extends string>(
 	situations: ReadonlyArray<Reached<F>>,
-	steering: ReadonlyArray<Tally<SteeringPhase>>
-): Under<F> => underOf(situations, { kind: "steered", pending: pendingOf(situations, steering) })
+	steering: ReadonlyArray<Tally<SteeringPhase>>,
+	turns: Turns,
+	cases: number
+): ((offset: number) => Under<F>) => {
+	const turnAt = turns.window(pendingOf(situations, steering), cases)
+	return (offset) => underOf(situations, { kind: "steered", pending: turnAt(offset) })
+}
 
 /** How a case's property ended, before its recording is read. */
 type Settled =
@@ -617,20 +635,36 @@ const keepNothing = (): void => undefined
 const keepTape = (recorded: Recording): Tape => recorded.tape()
 
 /**
- * Runs a window's cases, `concurrency` at once, and returns each case that ran with its index, in the order its search
- * settles them: case order, but every case its deadline cut after the rest, so a case that failed before the deadline
- * arrived is reported, shrunk as far as the deadline allows, rather than lost behind a lower case still in flight. A
- * case starts inline, so its property's synchronous work runs on the fiber that starts it; a concurrent window forks
- * each case's fiber and only then holds it among the fibers an interruption of the search reaches, so each concurrent
- * case starts on a turn of its own, once its fiber is held, and an interruption its own work causes reaches it. A
- * window of one case at a time forks nothing and starts each inline. No case starts once a lower case of its window
- * has failed or hung: the search settles that case before any case above it and ends there, so no case above it can
- * change what the search finds, and a failing window ends when the cases already running end instead of running every
- * case it has left.
+ * A window's runs, `concurrency` at once, in index order, each handed its index and its offset in the window. A run
+ * starts inline, so its property's synchronous work runs on the fiber that starts it; a concurrent window forks each
+ * run's fiber and only then holds it among the fibers an interruption of the search reaches, so each concurrent run
+ * starts on a turn of its own, once its fiber is held, and an interruption its own work causes reaches it. A window of
+ * one run at a time forks nothing and starts each inline.
  */
-const windowOf = <S, K, R>(
+const windowOf = <B, R>(
 	indices: ReadonlyArray<number>,
-	runOne: (index: number) => Effect.Effect<CaseRun<S, K>, never, R>,
+	runOne: (index: number, offset: number) => Effect.Effect<B, never, R>,
+	concurrency: number
+): Effect.Effect<Array<B>, never, R> =>
+	concurrency === 1
+		? Effect.forEach(indices, runOne)
+		: Effect.forEach(
+				indices,
+				(index, offset) => Effect.andThen(Effect.yieldNow, runOne(index, offset)),
+				{ concurrency }
+			)
+
+/**
+ * Runs a window's cases (windowOf) and returns each case that ran with its offset in the window, in the order its
+ * search settles them: case order, but every case its deadline cut after the rest, so a case that failed before the
+ * deadline arrived is reported, shrunk as far as the deadline allows, rather than lost behind a lower case still in
+ * flight. No case starts once a lower case of its window has failed or hung: the search settles that case before any
+ * case above it and ends there, so no case above it can change what the search finds, and a failing window ends when
+ * the cases already running end instead of running every case it has left.
+ */
+const casesOf = <S, K, R>(
+	indices: ReadonlyArray<number>,
+	runOne: (index: number, offset: number) => Effect.Effect<CaseRun<S, K>, never, R>,
 	concurrency: number
 ): Effect.Effect<ReadonlyArray<readonly [number, CaseRun<S, K>]>, never, R> =>
 	Effect.suspend(() => {
@@ -639,22 +673,14 @@ const windowOf = <S, K, R>(
 			Effect.suspend(() =>
 				offset > failedAt
 					? Effect.succeedNone
-					: Effect.map(runOne(index), (caseRun) => {
+					: Effect.map(runOne(index, offset), (caseRun) => {
 							if (caseRun.outcome.kind === "failed" || caseRun.outcome.kind === "hung") {
 								failedAt = Math.min(failedAt, offset)
 							}
-							return Option.some([index, caseRun] as const)
+							return Option.some([offset, caseRun] as const)
 						})
 			)
-		const ran =
-			concurrency === 1
-				? Effect.forEach(indices, started)
-				: Effect.forEach(
-						indices,
-						(index, offset) => Effect.andThen(Effect.yieldNow, started(index, offset)),
-						{ concurrency }
-					)
-		return Effect.map(ran, (results) => {
+		return Effect.map(windowOf(indices, started, concurrency), (results) => {
 			const settled = Arr.getSomes(results)
 			const wasCut = ([, caseRun]: readonly [number, CaseRun<S, K>]) =>
 				caseRun.outcome.kind === "cut"
@@ -1202,8 +1228,13 @@ const replayCorpus = <X, R>(
  * witness phase is never drawn from the run's seed.
  */
 type Mutated =
-	| Readonly<{ phase: "steered"; stream: LabelStream; tally: TallyBuilder<"steered"> }>
-	| Readonly<{ phase: "fuzzed"; stream: RunStream; tally: TallyBuilder<"fuzzed"> }>
+	| Readonly<{
+			phase: "steered"
+			stream: LabelStream
+			tally: TallyBuilder<"steered">
+			turns: Turns
+	  }>
+	| Readonly<{ phase: "fuzzed"; stream: RunStream; tally: TallyBuilder<"fuzzed">; turns: Turns }>
 
 /** Where a mutated case came from, as a failure report names it. */
 const mutatedLabel = (mutated: Mutated): string => {
@@ -1232,7 +1263,7 @@ const fuzzSenseOf = <F extends string>(coverage: Coverage<F>): Sense => {
  * order, so concurrency changes how fast a search runs and never what it finds. A failing case, the lowest of its
  * window, is shrunk by editing its tape, property draws included, under the steering it was drawn under. The run's
  * deadline bounds every phase and the shrink (Deadline), and a case it cuts is settled after the rest of its window
- * (windowOf). The stall
+ * (casesOf). The stall
  * verdict is judged on the floor stream, and the coverage verdict on the witnesses alone, before the rotating stream
  * runs: neither moves with the run's seed, and a coverage failure spends no sample. The residual comes from the
  * rotating stream's independent cases alone. A replay runs its one case instead; a fuzz run searches its run-seeded
@@ -1497,11 +1528,11 @@ export const explore = <S, T, F extends string, E, R>(
 			) =>
 				Effect.gen(function* () {
 					const steering = [floorTally.tally(), mutated.tally.tally()]
-					const under = steeredBy(situations, steering)
+					const underAt = steeredBy(situations, steering, mutated.turns, indices.length)
 					const pick = seeds.picker(steering)
-					const window = yield* windowOf(
+					const window = yield* casesOf(
 						indices,
-						(index) => {
+						(index, offset) => {
 							const words = wordsOf(caseSeed(mutated.stream, index))
 							const chooser = Option.match(
 								between(words, 0, FRESH_EVERY - 1) === 0 ? Option.none() : pick(words),
@@ -1513,13 +1544,13 @@ export const explore = <S, T, F extends string, E, R>(
 									}
 								}
 							)
-							return seedOf(chooser, under, sense)
+							return seedOf(chooser, underAt(offset), sense)
 						},
 						sense.concurrent ? spec.concurrency : 1
 					)
-					for (const [index, caseRun] of window) {
-						const where = `${mutatedLabel(mutated)} (seed ${hex(mutated.stream)}), case ${index}`
-						yield* settle(caseRun, where, under, mutated.tally)
+					for (const [offset, caseRun] of window) {
+						const where = `${mutatedLabel(mutated)} (seed ${hex(mutated.stream)}), case ${Arr.getUnsafe(indices, offset)}`
+						yield* settle(caseRun, where, underAt(offset), mutated.tally)
 						if (keepIfNew(caseRun)) {
 							yield* found(caseRun)
 						}
@@ -1538,20 +1569,22 @@ export const explore = <S, T, F extends string, E, R>(
 				passed: (caseRun: CaseRun<S, K>) => void
 			) =>
 				Effect.gen(function* () {
+					const floorTurns = turnsOf()
 					for (let windowStart = 0; windowStart < floorCases; windowStart += spec.steerEvery) {
-						const under = steeredBy(situations, [floorTally.tally()])
 						const indices = Array.from(
 							{ length: Math.min(windowStart + spec.steerEvery, floorCases) - windowStart },
 							(_, i) => windowStart + i
 						)
-						const window = yield* windowOf(
+						const underAt = steeredBy(situations, [floorTally.tally()], floorTurns, indices.length)
+						const window = yield* casesOf(
 							indices,
-							(index) => runOne(randomChooser(wordsOf(caseSeed(floor, index))), under),
+							(index, offset) =>
+								runOne(randomChooser(wordsOf(caseSeed(floor, index))), underAt(offset)),
 							spec.concurrency
 						)
-						for (const [index, caseRun] of window) {
-							const where = `the floor stream (seed ${hex(floor)}), case ${index}`
-							yield* settle(caseRun, where, under, floorTally)
+						for (const [offset, caseRun] of window) {
+							const where = `the floor stream (seed ${hex(floor)}), case ${windowStart + offset}`
+							yield* settle(caseRun, where, underAt(offset), floorTally)
 							passed(caseRun)
 						}
 					}
@@ -1568,12 +1601,18 @@ export const explore = <S, T, F extends string, E, R>(
 				const fuzzed: Mutated = {
 					phase: "fuzzed",
 					stream: fuzzSeed(rotatingSeed(run.seed, floor)),
-					tally: fuzzedTally
+					tally: fuzzedTally,
+					turns: turnsOf()
 				}
 				const sense = fuzzSenseOf(spec.coverage)
 				const replayed = yield* replayCorpus(fuzz.corpus, (values, index) =>
 					Effect.gen(function* () {
-						const under = steeredBy(situations, [floorTally.tally(), fuzzedTally.tally()])
+						const under = steeredBy(
+							situations,
+							[floorTally.tally(), fuzzedTally.tally()],
+							fuzzed.turns,
+							1
+						)(0)
 						const caseRun = yield* seedOf(
 							prefixChooser(
 								values,
@@ -1642,7 +1681,8 @@ export const explore = <S, T, F extends string, E, R>(
 					const steering: Mutated = {
 						phase: "steered",
 						stream: steeredSeed(floor),
-						tally: steeredTally
+						tally: steeredTally,
+						turns: turnsOf()
 					}
 					const witnessed = () => [floorTally.tally(), steeredTally.tally()]
 					for (
@@ -1682,15 +1722,15 @@ export const explore = <S, T, F extends string, E, R>(
 					{ length: Math.min(windowStart + spec.steerEvery, spec.runs) - windowStart },
 					(_, i) => windowStart + i
 				)
-				const window = yield* windowOf(
+				const window = yield* casesOf(
 					indices,
 					(index) => caseOf(randomChooser(wordsOf(caseSeed(rotating, index))), unsteered),
 					spec.concurrency
 				)
-				for (const [index, caseRun] of window) {
+				for (const [offset, caseRun] of window) {
 					yield* settle(
 						caseRun,
-						`the rotating stream (seed ${hex(rotating)}), case ${index}`,
+						`the rotating stream (seed ${hex(rotating)}), case ${windowStart + offset}`,
 						unsteered,
 						independentTally
 					)
@@ -1727,10 +1767,26 @@ const spaceCounted = (
 			)
 
 /**
+ * One sketch of an exhaustion's space: the branch its cases start at, a case of the generator alone, and how many
+ * decisions the generator draws there. Every decision past them is its property's, so the cases its property's draws
+ * enumerate from the start are its own, and the first branch that changes a decision of the generator's is the next
+ * sketch's start.
+ */
+type Sketch = Readonly<{ start: Branch; decisions: number }>
+
+/** What one sketch's run found: each case that passed, its notes in order, and the first case that did not, if any. */
+type SketchRan<A, F extends string> = Readonly<{
+	passed: ReadonlyArray<ReadonlySet<string>>
+	stopped: Option.Option<Readonly<{ caseRun: CaseRun<A, Tape>; under: Under<F> }>>
+}>
+
+/**
  * An exhaustive check: every case of a generator's space, whatever its size, the whole space or a failure. `literal`
  * prints a case as source, as an exploration's does; `coverage` is what the space must reach, judged on every case of it; `box` names the space in
  * words, the bound a pass proves the property within ("every family of size ≤ 4 under every single mutation"); and
- * `oracle` is what the property is checked against. The report prints both.
+ * `oracle` is what the property is checked against. The report prints both. `concurrency` is how many sketches run at
+ * once, a sketch being one case of the generator alone with every case its property's draws enumerate from it; cases
+ * that share state the property does not isolate run one at a time.
  */
 export type Exhaustion<A, F extends string> = Readonly<{
 	suite: string
@@ -1740,6 +1796,7 @@ export type Exhaustion<A, F extends string> = Readonly<{
 	caseHang: Duration.Input
 	box: Box
 	oracle: Oracle
+	concurrency: number
 }>
 
 /**
@@ -1765,13 +1822,19 @@ export type Exhausted = Readonly<{
  * as the space holds cases: enumeration is lexicographic over decisions and shrinking descends shortlex order, so a
  * later case with fewer decisions may be less than the first failure, and the shrink moves toward it, while a space of
  * one shape needs no candidate. Its replay token runs the shrunk case alone. The space is counted before any property
- * runs (sizeOf), and draws the property makes are enumerated too, so each case's successor depends on it and cases run
- * one at a time. Nothing caps an exhaustion: its test's deadline is its only end, and a count or a run the deadline cuts
- * fails, naming the space, so a space too large to finish is a failure, never a pass over part of it; a suite whose
- * space cannot finish exhausts a smaller space it constructs, or samples it with explore under a budget it names. Each
- * case steers by the requirements no earlier case reached. Every case of the space is a witness, fixed by the generator
- * alone, so every requirement must be reached by one of them, and the verdict is the same on every run seed. Passing is
- * a proof inside the box the generator draws.
+ * runs (sizeOf), and draws the property makes are enumerated too, so a case's successor among them depends on it. The
+ * space is run by sketches (Sketch), in windows of up to `concurrency` sketches at once, each sketch's cases one at a
+ * time; a window's results are taken in enumeration order, every case its deadline cut after the rest (as an
+ * exploration's window settles them), so concurrency changes how fast an exhaustion runs and never what it finds, the
+ * first failing case in enumeration order. Nothing caps an exhaustion: its test's deadline is its only end, and a count
+ * or a run the deadline cuts fails, naming the space, so a space too large to finish is a failure, never a pass over
+ * part of it; a suite whose space cannot finish exhausts a smaller space it constructs, or samples it with explore under
+ * a budget it names. Each case steers by the requirements no earlier case reached: a window's sketches run under those
+ * no case before the window reached, with their own earlier cases', and a sketch whose earlier sketches in the window
+ * reached a requirement, and so would have steered it otherwise, runs again under the right steering in the next
+ * window, which a search meets at most once for each requirement. Every case of the space is a witness, fixed by the
+ * generator alone, so every requirement must be reached by one of them, and the verdict is the same on every run seed.
+ * Passing is a proof inside the box the generator draws.
  */
 export const exhaust = <A, F extends string, E, R>(
 	spec: Exhaustion<A, F>,
@@ -1842,78 +1905,160 @@ export const exhaust = <A, F extends string, E, R>(
 					blockedUnder(under)
 				)
 
-			let branch: Option.Option<Branch> = Option.some(firstBranch)
+			/**
+			 * A sketch's cases from its start, through its first case that did not pass or its last, each aimed at its turn
+			 * among what it leaves pending: the first pending requirement after `aimedBefore`, the one the sketch before it
+			 * aimed at.
+			 */
+			const sketchRun = (
+				sketch: Sketch,
+				before: Tally<"exhaustive">,
+				aimedBefore: number
+			): Effect.Effect<SketchRan<A, F>, never, Exclude<R, Scope.Scope>> =>
+				Effect.gen(function* () {
+					const own = tallyOf("exhaustive")
+					const passed: Array<ReadonlySet<string>> = []
+					let branch: Option.Option<Branch> = Option.some(sketch.start)
+					while (Option.isSome(branch)) {
+						const under = underOf(situations, {
+							kind: "steered",
+							pending: turnOf(pendingIn(requiredKeys, [before], own), aimedBefore, 0)
+						})
+						const caseRun = yield* caseAt(branch.value, under)
+						if (judgedOf(caseRun).kind !== "passed") {
+							return { passed, stopped: Option.some({ caseRun, under }) }
+						}
+						passed.push(caseRun.notes)
+						own.add(caseRun.notes)
+						branch = Option.filter(
+							nextBranch(caseRun.kept),
+							(after) => after.length > sketch.decisions
+						)
+					}
+					return { passed, stopped: Option.none() }
+				})
+
+			/**
+			 * The requirements no case of `tally` reached, which every case steering by it is drawn under. A tally only grows,
+			 * so the requirements it leaves unreached only shrink, and two of one search's are the same exactly when they are
+			 * as many.
+			 */
+			const unreachedBy = (tally: Tally<"exhaustive">): ReadonlyArray<string> =>
+				spec.coverage.kind === "required" ? unreachedOf(spec.coverage.situations, [tally]) : []
+
+			const sketches = recorder()
+			let next: Option.Option<Branch> = Option.some(firstBranch)
+			let rerun: ReadonlyArray<Sketch> = []
 			let cases = 0
-			while (Option.isSome(branch)) {
-				const under = underOf(situations, {
-					kind: "steered",
-					pending: pendingIn(requiredKeys, exhaustive)
-				})
-				const caseRun = yield* caseAt(branch.value, under)
-				const where = `case ${cases} of the exhaustive space of ${size} cases`
-				yield* judge<Effect.Effect<void, SearchFailure, Exclude<R, Scope.Scope>>>(caseRun, {
-					passed: () =>
-						Effect.sync(() => {
-							cases += 1
-							exhaustive.add(caseRun.notes)
-						}),
-					misused: () => misusedIn(spec.suite, where),
-					hung: (hung) => {
-						const replayed = replayCaseOf(under.drawn, hung.tape)
-						return Effect.fail(
-							CaseHung.make({
-								suite: spec.suite,
-								replay: Option.some(replayed),
-								message: `${spec.suite}: ${where} ran past ${hang}: counterexample ${spec.literal(caseRun.sketch)}, replay it alone: TEST_REPLAY='${replayTokenOf(spec.suite, replayed)}'`
-							})
-						)
-					},
-					cut: (cut) =>
-						deadlineReachedIn(
-							run,
-							spec.suite,
-							where,
-							spec.literal(caseRun.sketch),
-							Option.some(replayCaseOf(under.drawn, cut.tape))
-						),
-					failed: (failed) =>
-						Effect.flatMap(
-							shrinkAttempt(
-								{ tape: failed.tape, failure: { run: caseRun, cause: failed.cause } },
-								(values) =>
-									Effect.map(candidateOf(values, under), (candidate) =>
-										judge(candidate, candidateJudgment(candidate))
-									),
-								boundedShrink(size)
+			let aimed = -1
+			while (Arr.isReadonlyArrayNonEmpty(rerun) || Option.isSome(next)) {
+				const window: Array<Sketch> = [...rerun]
+				rerun = []
+				while (Option.isSome(next) && (window.length === 0 || window.length < spec.concurrency)) {
+					const step: Enumerated<A> = enumerated(sketches, spec.generator, next.value)
+					window.push({ start: next.value, decisions: step.generated.tape.length })
+					next = step.next
+				}
+				const before = exhaustive.tally()
+				const steeredBefore = unreachedBy(before).length
+				const pendingBefore = pendingOf(situations, [before])
+				const lastAim = aimed
+				const afterOf = (offset: number): number =>
+					offset === 0
+						? lastAim
+						: Option.getOrElse(Arr.head(turnOf(pendingBefore, lastAim, offset - 1)), () => lastAim)
+				const ran = yield* windowOf(
+					Arr.map(window, (_, index) => index),
+					(index) => sketchRun(Arr.getUnsafe(window, index), before, afterOf(index)),
+					spec.concurrency
+				)
+				const stops: Array<Readonly<{ caseRun: CaseRun<A, Tape>; under: Under<F> }>> = []
+				for (const [index, sketchRan] of ran.entries()) {
+					if (unreachedBy(exhaustive.tally()).length !== steeredBefore) {
+						rerun = window.slice(index)
+						break
+					}
+					aimed = afterOf(index + 1)
+					for (const notes of sketchRan.passed) {
+						cases += 1
+						exhaustive.add(notes)
+					}
+					if (Option.isSome(sketchRan.stopped)) {
+						stops.push(sketchRan.stopped.value)
+						if (sketchRan.stopped.value.caseRun.outcome.kind !== "cut") {
+							break
+						}
+					}
+				}
+				const settling = [
+					...Arr.filter(stops, (stop) => stop.caseRun.outcome.kind !== "cut"),
+					...Arr.filter(stops, (stop) => stop.caseRun.outcome.kind === "cut")
+				]
+				for (const { caseRun, under } of settling) {
+					const where = `case ${cases} of the exhaustive space of ${size} cases`
+					yield* judge<Effect.Effect<void, SearchFailure, Exclude<R, Scope.Scope>>>(caseRun, {
+						passed: () =>
+							Effect.sync(() => {
+								cases += 1
+								exhaustive.add(caseRun.notes)
+							}),
+						misused: () => misusedIn(spec.suite, where),
+						hung: (hung) => {
+							const replayed = replayCaseOf(under.drawn, hung.tape)
+							return Effect.fail(
+								CaseHung.make({
+									suite: spec.suite,
+									replay: Option.some(replayed),
+									message: `${spec.suite}: ${where} ran past ${hang}: counterexample ${spec.literal(caseRun.sketch)}, replay it alone: TEST_REPLAY='${replayTokenOf(spec.suite, replayed)}'`
+								})
+							)
+						},
+						cut: (cut) =>
+							deadlineReachedIn(
+								run,
+								spec.suite,
+								where,
+								spec.literal(caseRun.sketch),
+								Option.some(replayCaseOf(under.drawn, cut.tape))
 							),
-							(shrunk) => {
-								const best = shrunk.best.failure.run
-								const replayed = Option.some(replayCaseOf(under.drawn, shrunk.best.tape))
-								return Effect.fail(
-									PropertyFalsified.make({
-										suite: spec.suite,
-										phase: "exhaustive",
-										shrink: shrunk.ended,
-										replay: replayed,
-										message: falsifiedReport(
-											run,
-											spec.suite,
-											where,
-											reportedOf(
-												spec.literal,
-												best,
-												shrunk.best.failure.cause,
-												drawsOf(best, shrunk.best.tape)
-											),
-											shrinkingOf(shrunk),
-											replayed
-										)
-									})
-								)
-							}
-						)
-				})
-				branch = nextBranch(caseRun.kept)
+						failed: (failed) =>
+							Effect.flatMap(
+								shrinkAttempt(
+									{ tape: failed.tape, failure: { run: caseRun, cause: failed.cause } },
+									(values) =>
+										Effect.map(candidateOf(values, under), (candidate) =>
+											judge(candidate, candidateJudgment(candidate))
+										),
+									boundedShrink(size)
+								),
+								(shrunk) => {
+									const best = shrunk.best.failure.run
+									const replayed = Option.some(replayCaseOf(under.drawn, shrunk.best.tape))
+									return Effect.fail(
+										PropertyFalsified.make({
+											suite: spec.suite,
+											phase: "exhaustive",
+											shrink: shrunk.ended,
+											replay: replayed,
+											message: falsifiedReport(
+												run,
+												spec.suite,
+												where,
+												reportedOf(
+													spec.literal,
+													best,
+													shrunk.best.failure.cause,
+													drawsOf(best, shrunk.best.tape)
+												),
+												shrinkingOf(shrunk),
+												replayed
+											)
+										})
+									)
+								}
+							)
+					})
+				}
 			}
 			switch (spec.coverage.kind) {
 				case "none":

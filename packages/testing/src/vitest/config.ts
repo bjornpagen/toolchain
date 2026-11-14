@@ -1,6 +1,14 @@
+import { availableParallelism } from "node:os"
 import { Array as Arr, Config, Effect, Option } from "effect"
 import { defineConfig } from "vitest/config"
 import { residualReporter } from "#vitest/reporter.ts"
+
+/**
+ * How many test workers a run holds: one a core of this machine. Vitest's maxWorkers is this number, and a suite tier
+ * that gives each worker a resource of its own (a cloned database, a claimed slot) creates and claims this many, so one
+ * constant states the width everywhere.
+ */
+export const testWorkers: number = availableParallelism()
 
 /**
  * The flags every test process runs under: no `__proto__` accessor and no inspector opened on SIGUSR1; a deprecated
@@ -112,7 +120,7 @@ export const defineTestConfig = (config: TestConfig) => {
 						]
 					: [])
 			],
-			maxWorkers: "100%",
+			maxWorkers: testWorkers,
 			reporters: ["default", residualReporter()],
 			testTimeout: timeoutOf(config.timeouts.test),
 			hookTimeout: timeoutOf(config.timeouts.hook)

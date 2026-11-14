@@ -133,8 +133,8 @@ class Consumer extends Context.Service<Consumer, Readonly<{ directory: string }>
 /**
  * The consumer, built in a temporary directory: its files; the library's package.json, src and scripts copied into its
  * node_modules, beside a link to each dependency the library's manifest declares, so the copy resolves only what the
- * library declares; its own dependencies linked; and the library's bin linked into node_modules/.bin, as a package
- * manager links it.
+ * library declares; its own dependencies linked, with each peer the library declares, which the consumer's own copy
+ * serves; and the library's bin linked into node_modules/.bin, as a package manager links it.
  */
 const consumerLayer = Layer.effect(
 	Consumer,
@@ -168,7 +168,7 @@ const consumerLayer = Layer.effect(
 			{ discard: true }
 		)
 		yield* Effect.forEach(
-			CONSUMER_DEPENDENCIES,
+			Arr.union(CONSUMER_DEPENDENCIES, Record.keys(manifest.peerDependencies)),
 			(name) =>
 				Effect.flatMap(installedPackage(name), (real) =>
 					fs.symlink(real, `${directory}/node_modules/${name}`)
@@ -438,7 +438,7 @@ layer(Layer.provideMerge(consumerLayer, NodeServices.layer))(
 							Effect.gen(function* () {
 								const run = Option.match(
 									Option.flatMap(c.steering, (pending) =>
-										Arr.findFirst(FEATURES, (feature) => pending.has(feature))
+										Arr.findFirst(FEATURES, (feature) => pending.aimed(feature))
 									),
 									{ onNone: () => sketch, onSome: (feature) => c.draw(aimedAt(feature)) }
 								)
