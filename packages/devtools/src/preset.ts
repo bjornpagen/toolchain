@@ -286,7 +286,7 @@ type Scope = "every file" | "effect-free code" | "test files"
 
 /** Each plugin rule's part, which a repository runs or not, and the files it runs on there. */
 const PLACES = {
-	"bearer-owners": { part: "web", scope: "every file" },
+	"bearer-owners": { part: "core", scope: "every file" },
 	"brands-sole-mint": { part: "core", scope: "every file" },
 	"import-doors": { part: "core", scope: "every file" },
 	"no-collation": { part: "drizzle", scope: "every file" },

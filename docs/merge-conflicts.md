@@ -6,7 +6,9 @@ who it changes things for, which fixtures prove each side, and what I recommende
 
 **Decided (Bjorn, 2026-11-14):** every item exactly as recommended, C1 to C17 and D1 to D2, C12 (a) included. The CLI
 generator drops `web` as well as `drizzle`, since it has no React. grizzle's main has since gained the oxlint rule
-`side-effect-free` (847cc104, a226cbac), a plain addition, which joins the `grizzle` pack.
+`side-effect-free` (847cc104, a226cbac), a plain addition, which joins the `grizzle` pack. `bearer-owners` moved from `web` to `core` after the decision: the CLI generator, which drops `web`, names an owner
+for it (its generated runtime's auth.ts), and the rule guards any HTTP client, not React; grizzle and den now run it,
+with their Bearer headers' files as owners.
 
 ## The decisions at a glance
 

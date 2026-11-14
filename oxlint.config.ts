@@ -21,6 +21,7 @@ export default defineConfig(
 		unassignedImports: [],
 		ceremony: ["packages/devtools/**"],
 		plugin: {
+			"bearer-owners": { owners: [] },
 			"brands-sole-mint": {
 				mints: [
 					{ doors: ["packages/testing/src/random.ts"], brands: ["LabelStream", "RunStream"] },
