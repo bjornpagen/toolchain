@@ -1,0 +1,13 @@
+import { defineTestConfig } from "#vitest/config.ts"
+
+export default defineTestConfig({
+	include: ["src/**/*.test.ts"],
+	guided: ["src/sense.test.ts"],
+	setup: [],
+	conditions: [],
+	timeouts: {
+		test: { kind: "bounded", millis: 60_000 },
+		hook: { kind: "bounded", millis: 60_000 }
+	},
+	smallStack: []
+})

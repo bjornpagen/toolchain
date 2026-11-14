@@ -8,16 +8,9 @@
 	],
 	"ignorePatterns": ["packages/devtools/src/*/fixtures/**"],
 	// The dev tools' fixtures, which fallow does not read, are these packages' only importers: Drizzle and pg for the
-	// SQL rules, Vitest's declarations for the test rules, React's types for the React Compiler's and the style
+	// SQL rules, @effect/vitest's declarations for the test rules, React's types for the React Compiler's and the style
 	// linter's, and Tailwind for the style linter's.
-	"ignoreDependencies": [
-		"@effect/vitest",
-		"@types/react",
-		"drizzle-orm",
-		"pg",
-		"tailwindcss",
-		"vitest"
-	],
+	"ignoreDependencies": ["@effect/vitest", "@types/react", "drizzle-orm", "pg", "tailwindcss"],
 	"rules": {
 		"require-suppression-reason": "error"
 	},

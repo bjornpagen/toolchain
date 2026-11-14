@@ -1,6 +1,7 @@
-import { toolchain } from "@bjornpagen/devtools/config"
+import { grizzle, toolchain } from "@bjornpagen/devtools/config"
 
-/** The toolchain repository's own decisions: the rules and diagnostics it rejects, and where a rule does not run. */
+/** The toolchain repository's own decisions: the rules and diagnostics it rejects, where a rule does not run, and the
+ * grizzle pack's names for the testing library, which grizzle's standard holds. */
 export default toolchain({
 	rejected: {
 		rules: {
@@ -106,7 +107,7 @@ export default toolchain({
 			unstableApiUsage: "Effect's whole Node platform layer is marked unstable"
 		}
 	},
-	exceptions: [],
+	exceptions: [{ rule: "no-module-state", files: ["packages/testing/src/vitest/coverage.ts"] }],
 	effectFree: [],
 	core: {
 		uncheckedVocabularyLiteral: {
@@ -116,6 +117,142 @@ export default toolchain({
 			explanations: ["message"]
 		}
 	},
-	packs: [],
+	packs: [
+		grizzle({
+			sqlTextAssertion: { files: [], exempt: [], texts: [], matchers: [], equalities: [] },
+			limitEvidence: {
+				limits: { module: "", mints: [] },
+				formatTag: "formatConstant",
+				modules: [
+					{ package: "effect", module: "Duration", category: "time" },
+					{ package: "effect", module: "Schedule", category: "retry" }
+				],
+				wrappers: [{ package: "effect", module: "Effect", names: ["fn", "fnUntraced"] }],
+				vocabulary: {
+					length: {
+						parameters: [
+							"start",
+							"end",
+							"count",
+							"length",
+							"maxLength",
+							"targetLength",
+							"arrayLength",
+							"deleteCount",
+							"n"
+						],
+						words: []
+					},
+					time: {
+						parameters: [
+							"ms",
+							"millis",
+							"milliseconds",
+							"delay",
+							"timeout",
+							"duration",
+							"seconds",
+							"minutes",
+							"hours",
+							"days",
+							"weeks",
+							"nanos",
+							"micros",
+							"interval",
+							"timeToLive"
+						],
+						words: [
+							"timeout",
+							"deadline",
+							"idle",
+							"ms",
+							"millis",
+							"milliseconds",
+							"seconds",
+							"minutes",
+							"hours",
+							"interval",
+							"delay",
+							"grace",
+							"backoff",
+							"duration",
+							"lifetime",
+							"ttl"
+						]
+					},
+					concurrency: {
+						parameters: ["permits", "concurrency"],
+						words: ["concurrency", "permits", "parallelism", "workers"]
+					},
+					retry: {
+						parameters: ["times", "retries", "attempts"],
+						words: ["retries", "retry", "attempts", "attempt", "times", "tries"]
+					},
+					size: {
+						parameters: ["capacity", "size", "max", "min", "limit"],
+						words: [
+							"max",
+							"min",
+							"size",
+							"limit",
+							"budget",
+							"depth",
+							"capacity",
+							"cap",
+							"threshold"
+						]
+					}
+				},
+				scopes: []
+			},
+			noEnvironment: { files: [], readers: [], sources: [], entryReads: [] },
+			testCaseIsSearch: {
+				files: ["packages/testing/src/"],
+				registrars: [
+					{ package: "@effect/vitest", declarations: ["Test", "each", "prop"] },
+					{
+						package: "vitest",
+						declarations: ["TestCollectorCallable", "EachFunctionReturn", "TestForFunctionReturn"]
+					}
+				],
+				searches: [
+					{ module: "packages/testing/src/explore.ts", names: ["explore", "exhaust"] },
+					{ module: "packages/testing/src/interleave.ts", names: ["interleave"] }
+				],
+				scaffolds: [],
+				exempt: [
+					{
+						files: ["packages/testing/src/engine.bench.ts"],
+						reason:
+							"The testing library's engine bench: it measures what generating, replaying, enumerating, shrinking and exploring cost, a performance measure, never a verdict a person wrote."
+					}
+				]
+			},
+			noCaseList: {
+				files: ["packages/testing/src/"],
+				cases: [],
+				dictionaries: [],
+				searches: [
+					{ module: "packages/testing/src/explore.ts", name: "exhaust", space: "generator" },
+					{ module: "packages/testing/src/explore.ts", name: "explore", space: "draw" }
+				],
+				generators: [
+					{ module: "packages/testing/src/gen.ts", names: ["element"], draws: "list" },
+					{ module: "packages/testing/src/gen.ts", names: ["constant"], draws: "value" },
+					{ module: "packages/testing/src/gen.ts", names: ["map", "span"], draws: "each" },
+					{
+						module: "packages/testing/src/explore.ts",
+						names: ["drawn", "sketched"],
+						draws: "each"
+					},
+					{
+						module: "packages/testing/src/gen.ts",
+						names: ["oneOf", "weighted", "proportional"],
+						draws: "union"
+					}
+				]
+			}
+		})
+	],
 	own: []
 })
