@@ -42,8 +42,11 @@ fill() (
 			*) continue ;;
 		esac
 		commit=${entry##* }
-		module=$(git -C "$5/$path" rev-parse --absolute-git-dir 2>/dev/null) ||
-			die "$path is a submodule that is not checked out: run git submodule update --init"
+		# A submodule the working tree never checked out (a nested one, often) stays an empty directory, as it is there.
+		checkout=$(cd "$5/$path" 2>/dev/null && pwd -P) || continue
+		top=$(git -C "$checkout" rev-parse --show-toplevel 2>/dev/null) || continue
+		[ "$(cd "$top" && pwd -P)" = "$checkout" ] || continue
+		module=$(git -C "$checkout" rev-parse --absolute-git-dir)
 		GIT_DIR=$module git cat-file -e "$commit^{commit}" 2>/dev/null ||
 			die "$path's repository lacks $commit, which the snapshot records: fetch it there"
 		fill "$module" "$commit^{tree}" "$3/$path" "$4.modules/$(printf '%s' "$path" | git hash-object --stdin)" "$5/$path"
