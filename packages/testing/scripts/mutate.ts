@@ -311,10 +311,14 @@ const verdictOf = (result: TestRunResult): RunVerdict => {
  * A forks worker its run owns from the moment its process is forked (start forks before it awaits anything) to its
  * stop, so the run's release can end it whatever it is doing. Its stop is Vitest's own: SIGTERM, then SIGKILL once
  * ForksPoolWorker's grace has passed (Vitest's SIGKILL_TIMEOUT, 500 ms in Vitest 5.1), which is how long a worker that
- * ignores SIGTERM, one looping in a mutant, keeps running.
+ * ignores SIGTERM, one looping in a mutant, keeps running. The run's release and Vitest's pool, cancelling after a
+ * bail, can both stop one worker, and Vitest's stop ends its process once: a second call lowers its streams' listener
+ * bound below zero (a RangeError) or reads the fork the first has cleared ("torn down"), an unhandled rejection that
+ * ends the run. So every stop after the first, until the next start, is the first's.
  */
 class OwnedFork extends ForksPoolWorker {
 	readonly #running: Set<OwnedFork>
+	#stopping: Option.Option<Promise<void>> = Option.none()
 
 	constructor(options: PoolOptions, running: Set<OwnedFork>) {
 		super(options)
@@ -323,13 +327,16 @@ class OwnedFork extends ForksPoolWorker {
 
 	override start() {
 		const started = super.start()
+		this.#stopping = Option.none()
 		this.#running.add(this)
 		return started
 	}
 
 	override stop() {
 		this.#running.delete(this)
-		return super.stop()
+		const stopping = Option.getOrElse(this.#stopping, () => super.stop())
+		this.#stopping = Option.some(stopping)
+		return stopping
 	}
 }
 
