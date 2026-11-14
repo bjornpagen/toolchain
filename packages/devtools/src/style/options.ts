@@ -77,7 +77,8 @@ const Operand = Schema.Union([
 	})
 ])
 
-/** The doors the markup rule leaves open, each at the files that own it. */
+/** The doors the markup rule (devtools/markup, which oxlint runs on the app's files) leaves open, each at the files
+ * that own it. */
 export const MarkupOptions = Schema.Struct({
 	/** The inline `style` objects a file may write: each CSS property with the operands it may hold, measured
 	 * layout or authored motion values, never static styling. */
@@ -109,8 +110,12 @@ export const MarkupOptions = Schema.Struct({
  * inert there.
  */
 const AppStyleOptions = Schema.Struct({
+	/** The stylesheet components.json names in tailwind.css, repository-relative: the entry of the design system the
+	 * class rules read. The style linter holds it to components.json. */
+	entryPoint: RepositoryPath,
 	/** The app's exceptions: files where a rule's reports are not the repository's to fix, by the rule's id, a shared
-	 * rule's or one of the app's own rules'. Exceptions live here, never inline. */
+	 * rule's or one of the app's own rules'. Exceptions live here, never inline: the preset turns an oxlint rule off on
+	 * them, and the style linter drops its own findings there. */
 	exceptions: Schema.Array(
 		Schema.Struct({ rule: Schema.NonEmptyString, files: Schema.Array(RepositoryPath) })
 	),
@@ -122,14 +127,19 @@ const AppStyleOptions = Schema.Struct({
 
 export type AppStyleOptions = typeof AppStyleOptions.Type
 
-/** The web pack's options: each Tailwind app's style options, by the app's package root relative to the repository's
+/** The web pack's options: the repository's root, absolute (`import.meta.dirname` of a module at the root, such as
+ * web.ts), which the class rules resolve each app from wherever oxlint runs and the style linter holds to the
+ * repository it runs in, and each Tailwind app's style options, by the app's package root relative to the repository's
  * root. A repository without a Tailwind app has no web pack. */
-export const WebOptions = Schema.Struct({ apps: Schema.Record(Schema.String, AppStyleOptions) })
+export const WebOptions = Schema.Struct({
+	root: Schema.NonEmptyString,
+	apps: Schema.Record(Schema.String, AppStyleOptions)
+})
 
 export type WebOptions = typeof WebOptions.Type
 
-/** What the shared rules read of an app's options: the stylesheet contract and the markup rule's doors. */
-export type RuleOptions = Pick<AppStyleOptions, "stylesheet" | "markup">
+/** What the style linter's shared rules read of an app's options: the stylesheet contract. */
+export type RuleOptions = Pick<AppStyleOptions, "stylesheet">
 
 export type StylesheetOption = (typeof StylesheetOptions)["Type"]
 
@@ -141,14 +151,22 @@ export type MarkupOption = (typeof MarkupOptions)["Type"]
 
 export type OperandOption = (typeof Operand)["Type"]
 
-/** Every path the shared rules' options name, for the check that each names a file the run knows. */
-export const pathsOf = (options: RuleOptions): ReadonlyArray<string> => [
+/** Every path the stylesheet contract names, for the check that each names a file the run knows. */
+export const stylesheetPathsOf = (options: RuleOptions): ReadonlyArray<string> => [
 	...Arr.map(options.stylesheet.scopedSheets, (sheet) => sheet.path),
-	...Arr.map(options.stylesheet.passthrough, (sheet) => sheet.path),
+	...Arr.map(options.stylesheet.passthrough, (sheet) => sheet.path)
+]
+
+/** Every path an app's options name, the markup rule's doors and the exceptions' files among them: oxlint does not
+ * notice a path that names no file, so the style linter checks them all. */
+export const appPathsOf = (options: AppStyleOptions): ReadonlyArray<string> => [
+	options.entryPoint,
+	...stylesheetPathsOf(options),
 	...Arr.map(options.markup.measuredStyles, (entry) => entry.path),
 	...Arr.map(options.markup.styleBridges, (bridge) => bridge.path),
 	...options.markup.htmlTemplates,
-	...options.markup.stylesheetConstructors
+	...options.markup.stylesheetConstructors,
+	...Arr.flatMap(options.exceptions, (exception) => exception.files)
 ]
 
 const FIXTURES = "src/style/fixtures"
@@ -173,14 +191,7 @@ const fixtureSheet = (path: string): ScopedSheetOption => ({
 
 const PASSTHROUGH_TEXT = '@import "../../support/theme.css";'
 
-const fixtureBridge = (path: string): MarkupOption["styleBridges"][number] => ({
-	path,
-	function: "mergeSurfaceProps",
-	base: "baseProps",
-	overlay: "props"
-})
-
-/** The options the fixtures run under: names that point into each rule's own fixture directory. The one layered
+/** The options the stylesheet fixtures run under: names that point into the rule's own fixture directory. The one layered
  * import is proven by the app sheets under stylesheet/app/layered/ and stylesheet/app/unordered/, and refused in a
  * scoped sheet under stylesheet/scoped/layered/. They name no runtime layer; RUNTIME_FIXTURE_OPTIONS name one. */
 export const FIXTURE_OPTIONS: RuleOptions = {
@@ -213,15 +224,6 @@ export const FIXTURE_OPTIONS: RuleOptions = {
 			{ path: `${FIXTURES}/stylesheet/passthrough/clean.css`, text: PASSTHROUGH_TEXT },
 			{ path: `${FIXTURES}/stylesheet/unnamed/clean.css`, text: PASSTHROUGH_TEXT }
 		]
-	},
-	markup: {
-		measuredStyles: [],
-		styleBridges: [
-			fixtureBridge(`${FIXTURES}/class-extraction/clean.tsx`),
-			fixtureBridge(`${FIXTURES}/class-extraction/violating.tsx`)
-		],
-		htmlTemplates: [],
-		stylesheetConstructors: []
 	}
 }
 

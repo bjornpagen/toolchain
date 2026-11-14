@@ -55,9 +55,9 @@
 		"@babel/core": "catalog:",
 		"@effect/platform-node": "catalog:",
 		"@effect/tsgo": "catalog:",
-		"@tailwindcss/node": "catalog:",
 		"babel-plugin-react-compiler": "catalog:",
 		"effect": "catalog:",
+		"eslint-plugin-better-tailwindcss": "catalog:",
 		"oxlint": "catalog:",
 		"typescript": "catalog:"
 	}

@@ -27,11 +27,6 @@ const characterAt = (text: string, index: number): Option.Option<string> =>
 const characterIs = (text: string, index: number, test: (character: string) => boolean): boolean =>
 	Option.exists(characterAt(text, index), test)
 
-export const startsWithWhitespace = (text: string): boolean => characterIs(text, 0, isWhitespace)
-
-export const endsWithWhitespace = (text: string): boolean =>
-	characterIs(text, text.length - 1, isWhitespace)
-
 /** The words of a whitespace-separated string, each with its offset in the string. */
 export const wordsOf = (
 	text: string
@@ -108,20 +103,6 @@ export const hasLiteralColor = (text: string): boolean =>
 			(index) => !characterIs(text, index - 1, isWordCharacter)
 		)
 	)
-
-const isVariableCharacter = (character: string): boolean =>
-	isLetter(character) || isDigit(character) || character === "-"
-
-/** `var(--name)` with nothing around it: the variable it names. */
-export const soleVariableOf = (text: string): Option.Option<string> => {
-	if (!Str.startsWith("var(--")(text) || !Str.endsWith(")")(text)) {
-		return Option.none()
-	}
-	const name = Str.slice(4, -1)(text)
-	return Arr.every(Arr.fromIterable(Str.slice(2)(name)), isVariableCharacter) && name.length > 2
-		? Option.some(name)
-		: Option.none()
-}
 
 /** Digits and dots, at least one: a plain number, without sign or unit. */
 const isPlainNumber = (text: string): boolean =>

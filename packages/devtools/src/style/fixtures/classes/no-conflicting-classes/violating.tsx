@@ -19,9 +19,6 @@ export function ConflictingFixture() {
 			<span
 				className="text-sm text-lg" // violation
 			/>
-			<span
-				className="flex items-center flex" // violation
-			/>
 			<span className={tones({ tone: "calm" })} />
 		</div>
 	)

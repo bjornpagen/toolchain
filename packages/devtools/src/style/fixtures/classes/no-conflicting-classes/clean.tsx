@@ -1,4 +1,4 @@
-import { cn } from "#style/fixtures/support/cn.ts"
+import { cn } from "#fixture/cn.ts"
 
 export function ComposedFixture({ active }: Readonly<{ active: boolean }>) {
 	return (

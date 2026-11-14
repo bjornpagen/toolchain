@@ -25,9 +25,6 @@ export function ArbitraryValueFixture() {
 				className="rounded-[min(var(--radius-md),10px)]" // violation
 			/>
 			<span
-				className="pb-(--fixture-gap)" // violation
-			/>
-			<span
 				className="bg-[var(--color-blue-500)]" // violation
 			/>
 			<span

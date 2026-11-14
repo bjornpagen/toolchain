@@ -9,6 +9,16 @@ import {
 } from "#oxlint/environment.ts"
 import type { OptionsOf, Plugin } from "#oxlint/rule.ts"
 import { TEST_SUFFIXES } from "#shared/tests.ts"
+import {
+	CLASS_RULE_IDS,
+	type ClassRuleId,
+	type ClassSetting,
+	type ClassSource,
+	classSettingsOf,
+	liftedSettingsOf,
+	TAILWIND_PLUGIN,
+	TAILWIND_PLUGIN_PATH
+} from "#style/classes.ts"
 import type { AppStyleOptions } from "#style/options.ts"
 
 /**
@@ -396,12 +406,48 @@ const APP_RULES: { readonly [R in AppRule]: (app: AppStyleOptions) => DummyRule 
 /** A path of the style options (repository-relative; one ending in "/" names a directory) as an oxlint glob. */
 const globOf = (path: string): string => (Str.endsWith("/")(path) ? `${path}**` : path)
 
-/** The web pack's Tailwind apps, by their package root relative to the repository's, with their style options; none
- * for a repository without a web pack. */
-const tailwindAppsOf = (toolchain: Toolchain): ReadonlyArray<readonly [string, AppStyleOptions]> =>
+/** One of the web pack's Tailwind apps: the repository's root, absolute, the app's package root relative to it, and
+ * the app's style options. */
+type TailwindApp = Readonly<{ root: string; app: string; options: AppStyleOptions }>
+
+/** The web pack's Tailwind apps; none for a repository without a web pack. */
+const tailwindAppsOf = (toolchain: Toolchain): ReadonlyArray<TailwindApp> =>
 	Arr.flatMap(toolchain.packs, (pack) =>
-		pack.pack === "web" ? Record.toEntries(pack.options.apps) : []
+		pack.pack === "web"
+			? Arr.map(Record.toEntries(pack.options.apps), ([app, options]) => ({
+					root: pack.options.root,
+					app,
+					options
+				}))
+			: []
 	)
+
+const isClassRuleId = (rule: string): rule is ClassRuleId =>
+	Arr.contains<string>(CLASS_RULE_IDS, rule)
+
+/** The class rules as a configuration names them: each plugin rule at error with its options, or off. */
+const classRulesOf = (settings: ReadonlyArray<ClassSetting>): DummyRuleMap =>
+	Record.fromEntries(
+		Arr.map(settings, (setting): readonly [string, DummyRule] => [
+			`${TAILWIND_PLUGIN}/${setting.rule}`,
+			Option.match(setting.options, {
+				onNone: (): DummyRule => "off",
+				onSome: (options): DummyRule => ["error", options]
+			})
+		])
+	)
+
+/** What a style exception sets on its files: an oxlint rule of the plugin off, or the class rules that hold a class
+ * rule id with that id lifted; none for a rule only the style linter runs. */
+const exceptionRulesOf = (source: ClassSource, rule: string): Option.Option<DummyRuleMap> => {
+	if (isClassRuleId(rule)) {
+		return Option.some(classRulesOf(liftedSettingsOf(source, rule)))
+	}
+	const off: DummyRule = "off"
+	return Arr.contains<string>(Record.keys(APP_RULES), rule)
+		? Option.some({ [`${plugin.meta.name}/${rule}`]: off })
+		: Option.none()
+}
 
 /** The plugin's names for the parts `P`: one options object for each of their rules that takes them, and none for a
  * rule of a part the repository does not run. */
@@ -560,6 +606,7 @@ export const standard = <const T extends Toolchain>(
 		Arr.filter(PLUGINS, (builtIn) => runs(builtIn.part)),
 		(builtIn) => builtIn.name
 	)
+	const apps = tailwindAppsOf(toolchain)
 	const generic = Arr.reduce(parts, {}, (rules: DummyRuleMap, part): DummyRuleMap => ({
 		...rules,
 		...GENERIC_RULES[part]
@@ -575,32 +622,41 @@ export const standard = <const T extends Toolchain>(
 				(rule) => entryOf(plugin.meta.name, names, rule)
 			)
 		)
-	/** Each Tailwind app's block, which runs the app's rules on its files with its options, and the blocks of its
-	 * style exceptions that name an oxlint rule, which turn that rule off on the files they name. */
-	const appBlocks = (app: string, options: AppStyleOptions): ReadonlyArray<OxlintOverride> => [
-		{
-			files: [`${app}/**`],
-			rules: {
-				...Record.fromEntries(
-					Arr.map(Record.keys(APP_RULES), (rule) => [
-						`${plugin.meta.name}/${rule}`,
-						APP_RULES[rule](options)
-					])
-				),
-				...off
-			}
-		},
-		...Arr.filterMap(options.exceptions, (exception): Result.Result<OxlintOverride, void> => {
-			const turnedOff: DummyRule = "off"
-			return Arr.contains<string>(Record.keys(APP_RULES), exception.rule) &&
-				Arr.isReadonlyArrayNonEmpty(exception.files)
-				? Result.succeed({
-						files: Arr.map(exception.files, globOf),
-						rules: { [`${plugin.meta.name}/${exception.rule}`]: turnedOff, ...off }
-					})
-				: Result.failVoid
-		})
-	]
+	/** Each Tailwind app's block, which runs the app's rules and its class rules on its files with its options, and
+	 * the blocks of its style exceptions that name an oxlint rule, which lift that rule on the files they name. */
+	const appBlocks = ({ root, app, options }: TailwindApp): ReadonlyArray<OxlintOverride> => {
+		const source: ClassSource = {
+			cwd: `${root}/${app}`,
+			entryPoint: `${root}/${options.entryPoint}`
+		}
+		return [
+			{
+				files: [`${app}/**`],
+				rules: {
+					...Record.fromEntries(
+						Arr.map(Record.keys(APP_RULES), (rule) => [
+							`${plugin.meta.name}/${rule}`,
+							APP_RULES[rule](options)
+						])
+					),
+					...classRulesOf(classSettingsOf(source, [])),
+					...off
+				}
+			},
+			...Arr.filterMap(options.exceptions, (exception): Result.Result<OxlintOverride, void> =>
+				Option.match(exceptionRulesOf(source, exception.rule), {
+					onNone: () => Result.failVoid,
+					onSome: (rules) =>
+						Arr.isReadonlyArrayNonEmpty(exception.files)
+							? Result.succeed({
+									files: Arr.map(exception.files, globOf),
+									rules: { ...rules, ...off }
+								})
+							: Result.failVoid
+				})
+			)
+		]
+	}
 	/** A file group's block, its rejected rules off after its own, and none when the repository has no such files. */
 	const block = (
 		files: ReadonlyArray<string>,
@@ -672,6 +728,7 @@ export const standard = <const T extends Toolchain>(
 				plugins: [...plugins],
 				jsPlugins: [
 					`${import.meta.dirname}/oxlint-plugin.ts`,
+					...(Arr.isReadonlyArrayNonEmpty(apps) ? [TAILWIND_PLUGIN_PATH] : []),
 					...testing.jsPlugins,
 					...Arr.map(project.ownPlugins, (own) => own.specifier)
 				],
@@ -713,7 +770,7 @@ export const standard = <const T extends Toolchain>(
 						}
 					),
 					...environment,
-					...Arr.flatMap(tailwindAppsOf(toolchain), ([app, options]) => appBlocks(app, options)),
+					...Arr.flatMap(apps, appBlocks),
 					{
 						files: [...TEST_FILES],
 						plugins: [...plugins, "vitest"],
