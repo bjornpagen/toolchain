@@ -21,9 +21,9 @@ comes from the plan's finalizer.
 
 - The catalog's versions: `@effect/tsgo` 0.69.0 (tsrs 0.25.0) with `typescript` 7.1.0-beta, `oxlint` 1.93.0,
   `oxlint-tsgolint` 7.0.2007, `turbo` 2.11.11, `vitest` 5.1.0, `oxfmt` 0.78.0, `fallow` 3.43.0 or later,
-  `effect`, `@effect/platform-node` and `@effect/vitest` 4.1.4, `@babel/core` 8.1.2 (if the repository still runs the
-  React Compiler check), `tailwindcss` and `@tailwindcss/node` 4.3.5, `vite` 8.3.8, pnpm 12.18.0. A pin newer than the
-  repository's `minimumReleaseAge` allows waits a day.
+  `effect`, `@effect/platform-node` and `@effect/vitest` 4.1.4, `tailwindcss` 4.3.5, `vite` 8.3.8, pnpm 12.18.0
+  (`@babel/core` and `@tailwindcss/node`, which only the old style linter and React Compiler check loaded, go in part 4).
+  A pin newer than the repository's `minimumReleaseAge` allows waits a day.
 - Babel 8 carries its own types: drop `@types/babel__core`.
 - @effect/tsgo 0.69.0 ships two new Effect diagnostics, `missingConcurrencyOption` and `onExitFailureToOnError`. Every
   tsconfig that restates the `@effect/language-service` plugin lists both at `"error"`, as the shared base does, unless
@@ -97,7 +97,38 @@ comes from the plan's finalizer.
   becomes `sh vendor/toolchain/packages/devtools/bin/gate.sh run index pnpm check`: it handles submodules, which `git checkout-index` left
   empty, and shares the working tree's turbo cache. Its old cache directory (`~/.cache/<repo>-check/`) can go.
 
-### 4. superlint's retirement
+### 4. Style and the React Compiler (fab3181, 2820eb3, 0540524, 2af41b6)
+
+Neither the style linter nor the React Compiler check opens a TypeScript program any more. For a repository with a web
+pack (superstarter, edullm):
+
+- web.ts: the web pack takes `root: import.meta.dirname` (web.ts sits at the root; `superstyle` refuses another value),
+  and each app `entryPoint`, the stylesheet its components.json names in `tailwind.css`, and `vendored`, the directory
+  its `aliases.ui` resolves to ending in `/`, both repository-relative (`"packages/nextjs-app/src/styles/globals.css"`,
+  `"packages/nextjs-app/src/ui/"`); `superstyle` holds both to components.json.
+- The preset runs on each app's files, its vendored directory aside: `devtools/markup` (with the app's `markup`
+  options), `devtools/no-svg-paint`, and eslint-plugin-better-tailwindcss's `no-unknown-classes`,
+  `no-conflicting-classes`, `no-duplicate-classes`, `no-concatenated-classes` and `no-restricted-classes` (arbitrary
+  values and Tailwind's palette), loaded by absolute path from the dev tools: nothing to install or name in
+  oxlint.config.ts. A style exception in web.ts for `markup`, `no-svg-paint`, `no-unresolved-class`,
+  `no-conflicting-classes`, `no-dynamic-class`, `no-arbitrary-value` or `no-invalid-color` still works: the preset
+  lifts the rule on its files. Exceptions for `class-extraction` and `no-unverifiable-class` go with those rules.
+- What a class rule no longer sees: a class reaches it from a className, a `*ClassName` attribute, a class helper (cn,
+  clsx, twMerge, cva, tv), a classList call or a variable named `*Class`, `*ClassName` or `*Classes`, no longer through
+  a type; a string literal inside a className expression is read as classes, so write `TONES[tone]`, not
+  `TONES[on ? "calm" : "loud"]`; `pb-(--x)` and `bg-[var(--x)]` pass whatever `--x` is (a palette variable aside).
+  no-svg-paint follows a paint through the file's own variables only.
+- `superstyle` checks the stylesheet contract and standalone HTML alone. A repository's own style rules
+  (`ownStyleRules`) get `{ read, stylesheet }` (the reader of a file the run knows, as text) and return
+  `{ namespaces, stylesheets, findings }`: class rules and the checker are gone, so a rule that reads classes or syntax
+  (edullm's book-units, book-caption) becomes a rule of the repository's own oxlint plugin. `RuleOptions` is the
+  stylesheet options alone, so an own rule set's fixture `style` drops `markup`.
+- The React Compiler: the preset's web part runs oxlint's React Compiler rules, the correctness category's with
+  `react/todo`, `react/unsupported-syntax`, `react/syntax` and `react/invariant`. Drop each app's `react-compiler`
+  script and turbo task and `react-compiler` from the root's `check`. Each app keeps `babel-plugin-react-compiler`, which
+  `next build` loads, and `REACT_COMPILER_OPTIONS` stays at `@bjornpagen/devtools/react-compiler`.
+
+### 5. superlint's retirement
 
 The finalizer of the plan completes this part: every superlint rule's new home (an oxlint rule, a mapping or a
 deletion), the config keys each repository drops from `toolchain.config.ts`, and the removal of the superlint tasks,
