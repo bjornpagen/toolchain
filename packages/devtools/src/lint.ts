@@ -124,21 +124,14 @@ const projectToolchain = Effect.gen(function* () {
 			)}`
 		})
 	}
-	const { support, vocabularies } = config.core.uncheckedVocabularyLiteral
-	const named = [
-		...Arr.map(
-			[...support, ...Arr.map(vocabularies, (vocabulary) => vocabulary.module)],
-			(module) => ({ option: "core.uncheckedVocabularyLiteral", module })
-		),
-		...Arr.flatMap(config.packs, (pack) =>
-			pack.pack === "grizzle"
-				? Arr.map(pack.options.testCaseIsSearch.scaffolds, (scaffold) => ({
-						option: "grizzle's testCaseIsSearch.scaffolds",
-						module: scaffold.module
-					}))
-				: []
-		)
-	]
+	const named = Arr.flatMap(config.packs, (pack) =>
+		pack.pack === "grizzle"
+			? Arr.map(pack.options.testCaseIsSearch.scaffolds, (scaffold) => ({
+					option: "grizzle's testCaseIsSearch.scaffolds",
+					module: scaffold.module
+				}))
+			: []
+	)
 	const absent = yield* Effect.filter(named, ({ module }) =>
 		fs
 			.exists(`${root}/${module}`)

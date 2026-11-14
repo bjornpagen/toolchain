@@ -11,69 +11,6 @@ const PackageDirectories = Schema.Array(Schema.String)
  * its name. */
 const Declaration = Schema.Struct({ owner: Schema.String, declaration: Schema.String })
 
-/** A type a repository module exports (a type alias, an interface or a class): the module by its repository-relative
- * path, the type by its name. */
-const DeclaredType = Schema.Struct({ module: Schema.String, type: Schema.String })
-
-/** A type alias a repository module exports: the module by its repository-relative path, the alias by its name. */
-const DeclaredAlias = Schema.Struct({ module: Schema.String, alias: Schema.String })
-
-/** The categories of the values that set a resource: a length or a count, a time, a concurrency, a retry policy and
- * a resource's size. */
-const CATEGORY_NAMES = ["length", "time", "concurrency", "retry", "size"] as const
-
-const Category = Schema.Literals(CATEGORY_NAMES)
-
-export type Category = typeof Category.Type
-
-/**
- * Where a bound sits. A comparison's operands (<, <=, >, >=), outside a loop's condition and inside it; the arguments
- * of Math.min and Math.max; and the values that set a category's resource, by the vocabulary of their parameter,
- * property or assignment target, or by the category module they are passed to.
- */
-const BoundPosition = Schema.Literals(["comparison", "loop", "extremum", ...CATEGORY_NAMES])
-
-export type BoundPosition = typeof BoundPosition.Type
-
-/** A module of an installed package whose values are a category's: a function of it sets one with every argument,
- * and a parameter that accepts one of its types is one (`{ package: "effect", module: "Schedule", category: "retry" }`). */
-const CategoryModule = Schema.Struct({
-	package: Schema.String,
-	module: Schema.String,
-	category: Category
-})
-
-/** The functions of an installed package that wrap a function into a callable taking the same arguments
- * (`{ package: "effect", module: "Effect", names: ["fn", "fnUntraced"] }`), whose body a call of the callable runs. */
-const Wrappers = Schema.Struct({ package: Schema.String, module: Schema.String, names: Names })
-
-/** One category's names: the parameter names a library's signature gives a value of it, matched exactly, and the
- * words of a property's or a parameter's name that put a value in it (`idleTimeoutMs` is idle, timeout and ms). */
-const Vocabulary = Schema.Struct({ parameters: Names, words: Names })
-
-/**
- * Whose names put a value in a category by their words: every property's and every assignment target's (the library,
- * where a property named for a bound holds one wherever its value goes), or only a library's properties (the tests,
- * whose own records and their subject's types are data, and whose bounds are what the libraries they call consume).
- */
-const Words = Schema.Literals(["every property", "library properties"])
-
-/** A set of files limit-evidence checks, which owns its numbers: a call from one of its files to a function of
- * another passes the caller's own numbers, so a parameter that reaches a bound there is that bound, while a call out of
- * the scope passes the code under test or a dependency its inputs. The scope names its files, the file-name suffixes
- * that mark a generated file, the positions it checks, whose names' words put a value in a category, the words of a
- * module-level number constant's name that say it bounds something, and the types (an alias or an interface) of the
- * inputs a test draws (a generator, a bench gate), whose builders' arguments are the test's inputs and never a bound. A
- * file is in the first scope that names it. */
-const LimitScope = Schema.Struct({
-	files: Paths,
-	generated: Names,
-	positions: Schema.Array(BoundPosition),
-	words: Words,
-	constants: Names,
-	inputs: Schema.Array(DeclaredAlias)
-})
-
 /** Values a repository module exports, by the module's repository-relative path and the values' names. */
 const DeclaredValues = Schema.Struct({ module: Schema.String, names: Names })
 
@@ -122,22 +59,8 @@ export type Exceptions = typeof Exceptions.Type
  * the Effect-free lint rules, its tsconfig extends the dev tools' Effect-free base, and it depends on no `effect`. */
 export const EffectFree = PackageDirectories
 
-/**
- * The core pack's options: the names its rules need. Every field is required: a repository where a rule has nothing
- * to guard states that with an empty list, so the rule is inert there.
- */
-export const CoreOptions = Schema.Struct({
-	/** Where a closed vocabulary's member is spelled as a bare string: the test support read beside the test files,
-	 * the types whose members form the vocabularies (a union of strings, or the `_tag` of a tagged error or a union of
-	 * them), the registrars whose first argument is a title (`describe`, `it`), and the parameter names whose argument
-	 * is prose (`message`). */
-	uncheckedVocabularyLiteral: Schema.Struct({
-		support: Paths,
-		vocabularies: Schema.Array(DeclaredType),
-		titled: Names,
-		explanations: Names
-	})
-})
+/** The core pack's options: its rules take no names. */
+export const CoreOptions = Schema.Struct({})
 
 export type CoreOptions = typeof CoreOptions.Type
 
@@ -209,34 +132,6 @@ export type DrizzleOptions = typeof DrizzleOptions.Type
  * where a rule has nothing to guard states that with an empty list, so the rule is inert there.
  */
 export const GrizzleOptions = Schema.Struct({
-	/** Where emitted SQL is asserted by its text: the test files read, the files exempt among them (text a person
-	 * reviews), the type aliases of emitted text, the matchers that assert a pattern (`assert.match`), and the
-	 * equalities that assert text when their expected value is a written string (`assert.equal`). */
-	sqlTextAssertion: Schema.Struct({
-		files: Paths,
-		exempt: Paths,
-		texts: Schema.Array(DeclaredAlias),
-		matchers: Names,
-		equalities: Names
-	}),
-	/** Where a bound must be a Limit or a caller's input: the module that mints limits, by its repository-relative path,
-	 * with its mints (`published`, `measured`, `derived`), whose arguments are a limit's evidence and its derivation;
-	 * the JSDoc tag that names a format's defining width; the packages' modules whose values are a category's; the
-	 * packages' function wrappers, whose wrapped body a call runs; each category's vocabulary; and the scopes. */
-	limitEvidence: Schema.Struct({
-		limits: Schema.Struct({ module: Schema.String, mints: Names }),
-		formatTag: Schema.String,
-		modules: Schema.Array(CategoryModule),
-		wrappers: Schema.Array(Wrappers),
-		vocabulary: Schema.Struct({
-			length: Vocabulary,
-			time: Vocabulary,
-			concurrency: Vocabulary,
-			retry: Vocabulary,
-			size: Vocabulary
-		}),
-		scopes: Schema.Array(LimitScope)
-	}),
 	/** Where the library reads no environment: the files read, the sanctioned readers among them, the packages' modules
 	 * whose values are the environment, and the values of those a program's entry module (one that tests
 	 * `import.meta.main`) reads as its own arguments and working directory. */
@@ -280,26 +175,10 @@ export const GrizzleOptions = Schema.Struct({
 export type GrizzleOptions = typeof GrizzleOptions.Type
 
 /** The exceptions the fixtures run under, relative to the fixtures root. */
-export const FIXTURE_EXCEPTIONS: Exceptions = [
-	{ rule: "limit-evidence", files: ["limit-evidence/mirror/clean.ts"] }
-]
+export const FIXTURE_EXCEPTIONS: Exceptions = []
 
-/** The core pack's options for its fixtures: names that point into each rule's own fixture directory. The vocabulary
- * rule's fixtures are two sets: its own directory's, and the `aliases` set beneath it, whose vocabularies are unions of
- * strings alone, as grizzle's were. */
-export const CORE_FIXTURE_OPTIONS: CoreOptions = {
-	uncheckedVocabularyLiteral: {
-		support: ["unchecked-vocabulary-literal/"],
-		vocabularies: [
-			{ module: "unchecked-vocabulary-literal/vocabulary.ts", type: "FaultTag" },
-			{ module: "unchecked-vocabulary-literal/vocabulary.ts", type: "TodoFailure" },
-			{ module: "unchecked-vocabulary-literal/vocabulary.ts", type: "TodoNotFound" },
-			{ module: "unchecked-vocabulary-literal/vocabulary.ts", type: "RefusalTag" }
-		],
-		titled: ["describe", "it", "effect"],
-		explanations: ["message", "why"]
-	}
-}
+/** The core pack's options for its fixtures. */
+export const CORE_FIXTURE_OPTIONS: CoreOptions = {}
 
 /** The drizzle pack's options for its fixtures: names that point into each rule's own fixture directory. */
 export const DRIZZLE_FIXTURE_OPTIONS: DrizzleOptions = {
@@ -350,134 +229,6 @@ export const DRIZZLE_FIXTURE_OPTIONS: DrizzleOptions = {
 
 /** The grizzle pack's options for its fixtures: names that point into each rule's own fixture directory. */
 export const GRIZZLE_FIXTURE_OPTIONS: GrizzleOptions = {
-	sqlTextAssertion: {
-		files: ["sql-text-assertion/"],
-		exempt: ["sql-text-assertion/clean.ts"],
-		texts: [{ module: "sql-text-assertion/emitted.ts", alias: "EmittedText" }],
-		matchers: ["assert.match", "assert.doesNotMatch", "containsText"],
-		equalities: ["assert.equal", "assert.notEqual"]
-	},
-	limitEvidence: {
-		limits: { module: "limit-evidence/limits.ts", mints: ["published", "measured", "derived"] },
-		formatTag: "formatConstant",
-		modules: [
-			{ package: "effect", module: "Duration", category: "time" },
-			{ package: "effect", module: "Schedule", category: "retry" }
-		],
-		wrappers: [{ package: "effect", module: "Effect", names: ["fn", "fnUntraced"] }],
-		vocabulary: {
-			length: {
-				parameters: [
-					"start",
-					"end",
-					"count",
-					"length",
-					"maxLength",
-					"targetLength",
-					"arrayLength",
-					"deleteCount",
-					"n"
-				],
-				words: []
-			},
-			time: {
-				parameters: [
-					"ms",
-					"millis",
-					"milliseconds",
-					"delay",
-					"timeout",
-					"duration",
-					"seconds",
-					"minutes",
-					"hours",
-					"days",
-					"weeks",
-					"nanos",
-					"micros",
-					"interval",
-					"timeToLive"
-				],
-				words: [
-					"timeout",
-					"deadline",
-					"idle",
-					"ms",
-					"millis",
-					"milliseconds",
-					"seconds",
-					"minutes",
-					"hours",
-					"interval",
-					"delay",
-					"grace",
-					"backoff",
-					"duration",
-					"lifetime",
-					"ttl"
-				]
-			},
-			concurrency: {
-				parameters: ["permits", "concurrency"],
-				words: ["concurrency", "permits", "parallelism", "workers"]
-			},
-			retry: {
-				parameters: ["times", "retries", "attempts"],
-				words: ["retries", "retry", "attempts", "attempt", "times", "tries"]
-			},
-			size: {
-				parameters: ["capacity", "size", "max", "min", "limit"],
-				words: ["max", "min", "size", "limit", "budget", "depth", "capacity", "cap", "threshold"]
-			}
-		},
-		scopes: [
-			{
-				files: ["limit-evidence/tests/"],
-				generated: [],
-				positions: ["time", "concurrency", "retry"],
-				words: "library properties",
-				constants: ["timeout", "deadline", "retries", "attempts", "concurrency", "ms", "seconds"],
-				inputs: [
-					{ module: "limit-evidence/tests/gen.ts", alias: "Gen" },
-					{ module: "limit-evidence/tests/gen.ts", alias: "Plan" }
-				]
-			},
-			{
-				files: ["limit-evidence/"],
-				generated: [".generated.ts"],
-				positions: [
-					"comparison",
-					"loop",
-					"extremum",
-					"length",
-					"time",
-					"concurrency",
-					"retry",
-					"size"
-				],
-				words: "every property",
-				constants: [
-					"max",
-					"min",
-					"limit",
-					"bound",
-					"budget",
-					"timeout",
-					"deadline",
-					"retries",
-					"size",
-					"depth",
-					"cap",
-					"threshold",
-					"grace",
-					"ms",
-					"millis",
-					"seconds"
-				],
-				inputs: []
-			}
-		]
-	},
 	noEnvironment: {
 		files: ["no-environment/"],
 		readers: ["no-environment/reader/clean.ts"],
