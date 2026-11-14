@@ -43,9 +43,10 @@
 		"bjornpagen-mutate": "./scripts/mutate.sh"
 	},
 	"scripts": {
-		"typecheck": "effect-tsgo tsrs",
+		"typecheck": "toolchain-typecheck",
+		"typecheck:full": "toolchain-typecheck --incremental false",
 		"superlint": "superlint",
-		"oxlint": "oxlint",
+		"oxlint": "toolchain-oxlint",
 		"test": "vitest run",
 		"bench": "vitest bench --run",
 		"mutate": "node scripts/mutate.ts"

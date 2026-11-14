@@ -8,21 +8,32 @@
 		"tsconfig.json",
 		"oxlint.config.ts"
 	],
-	"globalEnv": ["NODE_OPTIONS", "NODE_ENV"],
-	"globalPassThroughEnv": ["TMPDIR"],
+	"globalEnv": ["NODE_ENV"],
+	"globalPassThroughEnv": ["TMPDIR", "NODE_OPTIONS"],
 	"tasks": {
 		"source": {
 			"description": "Carries each package's source hash to its dependents, so a check reruns when a package it loads changes, without waiting for that package's checks.",
 			"dependsOn": ["^source"]
 		},
 		"typecheck": {
-			"description": "The dev tools' tsconfig bases, which the root tsconfig and every package extend, are inputs too.",
+			"description": "The incremental typecheck, `pnpm types`: each package's build info (node_modules/.cache/typecheck.tsbuildinfo, gitignored) lets a re-check check only what changed. The build info is no output: a hit replays the diagnostics, and a miss reads whatever build info the directory holds, which tsrs proves against the files' hashes. The dev tools' tsconfig bases, which the root tsconfig and every package extend, are inputs too. TOOLCHAIN_TS_CHECKERS caps the checkers and changes no result.",
 			"dependsOn": ["^source"],
 			"inputs": [
 				"$TURBO_DEFAULT$",
 				"$TURBO_ROOT$/packages/devtools/tsconfig.base.json",
 				"$TURBO_ROOT$/packages/devtools/tsconfig.effect-free.json"
-			]
+			],
+			"passThroughEnv": ["TOOLCHAIN_TS_CHECKERS"]
+		},
+		"typecheck:full": {
+			"description": "The full gate's typecheck, in `pnpm check`: from scratch (--incremental false), reading no build info, so a stale incremental result cannot pass the push. A task of its own, so it never replays a hit of the incremental one.",
+			"dependsOn": ["^source"],
+			"inputs": [
+				"$TURBO_DEFAULT$",
+				"$TURBO_ROOT$/packages/devtools/tsconfig.base.json",
+				"$TURBO_ROOT$/packages/devtools/tsconfig.effect-free.json"
+			],
+			"passThroughEnv": ["TOOLCHAIN_TS_CHECKERS"]
 		},
 		"superlint": {
 			"description": "The dev tools' rules and the repository's config are inputs too.",
@@ -36,13 +47,14 @@
 			]
 		},
 		"oxlint": {
-			"description": "The dev tools' preset and plugin and the repository's config are inputs too.",
+			"description": "The dev tools' preset and plugin and the repository's config are inputs too. TOOLCHAIN_TSGOLINT_PROCS caps tsgolint's cores (its GOMAXPROCS) and changes no result.",
 			"dependsOn": ["^source"],
 			"inputs": [
 				"$TURBO_DEFAULT$",
 				"$TURBO_ROOT$/toolchain.config.ts",
 				"$TURBO_ROOT$/packages/devtools/src/**"
-			]
+			],
+			"passThroughEnv": ["TOOLCHAIN_TSGOLINT_PROCS"]
 		},
 		"fixtures:superlint": {},
 		"fixtures:style": {},
@@ -60,13 +72,20 @@
 				"TOOLCHAIN_TEST_WORKERS"
 			]
 		},
-		"//#typecheck": {},
+		"//#typecheck": {
+			"passThroughEnv": ["TOOLCHAIN_TS_CHECKERS"]
+		},
+		"//#typecheck:full": {
+			"passThroughEnv": ["TOOLCHAIN_TS_CHECKERS"]
+		},
 		"//#superlint": {},
 		"//#workspace-gate": {
 			"description": "The repository-wide checks: every tsconfig and package manifest, and every file name git shows. It reads the whole tree and opens no TypeScript program, so it costs about a second, and a cache would have to hash the whole tree to know it could skip it.",
 			"cache": false
 		},
-		"//#oxlint": {},
+		"//#oxlint": {
+			"passThroughEnv": ["TOOLCHAIN_TSGOLINT_PROCS"]
+		},
 		"//#format": {},
 		"//#dead-code": {},
 		"//#dedupe": {

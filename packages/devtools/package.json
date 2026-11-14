@@ -26,14 +26,18 @@
 	},
 	"bin": {
 		"superlint": "./src/lint.ts",
+		"toolchain-gate": "./bin/gate.sh",
+		"toolchain-oxlint": "./bin/oxlint.sh",
+		"toolchain-typecheck": "./bin/typecheck.sh",
 		"superstyle": "./src/style.ts",
 		"react-compiler": "./src/react-compiler.ts",
 		"workspace-gate": "./src/workspace-gate.ts"
 	},
 	"scripts": {
-		"typecheck": "effect-tsgo tsrs",
+		"typecheck": "toolchain-typecheck",
+		"typecheck:full": "toolchain-typecheck --incremental false",
 		"superlint": "node src/lint.ts",
-		"oxlint": "oxlint",
+		"oxlint": "toolchain-oxlint",
 		"fixtures:superlint": "node src/lint.ts --fixtures",
 		"fixtures:style": "node src/style.ts --fixtures",
 		"fixtures:oxlint": "node src/oxlint/fixtures.ts",
