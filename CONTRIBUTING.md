@@ -126,7 +126,8 @@ working tree, so lanes that share one checkout never fail or pass each other's w
   which reads the commits a push sends from git's pre-push lines; `toolchain-gate run <index|commit> <command>` runs
   any command on what the index holds or on a commit (`toolchain-gate run index pnpm check` is the old
   `scripts/check-staged.sh`).
-- A snapshot is a directory under `${XDG_CACHE_HOME:-~/.cache}/toolchain-gate/<the checkout's hash>/` that git keeps in
+- A snapshot is a directory under `${XDG_CACHE_HOME:-~/.cache}/toolchain-gate/<the repository's key>/` (the cache layout
+  is below) that git keeps in
   step with an index of its own (`read-tree --reset -u`): a run rewrites only the files that changed, deletes the ones
   that went, and keeps what `.gitignore` names (node_modules, the build info, the tools' caches), so the install and
   the incremental typecheck stay warm. It installs with `pnpm install --frozen-lockfile --offline`, so a lockfile
@@ -142,6 +143,32 @@ working tree, so lanes that share one checkout never fail or pass each other's w
 The hooks call lefthook and the gate by path (`node_modules/.bin/lefthook`, `sh packages/devtools/bin/gate.sh`), not
 through `pnpm exec`, whose dependency check refuses to run anything while another lane's manifest change waits for its
 install.
+
+### The cache layout
+
+The cache is per repository, not per checkout: `${XDG_CACHE_HOME:-~/.cache}/toolchain-gate/<key>/`, where the key is the
+first 12 hex digits of the git hash of the repository's identity, its origin remote URL when it has one, else its
+absolute common git directory. Every clone of one repository (grizzle's lanes clone it under
+`~/.cache/grizzle-release/<LANE>/`) shares one commit snapshot and one push snapshot and takes turns under the lock, so
+a clone's first run is warm: the install and the typecheck's build info are already there.
+
+| Path under `<key>/`        | What it is                                                                       |
+| -------------------------- | -------------------------------------------------------------------------------- |
+| `clones`                   | The common git directories of the clones that ran here, one a line.              |
+| `commit`, `push`           | The snapshots' checkouts; `commit.git` and `push.git` are their git directories. |
+| `commit.lock`, `push.lock` | A directory holding a pid file while a run uses the snapshot.                    |
+| `push.full`                | Stamped when the daily `check:full` passed.                                      |
+
+A snapshot's git directory borrows objects (alternates) from one repository. Each run rewrites the alternates to the
+objects of the clone whose commit it checks, under the lock and before `read-tree`: that clone is the only one certain
+to hold the commit (the commit gate's commit of the index exists nowhere else), and the run holds the lock until it
+exits, so no other clone's rewrite takes the objects away mid-run. The semantics are unchanged: `read-tree --reset -u`,
+`git clean -fd` without `-x`, submodules filled from the checking clone's submodule repositories.
+
+A run that enters the cache collects garbage: it deletes every other key directory none of whose listed clones still
+exists with that key as its identity, unless a live run holds one of its locks. A directory with no `clones` file is
+the old per-path layout and goes the same way (a hard cutover; nothing reads it). A clone moved or deleted therefore
+costs its repository one cold snapshot at most, when the last clone is gone.
 
 A snapshot directory is safe to delete when no gate is running; the next run builds it again.
 

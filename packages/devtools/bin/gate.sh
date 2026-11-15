@@ -20,6 +20,28 @@
 # is checked out the same way, with a git directory of its own borrowing the submodule's objects, at the commit the
 # snapshot records, so the snapshot lists it as its gitlink, as the working tree does. The commit gate and the push gate keep separate snapshots, so a
 # commit, which holds index.lock for its whole hook, never waits on a push's full gate; runs on one snapshot take turns.
+#
+# Cache layout: ${XDG_CACHE_HOME:-~/.cache}/toolchain-gate/<key>/, one directory per REPOSITORY, not per checkout. The key
+# is the first 12 hex digits of the git hash of the repository's identity: its origin remote URL when it has one, else
+# the absolute common git directory. Every clone of one repository (grizzle's lanes clone it under
+# ~/.cache/grizzle-release/<LANE>/) therefore shares the one commit snapshot and the one push snapshot, taking turns
+# under the lock, and the first run of the second clone is warm: the install and the typecheck's build info are there.
+#
+#   <key>/clones          the common git directories of the clones that have run here, one a line
+#   <key>/commit, push    the snapshots' checkouts           <key>/commit.git, push.git   their git directories
+#   <key>/commit.lock, push.lock   held (a pid file in a directory) while a run uses the snapshot
+#   <key>/push.full       stamped when the daily check:full passed
+#
+# The snapshot's git directory borrows objects (alternates) from ONE repository, and a shared snapshot has several
+# candidates. Each run rewrites the alternates to the objects of the clone whose commit it checks, under the lock and
+# before read-tree: that clone is the only one certain to hold the commit (an index commit exists nowhere else), and a
+# run holds the lock until it exits, so no other clone's rewrite can pull the objects away mid-run. Listing every
+# clone's objects instead would let a deleted clone's missing directory and an unrelated clone's stale objects take
+# part in every read.
+#
+# Garbage: a run that enters the cache deletes each other key directory whose repository is gone, meaning none of the
+# clones listed in its `clones` file still exists with that key as its identity, and that holds no live lock. A
+# directory with no `clones` file is the old per-path layout (a hash of the checkout's path), dropped the same way.
 # Turbo's cache is the working tree's (.turbo/cache) unless TURBO_CACHE_DIR names one, so a task the working tree
 # already ran on the same content is a hit in the snapshot, and the other way round.
 set -eu
@@ -31,9 +53,18 @@ die() {
 
 root=$(git rev-parse --show-toplevel)
 git_dir=$(git rev-parse --absolute-git-dir)
-cache="${XDG_CACHE_HOME:-$HOME/.cache}/toolchain-gate/$(printf '%s' "$root" | git hash-object --stdin | cut -c1-12)"
+common_dir=$(git rev-parse --path-format=absolute --git-common-dir)
+cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/toolchain-gate"
 newline='
 '
+
+# key_of <common git dir>: the repository's cache key, from its origin remote URL when it has one, else from its path.
+key_of() {
+	identity=$(git --git-dir="$1" config --get remote.origin.url 2>/dev/null || true)
+	printf '%s' "${identity:-$1}" | git hash-object --stdin | cut -c1-12
+}
+
+cache="$cache_root/$(key_of "$common_dir")"
 
 # fill <git dir> <commit> <directory> <snapshot git dir> <checkout>: <directory> is a checkout of <commit>, whose git
 # directory, <snapshot git dir>, borrows <git dir>'s objects and holds HEAD at <commit>; each submodule is filled the
@@ -94,6 +125,44 @@ lock() {
 	trap 'exit 130' INT TERM
 }
 
+# held <key directory>: succeeds when a live run holds one of the directory's locks.
+held() {
+	for lockdir in "$1"/*.lock; do
+		pid=$(cat "$lockdir/pid" 2>/dev/null || true)
+		[ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && return 0
+	done
+	return 1
+}
+
+# collect: registers this clone under its key, then deletes every other key directory whose repository is gone and that
+# holds no live lock. The key directory appears whole (renamed from a hidden one) so a concurrent collect never reads a
+# new directory as an old-layout one; hidden names are skipped.
+collect() {
+	mkdir -p "$cache_root"
+	if [ ! -d "$cache" ]; then
+		fresh=$(mktemp -d "$cache_root/.new.XXXXXX")
+		printf '%s\n' "$common_dir" >"$fresh/clones"
+		mv "$fresh" "$cache" 2>/dev/null || true
+		rm -rf "$fresh"
+	fi
+	grep -qxF -- "$common_dir" "$cache/clones" 2>/dev/null || printf '%s\n' "$common_dir" >>"$cache/clones"
+	for dir in "$cache_root"/*; do
+		[ -d "$dir" ] && [ "$dir" != "$cache" ] || continue
+		alive=
+		clones=$(cat "$dir/clones" 2>/dev/null || true)
+		while IFS= read -r clone; do
+			if [ -d "$clone" ] && [ "$(key_of "$clone")" = "$(basename -- "$dir")" ]; then
+				alive=1
+				break
+			fi
+		done <<EOF
+$clones
+EOF
+		[ -z "$alive" ] || continue
+		held "$dir" || rm -rf "$dir"
+	done
+}
+
 # indexed: a commit of what the index holds, on HEAD, for the commit snapshot's HEAD. It is never referenced, so git's
 # gc prunes it.
 indexed() {
@@ -109,6 +178,7 @@ indexed() {
 # it.
 enter() {
 	unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
+	collect
 	lock "$cache/$1"
 	fill "$git_dir" "$2" "$cache/$1" "$cache/$1.git" "$root"
 	export TURBO_CACHE_DIR="${TURBO_CACHE_DIR:-$root/.turbo/cache}"
