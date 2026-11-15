@@ -2,8 +2,8 @@
  * A mutant's verdict (vitest/mutant-verdict.ts): what its run decided, or a timeout when the run is past its deadline,
  * however long its workers take to stop. Oracle: stated in the search.
  *
- * Plant: ~/.cache/grizzle-release/BR07/plants/verdict-timeout-ignored.patch (a deadline twice the one given) turns the
- * property red.
+ * @plant plants/testing/vitest/verdict-timeout-ignored.patch The run is timed out at twice the deadline given, so a run
+ * past its deadline gets no timeout and the search hangs until its test's deadline cuts it short; the property fails.
  */
 import { describe, it } from "@effect/vitest"
 import { deepStrictEqual } from "@effect/vitest/utils"

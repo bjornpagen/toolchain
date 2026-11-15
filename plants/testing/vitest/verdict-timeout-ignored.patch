@@ -1,0 +1,19 @@
+diff --git a/packages/testing/src/vitest/mutant-verdict.ts b/packages/testing/src/vitest/mutant-verdict.ts
+index 4586044..44e78f8 100644
+--- a/packages/testing/src/vitest/mutant-verdict.ts
++++ b/packages/testing/src/vitest/mutant-verdict.ts
+@@ -1,4 +1,4 @@
+-import { type Duration, Effect, Option, type Scope } from "effect"
++import { Duration, Effect, Option, type Scope } from "effect"
+ 
+ /** What a mutant's run says of it: killed by its first failing test, or survived by every test. */
+ export type RunVerdict = Readonly<{ kind: "killed"; by: string }> | Readonly<{ kind: "survived" }>
+@@ -23,7 +23,7 @@ export const verdictWithin = <E>(
+ ): Effect.Effect<TimedVerdict, E> =>
+ 	Effect.scoped(
+ 		Effect.flatMap(suite, (run) =>
+-			Effect.map(Effect.timeoutOption(run, deadline), (ran) =>
++			Effect.map(Effect.timeoutOption(run, Duration.times(deadline, 2)), (ran) =>
+ 				Option.getOrElse(ran, (): TimedVerdict => ({ kind: "timeout" }))
+ 			)
+ 		)
