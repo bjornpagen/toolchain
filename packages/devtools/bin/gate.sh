@@ -51,6 +51,11 @@ fill() (
 	fi
 	GIT_DIR=$1 git rev-parse --git-path objects >"$4/objects/info/alternates"
 	GIT_DIR=$4 git --work-tree="$3" read-tree --reset -u "$2^{tree}"
+	# read-tree removes only the files its index held: a file no index knows (one an older gate's snapshot kept, or one a
+	# check wrote and .gitignore does not name) would stay, and a check listing untracked files would read it. clean
+	# without -x removes those and keeps what .gitignore names (node_modules, build info, the tools' caches); a submodule's
+	# own git directory keeps clean out of it, and its own fill cleans it.
+	GIT_DIR=$4 git --work-tree="$3" clean -fdq
 	GIT_DIR=$4 git update-ref --no-deref HEAD "$2"
 	GIT_DIR=$4 git ls-tree -r "$2^{tree}" | while IFS='	' read -r entry path; do
 		case $entry in
