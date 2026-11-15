@@ -1,4 +1,3 @@
-import { availableParallelism } from "node:os"
 import { NodeRuntime, NodeServices } from "@effect/platform-node"
 import {
 	Array as Arr,
@@ -47,6 +46,7 @@ import {
 	verdictWithin
 } from "#vitest/mutant-verdict.ts"
 import { type MutatedFile, type RealPath, realPathOf } from "#vitest/mutated-file.ts"
+import { testWorkers } from "#workers.ts"
 
 /**
  * `pnpm mutate --package <dir> --file <path>... [--test <path>...] [--config <vitest config>] [--workers N]`, or `pnpm
@@ -70,14 +70,14 @@ import { type MutatedFile, type RealPath, realPathOf } from "#vitest/mutated-fil
  * behaviour no test pins; one whose run takes ten times as long as the unmutated suite's run times out, however long
  * its workers then take to stop. Every mutant runs in a Vitest of its own, whose test files each run in a fresh
  * process, so no process that loaded one mutant's target loads another's; `--workers N` judges N mutants at once, each
- * in its own Vitest, and one a core when it is not given. `--sample N` judges N mutants drawn by `--seed`, which is
- * also the suite's run seed; `--operator` and `--mutant` choose some; `--list` prints them and runs nothing. `--kept
- * <file.json>` runs instead the kept mutants the file lists, each a hand-written `KeptMutant` (its name, its file, the
- * original text it replaces once, its replacement and the test files that must kill it), against those test files
- * alone, each after its file's probe against them: a kept mutant whose original no longer stands once in its file is
- * stale, and one its killers pass on survived, the measurement "revert the fix and see the test fail" asks for, run on
- * every call and never written to the tree. A test that reads the target's source from disk, or loads it in a child
- * process of its own, sees the unmutated file.
+ * in its own Vitest, and as many as fit in the test processes one test run holds when it is not given (defaultWorkers).
+ * `--sample N` judges N mutants drawn by `--seed`, which is also the suite's run seed; `--operator` and `--mutant`
+ * choose some; `--list` prints them and runs nothing. `--kept <file.json>` runs instead the kept mutants the file
+ * lists, each a hand-written `KeptMutant` (its name, its file, the original text it replaces once, its replacement and
+ * the test files that must kill it), against those test files alone, each after its file's probe against them: a kept
+ * mutant whose original no longer stands once in its file is stale, and one its killers pass on survived, the
+ * measurement "revert the fix and see the test fail" asks for, run on every call and never written to the tree. A test
+ * that reads the target's source from disk, or loads it in a child process of its own, sees the unmutated file.
  */
 class MutationRunRefused extends Schema.TaggedError<
 	MutationRunRefused,
@@ -99,6 +99,29 @@ class MutationProbeSurvived extends Schema.TaggedError<
 
 /** Diagnostics a mutant raises only by leaving code unused or unreachable: no type error. */
 const UNUSED: ReadonlySet<number> = new Set([6133, 6138, 6192, 6196, 6198, 6199, 6205, 7027])
+
+/**
+ * How many mutants a run judges at once when `--workers` names no number: as many as fit, each in a Vitest of its own,
+ * in the test processes one test run of the package holds, so a mutation run takes no more of the machine than the
+ * package's tests do.
+ *
+ * @limitKind derived
+ * @owner the mutation tester
+ * @unit mutants judged at once
+ * @scope one mutation run on one machine
+ * @derivation testWorkers, the test processes one Vitest run holds (one a logical CPU, or TOOLCHAIN_TEST_WORKERS),
+ * divided by the processes one mutant's Vitest holds: it runs each test file in a process of its own, as many at once
+ * as its config's maxWorkers, which is testWorkers under defineTestConfig, so one a test file `--test` names, up to
+ * testWorkers, or testWorkers when it runs the whole suite; rounded down, and at least one
+ */
+const defaultWorkers = (tests: ReadonlyArray<string>): number =>
+	Math.max(
+		1,
+		Math.floor(
+			testWorkers /
+				(Arr.isReadonlyArrayNonEmpty(tests) ? Math.min(tests.length, testWorkers) : testWorkers)
+		)
+	)
 
 /** How many times the unmutated suite's run a mutant's run may take before it times out. */
 const DEADLINE_FACTOR = 10
@@ -136,7 +159,7 @@ type Flags = Readonly<{
 	operators: ReadonlyArray<Operator>
 	mutants: ReadonlyArray<string>
 	list: boolean
-	workers: number
+	workers: Option.Option<number>
 }>
 
 const describe = (mutant: Mutant<Operator>) =>
@@ -577,13 +600,14 @@ const run = Effect.fn("testing.mutate.run")(function* (flags: Flags) {
 		})
 	}
 	const deadline = Duration.times(unmutatedTime, DEADLINE_FACTOR)
+	const workers = Option.getOrElse(flags.workers, () => defaultWorkers(flags.tests))
 	yield* Effect.forEach(
 		sources,
 		(source) => probed(suite, source.target, source.text, flags.tests, deadline),
 		{ discard: true }
 	)
 	yield* Console.log(
-		`mutate: ${String(population.length)} of ${String(every.length)} mutants of ${Arr.join(flags.files, ", ")}, against ${Arr.isReadonlyArrayNonEmpty(flags.tests) ? Arr.join(flags.tests, ", ") : "the whole suite"}, TEST_SEED=${String(flags.seed)}, ${String(flags.workers)} at once`
+		`mutate: ${String(population.length)} of ${String(every.length)} mutants of ${Arr.join(flags.files, ", ")}, against ${Arr.isReadonlyArrayNonEmpty(flags.tests) ? Arr.join(flags.tests, ", ") : "the whole suite"}, TEST_SEED=${String(flags.seed)}, ${String(workers)} at once`
 	)
 	/** One mutant: invalid when its program has a type error, otherwise its run's verdict, or a timeout when its run
 	 * passes the deadline. */
@@ -602,7 +626,7 @@ const run = Effect.fn("testing.mutate.run")(function* (flags: Flags) {
 			),
 			Effect.map((verdict) => ({ mutant, verdict }))
 		)
-	const results = yield* Effect.forEach(population, judge, { concurrency: flags.workers })
+	const results = yield* Effect.forEach(population, judge, { concurrency: workers })
 	const count = (kind: Verdict["kind"]) =>
 		Arr.filter(results, ({ verdict }) => verdict.kind === kind).length
 	const valid = results.length - count("invalid")
@@ -639,7 +663,13 @@ const mutate = Command.make(
 		operators: Flag.Literals("operator", OPERATORS).pipe(Flag.atLeast(0)),
 		mutants: Flag.String("mutant").pipe(Flag.atLeast(0)),
 		list: Flag.Boolean("list").pipe(Flag.withDefault(false)),
-		workers: Flag.Int("workers").pipe(Flag.withDefault(availableParallelism()))
+		workers: Flag.Int("workers").pipe(
+			Flag.filter(
+				(workers) => workers > 0,
+				(workers) => `--workers must be a whole number above zero, not ${String(workers)}`
+			),
+			Flag.optional
+		)
 	},
 	run
 )

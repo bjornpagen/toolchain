@@ -1,7 +1,9 @@
 #!/bin/sh
 # toolchain-oxlint: oxlint with every argument it is given. Type-aware rules run in tsgolint, a Go program oxlint
-# starts, which takes a core per thread unless GOMAXPROCS says otherwise; TOOLCHAIN_TSGOLINT_PROCS, when set, is that
-# GOMAXPROCS, so a machine that many runs share caps each one. Unset, tsgolint takes what it took before.
+# starts, whose Go code runs on at most GOMAXPROCS threads at once; unset, Go picks the logical CPUs the process may use
+# (its affinity mask and, on Linux, its cgroup CPU quota: https://pkg.go.dev/runtime, verified 2026-11-15).
+# TOOLCHAIN_TSGOLINT_PROCS, when set, is that GOMAXPROCS, so a machine that many runs share caps each one. Unset,
+# tsgolint keeps Go's default, as it did before.
 set -eu
 case ${TOOLCHAIN_TSGOLINT_PROCS:-} in
 	"") ;;
