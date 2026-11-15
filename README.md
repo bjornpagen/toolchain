@@ -289,15 +289,13 @@ options name (`TIMEBACK_*SERVER_URL`, `TIMEBACK_*TOKEN_URL`) outside them, or it
     rule finds nothing there).
   - `exceptions` no-spread-argument on `test/unit/deps/runtime-probe.ts`: an override with
     `"devtools/no-spread-argument": "off"`.
-  - `exceptions` limit-evidence: deleted with the rule.
   - `exceptions` ts-only-extensions on `upstream/v8-unicode-end-anchor-astral-class/repro.js`: stays, the workspace
     gate's.
   - `noEnvironment`: `environment: { library: ["packages/engine/src", "packages/grizzle/src"], readers:
     ["packages/grizzle/src/adapter/connection/environment.ts"] }`.
   - `noCaseList`: `"no-case-list"` with the searches and generators above and `cases: ["test/"]`; its dictionaries go.
-  - `"no-raw-sql"`: the engine's SQL is strings its printer builds, and the rule reads Drizzle `sql` templates only,
-    so it finds nothing in grizzle whatever its `sources` and `writers` name; the printer, lexer and constants stay
-    the writers only by name.
+  - `"no-raw-sql": { sources: [], writers: [] }`: the engine's SQL is strings its printer builds and the rule reads
+    Drizzle `sql` templates only, so grizzle names none; its old cast guard has no successor.
   - no-spread-argument's `tuples`: `[{ module: "#test/support/list.ts", names: ["argumentsOf", "nonEmptyArgumentsOf"]
     }, { module: "#compiler/allen/atoms.ts", names: ["atomOperands"] }]`.
   - `testCaseIsSearch.exempt`: its five groups, with their reasons, become `examples.exempt` in `vitest.config.ts`
