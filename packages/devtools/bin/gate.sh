@@ -10,11 +10,14 @@
 #   toolchain-gate run <index|commit> <command> [arguments]
 #                                   any command on what the index holds, or on a commit
 #
-# A snapshot is a directory under the cache that git keeps in step with an index of its own (read-tree --reset -u): a
-# run rewrites only the files that changed since the last, deletes the ones that went, and leaves what .gitignore names
-# (node_modules, the typecheck's build info, the tools' caches) where it was, so installs and incremental checks stay
-# warm. git leaves a submodule's gitlink an empty directory: each is filled the same way from the submodule's own
-# repository, at the commit the snapshot records. The commit gate and the push gate keep separate snapshots, so a
+# A snapshot is a checkout under the cache of exactly the commit it checks (in index mode, a commit of what the index
+# holds, on HEAD), with a git directory of its own that borrows the repository's objects (alternates), keeps its index
+# in step with the files (read-tree --reset -u) and holds HEAD at that commit, so a check that reads git facts (HEAD,
+# the file list, a submodule's pin) reads the commit's and needs no case for the snapshot. A run rewrites only the files
+# that changed since the last, deletes the ones that went, and leaves what .gitignore names (node_modules, the
+# typecheck's build info, the tools' caches) where it was, so installs and incremental checks stay warm. Each submodule
+# is checked out the same way, with a git directory of its own borrowing the submodule's objects, at the commit the
+# snapshot records, so the snapshot lists it as its gitlink, as the working tree does. The commit gate and the push gate keep separate snapshots, so a
 # commit, which holds index.lock for its whole hook, never waits on a push's full gate; runs on one snapshot take turns.
 # Turbo's cache is the working tree's (.turbo/cache) unless TURBO_CACHE_DIR names one, so a task the working tree
 # already ran on the same content is a hit in the snapshot, and the other way round.
@@ -31,12 +34,24 @@ cache="${XDG_CACHE_HOME:-$HOME/.cache}/toolchain-gate/$(printf '%s' "$root" | gi
 newline='
 '
 
-# fill <git dir> <tree> <directory> <state> <checkout>: <directory> holds exactly <tree>, each submodule at the commit
-# <tree> records, read from the submodule's repository in <checkout>, the working tree that holds the submodules.
+# fill <git dir> <commit> <directory> <snapshot git dir> <checkout>: <directory> is a checkout of <commit>, whose git
+# directory, <snapshot git dir>, borrows <git dir>'s objects and holds HEAD at <commit>; each submodule is filled the
+# same way at the commit <commit> records, from the submodule's repository in <checkout>, the working tree that holds
+# the submodules.
 fill() (
 	mkdir -p "$3" "$(dirname -- "$4")"
-	GIT_DIR=$1 GIT_INDEX_FILE=$4 git --work-tree="$3" read-tree --reset -u "$2"
-	GIT_DIR=$1 git ls-tree -r "$2" | while IFS='	' read -r entry path; do
+	# An older gate kept a fresh, empty repository in the snapshot itself.
+	if [ -d "$3/.git" ]; then
+		rm -rf "$3/.git"
+	fi
+	if [ ! -f "$4/HEAD" ] || [ ! -f "$3/.git" ]; then
+		rm -f "$3/.git"
+		git init --quiet --separate-git-dir="$4" "$3"
+	fi
+	GIT_DIR=$1 git rev-parse --git-path objects >"$4/objects/info/alternates"
+	GIT_DIR=$4 git --work-tree="$3" read-tree --reset -u "$2^{tree}"
+	GIT_DIR=$4 git update-ref --no-deref HEAD "$2"
+	GIT_DIR=$4 git ls-tree -r "$2^{tree}" | while IFS='	' read -r entry path; do
 		case $entry in
 			*" commit "*) ;;
 			*) continue ;;
@@ -49,7 +64,7 @@ fill() (
 		module=$(git -C "$checkout" rev-parse --absolute-git-dir)
 		GIT_DIR=$module git cat-file -e "$commit^{commit}" 2>/dev/null ||
 			die "$path's repository lacks $commit, which the snapshot records: fetch it there"
-		fill "$module" "$commit^{tree}" "$3/$path" "$4.modules/$(printf '%s' "$path" | git hash-object --stdin)" "$5/$path"
+		fill "$module" "$commit" "$3/$path" "$4/modules/$(printf '%s' "$path" | git hash-object --stdin)" "$5/$path"
 	done
 )
 
@@ -73,14 +88,25 @@ lock() {
 	trap 'exit 130' INT TERM
 }
 
-# enter <snapshot> <tree>: the snapshot holds <tree> and its dependencies are installed, and the shell is in it.
+# indexed: a commit of what the index holds, on HEAD, for the commit snapshot's HEAD. It is never referenced, so git's
+# gc prunes it.
+indexed() {
+	tree=$(git write-tree)
+	parent=$(git rev-parse --quiet --verify HEAD) || parent=
+	printf 'toolchain-gate: what the index holds\n' |
+		GIT_AUTHOR_NAME=toolchain-gate GIT_AUTHOR_EMAIL=toolchain-gate@localhost \
+			GIT_COMMITTER_NAME=toolchain-gate GIT_COMMITTER_EMAIL=toolchain-gate@localhost \
+			git commit-tree "$tree" ${parent:+-p "$parent"}
+}
+
+# enter <snapshot> <commit>: the snapshot is a checkout of <commit>, its dependencies are installed, and the shell is in
+# it.
 enter() {
+	unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
 	lock "$cache/$1"
-	fill "$git_dir" "$2" "$cache/$1" "$cache/$1.index" "$root"
+	fill "$git_dir" "$2" "$cache/$1" "$cache/$1.git" "$root"
 	export TURBO_CACHE_DIR="${TURBO_CACHE_DIR:-$root/.turbo/cache}"
 	cd "$cache/$1"
-	unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
-	[ -d .git ] || git init --quiet
 	pnpm install --frozen-lockfile --offline --reporter=silent
 }
 
@@ -111,7 +137,7 @@ case $mode in
 		# The staged files, submodules aside (a gitlink is no file to format or lint), one a line.
 		staged=$(git diff --cached --name-only --diff-filter=ACMR --ignore-submodules=all)
 		lintable=$(printf '%s\n' "$staged" | grep -E '\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$' || true)
-		enter commit "$(git write-tree)"
+		enter commit "$(indexed)"
 		[ -f oxlint.ast.config.ts ] || die "the repository has no oxlint.ast.config.ts, the commit gate's AST-only oxlint"
 		logs=$(mktemp -d)
 		failed=
@@ -147,7 +173,7 @@ case $mode in
 		for commit in $pushed; do
 			printf 'toolchain-gate: pnpm check on %s\n' "$commit" >&2
 			(
-				enter push "$commit^{tree}"
+				enter push "$commit"
 				pnpm check
 			)
 		done
@@ -157,8 +183,8 @@ case $mode in
 		target=$1
 		shift
 		case $target in
-			index) enter commit "$(git write-tree)" ;;
-			*) enter push "$(git rev-parse --verify "$target^{tree}")" ;;
+			index) enter commit "$(indexed)" ;;
+			*) enter push "$(git rev-parse --verify "$target^{commit}")" ;;
 		esac
 		"$@"
 		;;
