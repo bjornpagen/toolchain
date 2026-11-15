@@ -9,8 +9,7 @@
  * requires within its budget. It runs one case at a time, in a process of its own: V8's block counters are the
  * process's and reset when read, so a case's trace holds its blocks alone only when no other case runs beside it.
  *
- * Plant (~/.cache/grizzle-release/BR07/plants): sense-v8-blind.patch (block coverage perceiving nothing) turns the
- * property red.
+ * @plant plants/testing/sense-v8-blind.patch Block coverage perceiving nothing, every trace empty; the property fails.
  */
 import { describe, it } from "@effect/vitest"
 import { strictEqual } from "@effect/vitest/utils"
