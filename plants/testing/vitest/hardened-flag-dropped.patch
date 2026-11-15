@@ -1,0 +1,13 @@
+diff --git a/packages/testing/src/vitest/config.ts b/packages/testing/src/vitest/config.ts
+index 4391efa..e2d515b 100644
+--- a/packages/testing/src/vitest/config.ts
++++ b/packages/testing/src/vitest/config.ts
+@@ -80,7 +80,7 @@ export const defineTestConfig = (config: TestConfig) => {
+ 	const fuzzing = Option.isSome(Effect.runSync(Config.option(Config.String("TEST_FUZZ"))))
+ 	const timeoutOf = (timeout: Timeout) => millisOf(fuzzing ? { kind: "unbounded" } : timeout)
+ 	const execArgv = [
+-		...HARDENED_FLAGS,
++		...HARDENED_FLAGS.slice(1),
+ 		...Arr.map(config.conditions, (condition) => `--conditions=${condition}`)
+ 	]
+ 	return defineConfig({
