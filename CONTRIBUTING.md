@@ -145,38 +145,26 @@ install.
 
 A snapshot directory is safe to delete when no gate is running; the next run builds it again.
 
-## Throughput knobs
+## Turbo's cache
 
-A machine that many runs share caps each one through the environment. Unset, every tool behaves as it did before
-these knobs. Each takes a whole number above zero and is refused otherwise; turbo passes each through to its tasks
-without hashing it, since none changes a result. beefy-workspace sets the machine-wide values on cassowary.
-
-| Variable                   | What it caps                                                                                 | Read by                                 |
-| -------------------------- | -------------------------------------------------------------------------------------------- | --------------------------------------- |
-| `TOOLCHAIN_TEST_WORKERS`   | Vitest's test files at once (`maxWorkers`)                                                   | the testing library's `workers.ts`      |
-| `TOOLCHAIN_TSGOLINT_PROCS` | the cores of tsgolint, the Go program that runs oxlint's type-aware rules (its `GOMAXPROCS`) | `toolchain-oxlint`                      |
-| `TOOLCHAIN_TS_CHECKERS`    | tsrs's type checkers per project (`--checkers`)                                              | `toolchain-typecheck`                   |
-| `TURBO_CACHE_DIR`          | where turbo keeps its cache: one directory shared by every clone of a repository             | turbo, and the gate, which passes it on |
-
-Never set `cacheDir` in turbo.json: a machine-wide `TURBO_CACHE_DIR` is what lets clones share one cache.
+Never set `cacheDir` in turbo.json: a machine-wide `TURBO_CACHE_DIR` (which the gate passes on) is what lets clones
+share one cache.
 
 ## Concurrency limits
 
 Every number that bounds concurrency answers to the indefensible-numbers policy (edullm's
 `.agents/skills/indefensible-numbers/SKILL.md`): its JSDoc names a published, measured or derived authority with
 `@limitKind`, `@owner`, `@unit` and `@scope`, or it goes. A `0` or `1` identity needs no citation, and a width the data
-gives (two streams read at once, the sessions a run started) is no limit. A knob above holds no number of its own:
-unset, each tool keeps its own default; set, the number is the machine owner's (beefy-workspace's).
+gives (two streams read at once, the sessions a run started) is no limit.
 
-| Limit                                              | Where                                 | Authority                                                                                                                                                                                                                                                                                                           |
-| -------------------------------------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Test processes at once, `testWorkers`              | `packages/testing/src/workers.ts`     | derived: one forked test process a logical CPU (`availableParallelism()`), or `TOOLCHAIN_TEST_WORKERS`                                                                                                                                                                                                              |
-| Mutants judged at once, without `--workers`        | `packages/testing/scripts/mutate.ts`  | derived (`defaultWorkers`): `testWorkers` over the processes one mutant's Vitest holds, so a mutation run holds no more test processes than a test run                                                                                                                                                              |
-| turbo's tasks at once, `"concurrency": "100%"`     | `turbo.json`                          | derived: one task a logical processor; turbo documents `100%` as "all available logical processors" and 10 tasks as its default (https://turborepo.dev/docs/reference/configuration, verified 2026-11-15). Each task's own threads are the knobs' to cap. JSON carries no comment, so this row is its documentation |
-| tsrs's checkers, tsgolint's `GOMAXPROCS`           | `bin/typecheck.sh`, `bin/oxlint.sh`   | the tool's own default while the knob is unset: tsrs's checker count, and Go's, the logical CPUs the process may use (https://pkg.go.dev/runtime, verified 2026-11-15)                                                                                                                                              |
-| One gate run per snapshot                          | `bin/gate.sh`                         | an identity: a snapshot is one directory that a run rewrites                                                                                                                                                                                                                                                        |
-| A search's cases at once, a search's `concurrency` | each test's `explore` or `exhaust`    | left out, one at a time (`oneAtATime`), an identity; stated above one, the test's own input, no resource's bound: the engine finds the same cases at any concurrency, and a sense that reads process-wide counters (guided coverage) runs its cases one at a time                                                   |
-| One plant at a time                                | `packages/devtools/src/plants/run.ts` | an identity: a plant goes into the one working tree, so a second plant planted beside it would turn the first one's tests red as well                                                                                                                                                                               |
+| Limit                                              | Where                                 | Authority                                                                                                                                                                                                                                                            |
+| -------------------------------------------------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Test processes at once, `testWorkers`              | `packages/testing/src/workers.ts`     | derived: one forked test process a logical CPU (`availableParallelism()`)                                                                                                                                                                                            |
+| Mutants judged at once, without `--workers`        | `packages/testing/scripts/mutate.ts`  | derived (`defaultWorkers`): `testWorkers` over the processes one mutant's Vitest holds, so a mutation run holds no more test processes than a test run                                                                                                               |
+| turbo's tasks at once, `"concurrency": "100%"`     | `turbo.json`                          | derived: one task a logical processor; turbo documents `100%` as "all available logical processors" and 10 tasks as its default (https://turborepo.dev/docs/reference/configuration, verified 2026-11-15). JSON carries no comment, so this row is its documentation |
+| One gate run per snapshot                          | `bin/gate.sh`                         | an identity: a snapshot is one directory that a run rewrites                                                                                                                                                                                                         |
+| A search's cases at once, a search's `concurrency` | each test's `explore` or `exhaust`    | left out, one at a time (`oneAtATime`), an identity; stated above one, the test's own input, no resource's bound: the engine finds the same cases at any concurrency, and a sense that reads process-wide counters (guided coverage) runs its cases one at a time    |
+| One plant at a time                                | `packages/devtools/src/plants/run.ts` | an identity: a plant goes into the one working tree, so a second plant planted beside it would turn the first one's tests red as well                                                                                                                                |
 
 ## Plants
 

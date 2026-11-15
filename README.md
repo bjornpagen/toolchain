@@ -56,9 +56,7 @@ whole section, and do every part: the parts are one migration, in the order a re
   "toolchain-typecheck"`, `"typecheck:full": "toolchain-typecheck --incremental false"`, and `check` runs
   `typecheck:full` in place of `typecheck`.
 - turbo.json: a `typecheck:full` task with the `typecheck` task's `dependsOn` and `inputs`, and `//#typecheck:full`;
-  `"passThroughEnv": ["TOOLCHAIN_TS_CHECKERS"]` on both typecheck tasks and their root tasks,
-  `"passThroughEnv": ["TOOLCHAIN_TSGOLINT_PROCS"]` on `oxlint` and `//#oxlint`, `TOOLCHAIN_TEST_WORKERS` in `test`'s
-  `passThroughEnv`; `NODE_OPTIONS` moves from `globalEnv` to `globalPassThroughEnv`. Never set `cacheDir`.
+  `NODE_OPTIONS` moves from `globalEnv` to `globalPassThroughEnv`. Never set `cacheDir`.
 - Agents' instructions: run `pnpm types` after an edit, never the root's `pnpm typecheck` (it checks the root's config
   files only); the hooks run the linters; never `--no-verify` in the main tree.
 

@@ -16,14 +16,13 @@
 			"dependsOn": ["^source"]
 		},
 		"typecheck": {
-			"description": "The incremental typecheck, `pnpm types`: each package's build info (node_modules/.cache/typecheck.tsbuildinfo, gitignored) lets a re-check check only what changed. The build info is no output: a hit replays the diagnostics, and a miss reads whatever build info the directory holds, which tsrs proves against the files' hashes. The dev tools' tsconfig bases, which the root tsconfig and every package extend, are inputs too. TOOLCHAIN_TS_CHECKERS caps the checkers and changes no result.",
+			"description": "The incremental typecheck, `pnpm types`: each package's build info (node_modules/.cache/typecheck.tsbuildinfo, gitignored) lets a re-check check only what changed. The build info is no output: a hit replays the diagnostics, and a miss reads whatever build info the directory holds, which tsrs proves against the files' hashes. The dev tools' tsconfig bases, which the root tsconfig and every package extend, are inputs too.",
 			"dependsOn": ["^source"],
 			"inputs": [
 				"$TURBO_DEFAULT$",
 				"$TURBO_ROOT$/packages/devtools/tsconfig.base.json",
 				"$TURBO_ROOT$/packages/devtools/tsconfig.effect-free.json"
-			],
-			"passThroughEnv": ["TOOLCHAIN_TS_CHECKERS"]
+			]
 		},
 		"typecheck:full": {
 			"description": "The full gate's typecheck, in `pnpm check`: from scratch (--incremental false), reading no build info, so a stale incremental result cannot pass the push. A task of its own, so it never replays a hit of the incremental one.",
@@ -32,39 +31,27 @@
 				"$TURBO_DEFAULT$",
 				"$TURBO_ROOT$/packages/devtools/tsconfig.base.json",
 				"$TURBO_ROOT$/packages/devtools/tsconfig.effect-free.json"
-			],
-			"passThroughEnv": ["TOOLCHAIN_TS_CHECKERS"]
+			]
 		},
 		"oxlint": {
-			"description": "The dev tools' preset and plugin and the repository's config are inputs too. TOOLCHAIN_TSGOLINT_PROCS caps tsgolint's cores (its GOMAXPROCS) and changes no result.",
+			"description": "The dev tools' preset and plugin and the repository's config are inputs too.",
 			"dependsOn": ["^source"],
 			"inputs": [
 				"$TURBO_DEFAULT$",
 				"$TURBO_ROOT$/toolchain.config.ts",
 				"$TURBO_ROOT$/packages/devtools/src/**"
-			],
-			"passThroughEnv": ["TOOLCHAIN_TSGOLINT_PROCS"]
+			]
 		},
 		"fixtures:style": {},
 		"fixtures:oxlint": {},
 		"fixtures:workspace-gate": {},
 		"test": {
-			"description": "Every test that uses no network. Each run draws fresh rotating seeds, so a test never replays from cache; the run's seed, a replay, a fuzz run and the worker cap come through the environment.",
+			"description": "Every test that uses no network. Each run draws fresh rotating seeds, so a test never replays from cache; the run's seed, a replay and a fuzz run come through the environment.",
 			"cache": false,
-			"passThroughEnv": [
-				"TEST_SEED",
-				"TEST_REPLAY",
-				"TEST_FUZZ",
-				"TEST_FUZZTIME",
-				"TOOLCHAIN_TEST_WORKERS"
-			]
+			"passThroughEnv": ["TEST_SEED", "TEST_REPLAY", "TEST_FUZZ", "TEST_FUZZTIME"]
 		},
-		"//#typecheck": {
-			"passThroughEnv": ["TOOLCHAIN_TS_CHECKERS"]
-		},
-		"//#typecheck:full": {
-			"passThroughEnv": ["TOOLCHAIN_TS_CHECKERS"]
-		},
+		"//#typecheck": {},
+		"//#typecheck:full": {},
 		"//#workspace-gate": {
 			"description": "The repository-wide checks: every tsconfig and package manifest, and every file name git shows. It reads the whole tree and opens no TypeScript program, so it costs about a second, and a cache would have to hash the whole tree to know it could skip it.",
 			"cache": false
@@ -73,9 +60,7 @@
 			"description": "Every plant a test cites is a file under plants/, and every file there is a plant some test cites. It reads every TypeScript file git shows, since a citation anywhere is read and one outside a test refused, so a cache would have to hash the whole tree to know it could skip it; it opens no TypeScript program and costs about a second.",
 			"cache": false
 		},
-		"//#oxlint": {
-			"passThroughEnv": ["TOOLCHAIN_TSGOLINT_PROCS"]
-		},
+		"//#oxlint": {},
 		"//#format": {},
 		"//#dead-code": {},
 		"//#dedupe": {

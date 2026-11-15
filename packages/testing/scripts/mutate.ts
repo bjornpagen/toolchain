@@ -109,7 +109,7 @@ const UNUSED: ReadonlySet<number> = new Set([6133, 6138, 6192, 6196, 6198, 6199,
  * @owner the mutation tester
  * @unit mutants judged at once
  * @scope one mutation run on one machine
- * @derivation testWorkers, the test processes one Vitest run holds (one a logical CPU, or TOOLCHAIN_TEST_WORKERS),
+ * @derivation testWorkers, the test processes one Vitest run holds (one a logical CPU),
  * divided by the processes one mutant's Vitest holds: it runs each test file in a process of its own, as many at once
  * as its config's maxWorkers, which is testWorkers under defineTestConfig, so one a test file `--test` names, up to
  * testWorkers, or testWorkers when it runs the whole suite; rounded down, and at least one
