@@ -1,0 +1,12 @@
+--- a/packages/testing/src/interleave.ts
++++ b/packages/testing/src/interleave.ts
+@@ -756,8 +756,7 @@ export const interleave = <S extends string, M, O, Q, A, W, E, R, F, RJ>(
+ 											!woken.has(session) &&
+ 											!done.has(session) &&
+ 											!pending.has(session) &&
+-											startable(session) &&
+-											driver.commute(nextMoveOf(session), nextMoveOf(choice))
++											startable(session)
+ 									)
+ 								)
+ 							: new Set()

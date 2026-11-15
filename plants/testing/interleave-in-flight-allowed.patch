@@ -1,0 +1,13 @@
+--- a/packages/testing/src/interleave.ts
++++ b/packages/testing/src/interleave.ts
+@@ -802,9 +802,7 @@ export const interleave = <S extends string, M, O, Q, A, W, E, R, F, RJ>(
+ 						case "move":
+ 							return done.has(choice.session)
+ 								? Option.some(`${choice.session} is done`)
+-								: pending.has(choice.session)
+-									? Option.some(`${choice.session} has a move in flight`)
+-									: !startable(choice.session) || !laneFree(choice.session)
++								: !startable(choice.session) || !laneFree(choice.session)
+ 										? Option.some(`${choice.session} cannot start yet`)
+ 										: Option.none()
+ 						case "join":

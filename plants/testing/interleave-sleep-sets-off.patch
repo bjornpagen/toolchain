@@ -1,0 +1,11 @@
+--- a/packages/testing/src/interleave.ts
++++ b/packages/testing/src/interleave.ts
+@@ -715,7 +715,7 @@ export const interleave = <S extends string, M, O, Q, A, W, E, R, F, RJ>(
+ 							return created
+ 						}
+ 					})
+-					const asleep = new Set(Arr.filter([...resolved.sleep], (session) => !woken.has(session)))
++					const asleep = new Set<S>()
+ 					const planned = replay.kind === "as-taped" ? Arr.get(plan.prefix, depth) : Option.none()
+ 					if (Option.isNone(planned) && Arr.every(runnable, (session) => asleep.has(session))) {
+ 						return Option.none()

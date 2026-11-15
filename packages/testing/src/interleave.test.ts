@@ -15,11 +15,22 @@
  * - A schedule drawn from a case's tape replays exactly, and every session a run starts is released, whatever its
  *   judge refuses.
  *
- * Oracles are stated per search. Plants (~/.cache/grizzle-release/BR07/plants): interleave-sleep-everything.patch
- * (every session put to sleep, commuting or not) turns the reach and deadlock properties red;
- * interleave-sleep-sets-off.patch the commuting one; interleave-after-cycle-blind.patch (a self-loop unseen) the
- * cycles; interleave-in-flight-allowed.patch the script; interleave-drawn-unobserved.patch (a drawn decision left off
- * the tape) the replay; interleave-unreleased.patch the release.
+ * Oracles are stated per search. The replay draws a schedule through a recording whose every decision the case makes,
+ * then runs it again from that recording's tape: the same decisions, every one as taped.
+ *
+ * @plant plants/testing/interleave-sleep-everything.patch Every session put to sleep, commuting or not; the reach and
+ * deadlock properties fail.
+ * @plant plants/testing/interleave-sleep-sets-off.patch Sleep sets off, no session ever asleep; the commuting property
+ * fails.
+ * @plant plants/testing/interleave-deadlock-settle-unrecorded.patch A deadlock the lock manager breaks while the
+ * engine settles goes unrecorded; the deadlock-record property fails.
+ * @plant plants/testing/interleave-after-cycle-blind.patch A self-loop among the afters unseen; the cycles property
+ * fails.
+ * @plant plants/testing/interleave-in-flight-allowed.patch A script's move of a session with a move in flight made
+ * rather than refused; the script property fails.
+ * @plant plants/testing/interleave-drawn-unobserved.patch A drawn decision left off the tape; the replay property
+ * fails.
+ * @plant plants/testing/interleave-unreleased.patch No session released when its run ends; the release property fails.
  */
 import { describe, it } from "@effect/vitest"
 import { assertTrue, deepStrictEqual, strictEqual } from "@effect/vitest/utils"
@@ -45,12 +56,15 @@ import {
 	type Interleave,
 	type Interleaving,
 	interleave,
+	type Nature,
 	type Reduction,
 	type Sessions,
 	type Strategy
 } from "#interleave.ts"
+import { fnv1a32 } from "#random.ts"
 import { notesOnly } from "#sense.ts"
 import { completeShrink } from "#shrink.ts"
+import { type Chooser, forcedChooser, type Recording, recording } from "#source.ts"
 import { searched } from "#vitest/searched.ts"
 
 const RESOURCES = ["x", "y", "z"] as const
@@ -659,7 +673,20 @@ describe("interleaving", () => {
 				},
 				(sessions, c: Case<never>) =>
 					Effect.gen(function* () {
-						const once = yield* oneDrawnRun(sessions, c)
+						const drawnOn = recording(caseChooser(c))
+						const once = yield* oneDrawnRun(sessions, natureOf(drawnOn))
+						const taped = drawnOn.tape()
+						const again = yield* oneDrawnRun(
+							sessions,
+							natureOf(recording(forcedChooser(taped.values, taped.length)))
+						)
+						deepStrictEqual(
+							{
+								replay: again.replay.kind,
+								schedule: Arr.map(again.tape, (decision) => decision.choice)
+							},
+							{ replay: "as-taped", schedule: Arr.map(once.tape, (decision) => decision.choice) }
+						)
 						strictEqual(once.replay.kind, "as-taped")
 						strictEqual(
 							Struct.keys(sessions).length,
@@ -780,8 +807,23 @@ describe("releasing sessions", () => {
 	)
 })
 
-/** One run of `sessions` whose decisions are drawn from the case's tape. */
-const oneDrawnRun = <S extends string>(sessions: Sessions<S, Move>, c: Case<never>) =>
+/**
+ * A chooser that makes each decision on the case's own tape, so a schedule drawn through it shrinks with the case.
+ */
+const caseChooser = (c: Case<never>): Chooser => ({
+	exhausted: () => false,
+	draw: (lo, hi, _at, spread) =>
+		c.draw((source) => (spread === "leaning" ? source.choose(lo, hi) : source.pick(lo, hi)))
+})
+
+/** The nature of a recording: what a run draws and what the system decided go on the recording's tape. */
+const natureOf = (recorded: Recording): Nature => ({
+	draw: (generator) => recorded.source.draw(generator),
+	observe: (decided) => recorded.source.observe(fnv1a32(decided))
+})
+
+/** One run of `sessions` whose decisions `nature` draws. */
+const oneDrawnRun = <S extends string>(sessions: Sessions<S, Move>, nature: Nature) =>
 	Effect.gen(function* () {
 		const runs: Array<Interleaving<S, Move, Outcome, "state", Snapshot, Resource>> = []
 		const spec: Interleave<S, Move, "state"> = {
@@ -790,7 +832,7 @@ const oneDrawnRun = <S extends string>(sessions: Sessions<S, Move>, c: Case<neve
 			exclusive: [],
 			state: Option.some("state")
 		}
-		yield* interleave(lockManager<S>(), spec, { kind: "drawn", nature: c }, (run) =>
+		yield* interleave(lockManager<S>(), spec, { kind: "drawn", nature }, (run) =>
 			Effect.sync(() => runs.push(run))
 		)
 		return Option.getOrThrow(Arr.head(runs))
