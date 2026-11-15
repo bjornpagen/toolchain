@@ -3,8 +3,8 @@
  * Vitest does by default, and bjornpagen-mutate's verdicts, the residual table and the watchdog's replay report are what
  * the library's contract says of the consumer's test files. Oracle: stated in the search.
  *
- * Plant: ~/.cache/grizzle-release/BR07/plants/reporter-silent.patch (the reporter printing no table) turns the property
- * red.
+ * @plant plants/testing/reporter-silent.patch The reporter prints no table: it clears the run's rows before it builds
+ * the table from them; the property fails.
  */
 import * as NodeServices from "@effect/platform-node/NodeServices"
 import { layer } from "@effect/vitest"
