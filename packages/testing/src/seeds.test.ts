@@ -2,8 +2,7 @@
  * A steered phase's seeds (seeds.ts): a case is kept exactly when it noted or perceived something no kept case had,
  * and a pick names only what was kept. Oracle: stated in the search.
  *
- * Plant: ~/.cache/grizzle-release/BR07/plants/seeds-keep-every-note.patch (every noted case kept) turns the property
- * red.
+ * @plant plants/testing/seeds-keep-every-note.patch Every noted case is kept, whatever it noted; the property fails.
  */
 import { describe, it } from "@effect/vitest"
 import { assertTrue, deepStrictEqual } from "@effect/vitest/utils"

@@ -1,0 +1,13 @@
+diff --git a/packages/testing/src/seeds.ts b/packages/testing/src/seeds.ts
+index a9b3dc8..39acbe7 100644
+--- a/packages/testing/src/seeds.ts
++++ b/packages/testing/src/seeds.ts
+@@ -58,7 +58,7 @@ export const seedsOf = (): Seeds => {
+ 		let novel = false
+ 		const holding: Array<Array<number>> = []
+ 		for (const note of noted) {
+-			novel = novel || !notes.has(note)
++			novel = true
+ 			holding.push(notedAs(note).seeds)
+ 		}
+ 		if (trace.length * TRACE_CLASSES > slots.length) {
