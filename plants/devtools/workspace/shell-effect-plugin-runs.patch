@@ -1,0 +1,12 @@
+--- a/packages/devtools/src/workspace/tsconfigs.ts
++++ b/packages/devtools/src/workspace/tsconfigs.ts
+@@ -501,7 +501,8 @@
+ 		}
+ 		const decoded = yield* readTsconfig(config)
+ 		const plugins =
+-			decoded.compilerOptions?.plugins === undefined
++			decoded.compilerOptions?.plugins === undefined ||
++				decoded.compilerOptions.plugins.length > 0
+ 				? []
+ 				: [
+ 						workspaceFinding({

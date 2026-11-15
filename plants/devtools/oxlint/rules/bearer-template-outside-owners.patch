@@ -1,0 +1,11 @@
+--- a/packages/devtools/src/oxlint/rules/bearer-owners.ts
++++ b/packages/devtools/src/oxlint/rules/bearer-owners.ts
+@@ -21,7 +21,7 @@ export const bearerOwners = configured(Options, (context, options) => {
+ 		TemplateLiteral: (node) => {
+ 			const head = Arr.head(node.quasis)
+ 			if (
+-				Arr.isReadonlyArrayNonEmpty(node.expressions) &&
++				Arr.isReadonlyArrayEmpty(node.expressions) &&
+ 				Option.exists(head, (quasi) => isBearerText(quasi.value.cooked ?? quasi.value.raw))
+ 			) {
+ 				context.report({ node, message: MESSAGE })

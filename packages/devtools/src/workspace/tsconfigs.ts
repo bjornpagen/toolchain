@@ -613,7 +613,7 @@ export const tsconfigFindings = (
 
 /** The workspaces that prove the workspace gate: in each `violating-*` one the root and every package draw a finding,
  * and in each `clean-*` one nothing does. */
-const WORKSPACE_FIXTURES = `${import.meta.dirname}/fixtures`
+export const WORKSPACE_FIXTURES = `${import.meta.dirname}/fixtures`
 
 /** A fixture workspace's root package.json: the Effect-free list, as the repository's names it. */
 const FixtureManifest = Schema.fromJsonString(
@@ -660,6 +660,14 @@ const fixtureWorkspaceOf = (root: string) =>
 		return { root, packages, effectFree: manifest.toolchain.effectFree }
 	})
 
+/** One fixture workspace, by its directory's name, and every finding the gate makes of it. */
+export const fixtureFindings = (name: string) =>
+	Effect.gen(function* () {
+		const workspace = yield* fixtureWorkspaceOf(`${WORKSPACE_FIXTURES}/${name}`)
+		const findings = yield* workspaceFindings(workspace)
+		return { workspace, findings }
+	})
+
 /** Every fixture workspace against the gate, directory for directory. No fixture workspace of either kind is a
  * mismatch too: the gate is never proven by nothing. */
 export const workspaceFixtureMismatches = Effect.gen(function* () {
@@ -678,8 +686,7 @@ export const workspaceFixtureMismatches = Effect.gen(function* () {
 	}
 	const mismatches = yield* Effect.forEach([...violating, ...clean], (name) =>
 		Effect.gen(function* () {
-			const workspace = yield* fixtureWorkspaceOf(`${WORKSPACE_FIXTURES}/${name}`)
-			const findings = yield* workspaceFindings(workspace)
+			const { workspace, findings } = yield* fixtureFindings(name)
 			const reported = Arr.dedupe(Arr.map(findings, (finding) => path.dirname(finding.file)))
 			const expected = Str.startsWith("violating-")(name)
 				? [workspace.root, ...workspace.packages]
