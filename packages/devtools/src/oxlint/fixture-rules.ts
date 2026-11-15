@@ -103,7 +103,7 @@ export const FIXTURE_RULES: FixtureRules<typeof plugin, "no-comment"> = {
 	"no-overload": null,
 	"no-pointless-type-alias": null,
 	"no-raw-regexp": null,
-	"no-raw-sql": { sources: ["no-raw-sql"], writers: ["no-raw-sql/drizzle/clean.tsx"] },
+	"no-raw-sql": { sources: ["no-raw-sql"], writers: ["no-raw-sql/writer/clean.tsx"] },
 	"no-send-beacon": null,
 	"no-spread-argument": { tuples: [{ module: "#fixture/list.ts", names: ["argumentsOf"] }] },
 	"no-svg-paint": null,
