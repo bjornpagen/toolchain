@@ -1,0 +1,11 @@
+--- a/packages/testing/src/oxlint/rules/no-error-prose.ts
++++ b/packages/testing/src/oxlint/rules/no-error-prose.ts
+@@ -31,7 +31,7 @@ export const ERROR_SUFFIXES: ReadonlyArray<string> = [
+ 
+ const isErrorName = (name: string): boolean =>
+ 	Arr.contains(ERROR_NAMES, name) ||
+-	Arr.some(ERROR_SUFFIXES, (suffix) => Str.endsWith(suffix)(name))
++	Arr.some(ERROR_SUFFIXES, (suffix) => suffix === name)
+ 
+ /** A value named as an error: a binding or a field called `error`, `cause`, `failure` or `…Error`. */
+ const isErrorLike = (node: AnyNode): boolean => {

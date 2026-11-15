@@ -1,0 +1,11 @@
+--- a/packages/testing/src/oxlint/rules/no-clamped-count.ts
++++ b/packages/testing/src/oxlint/rules/no-clamped-count.ts
+@@ -47,7 +47,7 @@ const writtenInteger = (context: Context, node: AnyNode): Option.Option<number>
+ 
+ /** A count written as a positive integer: the one count no clamping constructor normalizes. */
+ const statesPositive = (context: Context, node: AnyNode | undefined): boolean =>
+-	node !== undefined && Option.exists(writtenInteger(context, node), (count) => count >= 1)
++	node !== undefined && Option.exists(writtenInteger(context, node), (count) => count >= 0)
+ 
+ /** A range's ends written as integers, the start at most the end: a range of at least one item, as written. */
+ const statesEnds = (context: Context, start: AnyNode, end: AnyNode): boolean =>

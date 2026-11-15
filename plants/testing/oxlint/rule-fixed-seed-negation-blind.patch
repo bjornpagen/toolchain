@@ -1,0 +1,12 @@
+--- a/packages/testing/src/oxlint/rules/no-fixed-seed.ts
++++ b/packages/testing/src/oxlint/rules/no-fixed-seed.ts
+@@ -5,9 +5,6 @@ import { isCallTo, isLiteralOf, keyOf, valueOf } from "#oxlint/syntax.ts"
+ /** A seed written into the test: a number, a bigint or a string literal, negated or not, or a `const` that holds one. */
+ const isFixed = (context: Context, node: AnyNode): boolean => {
+ 	const value = valueOf(context, node)
+-	if (value.type === "UnaryExpression") {
+-		return value.operator === "-" && isFixed(context, value.argument)
+-	}
+ 	return isLiteralOf(value, ["bigint", "number", "string"])
+ }
+ 

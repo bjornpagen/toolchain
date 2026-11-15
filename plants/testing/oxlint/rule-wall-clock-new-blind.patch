@@ -1,0 +1,14 @@
+--- a/packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts
++++ b/packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts
+@@ -31,11 +31,6 @@ export const noWallClockVerdict = refusal(
+ 				refuse(node)
+ 			}
+ 		},
+-		NewExpression: (node) => {
+-			if (isNamed(context, node.callee, DATE_READS) && Arr.isReadonlyArrayEmpty(node.arguments)) {
+-				refuse(node)
+-			}
+-		},
+ 		CallExpression: (node) => {
+ 			if (isNamed(context, node.callee, DATE_READS)) {
+ 				refuse(node)

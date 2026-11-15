@@ -10,12 +10,31 @@
  * Oracle: the specification, each rule's JSDoc read over the lists its module exports, never a list written again
  * here. Features, required for every rule: a site reported, a site left alone, and a program of several sites.
  *
- * Plants (~/.cache/grizzle-release/BR07/plants), each in a rule's logic, never in a list the grammar reads, one a
- * rule in this order: rule-ordered-unordered-wrapped-blind (and rule-ordered-unordered-const-blind, a projection held by
- * a `const` and compared read as no projection), rule-error-prose-suffix-blind,
- * rule-serialized-to-string-blind, rule-example-table-tag-blind, rule-boolean-assert-expect-message-blind,
- * rule-clamped-count-zero-admitted, rule-fixed-seed-negation-blind, rule-sleep-bare-blind, rule-wall-clock-new-blind,
- * rule-retry-false-refused.
+ * Every plant sits in a rule's logic, never in a list the grammar reads, and turns that rule's property red.
+ *
+ * @plant plants/testing/oxlint/rule-ordered-unordered-wrapped-blind.patch no-ordered-unordered reads a projection
+ * held in an object literal's field or an array literal's item as no projection.
+ * @plant plants/testing/oxlint/rule-ordered-unordered-const-blind.patch no-ordered-unordered reads a projection held
+ * by a `const` and compared as no projection.
+ * @plant plants/testing/oxlint/rule-error-prose-suffix-blind.patch no-error-prose takes an error's ending for a whole
+ * name, so the text of a name ending in one (`parseError.message`) is no error's text; no-serialized-comparison,
+ * which leaves error text to no-error-prose, goes red with it.
+ * @plant plants/testing/oxlint/rule-serialized-to-string-blind.patch no-serialized-comparison reads `toString()` as no
+ * serialization.
+ * @plant plants/testing/oxlint/rule-example-table-tag-blind.patch no-example-table reads a tagged-template table as no
+ * table.
+ * @plant plants/testing/oxlint/rule-boolean-assert-expect-message-blind.patch no-boolean-assert reads the message of
+ * an `expect(actual, message)` chain as none.
+ * @plant plants/testing/oxlint/rule-clamped-count-zero-admitted.patch no-clamped-count admits a count of 0 as one it
+ * never normalizes.
+ * @plant plants/testing/oxlint/rule-fixed-seed-negation-blind.patch no-fixed-seed reads a negated literal seed as no
+ * fixed seed.
+ * @plant plants/testing/oxlint/rule-sleep-bare-blind.patch no-sleep-wait reads a sleep called by a bare name
+ * (`setTimeout`, an import alias) as no sleep.
+ * @plant plants/testing/oxlint/rule-wall-clock-new-blind.patch no-wall-clock-verdict reads `new Date()` as no read of
+ * the clock.
+ * @plant plants/testing/oxlint/rule-retry-false-refused.patch no-retry-or-concurrency refuses `concurrent: false`,
+ * which runs no test beside another.
  */
 import { describe, it } from "@effect/vitest"
 import { deepStrictEqual } from "@effect/vitest/utils"

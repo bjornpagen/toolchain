@@ -1,0 +1,12 @@
+--- a/packages/testing/src/oxlint/rules/no-boolean-assert.ts
++++ b/packages/testing/src/oxlint/rules/no-boolean-assert.ts
+@@ -76,8 +76,7 @@ const assertedOf = ({ name, subjects }: Assertion): Option.Option<AnyNode> => {
+  * matcher explains its failure that way.
+  */
+ const carriesMessage = (context: Context, node: AnyNode, assertion: Assertion): boolean =>
+-	assertion.subjects.length > (Arr.contains(TRUTHS, assertion.name) ? 1 : 2) ||
+-	Option.isSome(expectMessageOf(context, node))
++	assertion.subjects.length > (Arr.contains(TRUTHS, assertion.name) ? 1 : 2)
+ 
+ /**
+  * A boolean assertion over a fact a narrower assertion states: `assertTrue(Option.isSome(x))`,
