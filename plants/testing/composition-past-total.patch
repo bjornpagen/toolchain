@@ -1,0 +1,11 @@
+--- a/packages/testing/src/gen.ts
++++ b/packages/testing/src/gen.ts
+@@ -381,7 +381,7 @@ export const composition =
+ 		const counts: Array<number> = []
+ 		let rest = total
+ 		for (let place = 1; place < parts; place += 1) {
+-			const count = source.choose(0, rest)
++			const count = source.choose(0, total)
+ 			counts.push(count)
+ 			rest -= count
+ 		}

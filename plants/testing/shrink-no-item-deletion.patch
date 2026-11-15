@@ -1,0 +1,11 @@
+--- a/packages/testing/src/shrink.ts
++++ b/packages/testing/src/shrink.ts
+@@ -345,7 +345,7 @@ export const shrinkAttempt = <X, R>(
+ 
+ 		let progressed = true
+ 		while (progressed && !exhausted()) {
+-			const deleted = yield* deleteItems()
++			const deleted = false
+ 			const dropped = yield* deleteSpans()
+ 			const simplifiedAny = yield* simplifySpans()
+ 			const reordered = yield* reorderItems()

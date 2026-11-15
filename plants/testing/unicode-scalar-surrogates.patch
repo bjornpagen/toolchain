@@ -1,0 +1,11 @@
+--- a/packages/testing/src/gen.ts
++++ b/packages/testing/src/gen.ts
+@@ -202,7 +202,7 @@ const SURROGATES = { first: 0xd800, count: 0x800 } as const
+  * made of, where `codePoint(0, 0x10ffff)` would also draw a lone surrogate, which is no text at all.
+  */
+ export const unicodeScalar: Gen<string> = map(int(0, 0x10_ffff - SURROGATES.count), (index) =>
+-	String.fromCodePoint(index < SURROGATES.first ? index : index + SURROGATES.count)
++	String.fromCodePoint(index)
+ )
+ 
+ /** A string of between `size.min` and `size.max` characters from `character`. */

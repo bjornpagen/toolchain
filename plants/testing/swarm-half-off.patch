@@ -1,0 +1,11 @@
+--- a/packages/testing/src/swarm.ts
++++ b/packages/testing/src/swarm.ts
+@@ -32,7 +32,7 @@ export type Omission = (typeof OMISSIONS)[number]
+  */
+ const GATES = 18
+ 
+-const OFF: Readonly<Record<Omission, number>> = { "five-sixths": 15, half: 9, "one-sixth": 3 }
++const OFF: Readonly<Record<Omission, number>> = { "five-sixths": 15, half: 6, "one-sixth": 3 }
+ 
+ const PRESENCES = [1, 2, 3] as const
+ 

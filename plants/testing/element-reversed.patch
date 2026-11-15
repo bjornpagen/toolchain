@@ -1,0 +1,11 @@
+--- a/packages/testing/src/gen.ts
++++ b/packages/testing/src/gen.ts
+@@ -77,7 +77,7 @@ export const constant =
+ export const element =
+ 	<const A>(values: ReadonlyArray<A> & Readonly<{ 0: A }>): Gen<A> =>
+ 	(source) =>
+-		Arr.getUnsafe(values, source.pick(0, values.length - 1))
++		Arr.getUnsafe(values, values.length - 1 - source.pick(0, values.length - 1))
+ 
+ /** A generator's values, transformed. */
+ export const map =

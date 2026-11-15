@@ -1,0 +1,11 @@
+--- a/packages/testing/src/values.ts
++++ b/packages/testing/src/values.ts
+@@ -154,7 +154,7 @@ export const double = (min: number, max: number): Gen<number> => {
+ 	const places = doublePlaces()
+ 	return wholeOr(
+ 		min,
+-		max,
++		Math.ceil(max),
+ 		2 ** 31 - 1,
+ 		map(bigint(places.indexOf(min), places.indexOf(max)), places.valueOf)
+ 	)

@@ -1,0 +1,11 @@
+--- a/packages/testing/src/gen.ts
++++ b/packages/testing/src/gen.ts
+@@ -362,7 +362,7 @@ export const parents =
+ 		const parent: Array<number> = []
+ 		for (let node = 1; node < nodes; node += 1) {
+ 			source.open("element")
+-			parent.push(source.pick(0, node - 1))
++			parent.push(source.pick(0, node))
+ 			source.close()
+ 		}
+ 		source.close()

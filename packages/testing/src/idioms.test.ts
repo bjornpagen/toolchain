@@ -1,21 +1,66 @@
 /**
  * The library's generators (gen.ts, values.ts, swarm.ts, lsw.ts, pattern.ts), each held to what its JSDoc promises,
- * every search stating its oracle: exact enumeration orders and spaces (an int's or a bigint's distance from zero, every
- * arrangement, subset, sorted list, tree and composition of a small box, each exactly once); ranges kept however wide;
- * doubles and floats within range, a whole failure shrinking to the least whole number, every special double reached;
- * UUIDs canonical, of their version and variant; a unique array distinct by construction; alphabets, twins, element
- * order and the scalar code points; exact shares by exact enumeration (production's five in six, proportional weights,
- * a swarm's omissions and presences, a swarm choice); live, stale and wild boundary values drawn, printed untouched and
- * handed as data where data; a corrupted value's live share and its rules' weights; and a pattern's strings matching
- * it.
+ * every search stating its oracle: exact enumeration orders and spaces (an int's or a bigint's distance from zero,
+ * every arrangement, subset, sorted list, tree and composition of a small box, each exactly once); ranges kept however
+ * wide, a wide int's every decision at its greatest included; doubles and floats within range, a whole failure
+ * shrinking to the least whole number, every special double reached, -0 from a range that holds none; UUIDs canonical,
+ * of their version and variant; a unique array distinct by construction; alphabets (the kept letter first, the others
+ * in order), twins, element order and the scalar code points; exact shares by exact enumeration (production's five in
+ * six, proportional weights, a swarm's omissions and presences, a swarm choice); live, stale and wild boundary values
+ * drawn, printed untouched, handed as data where data, and shrunk to the simplest live value, or, in a list failing for
+ * its wild value, to that value alone; a corrupted value's live share and its rules' weights; and a pattern's strings
+ * matching it.
  *
- * Plants (~/.cache/grizzle-release/BR07/plants), each turning the property of its generator red:
- * int-order-sign-swapped, bigint-order-sign-swapped, int-wide-past-hi, double-past-max, float-past-max,
- * double-whole-shrink-lost, specials-without-negative-zero, uuid-variant-wrong, shuffled-repeats,
- * unique-array-repair-over-items (the repair walking each item, tail and all), alphabet-kept-last, clone-shares-object, production-four-in-five, element-reversed,
- * unicode-scalar-surrogates, proportional-zero-drawn, swarm-half-off, swarm-keep-at-weight-one-always,
- * ascending-repeats, parents-self, composition-past-total, lsw-proxy-touched (the lsw kinds and boundary data),
- * shrink-no-item-deletion (shrinking toward the simplest live value), corrupted-never-live, pattern-repeat-past-max.
+ * @plant plants/testing/int-order-sign-swapped.patch int's order puts the negative side first at each distance from
+ * zero; the int order enumeration fails.
+ * @plant plants/testing/bigint-order-sign-swapped.patch bigint's order puts the negative side first at each distance
+ * from zero; the bigint order enumeration fails.
+ * @plant plants/testing/int-wide-past-hi.patch A wide int's low word goes unbounded at its high word's top, so the
+ * whole passes hi; the wide ints property fails at every decision's greatest.
+ * @plant plants/testing/double-past-max.patch double's whole arm runs to max rounded up, past a max that is no whole
+ * number; the double bounds property fails.
+ * @plant plants/testing/float-past-max.patch float's whole arm runs to max rounded up, past a max that is no whole
+ * number; the float bounds property fails.
+ * @plant plants/testing/double-whole-shrink-lost.patch wholeOr puts its whole arm after the arm by place, so a failing
+ * double shrinks by place, never to the least whole number that still fails; the double shrink property fails.
+ * @plant plants/testing/specials-without-negative-zero.patch The special doubles hold 0 where -0 belongs, so a double
+ * or special from a range without -0 never draws it; the random reach property fails.
+ * @plant plants/testing/uuid-variant-wrong.patch A UUID's variant bits are 11 where RFC 9562 has 10; the uuid form
+ * property fails.
+ * @plant plants/testing/shuffled-repeats.patch shuffled never takes a picked value out of the rest, so a value
+ * repeats; the shuffled exhaustion fails.
+ * @plant plants/testing/unique-array-repair-over-items.patch The repair of a repeated key walks each item, tail and
+ * all, so where the keys run out it enumerates every tail and the case hangs; the unique array property fails.
+ * @plant plants/testing/alphabet-kept-last.patch alphabet puts its kept letter last, after the others, so the letters
+ * after the first leave their order; the alphabet exhaustion fails.
+ * @plant plants/testing/clone-shares-object.patch clone hands out the first twin again for every other, so the twins
+ * share their objects; the clone property fails.
+ * @plant plants/testing/production-four-in-five.patch production draws its constant four times in five; the
+ * production share property fails.
+ * @plant plants/testing/element-reversed.patch element picks from its list's end, so it shrinks toward the last
+ * literal and enumerates the list reversed; the element order property fails.
+ * @plant plants/testing/unicode-scalar-surrogates.patch unicodeScalar takes its index for the code point, so it draws
+ * lone surrogates and never the last plane's top; the unicode scalars property fails.
+ * @plant plants/testing/proportional-zero-drawn.patch proportional counts an option of weight zero among those with
+ * weight, so it draws the last option, not the floor, when none has weight, and decides where one alone has it; the
+ * proportional shares property fails.
+ * @plant plants/testing/swarm-half-off.patch The half omission turns a feature off a third of the time; the swarm
+ * distribution exhaustion fails.
+ * @plant plants/testing/swarm-keep-at-weight-one-always.patch keep keeps a feature of weight 1 at every place; the
+ * swarm weights exhaustion fails.
+ * @plant plants/testing/ascending-repeats.patch ascending drops its step, so increasing repeats values; the sorted
+ * collections exhaustion fails.
+ * @plant plants/testing/parents-self.patch parents lets a node be its own parent; the trees exhaustion fails.
+ * @plant plants/testing/composition-past-total.patch composition draws each count from the whole total, not what the
+ * counts before it left, so the counts run past it and the last goes negative; the compositions exhaustion fails.
+ * @plant plants/testing/lsw-proxy-touched.patch wild and wildOf hand out a wild value's hostile form in place of its
+ * data, so printing or reading a drawn proxy runs its traps; the lsw kinds and wild data properties fail.
+ * @plant plants/testing/shrink-no-item-deletion.patch The shrinker never deletes an item, so a list failing for its
+ * wild value keeps the live value before it; the lsw shrink property fails.
+ * @plant plants/testing/corrupted-never-live.patch corrupted drops its live arm, so an artifact a rule has a site in is
+ * never drawn live; the corrupted shares property fails.
+ * @plant plants/testing/pattern-repeat-past-max.patch A repetition draws up to one item past its max; the matching
+ * property fails.
  */
 import { describe, it } from "@effect/vitest"
 import { assertTrue, deepStrictEqual, strictEqual } from "@effect/vitest/utils"
@@ -108,7 +153,8 @@ import { searched } from "#vitest/searched.ts"
 
 /**
  * A chooser that takes every decision's greatest value: a draw at the far end of its range, which a double drawn whole
- * starts its shrink from where its seed's draw does not fail.
+ * starts its shrink from where its seed's draw does not fail, and which a wide whole number draws at its high word's
+ * top, where only the low word's bound keeps it within its range.
  */
 const greatestChooser: Chooser = { exhausted: () => false, draw: (_lo, hi) => hi }
 
@@ -386,7 +432,10 @@ const reachParameters: Gen<ReachParameters> = (source) => ({
 	exponent: source.draw(int(0, 20))
 })
 
-/** A wide generator of each kind, and what it reaches, by the drawn parameters. */
+/**
+ * A wide generator of each kind, and what it reaches, by the drawn parameters; a double or special within 1..2, which
+ * holds no -0, so only its special arm reaches -0.
+ */
 const reaching = (
 	kind: ReachingKind,
 	{ width, side, bits, exponent }: ReachParameters
@@ -418,7 +467,7 @@ const reaching = (
 		}
 		case "double or special":
 			return {
-				generator: doubleOrSpecial(-1, 1),
+				generator: doubleOrSpecial(1, 2),
 				values: [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -0],
 				chance: 1 / (10 * 4)
 			}
@@ -649,8 +698,13 @@ describe("collections", () => {
 					},
 					(drawnLetters) =>
 						Effect.sync(() => {
+							const others = Arr.drop(drawnLetters, 1)
 							deepStrictEqual(Arr.dedupe(drawnLetters), drawnLetters)
 							deepStrictEqual(Arr.difference(drawnLetters, letters), [])
+							deepStrictEqual(
+								Arr.filter(letters, (letter) => Arr.contains(others, letter)),
+								others
+							)
 						})
 				)
 			)
@@ -1238,6 +1292,15 @@ const boundaryValue = lsw({
 	wild: WILD_KINDS
 })
 
+/** Up to two boundary values in a list, which a shrink deletes one of only by deleting its item. */
+const boundaryList = array(boundaryValue, { min: 0, max: 2 })
+
+/**
+ * The decisions that start a list as two values, a live 9 and then a wild value, its kind and what it holds drawn
+ * after them: the wild value a list fails for, after a live value only deleting its item takes out.
+ */
+const LIVE_THEN_WILD = Float64Array.of(2, 0, 9, 2)
+
 describe("live, stale and wild values", () => {
 	it.effect("draw every kind, and print without touching a hostile value", (ctx) =>
 		searched(
@@ -1262,29 +1325,50 @@ describe("live, stale and wild values", () => {
 		)
 	)
 
-	it.effect("shrink any case toward the simplest live value", (ctx) =>
-		searched(
-			ctx,
-			explore(
-				searchOf(
-					"lsw shrink",
-					{ kind: "specification", name: "the simplest live value, as lsw orders its arms" },
-					seeds,
-					noCoverage,
-					40
-				),
-				(seed) =>
-					Effect.gen(function* () {
-						const shrunk = yield* shrink(
-							boundaryValue,
-							fresh(boundaryValue, seed),
-							() => Effect.succeed(true),
-							completeShrink
-						)
-						deepStrictEqual(shrunk.best.failure, { kind: "live", value: 0 })
-					})
+	it.effect(
+		"shrink any case toward the simplest live value, and a list failing for its wild value toward that value alone, of the simplest wild kind",
+		(ctx) =>
+			searched(
+				ctx,
+				explore(
+					searchOf(
+						"lsw shrink",
+						{
+							kind: "specification",
+							name: "the simplest live value, as lsw orders its arms, and the simplest wild kind alone once the live value before it is deleted"
+						},
+						seeds,
+						noCoverage,
+						40
+					),
+					(seed) =>
+						Effect.gen(function* () {
+							const shrunk = yield* shrink(
+								boundaryValue,
+								fresh(boundaryValue, seed),
+								() => Effect.succeed(true),
+								completeShrink
+							)
+							const shrunkList = yield* shrink(
+								boundaryList,
+								generate(
+									recorder(),
+									boundaryList,
+									prefixChooser(LIVE_THEN_WILD, LIVE_THEN_WILD.length, randomChooser(wordsOf(seed)))
+								),
+								(values) => Effect.succeed(Arr.some(values, (value) => value.kind === "wild")),
+								completeShrink
+							)
+							deepStrictEqual(
+								{ value: shrunk.best.failure, list: shrunkList.best.failure },
+								{
+									value: { kind: "live", value: 0 },
+									list: [{ kind: "wild", wild: wildOf("null") }]
+								}
+							)
+						})
+				)
 			)
-		)
 	)
 
 	it.effect(
@@ -1731,26 +1815,36 @@ describe("a pattern", () => {
 })
 
 describe("a wide whole number", () => {
-	it.effect("stays within a range wider than 2^32", (ctx) =>
-		searched(
-			ctx,
-			explore(
-				searchOf(
-					"wide ints",
-					{ kind: "specification", name: "lo ≤ value ≤ hi, as int states" },
-					boundsOf(int(-(2 ** 50), 2 ** 50)),
-					noCoverage,
-					200
-				),
-				([lo, hi], c) =>
-					Effect.sync(() => {
-						const value = c.draw(int(lo, hi))
-						assertTrue(
-							lo <= value && value <= hi && Number.isInteger(value),
-							`${value} lies within ${lo}..${hi}`
-						)
-					})
+	it.effect(
+		"stays within a range wider than 2^32, every decision at its greatest included",
+		(ctx) =>
+			searched(
+				ctx,
+				explore(
+					searchOf(
+						"wide ints",
+						{
+							kind: "specification",
+							name: "lo ≤ value ≤ hi, as int states, for a random draw and for every decision at its greatest"
+						},
+						boundsOf(int(-(2 ** 50), 2 ** 50)),
+						noCoverage,
+						200
+					),
+					([lo, hi], c) =>
+						Effect.sync(() => {
+							const value = c.draw(int(lo, hi))
+							const farthest = generate(recorder(), int(lo, hi), greatestChooser).value
+							assertTrue(
+								lo <= value && value <= hi && Number.isInteger(value),
+								`${value} lies within ${lo}..${hi}`
+							)
+							assertTrue(
+								lo <= farthest && farthest <= hi,
+								`${farthest}, every decision at its greatest, lies within ${lo}..${hi}`
+							)
+						})
+				)
 			)
-		)
 	)
 })

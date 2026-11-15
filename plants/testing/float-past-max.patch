@@ -1,0 +1,11 @@
+--- a/packages/testing/src/values.ts
++++ b/packages/testing/src/values.ts
+@@ -165,7 +165,7 @@ export const float = (min: number, max: number): Gen<number> => {
+ 	const places = floatPlaces()
+ 	return wholeOr(
+ 		min,
+-		max,
++		Math.ceil(max),
+ 		2 ** 24,
+ 		map(int(places.indexOf(min), places.indexOf(max)), places.valueOf)
+ 	)

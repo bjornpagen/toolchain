@@ -1,0 +1,13 @@
+--- a/packages/testing/src/values.ts
++++ b/packages/testing/src/values.ts
+@@ -137,8 +137,8 @@ const wholeOr = (min: number, max: number, limit: number, anywhere: Gen<number>)
+ 	const high = Math.min(Math.floor(max), limit)
+ 	return low <= high
+ 		? weighted([
+-				[1, int(low, high)],
+-				[3, anywhere]
++				[3, anywhere],
++				[1, int(low, high)]
+ 			])
+ 		: anywhere
+ }

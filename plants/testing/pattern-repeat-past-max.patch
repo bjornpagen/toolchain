@@ -1,0 +1,11 @@
+--- a/packages/testing/src/pattern.ts
++++ b/packages/testing/src/pattern.ts
+@@ -350,7 +350,7 @@ const generatorOf = (node: Node): Gen<string> => {
+ 		case "choice":
+ 			return oneOf(Arr.map(node.options, generatorOf))
+ 		case "repeat":
+-			return map(array(generatorOf(node.node), { min: node.min, max: node.max }), Arr.join(""))
++			return map(array(generatorOf(node.node), { min: node.min, max: node.max + 1 }), Arr.join(""))
+ 	}
+ }
+ 

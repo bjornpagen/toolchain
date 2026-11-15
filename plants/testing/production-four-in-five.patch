@@ -1,0 +1,11 @@
+--- a/packages/testing/src/gen.ts
++++ b/packages/testing/src/gen.ts
+@@ -252,7 +252,7 @@ export const option = <A>(generator: Gen<A>): Gen<Option.Option<A>> =>
+  */
+ export const production = <A>(inForce: A, small: Arr.NonEmptyReadonlyArray<A>): Gen<A> =>
+ 	weighted([
+-		[5, constant(inForce)],
++		[4, constant(inForce)],
+ 		[1, element(small)]
+ 	])
+ 

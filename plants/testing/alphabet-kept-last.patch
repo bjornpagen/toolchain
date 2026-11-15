@@ -1,0 +1,11 @@
+--- a/packages/testing/src/gen.ts
++++ b/packages/testing/src/gen.ts
+@@ -274,7 +274,7 @@ export const alphabet =
+ 			}
+ 		}
+ 		source.close()
+-		return [Arr.getUnsafe(letters, kept), ...others]
++		return [...others, Arr.getUnsafe(letters, kept)]
+ 	}
+ 
+ /**
