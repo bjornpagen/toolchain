@@ -4,8 +4,10 @@
  * the definition); and it costs no more than grouping by key, its comparisons and key computations growing no faster
  * than linearly in its answers' size (over sizes 2h, 4h and 6h, the second step costs no more than the first).
  *
- * Plants (~/.cache/grizzle-release/BR07/plants): agree-set-repeats.patch (a repeat agreeing) turns the first property
- * red; set-compared-pairwise.patch (every item compared with every other) the second.
+ * @plant plants/testing/agree-set-repeats.patch A set comparison never looks for a repeat, so an answer that repeats an
+ * item agrees with one that holds it once; the first property fails.
+ * @plant plants/testing/set-compared-pairwise.patch Every item is compared with every item of the other side, not
+ * only with those of its key's group; the second property fails.
  */
 import { describe, it } from "@effect/vitest"
 import { assertTrue, deepStrictEqual } from "@effect/vitest/utils"
