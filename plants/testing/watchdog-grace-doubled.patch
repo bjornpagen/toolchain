@@ -1,0 +1,13 @@
+diff --git a/packages/testing/src/live.ts b/packages/testing/src/live.ts
+index d8d9ec8..965e21d 100644
+--- a/packages/testing/src/live.ts
++++ b/packages/testing/src/live.ts
+@@ -317,7 +317,7 @@ export const watchedCase = <A, E, R>(
+ 						onNone: () => now + hangMillis,
+ 						onSome: (cut) => Math.min(now + hangMillis, cut)
+ 					}),
+-					graceMillis: WATCHDOG_GRACE_MILLIS,
++					graceMillis: WATCHDOG_GRACE_MILLIS * 2,
+ 					report
+ 				})
+ 			)

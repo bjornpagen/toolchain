@@ -4,8 +4,8 @@
  * that returns, pauses or sleeps ends its search in the program by the guard's typed verdict. Oracle: stated in the
  * search.
  *
- * Plant: ~/.cache/grizzle-release/BR07/plants/watchdog-grace-doubled.patch (a grace twice the one stated) turns the
- * property red.
+ * @plant plants/testing/watchdog-grace-doubled.patch The watchdog waits a grace twice the one it states before it ends
+ * a runaway's process; the property fails.
  */
 import * as NodeServices from "@effect/platform-node/NodeServices"
 import { layer } from "@effect/vitest"
