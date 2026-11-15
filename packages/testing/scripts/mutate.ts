@@ -463,43 +463,40 @@ const keptRun = Effect.fn("testing.mutate.kept")(function* (
 	yield* Console.log(
 		`mutate: ${String(kept.length)} kept mutants of ${keptFile}, TEST_SEED=${String(seed)}`
 	)
-	const judged = yield* Effect.forEach(
-		kept,
-		(mutant) =>
-			Effect.gen(function* () {
-				const target = yield* realPathOf(path.join(pkg, mutant.file))
-				const original = yield* fs.readFileString(target)
-				const mutatedText = keptApplied(mutant, original)
-				if (Result.isFailure(mutatedText)) {
-					yield* Console.log(`STALE ${mutant.name}: ${mutatedText.failure.message}`)
-					const stale: Verdict = { kind: "stale" }
-					return stale
-				}
-				const [unmutatedTime, unmutated] = yield* timedRun(
-					suite({ target, text: original }, mutant.killers)
-				)
-				if (unmutated.kind !== "survived") {
-					return yield* MutationRunRefused.make({
-						message: `${mutant.name}: its killers fail on the unmutated package: ${unmutated.by}`
-					})
-				}
-				const deadline = Duration.times(unmutatedTime, DEADLINE_FACTOR)
-				const probe = Arr.join([target, ...mutant.killers], "\u0000")
-				if (!probedFiles.has(probe)) {
-					yield* probed(suite, target, original, mutant.killers, deadline)
-					probedFiles.add(probe)
-				}
-				const mutated: MutatedFile = { target, text: mutatedText.success }
-				const invalid = yield* mistyped(mutated)
-				const verdict: Verdict = invalid
-					? { kind: "invalid" }
-					: yield* verdictWithin(suite(mutated, mutant.killers), deadline)
-				yield* Console.log(
-					`${mutant.name} ${mutant.file} ${verdict.kind}${verdict.kind === "killed" ? ` by "${verdict.by}"` : ""}`
-				)
-				return verdict
-			}),
-		{ concurrency: 1 }
+	const judged = yield* Effect.forEach(kept, (mutant) =>
+		Effect.gen(function* () {
+			const target = yield* realPathOf(path.join(pkg, mutant.file))
+			const original = yield* fs.readFileString(target)
+			const mutatedText = keptApplied(mutant, original)
+			if (Result.isFailure(mutatedText)) {
+				yield* Console.log(`STALE ${mutant.name}: ${mutatedText.failure.message}`)
+				const stale: Verdict = { kind: "stale" }
+				return stale
+			}
+			const [unmutatedTime, unmutated] = yield* timedRun(
+				suite({ target, text: original }, mutant.killers)
+			)
+			if (unmutated.kind !== "survived") {
+				return yield* MutationRunRefused.make({
+					message: `${mutant.name}: its killers fail on the unmutated package: ${unmutated.by}`
+				})
+			}
+			const deadline = Duration.times(unmutatedTime, DEADLINE_FACTOR)
+			const probe = Arr.join([target, ...mutant.killers], "\u0000")
+			if (!probedFiles.has(probe)) {
+				yield* probed(suite, target, original, mutant.killers, deadline)
+				probedFiles.add(probe)
+			}
+			const mutated: MutatedFile = { target, text: mutatedText.success }
+			const invalid = yield* mistyped(mutated)
+			const verdict: Verdict = invalid
+				? { kind: "invalid" }
+				: yield* verdictWithin(suite(mutated, mutant.killers), deadline)
+			yield* Console.log(
+				`${mutant.name} ${mutant.file} ${verdict.kind}${verdict.kind === "killed" ? ` by "${verdict.by}"` : ""}`
+			)
+			return verdict
+		})
 	)
 	const count = (kind: Verdict["kind"]) =>
 		Arr.filter(judged, (verdict) => verdict.kind === kind).length
@@ -521,27 +518,21 @@ const run = Effect.fn("testing.mutate.run")(function* (flags: Flags) {
 			message: "name the files to mutate with --file, or the kept mutants to run with --kept"
 		})
 	}
-	const sources = yield* Effect.forEach(
-		flags.files,
-		(file) =>
-			Effect.gen(function* () {
-				const target = yield* realPathOf(path.join(pkg, file))
-				const text = yield* fs.readFileString(target)
-				return { file, target, text }
-			}),
-		{ concurrency: 1 }
+	const sources = yield* Effect.forEach(flags.files, (file) =>
+		Effect.gen(function* () {
+			const target = yield* realPathOf(path.join(pkg, file))
+			const text = yield* fs.readFileString(target)
+			return { file, target, text }
+		})
 	)
-	const perFile = yield* Effect.forEach(
-		sources,
-		(source) =>
-			Effect.map(
-				mutantsOf([source], noFamilies),
-				Arr.map((mutant): Candidate => ({
-					mutant,
-					mutated: { target: source.target, text: applied(mutant) }
-				}))
-			),
-		{ concurrency: 1 }
+	const perFile = yield* Effect.forEach(sources, (source) =>
+		Effect.map(
+			mutantsOf([source], noFamilies),
+			Arr.map((mutant): Candidate => ({
+				mutant,
+				mutated: { target: source.target, text: applied(mutant) }
+			}))
+		)
 	)
 	const every = Arr.flatten(perFile)
 	const wanted: ReadonlySet<Operator> = new Set(
@@ -560,7 +551,6 @@ const run = Effect.fn("testing.mutate.run")(function* (flags: Flags) {
 	const population = flags.sample > 0 ? Arr.take(ranked, flags.sample) : chosen
 	if (flags.list) {
 		yield* Effect.forEach(population, ({ mutant }) => Console.log(describe(mutant)), {
-			concurrency: 1,
 			discard: true
 		})
 		return
@@ -590,7 +580,7 @@ const run = Effect.fn("testing.mutate.run")(function* (flags: Flags) {
 	yield* Effect.forEach(
 		sources,
 		(source) => probed(suite, source.target, source.text, flags.tests, deadline),
-		{ concurrency: 1, discard: true }
+		{ discard: true }
 	)
 	yield* Console.log(
 		`mutate: ${String(population.length)} of ${String(every.length)} mutants of ${Arr.join(flags.files, ", ")}, against ${Arr.isReadonlyArrayNonEmpty(flags.tests) ? Arr.join(flags.tests, ", ") : "the whole suite"}, TEST_SEED=${String(flags.seed)}, ${String(flags.workers)} at once`
@@ -626,12 +616,12 @@ const run = Effect.fn("testing.mutate.run")(function* (flags: Flags) {
 	yield* Effect.forEach(
 		Rec.toEntries(killers),
 		([by, killed]) => Console.log(`  killed by "${by}": ${String(killed.length)}`),
-		{ concurrency: 1, discard: true }
+		{ discard: true }
 	)
 	yield* Effect.forEach(
 		Arr.filter(results, ({ verdict }) => verdict.kind === "survived" || verdict.kind === "timeout"),
 		({ mutant, verdict }) => Console.log(`${Str.toUpperCase(verdict.kind)} ${describe(mutant)}`),
-		{ concurrency: 1, discard: true }
+		{ discard: true }
 	)
 	yield* judgedEvery
 }, Effect.scoped)

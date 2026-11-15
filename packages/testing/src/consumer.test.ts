@@ -149,12 +149,12 @@ const consumerLayer = Layer.effect(
 		yield* Effect.forEach(
 			CONSUMER,
 			([path, text]) => fs.writeFileString(`${directory}/${path}`, text),
-			{ concurrency: 1, discard: true }
+			{ discard: true }
 		)
 		yield* Effect.forEach(
 			["package.json", "src", "scripts"],
 			(entry) => fs.copy(`${library}/${entry}`, `${installed}/${entry}`),
-			{ concurrency: 1, discard: true }
+			{ discard: true }
 		)
 		yield* fs.makeDirectory(`${installed}/node_modules/@effect`, { recursive: true })
 		yield* Effect.forEach(
@@ -163,7 +163,7 @@ const consumerLayer = Layer.effect(
 				Effect.flatMap(installedPackage(name), (real) =>
 					fs.symlink(real, `${installed}/node_modules/${name}`)
 				),
-			{ concurrency: 1, discard: true }
+			{ discard: true }
 		)
 		yield* Effect.forEach(
 			Arr.union(CONSUMER_DEPENDENCIES, Record.keys(manifest.peerDependencies)),
@@ -171,7 +171,7 @@ const consumerLayer = Layer.effect(
 				Effect.flatMap(installedPackage(name), (real) =>
 					fs.symlink(real, `${directory}/node_modules/${name}`)
 				),
-			{ concurrency: 1, discard: true }
+			{ discard: true }
 		)
 		yield* fs.symlink(
 			"../@bjornpagen/testing/scripts/mutate.sh",
@@ -351,12 +351,12 @@ const written = (files: ReadonlyArray<readonly [path: string, text: string]>) =>
 		yield* Effect.forEach(
 			Arr.filter(left, (file) => file !== "below.ts"),
 			(file) => fs.remove(`${directory}/src/${file}`),
-			{ concurrency: 1, discard: true }
+			{ discard: true }
 		)
 		yield* Effect.forEach(
 			files,
 			([path, text]) => fs.writeFileString(`${directory}/${path}`, text),
-			{ concurrency: 1, discard: true }
+			{ discard: true }
 		)
 	})
 

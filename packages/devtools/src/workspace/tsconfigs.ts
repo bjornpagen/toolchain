@@ -134,49 +134,46 @@ const standardFindings = (rejected: ReadonlyArray<string>) =>
 			{ config: base, off: dropped },
 			...Arr.map(workspace, (config) => ({ config, off: Arr.union(dropped, rejected) }))
 		]
-		const findings = yield* Effect.forEach(
-			held,
-			(standard) =>
-				Effect.map(readTsconfig(standard.config), (decoded) => {
-					const expected = (diagnostic: string): string =>
-						Arr.contains(standard.off, diagnostic) ? "off" : "error"
-					const { config } = standard
-					return Arr.flatMap(severitiesIn(decoded), (severities) => [
-						...Arr.filterMap(
-							Arr.dedupe([...listed, ...standard.off]),
-							(diagnostic): Result.Result<Finding, void> => {
-								const set = Record.get(severities, diagnostic)
-								if (Option.contains(set, expected(diagnostic))) {
-									return Result.failVoid
-								}
-								return Result.succeed({
-									file: config,
-									line: 1,
-									column: 1,
-									rule: "rejected-diagnostics",
-									message: `${shown(config)} ${Option.match(set, {
-										onNone: () => "does not list",
-										onSome: (severity) => `sets ${severity} for`
-									})} the Effect diagnostic ${diagnostic}, which the standard sets to ${expected(diagnostic)}.`,
-									suggestion: Arr.contains(dropped, diagnostic)
-										? "The toolchain drops it for every repository: set it to off."
-										: Arr.contains(standard.off, diagnostic)
-											? "The repository's toolchain rejects it: set it to off."
-											: "Set it to error, or reject it in toolchain.config.ts's rejected.diagnostics with its reason, which needs the owner."
-								})
+		const findings = yield* Effect.forEach(held, (standard) =>
+			Effect.map(readTsconfig(standard.config), (decoded) => {
+				const expected = (diagnostic: string): string =>
+					Arr.contains(standard.off, diagnostic) ? "off" : "error"
+				const { config } = standard
+				return Arr.flatMap(severitiesIn(decoded), (severities) => [
+					...Arr.filterMap(
+						Arr.dedupe([...listed, ...standard.off]),
+						(diagnostic): Result.Result<Finding, void> => {
+							const set = Record.get(severities, diagnostic)
+							if (Option.contains(set, expected(diagnostic))) {
+								return Result.failVoid
 							}
-						),
-						...Arr.map(Arr.difference(Record.keys(severities), listed), (diagnostic): Finding => ({
-							file: config,
-							line: 1,
-							column: 1,
-							rule: "rejected-diagnostics",
-							message: `${shown(config)} lists the Effect diagnostic ${diagnostic}, which the shared base does not.`,
-							suggestion: "List every diagnostic in the shared base, and only those."
-						}))
-					])
-				}),
-			{ concurrency: 1 }
+							return Result.succeed({
+								file: config,
+								line: 1,
+								column: 1,
+								rule: "rejected-diagnostics",
+								message: `${shown(config)} ${Option.match(set, {
+									onNone: () => "does not list",
+									onSome: (severity) => `sets ${severity} for`
+								})} the Effect diagnostic ${diagnostic}, which the standard sets to ${expected(diagnostic)}.`,
+								suggestion: Arr.contains(dropped, diagnostic)
+									? "The toolchain drops it for every repository: set it to off."
+									: Arr.contains(standard.off, diagnostic)
+										? "The repository's toolchain rejects it: set it to off."
+										: "Set it to error, or reject it in toolchain.config.ts's rejected.diagnostics with its reason, which needs the owner."
+							})
+						}
+					),
+					...Arr.map(Arr.difference(Record.keys(severities), listed), (diagnostic): Finding => ({
+						file: config,
+						line: 1,
+						column: 1,
+						rule: "rejected-diagnostics",
+						message: `${shown(config)} lists the Effect diagnostic ${diagnostic}, which the shared base does not.`,
+						suggestion: "List every diagnostic in the shared base, and only those."
+					}))
+				])
+			})
 		)
 		return Arr.flatten(findings)
 	})
@@ -220,23 +217,20 @@ const installedRoster = Effect.gen(function* () {
 			detail: `${directory} holds no @effect/tsgo oxlint preset`
 		})
 	}
-	const rulesByPreset = yield* Effect.forEach(
-		presets,
-		(preset) =>
-			Effect.gen(function* () {
-				const file = path.join(directory, preset)
-				const text = yield* fs.readFileString(file).pipe(Effect.mapError(inspectionFailure(file)))
-				const decoded = yield* decodeRosterPreset(text).pipe(
-					Effect.mapError((cause) =>
-						DevtoolFailure.make({
-							detail: `${file} is not an oxlint preset this gate reads`,
-							cause
-						})
-					)
+	const rulesByPreset = yield* Effect.forEach(presets, (preset) =>
+		Effect.gen(function* () {
+			const file = path.join(directory, preset)
+			const text = yield* fs.readFileString(file).pipe(Effect.mapError(inspectionFailure(file)))
+			const decoded = yield* decodeRosterPreset(text).pipe(
+				Effect.mapError((cause) =>
+					DevtoolFailure.make({
+						detail: `${file} is not an oxlint preset this gate reads`,
+						cause
+					})
 				)
-				return Record.keys(decoded.rules)
-			}),
-		{ concurrency: 1 }
+			)
+			return Record.keys(decoded.rules)
+		})
 	)
 	const rules = Arr.dedupe(Arr.flatten(rulesByPreset))
 	const foreign = Arr.filter(rules, (rule) => !Str.startsWith(ROSTER_NAMESPACE)(rule))
@@ -400,10 +394,8 @@ const pluginBlockOf = (
 			)
 		}
 		const extended = Arr.reverse(extendedOf(decoded))
-		const resolved = yield* Effect.forEach(
-			extended,
-			(specifier) => Effect.map(extendedFile(config, specifier), (file) => ({ specifier, file })),
-			{ concurrency: 1 }
+		const resolved = yield* Effect.forEach(extended, (specifier) =>
+			Effect.map(extendedFile(config, specifier), (file) => ({ specifier, file }))
 		)
 		const unresolved = Arr.findFirst(resolved, ({ file }) => Option.isNone(file))
 		if (Option.isSome(unresolved)) {
@@ -596,10 +588,8 @@ const packageFindings = (workspace: Workspace, leaf: string) =>
 const workspaceFindings = (workspace: Workspace) =>
 	Effect.gen(function* () {
 		const root = yield* rootBlockFindings(workspace)
-		const packages = yield* Effect.forEach(
-			workspace.packages,
-			(leaf) => packageFindings(workspace, leaf),
-			{ concurrency: 1 }
+		const packages = yield* Effect.forEach(workspace.packages, (leaf) =>
+			packageFindings(workspace, leaf)
 		)
 		return [...root, ...listedFindings(workspace), ...Arr.flatten(packages)]
 	})
@@ -686,23 +676,20 @@ export const workspaceFixtureMismatches = Effect.gen(function* () {
 			detail: `${WORKSPACE_FIXTURES} needs a violating-* and a clean-* workspace`
 		})
 	}
-	const mismatches = yield* Effect.forEach(
-		[...violating, ...clean],
-		(name) =>
-			Effect.gen(function* () {
-				const workspace = yield* fixtureWorkspaceOf(`${WORKSPACE_FIXTURES}/${name}`)
-				const findings = yield* workspaceFindings(workspace)
-				const reported = Arr.dedupe(Arr.map(findings, (finding) => path.dirname(finding.file)))
-				const expected = Str.startsWith("violating-")(name)
-					? [workspace.root, ...workspace.packages]
-					: []
-				const missing = Arr.difference(expected, reported)
-				const unexpected = Arr.difference(reported, expected)
-				return Arr.isReadonlyArrayNonEmpty(missing) || Arr.isReadonlyArrayNonEmpty(unexpected)
-					? Option.some({ workspace: workspace.root, missing, unexpected })
-					: Option.none<WorkspaceMismatch>()
-			}),
-		{ concurrency: 1 }
+	const mismatches = yield* Effect.forEach([...violating, ...clean], (name) =>
+		Effect.gen(function* () {
+			const workspace = yield* fixtureWorkspaceOf(`${WORKSPACE_FIXTURES}/${name}`)
+			const findings = yield* workspaceFindings(workspace)
+			const reported = Arr.dedupe(Arr.map(findings, (finding) => path.dirname(finding.file)))
+			const expected = Str.startsWith("violating-")(name)
+				? [workspace.root, ...workspace.packages]
+				: []
+			const missing = Arr.difference(expected, reported)
+			const unexpected = Arr.difference(reported, expected)
+			return Arr.isReadonlyArrayNonEmpty(missing) || Arr.isReadonlyArrayNonEmpty(unexpected)
+				? Option.some({ workspace: workspace.root, missing, unexpected })
+				: Option.none<WorkspaceMismatch>()
+		})
 	)
 	return { workspaces: violating.length + clean.length, mismatches: Arr.getSomes(mismatches) }
 })

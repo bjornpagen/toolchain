@@ -239,7 +239,7 @@ const withCaseLives = <A, R>(
 				yield* searchStarted
 				const run = yield* Run
 				yield* Effect.addFinalizer(() =>
-					Effect.forEach(stopped, (fiber) => Fiber.await(fiber), { concurrency: 1, discard: true })
+					Effect.forEach(stopped, (fiber) => Fiber.await(fiber), { discard: true })
 				)
 				const cutting = yield* cuttingOf(run.deadline)
 				const life: Life = {
@@ -649,7 +649,7 @@ const windowOf = <B, R>(
 	concurrency: number
 ): Effect.Effect<Array<B>, never, R> =>
 	concurrency === 1
-		? Effect.forEach(indices, runOne, { concurrency: 1 })
+		? Effect.forEach(indices, runOne)
 		: Effect.forEach(
 				indices,
 				(index, offset) => Effect.andThen(Effect.yieldNow, runOne(index, offset)),

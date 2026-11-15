@@ -155,12 +155,10 @@ const styleFindingsOf = Effect.fn("styleFindingsOf")(function* (run: StyleRun) {
 	}
 	const fs = yield* FileSystem.FileSystem
 	const read = readerOf(fs, run.known)
-	const prepared = yield* Effect.forEach(
-		run.own,
-		(own) => own.prepare({ read, stylesheet: run.options.stylesheet }),
-		{ concurrency: 1 }
+	const prepared = yield* Effect.forEach(run.own, (own) =>
+		own.prepare({ read, stylesheet: run.options.stylesheet })
 	)
-	const sheets = yield* Effect.forEach(run.stylesheets, roleOf(run), { concurrency: 1 })
+	const sheets = yield* Effect.forEach(run.stylesheets, roleOf(run))
 	const unnamed = Arr.filterMap(sheets, (sheet) =>
 		Option.isNone(sheet.role) ? Result.succeed(sheet.file) : Result.failVoid
 	)
@@ -171,8 +169,7 @@ const styleFindingsOf = Effect.fn("styleFindingsOf")(function* (run: StyleRun) {
 				onSome: (role) => Result.succeed({ file: sheet.file, role })
 			})
 		),
-		(sheet) => sheetFindingsOf(run, prepared, sheet),
-		{ concurrency: 1 }
+		(sheet) => sheetFindingsOf(run, prepared, sheet)
 	)
 	const ownFindings = Arr.filter(
 		Arr.flatMap(prepared, (own) => own.findings),
@@ -375,8 +372,7 @@ const suiteMismatchesOf = Effect.fn("suiteMismatchesOf")(function* (suite: Fixtu
 	)
 	const read = yield* Effect.forEach(
 		Arr.filter(fixtureFiles, (file) => Arr.contains(files, file)),
-		(file) => Effect.map(readText(file), (text) => [file, text] as const),
-		{ concurrency: 1 }
+		(file) => Effect.map(readText(file), (text) => [file, text] as const)
 	)
 	const texts = new Map(read)
 	return Arr.flatMap(suite.cases, (fixtureCase) =>

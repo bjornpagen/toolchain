@@ -275,11 +275,9 @@ const derive = Effect.gen(function* () {
 	const manifest = `${root}/pnpm-workspace.yaml`
 	const text = yield* fs.readFileString(manifest).pipe(Effect.mapError(inspectionFailure(manifest)))
 	const globs = yield* workspaceGlobsOf(manifest, text)
-	const packagesPerGlob = yield* Effect.forEach(globs, (glob) => packagesOf(root, glob), {
-		concurrency: 1
-	})
+	const packagesPerGlob = yield* Effect.forEach(globs, (glob) => packagesOf(root, glob))
 	const packages = Arr.flatten(packagesPerGlob)
-	const packageApps = yield* Effect.forEach(packages, tailwindAppOf, { concurrency: 1 })
+	const packageApps = yield* Effect.forEach(packages, tailwindAppOf)
 	return { root, packages, apps: Arr.getSomes(packageApps) }
 })
 
