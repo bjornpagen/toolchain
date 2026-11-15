@@ -328,15 +328,15 @@ export type Oracle =
 	| Readonly<{ kind: "unstated" }>
 
 /**
- * A property search over one draw. Every field is stated by the suite, so its budget is on the page:
+ * A property search over one draw. Every field but `concurrency` is stated by the suite, so its budget is on the page:
  * - `literal` prints a sketch as source the suite can paste into its kept cases, and must read back as the same sketch;
  * - `coverage` is what the search must reach, and the steered phase that reaches what the floor stream misses: the
  *   floor's and the steered phase's cases alone decide it, so it passes on every run seed or on none;
  * - `runs` is the rotating stream's cases, the run's fresh sample, and the floor stream runs a quarter as many: the
  *   suite's budget for finding failures under test, never a dial for coverage, where a longer search is a fuzz run
  *   with a budget of its own;
- * - `concurrency` is how many cases run at once; cases that share state the property does not isolate run one at a
- *   time;
+ * - `concurrency` is how many cases run at once, one at a time where the suite leaves it out (oneAtATime), as cases
+ *   that share state the property does not isolate must run;
  * - `steerEvery` is how many cases pass between the snapshots `Case.steering` reads, a constant of the suite, so the
  *   same seed draws the same cases however many run at once;
  * - `caseHang` is how long one case may run before it is stopped and reported;
@@ -351,7 +351,7 @@ export type Exploration<S, T, F extends string> = Readonly<{
 	kept: ReadonlyArray<Kept<S, F>>
 	runs: number
 	shrink: ShrinkBudget
-	concurrency: number
+	concurrency?: number
 	steerEvery: number
 	caseHang: Duration.Input
 	oracle: Oracle
@@ -630,6 +630,12 @@ const outcomeOf = (recorded: Recording, settled: Settled): Outcome => {
 	}
 }
 
+/**
+ * How many cases a search runs at once where its spec states no `concurrency`: one at a time, a sequential run, which
+ * is a window's identity (windowOf forks nothing for it) and Effect's own default, so no limit and no bound.
+ */
+const oneAtATime = 1
+
 /** Keeps nothing of a case's recording: a search reads only a failing case's tape, which its outcome carries. */
 const keepNothing = (): void => undefined
 
@@ -648,7 +654,7 @@ const windowOf = <B, R>(
 	runOne: (index: number, offset: number) => Effect.Effect<B, never, R>,
 	concurrency: number
 ): Effect.Effect<Array<B>, never, R> =>
-	concurrency === 1
+	concurrency === oneAtATime
 		? Effect.forEach(indices, runOne)
 		: Effect.forEach(
 				indices,
@@ -1278,6 +1284,7 @@ export const explore = <S, T, F extends string, E, R>(
 	withCaseLives((run, life) =>
 		Effect.gen(function* () {
 			const situations = situationsOf(spec.coverage)
+			const concurrency = spec.concurrency ?? oneAtATime
 			const replay = Option.filter(run.replay, (requested) => requested.suite === spec.suite)
 			if (Option.isSome(replay)) {
 				return yield* replayOne(
@@ -1548,7 +1555,7 @@ export const explore = <S, T, F extends string, E, R>(
 							)
 							return seedOf(chooser, underAt(offset), sense)
 						},
-						sense.concurrent ? spec.concurrency : 1
+						sense.concurrent ? concurrency : oneAtATime
 					)
 					for (const [offset, caseRun] of window) {
 						const where = `${mutatedLabel(mutated)} (seed ${hex(mutated.stream)}), case ${Arr.getUnsafe(indices, offset)}`
@@ -1582,7 +1589,7 @@ export const explore = <S, T, F extends string, E, R>(
 							indices,
 							(index, offset) =>
 								runOne(randomChooser(wordsOf(caseSeed(floor, index))), underAt(offset)),
-							spec.concurrency
+							concurrency
 						)
 						for (const [offset, caseRun] of window) {
 							const where = `the floor stream (seed ${hex(floor)}), case ${windowStart + offset}`
@@ -1727,7 +1734,7 @@ export const explore = <S, T, F extends string, E, R>(
 				const window = yield* casesOf(
 					indices,
 					(index) => caseOf(randomChooser(wordsOf(caseSeed(rotating, index))), unsteered),
-					spec.concurrency
+					concurrency
 				)
 				for (const [offset, caseRun] of window) {
 					yield* settle(
@@ -1787,8 +1794,8 @@ type SketchRan<A, F extends string> = Readonly<{
  * prints a case as source, as an exploration's does; `coverage` is what the space must reach, judged on every case of it; `box` names the space in
  * words, the bound a pass proves the property within ("every family of size ≤ 4 under every single mutation"); and
  * `oracle` is what the property is checked against. The report prints both. `concurrency` is how many sketches run at
- * once, a sketch being one case of the generator alone with every case its property's draws enumerate from it; cases
- * that share state the property does not isolate run one at a time.
+ * once, a sketch being one case of the generator alone with every case its property's draws enumerate from it, one at
+ * a time where the suite leaves it out (oneAtATime), as cases that share state the property does not isolate run.
  */
 export type Exhaustion<A, F extends string> = Readonly<{
 	suite: string
@@ -1798,7 +1805,7 @@ export type Exhaustion<A, F extends string> = Readonly<{
 	caseHang: Duration.Input
 	box: Box
 	oracle: Oracle
-	concurrency: number
+	concurrency?: number
 }>
 
 /**
@@ -1845,6 +1852,7 @@ export const exhaust = <A, F extends string, E, R>(
 	withCaseLives((run, life) =>
 		Effect.gen(function* () {
 			const situations = situationsOf(spec.coverage)
+			const concurrency = spec.concurrency ?? oneAtATime
 			const exhaustedOf = (cases: number): Exhausted => ({
 				kind: "exhausted",
 				suite: spec.suite,
@@ -1956,7 +1964,7 @@ export const exhaust = <A, F extends string, E, R>(
 			while (Arr.isReadonlyArrayNonEmpty(rerun) || Option.isSome(next)) {
 				const window: Array<Sketch> = [...rerun]
 				rerun = []
-				while (Option.isSome(next) && (window.length === 0 || window.length < spec.concurrency)) {
+				while (Option.isSome(next) && (window.length === 0 || window.length < concurrency)) {
 					const step: Enumerated<A> = enumerated(sketches, spec.generator, next.value)
 					window.push({ start: next.value, decisions: step.generated.tape.length })
 					next = step.next
@@ -1972,7 +1980,7 @@ export const exhaust = <A, F extends string, E, R>(
 				const ran = yield* windowOf(
 					Arr.map(window, (_, index) => index),
 					(index) => sketchRun(Arr.getUnsafe(window, index), before, afterOf(index)),
-					spec.concurrency
+					concurrency
 				)
 				const stops: Array<Readonly<{ caseRun: CaseRun<A, Tape>; under: Under<F> }>> = []
 				for (const [index, sketchRan] of ran.entries()) {

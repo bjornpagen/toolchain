@@ -189,7 +189,6 @@ const searchOf = <A, F extends string>(
 	kept: [],
 	runs,
 	shrink: completeShrink,
-	concurrency: 1,
 	steerEvery: 16,
 	caseHang: Duration.minutes(1)
 })
@@ -231,8 +230,7 @@ describe("whole numbers", () => {
 					generator: smallBounds,
 					literal: Formatter.format,
 					coverage: noCoverage,
-					caseHang: Duration.minutes(1),
-					concurrency: 1
+					caseHang: Duration.minutes(1)
 				},
 				([lo, hi]) =>
 					Effect.sync(() =>
@@ -264,8 +262,7 @@ describe("bigints", () => {
 					generator: smallBounds,
 					literal: Formatter.format,
 					coverage: noCoverage,
-					caseHang: Duration.minutes(1),
-					concurrency: 1
+					caseHang: Duration.minutes(1)
 				},
 				([lo, hi]) =>
 					Effect.sync(() =>
@@ -568,8 +565,7 @@ describe("collections", () => {
 						generator: shuffled(values, { min: 0, max: 4 }),
 						literal: Formatter.format,
 						coverage: noCoverage,
-						caseHang: Duration.minutes(1),
-						concurrency: 1
+						caseHang: Duration.minutes(1)
 					},
 					(picked) =>
 						Effect.sync(() => {
@@ -693,8 +689,7 @@ describe("collections", () => {
 						generator: alphabet(letters),
 						literal: Formatter.format,
 						coverage: noCoverage,
-						caseHang: Duration.minutes(1),
-						concurrency: 1
+						caseHang: Duration.minutes(1)
 					},
 					(drawnLetters) =>
 						Effect.sync(() => {
@@ -986,8 +981,7 @@ describe("swarms", () => {
 						generator: alphabet<Letter>(["a", "b", "c"]),
 						literal: Formatter.format,
 						coverage: noCoverage,
-						caseHang: Duration.minutes(1),
-						concurrency: 1
+						caseHang: Duration.minutes(1)
 					},
 					(features) =>
 						Effect.sync(() => {
@@ -1045,8 +1039,7 @@ describe("swarms", () => {
 						}),
 						literal: Formatter.format,
 						coverage: noCoverage,
-						caseHang: Duration.minutes(1),
-						concurrency: 1
+						caseHang: Duration.minutes(1)
 					},
 					({ weights, options }) =>
 						Effect.sync(() => {
@@ -1170,8 +1163,7 @@ describe("constructive collections", () => {
 						generator: rangeBox,
 						literal: Formatter.format,
 						coverage: noCoverage,
-						caseHang: Duration.minutes(1),
-						concurrency: 1
+						caseHang: Duration.minutes(1)
 					},
 					({ lo, hi, size }) =>
 						Effect.gen(function* () {
@@ -1226,8 +1218,7 @@ describe("constructive collections", () => {
 					generator: int(1, 5),
 					literal: Formatter.format,
 					coverage: noCoverage,
-					caseHang: Duration.minutes(1),
-					concurrency: 1
+					caseHang: Duration.minutes(1)
 				},
 				(nodes) =>
 					Effect.gen(function* () {
@@ -1264,8 +1255,7 @@ describe("constructive collections", () => {
 						}),
 						literal: Formatter.format,
 						coverage: noCoverage,
-						caseHang: Duration.minutes(1),
-						concurrency: 1
+						caseHang: Duration.minutes(1)
 					},
 					({ total, parts }) =>
 						agree(
@@ -1387,8 +1377,7 @@ describe("live, stale and wild values", () => {
 						generator: map(element(WILD_KINDS), wildOf),
 						literal: Formatter.format,
 						coverage: noCoverage,
-						caseHang: Duration.minutes(1),
-						concurrency: 1
+						caseHang: Duration.minutes(1)
 					},
 					(wildValue) =>
 						Effect.sync(() => {

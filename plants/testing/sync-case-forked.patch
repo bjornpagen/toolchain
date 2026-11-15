@@ -1,6 +1,6 @@
 --- a/packages/testing/src/explore.ts
 +++ b/packages/testing/src/explore.ts
-@@ -843,7 +843,7 @@
+@@ -849,7 +849,7 @@
  				if (cutting.kind === "at" && began >= cutting.moment) {
  					return finish({ kind: "cut" })
  				}

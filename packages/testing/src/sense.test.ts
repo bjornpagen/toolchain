@@ -61,7 +61,6 @@ describe("a guided file's block coverage", () => {
 						kept: [],
 						runs: 20,
 						shrink: boundedShrink(20),
-						concurrency: 1,
 						steerEvery: 10,
 						caseHang: Duration.seconds(30)
 					},

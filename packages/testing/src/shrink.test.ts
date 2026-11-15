@@ -458,7 +458,6 @@ describe("shrinking", () => {
 						kept: [],
 						runs: 300,
 						shrink: completeShrink,
-						concurrency: 1,
 						steerEvery: 16,
 						caseHang: Duration.minutes(1)
 					},
@@ -486,8 +485,7 @@ describe("shrinking", () => {
 										generator,
 										literal: Formatter.format,
 										coverage: noCoverage,
-										caseHang: Duration.minutes(1),
-										concurrency: 1
+										caseHang: Duration.minutes(1)
 									},
 									(items) => Effect.sync(() => assertTrue(!fails(items), "the case holds"))
 								)
@@ -551,7 +549,6 @@ describe("shrinking", () => {
 						kept: [],
 						runs: 300,
 						shrink: completeShrink,
-						concurrency: 1,
 						steerEvery: 16,
 						caseHang: Duration.minutes(1)
 					},
@@ -658,7 +655,6 @@ describe("shrinking", () => {
 						kept: [],
 						runs: 200,
 						shrink: completeShrink,
-						concurrency: 1,
 						steerEvery: 16,
 						caseHang: Duration.minutes(1)
 					},

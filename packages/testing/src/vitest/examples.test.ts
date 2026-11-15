@@ -96,8 +96,7 @@ describe("the reporter's check of examples", () => {
 							"a search",
 							"a case that did not pass"
 						]),
-						caseHang: Duration.minutes(1),
-						concurrency: 1
+						caseHang: Duration.minutes(1)
 					},
 					({ stance, place, state, searches }, c) =>
 						Effect.sync(() => {

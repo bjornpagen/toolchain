@@ -371,7 +371,6 @@ describe("side-effect-free", () => {
 						kept: [],
 						runs: 200,
 						shrink: completeShrink,
-						concurrency: 1,
 						steerEvery: 16,
 						caseHang: Duration.minutes(1)
 					},
@@ -419,7 +418,6 @@ describe("side-effect-free", () => {
 					kept: [],
 					runs: 50,
 					shrink: completeShrink,
-					concurrency: 1,
 					steerEvery: 16,
 					caseHang: Duration.minutes(1)
 				},

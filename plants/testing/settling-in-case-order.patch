@@ -1,6 +1,6 @@
 --- a/packages/testing/src/explore.ts
 +++ b/packages/testing/src/explore.ts
-@@ -684,9 +684,7 @@
+@@ -690,9 +690,7 @@
  			)
  		return Effect.map(windowOf(indices, started, concurrency), (results) => {
  			const settled = Arr.getSomes(results)

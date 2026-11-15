@@ -1,6 +1,6 @@
 --- a/packages/testing/src/explore.ts
 +++ b/packages/testing/src/explore.ts
-@@ -1090,7 +1090,7 @@
+@@ -1096,7 +1096,7 @@
  			property,
  			forcedChooser(values, values.length),
  			[],

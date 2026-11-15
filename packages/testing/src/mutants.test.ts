@@ -267,7 +267,6 @@ layer(NodeServices.layer)("source mutation", (it) => {
 						kept: [],
 						runs: 60,
 						shrink: { kind: "bounded", candidates: 100 },
-						concurrency: 1,
 						steerEvery: 60,
 						caseHang: Duration.seconds(30)
 					},
@@ -340,7 +339,6 @@ layer(NodeServices.layer)("source mutation", (it) => {
 						kept: [],
 						runs: 40,
 						shrink: { kind: "bounded", candidates: 40 },
-						concurrency: 1,
 						steerEvery: 10,
 						caseHang: Duration.minutes(1)
 					},
@@ -434,7 +432,6 @@ layer(NodeServices.layer)("source mutation", (it) => {
 						kept: [],
 						runs: 200,
 						shrink: { kind: "complete" },
-						concurrency: 1,
 						steerEvery: 16,
 						caseHang: Duration.seconds(30)
 					},

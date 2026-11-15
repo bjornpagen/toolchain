@@ -168,7 +168,6 @@ const outerOf = <A, F extends string>(
 	kept: [],
 	runs: 40,
 	shrink: completeShrink,
-	concurrency: 1,
 	steerEvery: 16,
 	caseHang: Duration.minutes(1)
 })
@@ -412,8 +411,7 @@ describe("exhaust", () => {
 		generator: (source) => [source.draw(int(0, 2)), source.draw(int(0, 1))] as const,
 		literal: Formatter.format,
 		coverage: noCoverage,
-		caseHang: Duration.seconds(10),
-		concurrency: 1
+		caseHang: Duration.seconds(10)
 	}
 
 	it.effect(
@@ -489,8 +487,7 @@ describe("exhaust", () => {
 											generator: int(0, 2 ** 53 - 1),
 											literal: String,
 											coverage: noCoverage,
-											caseHang: pairs.caseHang,
-											concurrency: 1
+											caseHang: pairs.caseHang
 										},
 										() =>
 											Effect.sync(() => {
@@ -737,7 +734,6 @@ describe("the residual", () => {
 						kept: [],
 						runs: 200,
 						shrink: completeShrink,
-						concurrency: 1,
 						steerEvery: 200,
 						caseHang: Duration.seconds(30)
 					},
@@ -821,8 +817,7 @@ describe("the residual", () => {
 							Array.from({ length: source.draw(int(1, 4)) }, () => source.draw(int(1, 4))),
 						literal: Formatter.format,
 						coverage: noCoverage,
-						caseHang: Duration.minutes(1),
-						concurrency: 1
+						caseHang: Duration.minutes(1)
 					},
 					(weights) =>
 						Effect.sync(() => {
@@ -856,8 +851,7 @@ describe("the residual", () => {
 						}),
 						literal: Formatter.format,
 						coverage: noCoverage,
-						caseHang: Duration.minutes(1),
-						concurrency: 1
+						caseHang: Duration.minutes(1)
 					},
 					({ n, weights }) =>
 						Effect.sync(() => {
@@ -1325,7 +1319,6 @@ describe("the coverage verdict", () => {
 						kept: [],
 						runs: 60,
 						shrink: boundedShrink(100),
-						concurrency: 1,
 						steerEvery: 16,
 						caseHang: Duration.minutes(1)
 					},
@@ -1522,7 +1515,6 @@ describe("replay fidelity", () => {
 						kept: [],
 						runs: 60,
 						shrink: boundedShrink(100),
-						concurrency: 1,
 						steerEvery: 16,
 						caseHang: Duration.minutes(1)
 					},
@@ -1635,8 +1627,7 @@ const syncExhaustion = (kind: SyncProperty, cases: number, seed: number) =>
 			generator: int(0, cases - 1),
 			literal: Formatter.format,
 			coverage: noCoverage,
-			caseHang: Duration.minutes(1),
-			concurrency: 1
+			caseHang: Duration.minutes(1)
 		},
 		syncProperty(kind)
 	).pipe(

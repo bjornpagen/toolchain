@@ -64,7 +64,6 @@ const search = (suite: string): Exploration<number, number, Found> => ({
 	kept: [],
 	runs: 100,
 	shrink: completeShrink,
-	concurrency: 4,
 	steerEvery: 16,
 	caseHang: Duration.minutes(1)
 })
@@ -143,7 +142,6 @@ describe("a fuzz run's corpus", () => {
 					kept: [],
 					runs: 40,
 					shrink: completeShrink,
-					concurrency: 1,
 					steerEvery: 16,
 					caseHang: Duration.minutes(1)
 				},

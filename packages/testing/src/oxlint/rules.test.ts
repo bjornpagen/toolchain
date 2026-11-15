@@ -232,7 +232,6 @@ const ruleSearch = (name: RuleName, sites: Gen<Site>) =>
 			kept: [],
 			runs: 200,
 			shrink: completeShrink,
-			concurrency: 1,
 			steerEvery: 16,
 			caseHang: Duration.minutes(1)
 		},

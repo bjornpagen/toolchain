@@ -48,7 +48,6 @@ describe("awaiting a fact", () => {
 						kept: [],
 						runs: 100,
 						shrink: boundedShrink(100),
-						concurrency: 1,
 						steerEvery: 25,
 						caseHang: Duration.seconds(30)
 					},

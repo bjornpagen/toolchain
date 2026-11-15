@@ -33,7 +33,6 @@ const exploration = (coverage: Coverage<"a">): Exploration<number, number, "a"> 
 	kept: [],
 	runs: 4,
 	shrink: boundedShrink(0),
-	concurrency: 1,
 	steerEvery: 4,
 	caseHang: Duration.seconds(1)
 })
@@ -45,8 +44,7 @@ const exhaustion = (coverage: Exhaustion<number, "a">["coverage"]): Exhaustion<n
 	generator: int(0, 9),
 	literal: Formatter.format,
 	coverage,
-	caseHang: Duration.seconds(1),
-	concurrency: 1
+	caseHang: Duration.seconds(1)
 })
 
 export const accepted = Object.freeze([

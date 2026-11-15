@@ -2,7 +2,7 @@ diff --git a/packages/testing/src/explore.ts b/packages/testing/src/explore.ts
 index c95f8ad..ff70e7e 100644
 --- a/packages/testing/src/explore.ts
 +++ b/packages/testing/src/explore.ts
-@@ -1559,7 +1559,7 @@ export const explore = <S, T, F extends string, E, R>(
+@@ -1566,7 +1566,7 @@ export const explore = <S, T, F extends string, E, R>(
  					}
  				})
  

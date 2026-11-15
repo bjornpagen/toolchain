@@ -1,6 +1,6 @@
 --- a/packages/testing/src/explore.ts
 +++ b/packages/testing/src/explore.ts
-@@ -1682,7 +1682,7 @@ export const explore = <S, T, F extends string, E, R>(
+@@ -1689,7 +1689,7 @@ export const explore = <S, T, F extends string, E, R>(
  					const { situations: requiredSituations, steered } = spec.coverage
  					const steering: Mutated = {
  						phase: "steered",

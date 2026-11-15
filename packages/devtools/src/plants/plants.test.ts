@@ -605,7 +605,6 @@ describe("readingOf", () => {
 						kept: [],
 						runs: 400,
 						shrink: completeShrink,
-						concurrency: 1,
 						steerEvery: 16,
 						caseHang: Duration.minutes(1)
 					},
@@ -653,7 +652,6 @@ describe("findingsOf", () => {
 						kept: [],
 						runs: 300,
 						shrink: completeShrink,
-						concurrency: 1,
 						steerEvery: 16,
 						caseHang: Duration.minutes(1)
 					},
@@ -711,7 +709,6 @@ describe("planOf", () => {
 						kept: [],
 						runs: 300,
 						shrink: completeShrink,
-						concurrency: 1,
 						steerEvery: 16,
 						caseHang: Duration.minutes(1)
 					},

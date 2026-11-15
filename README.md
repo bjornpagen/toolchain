@@ -241,6 +241,10 @@ that moved into oxlint are AST-only, so the commit gate's `oxlint.ast.config.ts`
   `["@bjornpagen/testing/vitest/reporter", { examples }]`; banning examples needs `defineTestConfig`, which installs
   the setup file that counts searches. Passing `--reporter` on the command line replaces the configured reporters and
   so drops the check.
+- A search's `concurrency` is optional (Bjorn, 2026-11-15): `explore`'s `Exploration` and `exhaust`'s `Exhaustion`
+  run one case, or one sketch, at a time where it is left out, a sequential run, Effect's default. Delete every
+  `concurrency: 1` in a search's spec, which only restates it; a spec that still states it typechecks and runs the
+  same. State a width above one only where it is the test's own input, as CONTRIBUTING.md's concurrency limits say.
 
 #### package.json, turbo.json, lefthook.yml, tsconfig, fallow
 

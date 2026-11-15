@@ -269,7 +269,6 @@ describe("a steered search", () => {
 						kept: [],
 						runs: 40,
 						shrink: completeShrink,
-						concurrency: 1,
 						steerEvery: 16,
 						caseHang: Duration.minutes(1)
 					},
@@ -291,7 +290,6 @@ describe("a steered search", () => {
 									kept: [],
 									runs: 4 * shape.floor,
 									shrink: completeShrink,
-									concurrency: 1,
 									steerEvery: shape.window,
 									caseHang: Duration.minutes(1)
 								},

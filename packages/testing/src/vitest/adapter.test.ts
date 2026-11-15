@@ -111,7 +111,6 @@ describe("the Vitest adapter", () => {
 						kept: [],
 						runs: 100,
 						shrink: boundedShrink(500),
-						concurrency: 8,
 						steerEvery: 16,
 						caseHang: Duration.minutes(1)
 					},
@@ -139,8 +138,7 @@ describe("the Vitest adapter", () => {
 							Arr.getUnsafe(HARDENED_FLAGS, source.draw(int(0, HARDENED_FLAGS.length - 1))),
 						literal: Formatter.format,
 						coverage: noCoverage,
-						caseHang: Duration.minutes(1),
-						concurrency: 1
+						caseHang: Duration.minutes(1)
 					},
 					(flag) =>
 						Effect.sync(() =>
@@ -187,7 +185,6 @@ describe("the Vitest adapter", () => {
 						kept: [],
 						runs: 100,
 						shrink: boundedShrink(100),
-						concurrency: 1,
 						steerEvery: 25,
 						caseHang: Duration.minutes(1)
 					},

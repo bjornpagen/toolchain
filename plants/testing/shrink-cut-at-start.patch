@@ -1,6 +1,6 @@
 --- a/packages/testing/src/explore.ts
 +++ b/packages/testing/src/explore.ts
-@@ -1479,8 +1479,12 @@
+@@ -1486,8 +1486,12 @@
  							shrinkAttempt(
  								{ tape: failed.tape, failure: { run: caseRun, cause: failed.cause } },
  								(values) =>

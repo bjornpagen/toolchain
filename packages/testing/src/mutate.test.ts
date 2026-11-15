@@ -72,7 +72,6 @@ const searchOf = <A>(suite: string, generator: Gen<A>): Exploration<A, A, never>
 	kept: [],
 	runs: 200,
 	shrink: completeShrink,
-	concurrency: 1,
 	steerEvery: 16,
 	caseHang: Duration.minutes(1)
 })

@@ -1,6 +1,6 @@
 --- a/packages/testing/src/explore.ts
 +++ b/packages/testing/src/explore.ts
-@@ -1560,7 +1560,7 @@
+@@ -1567,7 +1567,7 @@
  				})
  
  			const fuzzing = Option.filter(run.fuzz, (fuzz) => fuzz.suite === spec.suite)

@@ -94,8 +94,7 @@ describe("a set comparison", () => {
 						},
 						literal: Formatter.format,
 						coverage: requiredInSpace<Change>(CHANGES),
-						caseHang: Duration.minutes(1),
-						concurrency: 1
+						caseHang: Duration.minutes(1)
 					},
 					({ left, right, change, at }, c) =>
 						Effect.sync(() => {
@@ -161,7 +160,6 @@ describe("a set comparison's cost", () => {
 						kept: [],
 						runs: 60,
 						shrink: boundedShrink(40),
-						concurrency: 1,
 						steerEvery: 20,
 						caseHang: Duration.minutes(1)
 					},

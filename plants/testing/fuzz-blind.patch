@@ -2,7 +2,7 @@ diff --git a/packages/testing/src/explore.ts b/packages/testing/src/explore.ts
 index c95f8ad..0b09d61 100644
 --- a/packages/testing/src/explore.ts
 +++ b/packages/testing/src/explore.ts
-@@ -1553,7 +1553,13 @@ export const explore = <S, T, F extends string, E, R>(
+@@ -1560,7 +1560,13 @@ export const explore = <S, T, F extends string, E, R>(
  					for (const [offset, caseRun] of window) {
  						const where = `${mutatedLabel(mutated)} (seed ${hex(mutated.stream)}), case ${Arr.getUnsafe(indices, offset)}`
  						yield* settle(caseRun, where, underAt(offset), mutated.tally)

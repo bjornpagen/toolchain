@@ -156,7 +156,6 @@ describe("a fuzz run", () => {
 						kept: [],
 						runs: 20,
 						shrink: completeShrink,
-						concurrency: 1,
 						steerEvery: 16,
 						caseHang: Duration.minutes(1)
 					},
@@ -205,8 +204,7 @@ describe("a fuzz run", () => {
 						] as const,
 					literal: Formatter.format,
 					coverage: noCoverage,
-					caseHang: Duration.minutes(1),
-					concurrency: 1
+					caseHang: Duration.minutes(1)
 				},
 				([count, unit]) =>
 					Effect.sync(() =>

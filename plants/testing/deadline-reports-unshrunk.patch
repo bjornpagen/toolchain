@@ -1,6 +1,6 @@
 --- a/packages/testing/src/explore.ts
 +++ b/packages/testing/src/explore.ts
-@@ -1485,13 +1485,15 @@
+@@ -1492,13 +1492,15 @@
  								spec.shrink
  							),
  							(shrunk) => {
@@ -19,7 +19,7 @@
  										replay: replayed,
  										message: falsifiedReport(
  											run,
-@@ -1500,10 +1502,10 @@
+@@ -1507,10 +1509,10 @@
  											reportedOf(
  												spec.literal,
  												best,

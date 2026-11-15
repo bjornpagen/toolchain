@@ -132,7 +132,6 @@ const searchOf = <A, F extends string>(
 	kept: [],
 	runs: 40,
 	shrink: completeShrink,
-	concurrency: 1,
 	steerEvery: 40,
 	caseHang: Duration.seconds(30)
 })
@@ -220,7 +219,6 @@ describe("a tape", () => {
 					kept: [],
 					runs: 300,
 					shrink: { kind: "bounded", candidates: 100 },
-					concurrency: 1,
 					steerEvery: 300,
 					caseHang: Duration.seconds(10)
 				},
@@ -274,7 +272,6 @@ describe("a tape", () => {
 						kept: [],
 						runs: 300,
 						shrink: { kind: "bounded", candidates: 100 },
-						concurrency: 1,
 						steerEvery: 300,
 						caseHang: Duration.seconds(10)
 					},

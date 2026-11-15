@@ -400,7 +400,6 @@ describe("interleaving", () => {
 					kept: [],
 					runs: 24,
 					shrink: completeShrink,
-					concurrency: 1,
 					steerEvery: 16,
 					caseHang: Duration.minutes(1)
 				},
@@ -437,8 +436,7 @@ describe("interleaving", () => {
 						generator: disjointSessions,
 						literal: Formatter.format,
 						coverage: noCoverage,
-						caseHang: Duration.minutes(1),
-						concurrency: 1
+						caseHang: Duration.minutes(1)
 					},
 					(sessions) =>
 						Effect.gen(function* () {
@@ -493,7 +491,6 @@ describe("interleaving", () => {
 						kept: [],
 						runs: 24,
 						shrink: completeShrink,
-						concurrency: 1,
 						steerEvery: 16,
 						caseHang: Duration.minutes(1)
 					},
@@ -548,8 +545,7 @@ describe("interleaving", () => {
 							"no cycle",
 							"a chain"
 						]),
-						caseHang: Duration.minutes(1),
-						concurrency: 1
+						caseHang: Duration.minutes(1)
 					},
 					(afters, c) =>
 						Effect.gen(function* () {
@@ -667,7 +663,6 @@ describe("interleaving", () => {
 					kept: [],
 					runs: 40,
 					shrink: completeShrink,
-					concurrency: 1,
 					steerEvery: 16,
 					caseHang: Duration.minutes(1)
 				},
@@ -749,7 +744,6 @@ describe("releasing sessions", () => {
 						kept: [],
 						runs: 40,
 						shrink: completeShrink,
-						concurrency: 1,
 						steerEvery: 1,
 						caseHang: Duration.minutes(1)
 					},

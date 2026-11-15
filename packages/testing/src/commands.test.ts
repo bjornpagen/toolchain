@@ -308,8 +308,7 @@ describe("a state machine", () => {
 							generator: program(twoValued, { min: 0, max: 3 }, fullSwarm(COMMANDS)),
 							literal: Formatter.format,
 							coverage: noCoverage,
-							caseHang: Duration.minutes(1),
-							concurrency: 1
+							caseHang: Duration.minutes(1)
 						},
 						(steps) =>
 							Effect.sync(() => {
@@ -342,7 +341,6 @@ describe("a state machine", () => {
 						kept: [],
 						runs: 200,
 						shrink: completeShrink,
-						concurrency: 1,
 						steerEvery: 16,
 						caseHang: Duration.minutes(1)
 					},
@@ -427,7 +425,6 @@ describe("a state machine", () => {
 						kept: [],
 						runs: 200,
 						shrink: completeShrink,
-						concurrency: 1,
 						steerEvery: 16,
 						caseHang: Duration.minutes(1)
 					},
@@ -466,7 +463,6 @@ describe("a state machine", () => {
 						kept: [],
 						runs: 100,
 						shrink: completeShrink,
-						concurrency: 1,
 						steerEvery: 16,
 						caseHang: Duration.minutes(1)
 					},
@@ -522,7 +518,6 @@ describe("a state machine", () => {
 									kept: [],
 									runs: 400,
 									shrink: completeShrink,
-									concurrency: 1,
 									steerEvery: 16,
 									caseHang: Duration.minutes(1)
 								},
@@ -580,7 +575,6 @@ describe("a state machine", () => {
 						kept: [],
 						runs: 200,
 						shrink: completeShrink,
-						concurrency: 1,
 						steerEvery: 50,
 						caseHang: Duration.minutes(1)
 					},

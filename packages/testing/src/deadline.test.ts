@@ -302,7 +302,6 @@ describe("a search under its test's deadline", () => {
 						kept: [],
 						runs: 20,
 						shrink: completeShrink,
-						concurrency: 1,
 						steerEvery: 16,
 						caseHang: Duration.minutes(1)
 					},
@@ -425,7 +424,6 @@ describe("a search's cases", () => {
 						kept: [],
 						runs: 6,
 						shrink: completeShrink,
-						concurrency: 1,
 						steerEvery: 6,
 						caseHang: Duration.minutes(2)
 					},
