@@ -1,0 +1,11 @@
+--- a/packages/testing/src/shrink.ts
++++ b/packages/testing/src/shrink.ts
+@@ -330,7 +330,7 @@
+ 				}
+ 				let low = lo
+ 				let high = value
+-				while (low + 1 < high && !exhausted()) {
++				while (low + 2 < high && !exhausted()) {
+ 					const middle = low + Math.floor((high - low) / 2)
+ 					if (yield* propose(replaced(best.tape.values, at, middle))) {
+ 						high = middle

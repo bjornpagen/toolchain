@@ -1,0 +1,11 @@
+--- a/packages/testing/src/shrink.ts
++++ b/packages/testing/src/shrink.ts
+@@ -211,7 +211,7 @@
+ 				tried.get(digest) ?? [],
+ 				(seen) => shortlex(seen, seen.length, values, values.length) === 0
+ 			)
+-		const budgetSpent = () => budget.kind === "bounded" && candidates >= budget.candidates
++		const budgetSpent = () => budget.kind === "bounded" && candidates > budget.candidates
+ 		const exhausted = () => deadlineArrived || budgetSpent()
+ 		const endOf = (): ShrinkEnd => {
+ 			if (deadlineArrived) {
