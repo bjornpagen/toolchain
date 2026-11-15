@@ -1,0 +1,11 @@
+--- a/packages/testing/src/commands.ts
++++ b/packages/testing/src/commands.ts
+@@ -284,7 +284,7 @@
+ 		const answer = yield* runStep(command, parameters, model, verdict)
+ 		const predicted = stepFeature<P, V>(command, answerOf(verdict))
+ 		const answered = stepFeature<P, V>(command, answer)
+-		if (predicted !== answered) {
++		if (predicted.split(" ")[0] !== answered.split(" ")[0]) {
+ 			return yield* VerdictDiverged.make({
+ 				at,
+ 				command,

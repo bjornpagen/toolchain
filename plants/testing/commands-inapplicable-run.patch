@@ -1,0 +1,16 @@
+--- a/packages/testing/src/commands.ts
++++ b/packages/testing/src/commands.ts
+@@ -273,13 +273,6 @@
+ 	const verdicts: Array<StepFeature<P, V>> = []
+ 	for (let at = 0; at < steps.length; at += 1) {
+ 		const { command, parameters } = Arr.getUnsafe(steps, at)
+-		if (!machine.commands[command].applies(model)) {
+-			return yield* StepInapplicable.make({
+-				at,
+-				command,
+-				message: `step ${at} runs ${command}, which the model does not allow in its state there`
+-			})
+-		}
+ 		const verdict = judgeStep(machine, model, command, parameters)
+ 		const answer = yield* runStep(command, parameters, model, verdict)
+ 		const predicted = stepFeature<P, V>(command, answerOf(verdict))

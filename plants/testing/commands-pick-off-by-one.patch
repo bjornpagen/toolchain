@@ -1,0 +1,11 @@
+--- a/packages/testing/src/commands.ts
++++ b/packages/testing/src/commands.ts
+@@ -174,7 +174,7 @@
+ 		Arr.reduce(weighted, 0, (sum, [, weight]) => sum + weight / divisor) - 1
+ 	)
+ 	for (const [name, weight] of weighted) {
+-		if (rest < weight / divisor) {
++		if (rest <= weight / divisor) {
+ 			return name
+ 		}
+ 		rest -= weight / divisor

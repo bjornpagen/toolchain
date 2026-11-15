@@ -1,0 +1,13 @@
+--- a/packages/testing/src/shrink.ts
++++ b/packages/testing/src/shrink.ts
+@@ -345,8 +345,8 @@
+ 
+ 		let progressed = true
+ 		while (progressed && !exhausted()) {
+-			const deleted = yield* deleteItems()
+-			const dropped = yield* deleteSpans()
++			const deleted = false
++			const dropped = false
+ 			const simplifiedAny = yield* simplifySpans()
+ 			const reordered = yield* reorderItems()
+ 			const lowered = yield* lowerChoices()

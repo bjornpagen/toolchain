@@ -1,0 +1,11 @@
+--- a/packages/testing/src/commands.ts
++++ b/packages/testing/src/commands.ts
+@@ -138,7 +138,7 @@
+ 		case "accepted":
+ 			return took
+ 		case "refused":
+-			return verdict
++			return took
+ 	}
+ }
+ 

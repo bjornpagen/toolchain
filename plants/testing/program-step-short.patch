@@ -1,0 +1,11 @@
+--- a/packages/testing/src/commands.ts
++++ b/packages/testing/src/commands.ts
+@@ -214,7 +214,7 @@
+ 		const steps: Array<Step<P>> = []
+ 		if (Arr.isReadonlyArrayNonEmpty(on)) {
+ 			let model = machine.initial
+-			for (let index = 0; index < length; index += 1) {
++			for (let index = 0; index < length - 1; index += 1) {
+ 				const applicable = Arr.filter(on, ([name]) => machine.commands[name].applies(model))
+ 				if (!Arr.isReadonlyArrayNonEmpty(applicable)) {
+ 					break
