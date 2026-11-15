@@ -185,7 +185,7 @@ layer(NodeServices.layer)("the gate's snapshot cache", (it) => {
 	)
 
 	it.effect(
-		"collects a snapshot whose repository is gone and the old per-path layout, and keeps a held one",
+		"collects a snapshot whose repository is gone, and keeps a held one and the old per-path layout an older gate may be running in",
 		() =>
 			scratched((scratch) =>
 				Effect.gen(function* () {
@@ -207,7 +207,7 @@ layer(NodeServices.layer)("the gate's snapshot cache", (it) => {
 					yield* fs.remove(other, { recursive: true })
 					yield* gate(scratch, b, "true")
 					const left = yield* keys(scratch)
-					deepStrictEqual(left, Arr.sort([live, "ba9876543210"], Order.String))
+					deepStrictEqual(left, Arr.sort([live, "0123456789ab", "ba9876543210"], Order.String))
 				})
 			)
 	)

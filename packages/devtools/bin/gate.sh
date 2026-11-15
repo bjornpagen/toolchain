@@ -41,7 +41,8 @@
 #
 # Garbage: a run that enters the cache deletes each other key directory whose repository is gone, meaning none of the
 # clones listed in its `clones` file still exists with that key as its identity, and that holds no live lock. A
-# directory with no `clones` file is the old per-path layout (a hash of the checkout's path), dropped the same way.
+# directory with no `clones` file is the old per-path layout (a hash of the checkout's path), which a repository pinned
+# to an older toolchain still runs in: it is left alone, since no run here can tell whether its checkout still uses it.
 # Turbo's cache is the working tree's (.turbo/cache) unless TURBO_CACHE_DIR names one, so a task the working tree
 # already ran on the same content is a hit in the snapshot, and the other way round.
 set -eu
@@ -134,8 +135,8 @@ held() {
 	return 1
 }
 
-# collect: registers this clone under its key, then deletes every other key directory whose repository is gone and that
-# holds no live lock. The key directory appears whole (renamed from a hidden one) so a concurrent collect never reads a
+# collect: registers this clone under its key, then deletes every other key directory of this layout whose repository is
+# gone and that holds no live lock. The key directory appears whole (renamed from a hidden one) so a concurrent collect never reads a
 # new directory as an old-layout one; hidden names are skipped.
 collect() {
 	mkdir -p "$cache_root"
@@ -148,6 +149,9 @@ collect() {
 	grep -qxF -- "$common_dir" "$cache/clones" 2>/dev/null || printf '%s\n' "$common_dir" >>"$cache/clones"
 	for dir in "$cache_root"/*; do
 		[ -d "$dir" ] && [ "$dir" != "$cache" ] || continue
+		# An older toolchain's gate keeps its snapshots here keyed by its checkout's path, with no clones file: that
+		# repository may be mid-run in it (edullm and grizzle move their pin only with a certified grizzle).
+		[ -f "$dir/clones" ] || continue
 		alive=
 		clones=$(cat "$dir/clones" 2>/dev/null || true)
 		while IFS= read -r clone; do
