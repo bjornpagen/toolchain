@@ -69,6 +69,10 @@
 			"description": "The repository-wide checks: every tsconfig and package manifest, and every file name git shows. It reads the whole tree and opens no TypeScript program, so it costs about a second, and a cache would have to hash the whole tree to know it could skip it.",
 			"cache": false
 		},
+		"//#plants:check": {
+			"description": "Every plant a test cites is a file under plants/, and every file there is a plant some test cites. It reads every TypeScript file git shows, since a citation anywhere is read and one outside a test refused, so a cache would have to hash the whole tree to know it could skip it; it opens no TypeScript program and costs about a second.",
+			"cache": false
+		},
 		"//#oxlint": {
 			"passThroughEnv": ["TOOLCHAIN_TSGOLINT_PROCS"]
 		},

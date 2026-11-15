@@ -17,7 +17,7 @@
 	},
 	"scripts": {
 		"prepare": "effect-tsgo patch",
-		"check": "turbo run typecheck:full oxlint format dead-code dedupe workspace-gate fixtures:style fixtures:oxlint fixtures:workspace-gate --continue=dependencies-successful",
+		"check": "turbo run typecheck:full oxlint format dead-code dedupe workspace-gate plants:check fixtures:style fixtures:oxlint fixtures:workspace-gate --continue=dependencies-successful",
 		"types": "turbo run typecheck",
 		"typecheck": "toolchain-typecheck",
 		"typecheck:full": "toolchain-typecheck --incremental false",
@@ -29,6 +29,8 @@
 		"dedupe": "pnpm dedupe --check",
 		"fuzz": "node packages/testing/scripts/fuzz.ts",
 		"mutate": "node packages/testing/scripts/mutate.ts",
+		"plants": "node packages/devtools/src/plants/run.ts",
+		"plants:check": "node packages/devtools/src/plants/check.ts",
 		"test": "turbo run test"
 	},
 	"devDependencies": {

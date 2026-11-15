@@ -1,0 +1,11 @@
+--- a/packages/devtools/src/plants/tree.ts
++++ b/packages/devtools/src/plants/tree.ts
+@@ -138,7 +138,7 @@
+ const picks =
+ 	(name: string) =>
+ 	({ file, citation }: Cited): boolean =>
+-		file === name || citation.plant === name
++		file === citation.plant && citation.plant === name
+ 
+ /** The citations named targets pick, or the names that pick none. */
+ const pickedBy = (

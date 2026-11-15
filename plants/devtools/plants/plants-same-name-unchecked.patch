@@ -1,0 +1,11 @@
+--- a/packages/devtools/src/plants/tree.ts
++++ b/packages/devtools/src/plants/tree.ts
+@@ -102,7 +102,7 @@
+ 	const shared = Arr.flatMap(
+ 		byKey(Arr.groupBy(tree.plants, nameOf)),
+ 		([name, group]): ReadonlyArray<Finding> =>
+-			group.length > 1 ? [{ kind: "sameName", name, plants: Arr.sort(group, Order.String) }] : []
++			group.length > tree.plants.length ? [{ kind: "sameName", name, plants: Arr.sort(group, Order.String) }] : []
+ 	)
+ 	return [...ofSources, ...uncited, ...shared]
+ }
