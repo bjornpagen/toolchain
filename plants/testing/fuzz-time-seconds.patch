@@ -1,0 +1,18 @@
+diff --git a/packages/testing/src/fuzz.ts b/packages/testing/src/fuzz.ts
+index 0bb2a90..00f200f 100644
+--- a/packages/testing/src/fuzz.ts
++++ b/packages/testing/src/fuzz.ts
+@@ -36,12 +36,6 @@ export const budgetOf = (fuzzTime: string): FuzzBudget => {
+ 	if (Str.endsWith("x")(fuzzTime)) {
+ 		return { kind: "cases", cases: count }
+ 	}
+-	const duration = Str.endsWith("ms")(fuzzTime)
+-		? Duration.millis(count)
+-		: Str.endsWith("s")(fuzzTime)
+-			? Duration.seconds(count)
+-			: Str.endsWith("m")(fuzzTime)
+-				? Duration.minutes(count)
+-				: Duration.hours(count)
++	const duration = Duration.seconds(count)
+ 	return { kind: "time", duration }
+ }
