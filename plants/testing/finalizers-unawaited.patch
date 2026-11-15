@@ -1,0 +1,12 @@
+--- a/packages/testing/src/explore.ts
++++ b/packages/testing/src/explore.ts
+@@ -238,9 +238,6 @@
+ 			Effect.gen(function* () {
+ 				yield* searchStarted
+ 				const run = yield* Run
+-				yield* Effect.addFinalizer(() =>
+-					Effect.forEach(stopped, (fiber) => Fiber.await(fiber), { discard: true })
+-				)
+ 				const cutting = yield* cuttingOf(run.deadline)
+ 				const life: Life = {
+ 					cutting,

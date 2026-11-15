@@ -1,0 +1,17 @@
+--- a/packages/testing/src/explore.ts
++++ b/packages/testing/src/explore.ts
+@@ -1479,8 +1479,12 @@
+ 							shrinkAttempt(
+ 								{ tape: failed.tape, failure: { run: caseRun, cause: failed.cause } },
+ 								(values) =>
+-									Effect.map(candidateOf(values, under), (candidate) =>
+-										judge(candidate, candidateJudgment(candidate))
++									Effect.flatMap(liveMillis, (now) =>
++										life.cutting.kind === "at" && now < life.cutting.moment
++											? Effect.succeed({ kind: "cut" } as const)
++											: Effect.map(candidateOf(values, under), (candidate) =>
++												judge(candidate, candidateJudgment(candidate))
++											)
+ 									),
+ 								spec.shrink
+ 							),

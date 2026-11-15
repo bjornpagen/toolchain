@@ -1,0 +1,10 @@
+--- a/packages/testing/src/explore.ts
++++ b/packages/testing/src/explore.ts
+@@ -1011,7 +1011,6 @@
+ 				[
+ 					seedLine(run, suite, where),
+ 					`its test's deadline cut the search short here, before any case failed: it stopped ${PRINT_MARGIN_MILLIS} ms before the deadline to report`,
+-					`the case in flight: ${inFlight}`,
+ 					...Option.match(replay, {
+ 						onNone: () => [],
+ 						onSome: (replayed) => [
