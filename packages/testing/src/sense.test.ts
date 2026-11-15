@@ -3,7 +3,7 @@
  * senses read the file before it, every case running one block and skipping another. Oracle: universal, stated in the
  * search.
  *
- * Plant: ~/.cache/grizzle-release/BR07/plants/sense-v8-blind.patch (a trace of nothing) turns the property red.
+ * @plant plants/testing/sense-v8-blind.patch A trace of nothing; the property fails.
  */
 import { describe, it } from "@effect/vitest"
 import { deepStrictEqual } from "@effect/vitest/utils"
