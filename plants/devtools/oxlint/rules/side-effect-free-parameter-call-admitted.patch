@@ -1,0 +1,10 @@
+--- a/packages/devtools/src/oxlint/rules/side-effect-free.ts
++++ b/packages/devtools/src/oxlint/rules/side-effect-free.ts
+@@ -572,6 +572,7 @@ export const sideEffectFree = configured(Options, (context, options) => {
+ 					variable.defs,
+ 					(def) =>
+ 						def.type === "FunctionName" ||
++						def.type === "Parameter" ||
+ 						(def.type === "Variable" &&
+ 							def.node.type === "VariableDeclarator" &&
+ 							def.parent?.type === "VariableDeclaration" &&

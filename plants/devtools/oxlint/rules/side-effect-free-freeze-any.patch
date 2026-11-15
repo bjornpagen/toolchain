@@ -1,0 +1,19 @@
+--- a/packages/devtools/src/oxlint/rules/side-effect-free.ts
++++ b/packages/devtools/src/oxlint/rules/side-effect-free.ts
+@@ -641,16 +641,6 @@ export const sideEffectFree = configured(Options, (context, options) => {
+ 					if (Option.isNone(variable)) {
+ 						if (!Arr.contains(BUILTIN_CALLS.get(object.name) ?? [], property)) {
+ 							reportAt(callee, `Calls ${object.name}.${property}, which no proof covers.`)
+-						} else if (
+-							object.name === "Object" &&
+-							property === "freeze" &&
+-							call.arguments[0]?.type !== "ObjectExpression" &&
+-							call.arguments[0]?.type !== "ArrayExpression"
+-						) {
+-							reportAt(
+-								callee,
+-								"Freezes a value it may not own: it freezes only a literal the call builds."
+-							)
+ 						}
+ 						return Option.none()
+ 					}

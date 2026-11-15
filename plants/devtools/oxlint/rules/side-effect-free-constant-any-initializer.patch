@@ -1,0 +1,12 @@
+--- a/packages/devtools/src/oxlint/rules/side-effect-free.ts
++++ b/packages/devtools/src/oxlint/rules/side-effect-free.ts
+@@ -563,8 +563,7 @@ export const sideEffectFree = configured(Options, (context, options) => {
+ 						def.node.id.type === "Identifier" &&
+ 						def.parent?.type === "VariableDeclaration" &&
+ 						def.parent.kind === "const" &&
+-						def.node.init !== null &&
+-						isProvenInitializer(def.node.init)
++						def.node.init !== null
+ 				)
+ 			const isLocalFunction = (root: FunctionNode, variable: Variable): boolean =>
+ 				isWithin(variable.scope, root) &&

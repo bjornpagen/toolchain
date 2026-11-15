@@ -1,0 +1,12 @@
+--- a/packages/devtools/src/oxlint/rules/side-effect-free.ts
++++ b/packages/devtools/src/oxlint/rules/side-effect-free.ts
+@@ -332,9 +332,6 @@ const returnsFunctions = (context: Context, node: FunctionNode): boolean => {
+ 
+ /** The members a pattern assigns: each property or element target, at any depth, of an assignment's left side. */
+ const memberTargets = (context: Context, pattern: AnyNode): ReadonlyArray<AnyNode> => {
+-	if (pattern.type === "MemberExpression") {
+-		return [pattern]
+-	}
+ 	if (pattern.type === "ArrayPattern" || pattern.type === "ObjectPattern") {
+ 		return Arr.flatMap(childrenOf(context, pattern), (part) =>
+ 			memberTargets(context, part.type === "Property" ? part.value : part)
