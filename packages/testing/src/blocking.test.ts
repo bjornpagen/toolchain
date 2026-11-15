@@ -14,7 +14,7 @@ import { regex } from "arkregex"
 import { Array as Arr, Duration, Effect, Exit, Formatter, Option, Stream } from "effect"
 import { ChildProcess } from "effect/process"
 import { BODIES, type Body, type Planted, runsAway, suiteOf, values } from "#blocking.fixtures.ts"
-import { drawn, explore, PRINT_MARGIN_MILLIS } from "#explore.ts"
+import { aimed, explore, PRINT_MARGIN_MILLIS } from "#explore.ts"
 import { required } from "#features.ts"
 import { boolean, element, type Gen, int } from "#gen.ts"
 import { liveMillis, WATCHDOG_GRACE_MILLIS } from "#live.ts"
@@ -202,7 +202,10 @@ layer(NodeServices.layer, { excludeTestServices: true })(
 								kind: "specification",
 								name: "a runaway ends its process past its moment and the watchdog's grace, naming its case; any other body ends its search by the guard's verdict"
 							},
-							draw: drawn(planted),
+							draw: aimed(
+								planted,
+								Arr.map(FEATURES, (feature) => [feature, aimedAt(feature)] as const)
+							),
 							literal: Formatter.format,
 							coverage: required<Feature>(FEATURES, { cases: 16, sense: notesOnly }),
 							kept: [],
@@ -212,14 +215,8 @@ layer(NodeServices.layer, { excludeTestServices: true })(
 							steerEvery: 4,
 							caseHang: Duration.minutes(2)
 						},
-						(sketch, c) =>
+						(plantedSearch, c) =>
 							Effect.gen(function* () {
-								const plantedSearch = Option.match(
-									Option.flatMap(c.steering, (pending) =>
-										Arr.findFirst(FEATURES, (feature) => pending.aimed(feature))
-									),
-									{ onNone: () => sketch, onSome: (feature) => c.draw(aimedAt(feature)) }
-								)
 								c.note(`a body that ${plantedSearch.body}`)
 								if (Option.isSome(plantedSearch.deadlineMillis)) {
 									c.note("a deadline before the hang limit")

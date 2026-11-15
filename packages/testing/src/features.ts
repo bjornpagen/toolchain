@@ -345,11 +345,12 @@ export const turnsOf = (): Turns => {
 }
 
 /**
- * What a steered case may read of its run, of the required situations no case of the steering tallies had reached when
- * its window began: whether a situation is among them; whether a feature is named by one of them, alone or in a pair;
- * and whether a situation is the one this case's turn aims at (Turns), true of exactly one pending situation while any
- * is pending. A suite that aims a case at what is pending aims it at its turn's situation (`aimed`), so the cases of
- * one window aim at distinct requirements and none waits behind another the suite cannot reach. Each takes a situation
+ * What a steered case's generator may read (explore.ts Steered), of the required situations no case of the steering
+ * tallies had reached when its window began: whether a situation is among them; whether a feature is named by one of
+ * them, alone or in a pair; and whether a situation is the one this case's turn aims at (Turns), true of exactly one
+ * pending situation while any is pending. A suite that aims a case at what is pending aims it at its turn's situation
+ * (`aimed`, as explore.ts `aimed` does), so the cases of one window aim at distinct requirements and none waits behind
+ * another the suite cannot reach. Each takes a situation
  * and answers, so a case of a suite's features is a case of any narrower feature set, as `note` and `pair` already make
  * it. A situation the suite does not require is never pending. A replay token records exactly this, by the places of
  * the pending requirements in turn order, so a replayed case steers as its case did.

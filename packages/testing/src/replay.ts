@@ -5,8 +5,9 @@ import { tokenOf, valuesFromToken } from "#tape.ts"
 /**
  * What a case was drawn under: steered by the required situations still pending when its window began, named by
  * their places among the suite's declared requirements in turn order (Turns), the one the case aimed at first and the
- * rest from it, ascending and wrapping; or unsteered, as a rotating case and a kept case are. A property that steers decodes one tape into different programs under different steering,
- * so a replay draws under exactly what its case was drawn under.
+ * rest from it, ascending and wrapping; or unsteered, as a rotating case and an exhaustion's are. A steered generator
+ * decodes one tape into different cases under different steering, so a replay draws under exactly what its case was
+ * drawn under.
  */
 const Drawn = Schema.Union([
 	Schema.Struct({ kind: Schema.Literal("unsteered") }),

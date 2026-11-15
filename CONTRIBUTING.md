@@ -166,6 +166,16 @@ gives (two streams read at once, the sessions a run started) is no limit.
 | A search's cases at once, a search's `concurrency` | each test's `explore` or `exhaust`    | left out, one at a time (`oneAtATime`), an identity; stated above one, the test's own input, no resource's bound: the engine finds the same cases at any concurrency, and a sense that reads process-wide counters (guided coverage) runs its cases one at a time    |
 | One plant at a time                                | `packages/devtools/src/plants/run.ts` | an identity: a plant goes into the one working tree, so a second plant planted beside it would turn the first one's tests red as well                                                                                                                                |
 
+## Steering belongs to the generator
+
+A search offers steering (the requirements still pending, the one a case's turn aims at) to its generator alone:
+`Draw`'s `generator` is a `Steered`, and `runRecorded` draws `generator(under.steering)`. A `Case` never carries
+steering, so no property can run a case other than the sketch the search prints, shrinks, keeps and replays. Keep it
+that way: a new phase or search passes its steering to the generator through `Under`, a replay draws under its token's,
+a shrink under its case's own, and a kept case is its sketch, drawn by nothing. `exhaust` steers nothing; its space is
+its box. The aimed-case property in `explore.test.ts` holds this, and its plant
+(`plants/testing/aimed-case-reported-unsteered.patch`) is the bug it catches.
+
 ## Plants
 
 A plant is a patch under `plants/<suite>/<name>.patch` that breaks the code on purpose, as a bug would, `<suite>` being

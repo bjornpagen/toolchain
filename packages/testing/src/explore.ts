@@ -26,11 +26,9 @@ import { failureText } from "#failure.ts"
 import {
 	type Coverage,
 	keyOf,
-	keysOf,
 	type Pending,
 	type Phase,
 	pendingAt,
-	pendingIn,
 	pendingOf,
 	type Rate,
 	ratesOf,
@@ -44,7 +42,6 @@ import {
 	type TallyBuilder,
 	type Turns,
 	tallyOf,
-	turnOf,
 	turnsOf,
 	unreachedOf
 } from "#features.ts"
@@ -258,43 +255,80 @@ const withCaseLives = <A, R>(
 	})
 
 /**
- * What a property sees of the case it runs: it notes the situations it reached; steers, where steering is allowed, by
- * reading which of the suite's required situations no witness had reached when the case's window began (Pending);
- * draws more from the case's own tape; and records on the tape what the system under test decided (and learns whether
- * a replay decided the same). A case never gives itself up: a precondition is a property of the generator, which
- * constructs only cases that meet it. A note, a draw or an observation made
- * after the case ended is a misuse, reported as one. Steering is offered to the witnesses (the floor stream, the
- * steered phase, an exhaustion's cases) and to a fuzz run, so a property may aim their draws at what is pending.
- * `steering` is none wherever a case must be a plain draw of its generator: the rotating stream, whose cases alone
- * estimate the residual, and a kept case, which must run as it ran. A replay steers exactly as the case it replays
- * did: its token records what the case was drawn under.
+ * What a property sees of the case it runs: it notes the situations it reached; draws more from the case's own tape;
+ * and records on the tape what the system under test decided (and learns whether a replay decided the same). A case
+ * never gives itself up: a precondition is a property of the generator, which constructs only cases that meet it. A
+ * note, a draw or an observation made after the case ended is a misuse, reported as one. A property never reads what
+ * its case is steered at: the generator does (Steered), so the case a steered witness runs is its sketch, the one value
+ * the search prints, shrinks, keeps and replays.
  */
 export type Case<F extends string> = Readonly<{
 	note: (feature: F) => void
 	noteAll: (features: Iterable<F>) => void
 	pair: (first: F, second: F) => void
-	steering: Option.Option<Pending<F>>
 	draw: <A>(generator: Gen<A>) => A
 	observe: (decided: string) => Observed
 }>
 
 /**
- * What a suite generates and what its property sees: the sketch is what is generated, printed and shrunk, and `resolve`
- * turns it into the value the property takes. A resolve that throws fails the case like the property would.
+ * A suite's generator under the steering its case is drawn under: the required situations no witness had reached when
+ * the case's window began, the one its turn aims at among them (Pending), or none. Steering is offered to the witnesses
+ * (the floor stream and the steered phase) and to a fuzz run, so the generator may draw a case aimed at what is
+ * pending; it is none wherever a case must be a plain draw: the rotating stream, whose cases alone estimate the
+ * residual. A replay draws under exactly the steering its token records, and a kept case is its sketch, drawn by
+ * nothing, so the case an aim drew is the one that ran, was printed and is kept.
  */
-export type Draw<S, T> = Readonly<{ generator: Gen<S>; resolve: (sketch: S) => T }>
+export type Steered<S, F extends string> = (steering: Option.Option<Pending<F>>) => Gen<S>
 
-/** The property takes the generated value itself. */
-export const drawn = <T>(generator: Gen<T>): Draw<T, T> => ({
-	generator,
+/**
+ * What a suite generates and what its property sees: the sketch is what is generated under the case's steering,
+ * printed and shrunk, and `resolve` turns it into the value the property takes. A resolve that throws fails the case
+ * like the property would.
+ */
+export type Draw<S, T, F extends string> = Readonly<{
+	generator: Steered<S, F>
+	resolve: (sketch: S) => T
+}>
+
+/** The property takes the generated value itself, drawn alike under any steering. */
+export const drawn = <T>(generator: Gen<T>): Draw<T, T, never> => ({
+	generator: () => generator,
 	resolve: (value) => value
 })
 
-/** The property takes what `resolve` makes of the generated sketch. */
-export const sketched = <S, T>(generator: Gen<S>, resolve: (sketch: S) => T): Draw<S, T> => ({
-	generator,
+/** The property takes what `resolve` makes of the generated sketch, drawn alike under any steering. */
+export const sketched = <S, T>(
+	generator: Gen<S>,
+	resolve: (sketch: S) => T
+): Draw<S, T, never> => ({
+	generator: () => generator,
 	resolve
 })
+
+/**
+ * The property takes the generated value, drawn by `generator` unless the case's turn aims at a situation `aims` names
+ * (Pending `aimed`), which the generator beside it draws instead: a case constructed to reach it, so the cases of one
+ * window aim at distinct requirements.
+ */
+export const aimed = <T, const F extends string>(
+	generator: Gen<T>,
+	aims: ReadonlyArray<readonly [Reached<F>, Gen<T>]>
+): Draw<T, T, F> => ({
+	generator: (steering) =>
+		Option.match(
+			Option.flatMap(steering, (pending) =>
+				Arr.findFirst(aims, ([situation]) => pending.aimed(situation))
+			),
+			{ onNone: () => generator, onSome: ([, aim]) => aim }
+		),
+	resolve: (value) => value
+})
+
+/** The property takes what `resolve` makes of the sketch `generator` draws under the case's steering. */
+export const steered = <S, T, F extends string>(
+	generator: Steered<S, F>,
+	resolve: (sketch: S) => T
+): Draw<S, T, F> => ({ generator, resolve })
 
 /**
  * A counterexample kept by value: it replays before any stream, unsteered, is never shrunk, and must still reach every
@@ -337,7 +371,7 @@ export type Oracle =
  *   with a budget of its own;
  * - `concurrency` is how many cases run at once, one at a time where the suite leaves it out (oneAtATime), as cases
  *   that share state the property does not isolate must run;
- * - `steerEvery` is how many cases pass between the snapshots `Case.steering` reads, a constant of the suite, so the
+ * - `steerEvery` is how many cases pass between the snapshots a steered generator reads (Steered), a constant of the suite, so the
  *   same seed draws the same cases however many run at once;
  * - `caseHang` is how long one case may run before it is stopped and reported;
  * - `oracle` is what the property is checked against, which the report prints, `unstated` while the suite has not
@@ -345,7 +379,7 @@ export type Oracle =
  */
 export type Exploration<S, T, F extends string> = Readonly<{
 	suite: string
-	draw: Draw<S, T>
+	draw: Draw<S, T, F>
 	literal: (sketch: S) => string
 	coverage: Coverage<F>
 	kept: ReadonlyArray<Kept<S, F>>
@@ -723,7 +757,7 @@ type Blocked<S> = (sketch: Option.Option<S>, tape: Tape) => string
  * comes first, by the watchdog's grace, with `blocked`'s report.
  */
 const runCase = <S, T, F extends string, E, R, K>(
-	generator: Gen<S>,
+	generator: Steered<S, F>,
 	resolve: (sketch: S) => T,
 	property: (value: T, c: Case<F>) => Effect.Effect<void, E, R>,
 	chooser: Chooser,
@@ -762,7 +796,7 @@ const runCase = <S, T, F extends string, E, R, K>(
 
 /** One case's run on its recorder, once runCase has it watched: `onDrawn` hears of the sketch as soon as it is drawn. */
 const runRecorded = <S, T, F extends string, E, R, K>(
-	generator: Gen<S>,
+	generator: Steered<S, F>,
 	resolve: (sketch: S) => T,
 	property: (value: T, c: Case<F>) => Effect.Effect<void, E, R>,
 	recorded: Recorder,
@@ -775,7 +809,7 @@ const runRecorded = <S, T, F extends string, E, R, K>(
 	onDrawn: (sketch: S) => void
 ): Effect.Effect<CaseRun<S, K>, never, Exclude<R, Scope.Scope>> =>
 	Effect.suspend(() => {
-		const sketch = generator(recorded.source)
+		const sketch = generator(under.steering)(recorded.source)
 		onDrawn(sketch)
 		const sketchDecisions = recorded.decided()
 		const notes = new Set<string>()
@@ -797,7 +831,6 @@ const runRecorded = <S, T, F extends string, E, R, K>(
 				}
 			},
 			pair: (first, second) => record(keyOf<F>([first, second])),
-			steering: under.steering,
 			draw: (inner) => {
 				if (!open) {
 					misused = true
@@ -1061,7 +1094,7 @@ const reportedOf = <S>(
 /** What the replay of one case needs of its search: how its cases are drawn and printed, and what it requires. */
 type Replaying<S, T, F extends string> = Readonly<{
 	suite: string
-	generator: Gen<S>
+	generator: Steered<S, F>
 	resolve: (sketch: S) => T
 	literal: (sketch: S) => string
 	situations: ReadonlyArray<Reached<F>>
@@ -1377,7 +1410,7 @@ export const explore = <S, T, F extends string, E, R>(
 			for (const kept of spec.kept) {
 				const draws = valuesFromToken(kept.draws)
 				const keptRun = yield* runCase(
-					() => kept.sketch,
+					() => () => kept.sketch,
 					spec.draw.resolve,
 					property,
 					forcedChooser(draws, draws.length),
@@ -1686,7 +1719,7 @@ export const explore = <S, T, F extends string, E, R>(
 				case "none":
 					break
 				case "required": {
-					const { situations: requiredSituations, steered } = spec.coverage
+					const { situations: requiredSituations, steered: steeredPhase } = spec.coverage
 					const steering: Mutated = {
 						phase: "steered",
 						stream: steeredSeed(floor),
@@ -1696,17 +1729,19 @@ export const explore = <S, T, F extends string, E, R>(
 					const witnessed = () => [floorTally.tally(), steeredTally.tally()]
 					for (
 						let windowStart = 0;
-						windowStart < steered.cases &&
+						windowStart < steeredPhase.cases &&
 						Arr.isReadonlyArrayNonEmpty(unreachedOf(requiredSituations, witnessed()));
 						windowStart += spec.steerEvery
 					) {
 						yield* mutatedWindow(
 							steering,
 							Array.from(
-								{ length: Math.min(windowStart + spec.steerEvery, steered.cases) - windowStart },
+								{
+									length: Math.min(windowStart + spec.steerEvery, steeredPhase.cases) - windowStart
+								},
 								(_, i) => windowStart + i
 							),
-							steered.sense,
+							steeredPhase.sense,
 							() => Effect.void
 						)
 					}
@@ -1718,7 +1753,7 @@ export const explore = <S, T, F extends string, E, R>(
 							suite: spec.suite,
 							missing,
 							witnessed: { kind: "streams", floor: floorCount, steered: steeredCount },
-							message: `${spec.suite}: no case of its ${floorCount} floor cases or ${steeredCount} steered cases reached ${Arr.join(missing, ", ")}; both streams are fixed by the suite's label, so every run seed fails alike. A kept case and a rotating case never count: give the generator an arm that reaches it, aim the property's draws at what is pending (Case.steering), or give the steered phase more cases`
+							message: `${spec.suite}: no case of its ${floorCount} floor cases or ${steeredCount} steered cases reached ${Arr.join(missing, ", ")}; both streams are fixed by the suite's label, so every run seed fails alike. A kept case and a rotating case never count: give the generator an arm that reaches it, aim the generator at what is pending (aimed, steered), or give the steered phase more cases`
 						})
 					}
 					break
@@ -1784,9 +1819,9 @@ const spaceCounted = (
 type Sketch = Readonly<{ start: Branch; decisions: number }>
 
 /** What one sketch's run found: each case that passed, its notes in order, and the first case that did not, if any. */
-type SketchRan<A, F extends string> = Readonly<{
+type SketchRan<A> = Readonly<{
 	passed: ReadonlyArray<ReadonlySet<string>>
-	stopped: Option.Option<Readonly<{ caseRun: CaseRun<A, Tape>; under: Under<F> }>>
+	stopped: Option.Option<CaseRun<A, Tape>>
 }>
 
 /**
@@ -1827,23 +1862,21 @@ export type Exhausted = Readonly<{
 
 /**
  * Checks a property on every case of a bounded generator, in enumeration order, and shrinks the first case that fails
- * by editing its tape, property draws included, under the steering it was drawn under, for at most as many candidates
- * as the space holds cases: enumeration is lexicographic over decisions and shrinking descends shortlex order, so a
- * later case with fewer decisions may be less than the first failure, and the shrink moves toward it, while a space of
- * one shape needs no candidate. Its replay token runs the shrunk case alone. The space is counted before any property
- * runs (sizeOf), and draws the property makes are enumerated too, so a case's successor among them depends on it. The
- * space is run by sketches (Sketch), in windows of up to `concurrency` sketches at once, each sketch's cases one at a
- * time; a window's results are taken in enumeration order, every case its deadline cut after the rest (as an
- * exploration's window settles them), so concurrency changes how fast an exhaustion runs and never what it finds, the
- * first failing case in enumeration order. Nothing caps an exhaustion: its test's deadline is its only end, and a count
- * or a run the deadline cuts fails, naming the space, so a space too large to finish is a failure, never a pass over
- * part of it; a suite whose space cannot finish exhausts a smaller space it constructs, or samples it with explore under
- * a budget it names. Each case steers by the requirements no earlier case reached: a window's sketches run under those
- * no case before the window reached, with their own earlier cases', and a sketch whose earlier sketches in the window
- * reached a requirement, and so would have steered it otherwise, runs again under the right steering in the next
- * window, which a search meets at most once for each requirement. Every case of the space is a witness, fixed by the
- * generator alone, so every requirement must be reached by one of them, and the verdict is the same on every run seed.
- * Passing is a proof inside the box the generator draws.
+ * by editing its tape, property draws included, for at most as many candidates as the space holds cases: enumeration is
+ * lexicographic over decisions and shrinking descends shortlex order, so a later case with fewer decisions may be less
+ * than the first failure, and the shrink moves toward it, while a space of one shape needs no candidate. Its replay
+ * token runs the shrunk case alone. The space is counted before any property runs (sizeOf), and draws the property
+ * makes are enumerated too, so a case's successor among them depends on it. The space is run by sketches (Sketch), in
+ * windows of up to `concurrency` sketches at once, each sketch's cases one at a time; a window's results are taken in
+ * enumeration order, every case its deadline cut after the rest (as an exploration's window settles them), so
+ * concurrency changes how fast an exhaustion runs and never what it finds, the first failing case in enumeration
+ * order. Nothing caps an exhaustion: its test's deadline is its only end, and a count or a run the deadline cuts fails,
+ * naming the space, so a space too large to finish is a failure, never a pass over part of it; a suite whose space
+ * cannot finish exhausts a smaller space it constructs, or samples it with explore under a budget it names. Nothing
+ * steers an exhaustion: every case of the space runs, the property's draws enumerated with it, so a case aimed at a
+ * requirement is one the box holds already. Every case of the space is a witness, fixed by the generator alone, so every
+ * requirement must be reached by one of them, and the verdict is the same on every run seed. Passing is a proof inside
+ * the box the generator draws.
  */
 export const exhaust = <A, F extends string, E, R>(
 	spec: Exhaustion<A, F>,
@@ -1853,6 +1886,7 @@ export const exhaust = <A, F extends string, E, R>(
 		Effect.gen(function* () {
 			const situations = situationsOf(spec.coverage)
 			const concurrency = spec.concurrency ?? oneAtATime
+			const generator = () => spec.generator
 			const exhaustedOf = (cases: number): Exhausted => ({
 				kind: "exhausted",
 				suite: spec.suite,
@@ -1865,7 +1899,7 @@ export const exhaust = <A, F extends string, E, R>(
 				return yield* replayOne(
 					{
 						suite: spec.suite,
-						generator: spec.generator,
+						generator,
 						resolve: (value: A) => value,
 						literal: spec.literal,
 						situations,
@@ -1880,66 +1914,59 @@ export const exhaust = <A, F extends string, E, R>(
 			}
 			const size = yield* spaceCounted(run, life.cutting, spec.suite, spec.generator)
 			const exhaustive = tallyOf("exhaustive")
-			const requiredKeys = keysOf(situations)
+			const unsteered = underOf(situations, { kind: "unsteered" })
 			const pool: Array<Recorder> = []
 			const hang = hangOf(spec.caseHang)
-			const blockedUnder = (under: Under<F>) =>
-				blockedIn(run, spec.suite, spec.literal, spec.caseHang, Option.some(under.drawn))
-			const caseAt = (at: Branch, under: Under<F>) =>
+			const blocked = blockedIn(
+				run,
+				spec.suite,
+				spec.literal,
+				spec.caseHang,
+				Option.some(unsteered.drawn)
+			)
+			const caseAt = (at: Branch) =>
 				runCase(
-					spec.generator,
+					generator,
 					(value: A) => value,
 					property,
 					prefixChooser(at.values, at.length, simplestChooser),
 					pool,
-					under,
+					unsteered,
 					spec.caseHang,
 					life,
 					keepTape,
 					notesOnly,
-					blockedUnder(under)
+					blocked
 				)
 
-			const candidateOf = (values: Float64Array, under: Under<F>) =>
+			const candidateOf = (values: Float64Array) =>
 				runCase(
-					spec.generator,
+					generator,
 					(value: A) => value,
 					property,
 					forcedChooser(values, values.length),
 					pool,
-					under,
+					unsteered,
 					spec.caseHang,
 					life,
 					keepTape,
 					notesOnly,
-					blockedUnder(under)
+					blocked
 				)
 
-			/**
-			 * A sketch's cases from its start, through its first case that did not pass or its last, each aimed at its turn
-			 * among what it leaves pending: the first pending requirement after `aimedBefore`, the one the sketch before it
-			 * aimed at.
-			 */
+			/** A sketch's cases from its start, through its first case that did not pass or its last. */
 			const sketchRun = (
-				sketch: Sketch,
-				before: Tally<"exhaustive">,
-				aimedBefore: number
-			): Effect.Effect<SketchRan<A, F>, never, Exclude<R, Scope.Scope>> =>
+				sketch: Sketch
+			): Effect.Effect<SketchRan<A>, never, Exclude<R, Scope.Scope>> =>
 				Effect.gen(function* () {
-					const own = tallyOf("exhaustive")
 					const passed: Array<ReadonlySet<string>> = []
 					let branch: Option.Option<Branch> = Option.some(sketch.start)
 					while (Option.isSome(branch)) {
-						const under = underOf(situations, {
-							kind: "steered",
-							pending: turnOf(pendingIn(requiredKeys, [before], own), aimedBefore, 0)
-						})
-						const caseRun = yield* caseAt(branch.value, under)
+						const caseRun = yield* caseAt(branch.value)
 						if (judgedOf(caseRun).kind !== "passed") {
-							return { passed, stopped: Option.some({ caseRun, under }) }
+							return { passed, stopped: Option.some(caseRun) }
 						}
 						passed.push(caseRun.notes)
-						own.add(caseRun.notes)
 						branch = Option.filter(
 							nextBranch(caseRun.kept),
 							(after) => after.length > sketch.decisions
@@ -1948,63 +1975,39 @@ export const exhaust = <A, F extends string, E, R>(
 					return { passed, stopped: Option.none() }
 				})
 
-			/**
-			 * The requirements no case of `tally` reached, which every case steering by it is drawn under. A tally only grows,
-			 * so the requirements it leaves unreached only shrink, and two of one search's are the same exactly when they are
-			 * as many.
-			 */
-			const unreachedBy = (tally: Tally<"exhaustive">): ReadonlyArray<string> =>
-				spec.coverage.kind === "required" ? unreachedOf(spec.coverage.situations, [tally]) : []
-
 			const sketches = recorder()
 			let next: Option.Option<Branch> = Option.some(firstBranch)
-			let rerun: ReadonlyArray<Sketch> = []
 			let cases = 0
-			let aimed = -1
-			while (Arr.isReadonlyArrayNonEmpty(rerun) || Option.isSome(next)) {
-				const window: Array<Sketch> = [...rerun]
-				rerun = []
+			while (Option.isSome(next)) {
+				const window: Array<Sketch> = []
 				while (Option.isSome(next) && (window.length === 0 || window.length < concurrency)) {
 					const step: Enumerated<A> = enumerated(sketches, spec.generator, next.value)
 					window.push({ start: next.value, decisions: step.generated.tape.length })
 					next = step.next
 				}
-				const before = exhaustive.tally()
-				const steeredBefore = unreachedBy(before).length
-				const pendingBefore = pendingOf(situations, [before])
-				const lastAim = aimed
-				const afterOf = (offset: number): number =>
-					offset === 0
-						? lastAim
-						: Option.getOrElse(Arr.head(turnOf(pendingBefore, lastAim, offset - 1)), () => lastAim)
 				const ran = yield* windowOf(
 					Arr.map(window, (_, index) => index),
-					(index) => sketchRun(Arr.getUnsafe(window, index), before, afterOf(index)),
+					(index) => sketchRun(Arr.getUnsafe(window, index)),
 					concurrency
 				)
-				const stops: Array<Readonly<{ caseRun: CaseRun<A, Tape>; under: Under<F> }>> = []
-				for (const [index, sketchRan] of ran.entries()) {
-					if (unreachedBy(exhaustive.tally()).length !== steeredBefore) {
-						rerun = window.slice(index)
-						break
-					}
-					aimed = afterOf(index + 1)
+				const stops: Array<CaseRun<A, Tape>> = []
+				for (const sketchRan of ran) {
 					for (const notes of sketchRan.passed) {
 						cases += 1
 						exhaustive.add(notes)
 					}
 					if (Option.isSome(sketchRan.stopped)) {
 						stops.push(sketchRan.stopped.value)
-						if (sketchRan.stopped.value.caseRun.outcome.kind !== "cut") {
+						if (sketchRan.stopped.value.outcome.kind !== "cut") {
 							break
 						}
 					}
 				}
 				const settling = [
-					...Arr.filter(stops, (stop) => stop.caseRun.outcome.kind !== "cut"),
-					...Arr.filter(stops, (stop) => stop.caseRun.outcome.kind === "cut")
+					...Arr.filter(stops, (stop) => stop.outcome.kind !== "cut"),
+					...Arr.filter(stops, (stop) => stop.outcome.kind === "cut")
 				]
-				for (const { caseRun, under } of settling) {
+				for (const caseRun of settling) {
 					const where = `case ${cases} of the exhaustive space of ${size} cases`
 					yield* judge<Effect.Effect<void, SearchFailure, Exclude<R, Scope.Scope>>>(caseRun, {
 						passed: () =>
@@ -2014,7 +2017,7 @@ export const exhaust = <A, F extends string, E, R>(
 							}),
 						misused: () => misusedIn(spec.suite, where),
 						hung: (hung) => {
-							const replayed = replayCaseOf(under.drawn, hung.tape)
+							const replayed = replayCaseOf(unsteered.drawn, hung.tape)
 							return Effect.fail(
 								CaseHung.make({
 									suite: spec.suite,
@@ -2029,21 +2032,21 @@ export const exhaust = <A, F extends string, E, R>(
 								spec.suite,
 								where,
 								spec.literal(caseRun.sketch),
-								Option.some(replayCaseOf(under.drawn, cut.tape))
+								Option.some(replayCaseOf(unsteered.drawn, cut.tape))
 							),
 						failed: (failed) =>
 							Effect.flatMap(
 								shrinkAttempt(
 									{ tape: failed.tape, failure: { run: caseRun, cause: failed.cause } },
 									(values) =>
-										Effect.map(candidateOf(values, under), (candidate) =>
+										Effect.map(candidateOf(values), (candidate) =>
 											judge(candidate, candidateJudgment(candidate))
 										),
 									boundedShrink(size)
 								),
 								(shrunk) => {
 									const best = shrunk.best.failure.run
-									const replayed = Option.some(replayCaseOf(under.drawn, shrunk.best.tape))
+									const replayed = Option.some(replayCaseOf(unsteered.drawn, shrunk.best.tape))
 									return Effect.fail(
 										PropertyFalsified.make({
 											suite: spec.suite,

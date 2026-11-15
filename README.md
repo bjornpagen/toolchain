@@ -13,6 +13,34 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps
 its own decisions in `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: steering belongs to the generator (2026-11-15)
+
+A property that read `Case.steering` and swapped its case (`c.draw(aimedGen)` while its turn aimed at a pending
+situation) ran one case while the search printed, shrank and offered to keep another, the drawn sketch; a kept case
+runs unsteered, so the pasted "keep it" literal kept a case that never failed. Steering now reaches the generator
+alone, so a case is one value: the one drawn, run, printed, shrunk, kept and replayed.
+
+- `Case<F>` has no `steering`. A `Draw<S, T, F>`'s `generator` is a `Steered<S, F>`, `(steering:
+  Option<Pending<F>>) => Gen<S>`, drawn under the case's steering: the requirements pending when its window began, the
+  one its turn aims at among them, offered to the floor stream, the steered phase and a fuzz run, and none for the
+  rotating stream. A replay draws under its token's steering; a kept case is its sketch and is drawn by nothing.
+- `drawn(gen)` and `sketched(gen, resolve)` ignore steering (`Draw<…, never>`, which fits any feature set).
+- `aimed(gen, aims)`, `aims` a list of `[situation, generator]`, draws the generator of the situation the case's turn
+  aims at (`pending.aimed`), else `gen`: the old table, `Arr.findFirst(aims, ([s]) => pending.aimed(s))` then
+  `c.draw(aim)`, moved into the draw. Its feature type is inferred from the situations it names.
+- `steered((steering) => gen, resolve)` is the general form: any logic that read `c.steering` (`pending.has`,
+  `pending.names`, a filter over candidates) moves into the function, and the sketch it returns holds what it chose,
+  never a choice the property re-resolves under steering a kept case lacks.
+- `exhaust` steers nothing: every case of its box runs, its property's draws enumerated with it, so a case aimed at a
+  requirement is one the box holds already. A property that drew wider while a requirement was pending draws the
+  wider space.
+- To move a caller: delete each read of `c.steering`; put its aim in the draw with `aimed(gen, aims)`, or with
+  `steered` where the aim is more than a table; and take the case the property is handed as the case. A helper that
+  composed a draw (`source.draw(draw.generator)`) composes the steered one:
+  `steered((steering) => (source) => [source.draw(draw.generator(steering)), …], resolve)`.
+- no-case-list: name `aimed` beside `drawn` and `sketched` among `@bjornpagen/testing/explore`'s `"each"`
+  generators (its base generator is the space it reads); `steered` takes a function, which the rule cannot read.
+
 ## Consumer migration: the check pipeline (2026-11-14)
 
 What a repository changes to take the toolchain from the check-pipeline plan on (Bjorn's plan and decisions of
@@ -205,7 +233,7 @@ that moved into oxlint are AST-only, so the commit gate's `oxlint.ast.config.ts`
     `searches: [{ module: "@bjornpagen/testing/explore", name: "exhaust", space: "generator" }, { module:
     "@bjornpagen/testing/explore", name: "explore", space: "draw" }]`; `generators`: `@bjornpagen/testing/gen`'s
     `element` draws `"list"`, `constant` `"value"`, `map` and `span` `"each"`, `oneOf`, `weighted` and `proportional`
-    `"union"`, and `@bjornpagen/testing/explore`'s `drawn` and `sketched` `"each"`, each as
+    `"union"`, and `@bjornpagen/testing/explore`'s `drawn`, `sketched` and `aimed` `"each"`, each as
     `{ module, names, draws }`; `cases`, the old `cases` list (a directory ending in "/", or a file). A list
     imported from another module passes, so `dictionaries` goes; the rule runs on every file, so `files` goes. The
     toolchain's own oxlint.config.ts is a worked example.

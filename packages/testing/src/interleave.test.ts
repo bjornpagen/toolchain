@@ -46,9 +46,9 @@ import {
 	String as Str,
 	Struct
 } from "effect"
-import { type Case, drawn, exhaust, explore } from "#explore.ts"
+import { type Case, drawn, exhaust, explore, type Steered, steered } from "#explore.ts"
 import { awaitFact } from "#fact.ts"
-import { noCoverage, required, requiredInSpace } from "#features.ts"
+import { noCoverage, type Pending, required, requiredInSpace } from "#features.ts"
 import { array, element, type Gen, int } from "#gen.ts"
 import {
 	AfterCycle,
@@ -706,7 +706,9 @@ type Ending = (typeof ENDINGS)[number]
 type Released = Exclude<Ending["aims"], "nothing">
 
 /** The ways a case may end its runs: those aimed at a pending requirement where it steers and one is, else every way. */
-const endingsFor = (steering: Case<Released>["steering"]): Arr.NonEmptyReadonlyArray<Ending> =>
+const endingsFor = (
+	steering: Option.Option<Pending<Released>>
+): Arr.NonEmptyReadonlyArray<Ending> =>
 	Option.match(steering, {
 		onNone: () => ENDINGS,
 		onSome: (pending) =>
@@ -716,11 +718,21 @@ const endingsFor = (steering: Case<Released>["steering"]): Arr.NonEmptyReadonlyA
 			)
 	})
 
-/** A session set, and the script a scripted run follows: moves of any session, so it stops or runs out part-way. */
-const releaseCases: Gen<readonly [Sessions<Named, Move>, ReadonlyArray<Named>]> = (source) => [
-	source.draw(sessionSets),
-	source.draw(array(element(["a", "b", "c"] as const), { min: 0, max: 6 }))
-]
+/**
+ * A session set, the script a scripted run follows (moves of any session, so it stops or runs out part-way), and how
+ * the case ends its runs, drawn among the ways its steering aims at (endingsFor).
+ */
+const releaseCases: Steered<
+	readonly [Sessions<Named, Move>, ReadonlyArray<Named>, Ending],
+	Released
+> = (steering) => {
+	const endings = endingsFor(steering)
+	return (source) => [
+		source.draw(sessionSets),
+		source.draw(array(element(["a", "b", "c"] as const), { min: 0, max: 6 })),
+		source.draw(element(endings))
+	]
+}
 
 describe("releasing sessions", () => {
 	it.effect(
@@ -735,7 +747,7 @@ describe("releasing sessions", () => {
 							kind: "specification",
 							name: "every session a run started is released, however the run ends"
 						},
-						draw: drawn(releaseCases),
+						draw: steered(releaseCases, (sketch) => sketch),
 						literal: Formatter.format,
 						coverage: required<Released>(
 							["a run pruned", "a run refused", "a judged run left a session part-way"],
@@ -747,10 +759,8 @@ describe("releasing sessions", () => {
 						steerEvery: 1,
 						caseHang: Duration.minutes(1)
 					},
-					([sessions, script], c: Case<Released>) =>
+					([sessions, script, ending], c: Case<Released>) =>
 						Effect.gen(function* () {
-							const endings = endingsFor(c.steering)
-							const ending = c.draw(element(endings))
 							const driver = lockManager<Named>()
 							let judged = 0
 							const judge = (

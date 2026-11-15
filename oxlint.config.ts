@@ -46,12 +46,16 @@ export default defineConfig(
 						names: ["oneOf", "weighted", "proportional"],
 						draws: "union"
 					},
-					{ module: "@bjornpagen/testing/explore", names: ["drawn", "sketched"], draws: "each" },
+					{
+						module: "@bjornpagen/testing/explore",
+						names: ["drawn", "sketched", "aimed"],
+						draws: "each"
+					},
 					{ module: "#gen.ts", names: ["element"], draws: "list" },
 					{ module: "#gen.ts", names: ["constant"], draws: "value" },
 					{ module: "#gen.ts", names: ["map", "span"], draws: "each" },
 					{ module: "#gen.ts", names: ["oneOf", "weighted", "proportional"], draws: "union" },
-					{ module: "#explore.ts", names: ["drawn", "sketched"], draws: "each" }
+					{ module: "#explore.ts", names: ["drawn", "sketched", "aimed"], draws: "each" }
 				],
 				cases: []
 			},

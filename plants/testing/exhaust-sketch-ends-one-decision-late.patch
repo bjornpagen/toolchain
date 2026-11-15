@@ -1,7 +1,7 @@
 --- a/packages/testing/src/explore.ts
 +++ b/packages/testing/src/explore.ts
-@@ -1942,7 +1942,7 @@
- 						own.add(caseRun.notes)
+@@ -1967,7 +1967,7 @@ export const exhaust = <A, F extends string, E, R>(
+ 						passed.push(caseRun.notes)
  						branch = Option.filter(
  							nextBranch(caseRun.kept),
 -							(after) => after.length > sketch.decisions

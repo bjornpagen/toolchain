@@ -1,0 +1,14 @@
+diff --git a/packages/testing/src/explore.ts b/packages/testing/src/explore.ts
+--- a/packages/testing/src/explore.ts
++++ b/packages/testing/src/explore.ts
+@@ -850,8 +850,9 @@ const runRecorded = <S, T, F extends string, E, R, K>(
+ 		}
+ 		const finish = (settled: Settled): CaseRun<S, K> => {
+ 			open = false
++			const tape = recorded.tape()
+ 			const run = {
+-				sketch,
++				sketch: generator(Option.none())(recording(forcedChooser(tape.values, tape.length)).source),
+ 				sketchDecisions,
+ 				decisions: recorded.decided(),
+ 				overrun: recorded.status() === "overrun",

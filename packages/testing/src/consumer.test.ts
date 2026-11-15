@@ -25,7 +25,7 @@ import {
 	Stream
 } from "effect"
 import { ChildProcess } from "effect/process"
-import { drawn, explore } from "#explore.ts"
+import { aimed, explore } from "#explore.ts"
 import { required } from "#features.ts"
 import { boolean, constant, element, type Gen, int, map, oneOf, subarray } from "#gen.ts"
 import manifest from "#package.json" with { type: "json" }
@@ -420,7 +420,10 @@ layer(Layer.provideMerge(consumerLayer, NodeServices.layer))(
 								kind: "specification",
 								name: "bjornpagen-mutate's contract over the scope's test files, the reporter's table, and the watchdog's report"
 							},
-							draw: drawn(anyRun),
+							draw: aimed(
+								anyRun,
+								Arr.map(FEATURES, (feature) => [feature, aimedAt(feature)] as const)
+							),
 							literal: Formatter.format,
 							coverage: required<Feature>(FEATURES, { cases: 12, sense: notesOnly }),
 							kept: [],
@@ -429,14 +432,8 @@ layer(Layer.provideMerge(consumerLayer, NodeServices.layer))(
 							steerEvery: 1,
 							caseHang: Duration.minutes(5)
 						},
-						(sketch, c) =>
+						(run, c) =>
 							Effect.gen(function* () {
-								const run = Option.match(
-									Option.flatMap(c.steering, (pending) =>
-										Arr.findFirst(FEATURES, (feature) => pending.aimed(feature))
-									),
-									{ onNone: () => sketch, onSome: (feature) => c.draw(aimedAt(feature)) }
-								)
 								const seen = yield* observed(run)
 								switch (run.kind) {
 									case "mutate": {

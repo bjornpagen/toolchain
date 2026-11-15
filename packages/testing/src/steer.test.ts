@@ -10,7 +10,8 @@
  *   steered budgets of 0 to 40, cases that never or sometimes reach a requirement), each window's cases see one
  *   snapshot of what is pending, each aims at one pending requirement, the window's aims are distinct while it holds no
  *   more cases than are pending, and with k pending and windows of w every requirement still pending is aimed at within
- *   ⌈k / w⌉ windows of its stream. Oracle: the specification, judged on what each case saw of Case.steering.
+ *   ⌈k / w⌉ windows of its stream. Oracle: the specification, judged on what each case's generator saw of its
+ *   steering (Steered), which its sketch carries.
  *
  * The climb through V8's block coverage is steer-by-coverage.test.ts, a process of its own. Each lock is a planted
  * capability problem, its verdict the specification's: a steered search reaches what it requires within its budget.
@@ -27,8 +28,8 @@ import { describe, it } from "@effect/vitest"
 import { assertTrue, deepStrictEqual, strictEqual } from "@effect/vitest/utils"
 import { Array as Arr, Duration, Effect, Formatter, Option, Order } from "effect"
 import type { TestContext } from "vitest"
-import { type Case, drawn, type Exploration, explore, Run } from "#explore.ts"
-import { type Coverage, required } from "#features.ts"
+import { type Case, type Draw, drawn, type Exploration, explore, Run, steered } from "#explore.ts"
+import { type Coverage, type Pending, required } from "#features.ts"
 import { array, boolean, type Gen, int } from "#gen.ts"
 import { floorSeed, rotatingSeed } from "#random.ts"
 import { notesOnly } from "#sense.ts"
@@ -67,15 +68,16 @@ const runIn = (ctx: TestContext) =>
 		Run.of({ ...testRun, replay: Option.none(), fuzz: Option.none() })
 	)
 
-/** A search that must reach what its coverage requires, from six values of 0..31. */
-const magicSearch = <F extends string>(
+/** A search that must reach what its coverage requires, from six values of 0..31 that `draw` draws. */
+const magicSearch = <S, T, F extends string>(
 	suite: string,
 	coverage: Coverage<F>,
-	concurrency: number
-): Exploration<ReadonlyArray<number>, ReadonlyArray<number>, F> => ({
+	concurrency: number,
+	draw: Draw<S, T, F>
+): Exploration<S, T, F> => ({
 	suite,
 	oracle: { kind: "specification", name: "a lock planted so that only a steered search opens it" },
-	draw: drawn(values),
+	draw,
 	literal: Formatter.format,
 	coverage,
 	kept: [],
@@ -92,6 +94,16 @@ const noteMatched = (drawnValues: ReadonlyArray<number>, c: Case<Matched>) =>
 
 /** Five magic values matched, the situation only a steered search reaches, with a steered budget of `cases`. */
 const fiveMatched = (cases: number) => required<Matched>(["5 matched"], { cases, sense: notesOnly })
+
+/** Six values of 0..31, and whether the generator drew them under steering: a witness's, floor or steered. */
+const steeredValues = steered(
+	(steering: Option.Option<Pending<Matched>>) =>
+		(source): Readonly<{ values: ReadonlyArray<number>; steered: boolean }> => ({
+			values: source.draw(values),
+			steered: Option.isSome(steering)
+		}),
+	(sketch) => sketch
+)
 
 /** Orders witnesses' values lexicographically, so two runs' witnesses compare whatever order each run found them in. */
 const byValues = Arr.makeOrder(Order.Number)
@@ -133,7 +145,8 @@ const turnShapes: Gen<TurnShape> = (source) => ({
 	reaching: source.draw(boolean)
 })
 
-/** What one steered case saw of Case.steering: the places of the requirements pending, and of the one it aims at. */
+/** What one steered case's generator saw of its steering: the places of the requirements pending, and of the one it
+ * aims at. */
 type Seen = Readonly<{ pending: ReadonlyArray<number>; aimed: ReadonlyArray<number> }>
 
 type TurnFeature =
@@ -197,10 +210,10 @@ describe("a steered search", () => {
 	it.effect("climbs to a situation random search never reaches, one new note at a time", (ctx) =>
 		Effect.gen(function* () {
 			const unsteered = yield* Effect.flip(
-				explore(magicSearch("unsteered", fiveMatched(0), 4), noteMatched)
+				explore(magicSearch("unsteered", fiveMatched(0), 4, drawn(values)), noteMatched)
 			)
 			strictEqual(unsteered._tag, "FeaturesUnreached")
-			yield* explore(magicSearch("steered", fiveMatched(50_000), 4), noteMatched)
+			yield* explore(magicSearch("steered", fiveMatched(50_000), 4, drawn(values)), noteMatched)
 		}).pipe(Effect.provideServiceEffect(Run, runIn(ctx)))
 	)
 
@@ -218,15 +231,20 @@ describe("a steered search", () => {
 						Effect.suspend(() => {
 							const witnesses: Array<ReadonlyArray<number>> = []
 							return explore(
-								magicSearch("steered at any concurrency", fiveMatched(50_000), concurrency),
-								(drawnValues, c) =>
+								magicSearch(
+									"steered at any concurrency",
+									fiveMatched(50_000),
+									concurrency,
+									steeredValues
+								),
+								(drawnCase, c) =>
 									Effect.andThen(
 										Effect.sync(() => {
-											if (Option.isSome(c.steering)) {
-												witnesses.push(drawnValues)
+											if (drawnCase.steered) {
+												witnesses.push(drawnCase.values)
 											}
 										}),
-										noteMatched(drawnValues, c)
+										noteMatched(drawnCase.values, c)
 									)
 							).pipe(
 								Effect.map(
@@ -277,11 +295,22 @@ describe("a steered search", () => {
 							const [first, ...rest] = REQUIREMENTS
 							const seen: Array<Seen> = []
 							const places = Array.from({ length: shape.pending }, (_, place) => place)
+							const requirementAt = (place: number) => Arr.getUnsafe(REQUIREMENTS, place)
 							yield* explore(
 								{
 									suite: "turns, inner",
 									oracle: { kind: "specification", name: "what each case saw of its steering" },
-									draw: drawn(int(0, 3)),
+									draw: steered(
+										(steering: Option.Option<Pending<Requirement>>) =>
+											(source): Readonly<{ value: number; saw: Option.Option<Seen> }> => ({
+												value: source.draw(int(0, 3)),
+												saw: Option.map(steering, (pending): Seen => ({
+													pending: Arr.filter(places, (place) => pending.has(requirementAt(place))),
+													aimed: Arr.filter(places, (place) => pending.aimed(requirementAt(place)))
+												}))
+											}),
+										(sketch) => sketch
+									),
 									literal: Formatter.format,
 									coverage: required<Requirement>([first, ...Arr.take(rest, shape.pending - 1)], {
 										cases: shape.budget,
@@ -293,17 +322,12 @@ describe("a steered search", () => {
 									steerEvery: shape.window,
 									caseHang: Duration.minutes(1)
 								},
-								(value, inner: Case<Requirement>) =>
+								({ value, saw: steeredSaw }, inner: Case<Requirement>) =>
 									Effect.sync(() => {
-										if (Option.isNone(inner.steering)) {
+										if (Option.isNone(steeredSaw)) {
 											return
 										}
-										const pending = inner.steering.value
-										const requirementAt = (place: number) => Arr.getUnsafe(REQUIREMENTS, place)
-										const saw: Seen = {
-											pending: Arr.filter(places, (place) => pending.has(requirementAt(place))),
-											aimed: Arr.filter(places, (place) => pending.aimed(requirementAt(place)))
-										}
+										const saw = steeredSaw.value
 										seen.push(saw)
 										if (shape.reaching && value === 0) {
 											inner.noteAll(Arr.map(saw.aimed, requirementAt))
@@ -313,11 +337,13 @@ describe("a steered search", () => {
 										}
 									})
 							).pipe(Effect.catchTag("FeaturesUnreached", () => Effect.void))
-							const steered = Arr.chunksOf(seen.slice(shape.floor), shape.window)
+							const steeredWindows = Arr.chunksOf(seen.slice(shape.floor), shape.window)
 							c.noteAll([
 								...turnsKept(Arr.chunksOf(seen.slice(0, shape.floor), shape.window), shape.window),
-								...turnsKept(steered, shape.window),
-								...(steered.length > 1 ? ["a steered phase of several windows" as const] : [])
+								...turnsKept(steeredWindows, shape.window),
+								...(steeredWindows.length > 1
+									? ["a steered phase of several windows" as const]
+									: [])
 							])
 						})
 				)

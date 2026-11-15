@@ -3,7 +3,8 @@
  *
  * - Streams: over drawn searches (rotating runs of 0 to 48, 1 to 4 at once, a snapshot every 1 to 16), the floor runs
  *   max(1, ⌈runs / 4⌉) cases and the rotating stream runs, the residual counting the rotating cases alone; steering is
- *   offered to exactly the floor's cases, never to a kept case or the rotating stream's.
+ *   offered to the generator of exactly the floor's cases, never the rotating stream's, and a kept case is drawn by
+ *   nothing.
  * - Shrinking: a property failing at every draw of at least a drawn threshold shrinks to the threshold.
  * - Failures by kind: a replay that no longer runs as its token says is ReplayStale; a kept case never meets a
  *   requirement; a kept case that no longer reaches what it names is KeptUnreached; a hanging case is stopped on the
@@ -17,6 +18,9 @@
  *   distributions, and Good–Turing's identity by exact enumeration.
  * - agree: each comparison's definition, side by side.
  * - The coverage verdict and replay fidelity: metamorphic under another seed and concurrency, and a round trip.
+ * - An aimed case: the case a steered generator drew at a pending requirement (aimed) is the one its failure prints as
+ *   the counterexample and the kept case to paste, the one its replay token reruns, and its printed kept case fails
+ *   again. Oracle: a round trip.
  * - A synchronous case runs inline: twice the cases arm no more timers or event-loop hops than the runtime's own
  *   yields allow (SCHEDULED_PER_CASE). Its wall time is no verdict.
  *
@@ -40,9 +44,6 @@
  * a space the deadline cuts passes with no case run; the exhaustive spaces property fails.
  * @plant plants/testing/exhaust-sketch-ends-one-decision-late.patch A sketch's run ends one decision late, so it runs
  * on into the next sketch's first case, which runs twice; the exhaustive spaces property fails.
- * @plant plants/testing/exhaust-window-steering-never-rerun.patch A sketch whose earlier sketches in its window reached
- * a requirement never runs again under the steering they leave, so a window run at once finds what one sketch at a time
- * does not; the exhaust at once property fails.
  * @plant plants/testing/residual-doubletons-wide.patch Every situation seen twice or more counts as a doubleton, not
  * only those seen exactly twice; the recount property fails.
  * @plant plants/testing/residual-bound-halved.patch The risk's 95% bound is half what it is, so it is exceeded more
@@ -58,6 +59,8 @@
  * kept case that observes is stale; the observations property fails.
  * @plant plants/testing/steering-offered-rotating.patch The rotating stream's cases are offered the floor's steering;
  * the steering property fails.
+ * @plant plants/testing/aimed-case-reported-unsteered.patch A case's report prints the unsteered draw of its tape as
+ * its sketch, not the case its generator aimed and ran; the aimed case property fails.
  * @plant plants/testing/coverage-verdict-run-seeded.patch The steered phase's stream is drawn from the run's seed, so
  * the coverage verdict moves with the seed; the coverage verdict property fails.
  * @plant plants/testing/replay-unsteered.patch A replay runs its case unsteered, whatever steering its token records;
@@ -81,8 +84,10 @@ import {
 } from "effect"
 import { fraction, type Fraction, plus, times } from "#chance.fixtures.ts"
 import {
+	aimed,
 	type Case,
 	type CasePhase,
+	type Draw,
 	drawn,
 	type Exhaustion,
 	type Exploration,
@@ -93,11 +98,13 @@ import {
 	noDeadline,
 	type PropertyFalsified,
 	Run,
+	steered,
 	type Witnessed
 } from "#explore.ts"
 import {
 	type Coverage,
 	noCoverage,
+	type Pending,
 	RISK_BOUND_MISS,
 	type Risk,
 	required,
@@ -123,17 +130,17 @@ const runOf = (seed: number, replay: Option.Option<Replay>) =>
 
 const fullRun = runOf(7, Option.none())
 
-/** This suite's budget for a search: every field stated, as every suite states its own. */
-const searchOf = <A, F extends string>(
+/** This suite's budget for a search over `draw`: every field stated, as every suite states its own. */
+const searchOver = <S, T, F extends string>(
 	suite: string,
-	generator: Gen<A>,
+	draw: Draw<S, T, F>,
 	coverage: Coverage<F>,
 	runs: number,
 	concurrency: number
-): Exploration<A, A, F> => ({
+): Exploration<S, T, F> => ({
 	suite,
 	oracle: { kind: "specification", name: "a property planted to exercise the search itself" },
-	draw: drawn(generator),
+	draw,
 	literal: Formatter.format,
 	coverage,
 	kept: [],
@@ -143,6 +150,31 @@ const searchOf = <A, F extends string>(
 	steerEvery: 16,
 	caseHang: Duration.minutes(1)
 })
+
+/** This suite's budget for a search of `generator`'s values. */
+const searchOf = <A, F extends string>(
+	suite: string,
+	generator: Gen<A>,
+	coverage: Coverage<F>,
+	runs: number,
+	concurrency: number
+): Exploration<A, A, F> => searchOver(suite, drawn(generator), coverage, runs, concurrency)
+
+/** A value of `generator`, and whether its case was drawn under steering, as its generator sees it (Steered). */
+type SteeredValue<A> = Readonly<{ value: A; steered: boolean }>
+
+/** Draws `generator`'s value, recording in the sketch whether the case is steered: what the generator was offered. */
+const steeredValues = <A, F extends string>(
+	generator: Gen<A>
+): Draw<SteeredValue<A>, SteeredValue<A>, F> =>
+	steered(
+		(steering: Option.Option<Pending<F>>) =>
+			(source): SteeredValue<A> => ({
+				value: source.draw(generator),
+				steered: Option.isSome(steering)
+			}),
+		(sketch) => sketch
+	)
 
 type Size = "small" | "big"
 
@@ -515,9 +547,9 @@ describe("exhaust", () => {
 })
 
 /**
- * What the concurrency oracle draws: a space of `values` values, each case drawing one of `draws` more, or of twice as
- * many while "rare" is pending; "rare" noted by the value `rareAt`; failing on the values `failing` at a draw of at
- * least `from`, only where its draw was aimed when `aimedOnly`; run one sketch at a time and `concurrency` at once.
+ * What the concurrency oracle draws: a space of `values` values, each case drawing one of `draws` more; "rare" noted by
+ * the value `rareAt`; failing on the values `failing` at a draw of at least `from`; run one sketch at a time and
+ * `concurrency` at once.
  */
 type AtOnceSketch = Readonly<{
 	values: number
@@ -525,7 +557,6 @@ type AtOnceSketch = Readonly<{
 	rareAt: number
 	failing: ReadonlyArray<number>
 	from: number
-	aimedOnly: boolean
 	concurrency: number
 }>
 
@@ -537,8 +568,7 @@ const atOnceSketches: Gen<AtOnceSketch> = (source) => {
 		draws,
 		rareAt: source.draw(int(0, values - 1)),
 		failing: Arr.dedupe(source.draw(array(int(0, values - 1), { min: 0, max: 3 }))),
-		from: source.draw(int(0, 2 * draws - 1)),
-		aimedOnly: source.draw(boolean),
+		from: source.draw(int(0, draws)),
 		concurrency: source.draw(int(2, 8))
 	}
 }
@@ -560,16 +590,11 @@ const atOnceSearch = (sketch: AtOnceSketch, concurrency: number) =>
 		(value, c: Case<"rare">) =>
 			Effect.gen(function* () {
 				yield* Effect.yieldNow
-				const aimed = Option.exists(c.steering, (pending) => pending.has("rare"))
-				const drew = c.draw(int(0, aimed ? 2 * sketch.draws - 1 : sketch.draws - 1))
+				const drew = c.draw(int(0, sketch.draws - 1))
 				if (value === sketch.rareAt) {
 					c.note("rare")
 				}
-				if (
-					Arr.contains(sketch.failing, value) &&
-					drew >= sketch.from &&
-					(aimed || !sketch.aimedOnly)
-				) {
+				if (Arr.contains(sketch.failing, value) && drew >= sketch.from) {
 					return yield* Effect.die("falsified")
 				}
 			})
@@ -581,32 +606,21 @@ const atOnceSearch = (sketch: AtOnceSketch, concurrency: number) =>
 		Effect.provideService(Run, fullRun)
 	)
 
-type AtOnceFeature =
-	| "passed"
-	| "falsified"
-	| "two failing values within one window"
-	| "rare reached within the window before a failing value"
-	| "a failure only an aimed draw meets"
+type AtOnceFeature = "passed" | "falsified" | "two failing values within one window"
 
 describe("exhaust at once", () => {
 	it.effect(
-		"finds at any concurrency exactly what it finds one sketch at a time: the same count, or the same first failing case under the same steering",
+		"finds at any concurrency exactly what it finds one sketch at a time: the same count, or the same first failing case",
 		(ctx) =>
 			searched(
 				ctx,
 				explore(
 					outerOf(
 						"exhaust at once",
-						"one sketch at a time is the definition: every case runs in enumeration order, steered by every case before it",
+						"one sketch at a time is the definition: every case runs in enumeration order",
 						atOnceSketches,
 						required<AtOnceFeature>(
-							[
-								"passed",
-								"falsified",
-								"two failing values within one window",
-								"rare reached within the window before a failing value",
-								"a failure only an aimed draw meets"
-							],
+							["passed", "falsified", "two failing values within one window"],
 							{ cases: 80, sense: notesOnly }
 						)
 					),
@@ -621,17 +635,6 @@ describe("exhaust at once", () => {
 								Arr.some(failing, (f, i) => i > 0 && f - (failing[i - 1] ?? f) < sketch.concurrency)
 							) {
 								k.note("two failing values within one window")
-							}
-							if (
-								Arr.some(
-									failing,
-									(f) => f > sketch.rareAt && f - sketch.rareAt < sketch.concurrency
-								)
-							) {
-								k.note("rare reached within the window before a failing value")
-							}
-							if (one.kind === "falsified" && sketch.aimedOnly) {
-								k.note("a failure only an aimed draw meets")
 							}
 						})
 				)
@@ -1081,7 +1084,7 @@ describe("a kept case", () => {
 
 describe("steering", () => {
 	it.effect(
-		"is offered to the floor stream's cases, and never to the rotating stream's or a kept case",
+		"is offered to the generator of the floor stream's cases, and never the rotating stream's; a kept case is drawn by nothing",
 		(ctx) =>
 			searched(
 				ctx,
@@ -1105,19 +1108,26 @@ describe("steering", () => {
 							yield* underFullRun(
 								explore(
 									{
-										...searchOf<number, Size>(
+										...searchOver<SteeredValue<number>, SteeredValue<number>, Size>(
 											"steering phases",
-											int(0, 9),
+											steeredValues(int(0, 9)),
 											noCoverage,
 											shape.runs,
 											shape.concurrency
 										),
 										steerEvery: shape.steerEvery,
-										kept: [{ note: "small", sketch: 1, draws: "", reaches: ["small"] }]
+										kept: [
+											{
+												note: "small",
+												sketch: { value: 1, steered: false },
+												draws: "",
+												reaches: ["small"]
+											}
+										]
 									},
-									(value, inner: Case<Size>) =>
+									({ value, steered: drawnSteered }, inner: Case<Size>) =>
 										Effect.andThen(
-											Effect.sync(() => offered.push(Option.isSome(inner.steering))),
+											Effect.sync(() => offered.push(drawnSteered)),
 											noteSize(value, inner)
 										)
 								)
@@ -1185,12 +1195,12 @@ const verdictSketches: Gen<VerdictSketch> = (source) => ({
 	runs: [source.draw(innerRuns), source.draw(innerRuns)]
 })
 
-const reachesRare = (rare: RareReach, value: number, steered: boolean): boolean => {
+const reachesRare = (rare: RareReach, value: number, drawnSteered: boolean): boolean => {
 	switch (rare) {
 		case "never":
 			return false
 		case "unsteered":
-			return !steered
+			return !drawnSteered
 		case "one in fifty":
 			return value % 50 === 1
 		case "one in five":
@@ -1215,22 +1225,22 @@ const verdictOf = (sketch: VerdictSketch, run: InnerRun) =>
 		const witnesses: Array<number> = []
 		return explore(
 			{
-				...searchOf(
+				...searchOver(
 					sketch.label,
-					innerValues,
+					steeredValues<number, Inner>(innerValues),
 					required<Inner>(["common", "rare"], { cases: sketch.budget, sense: notesOnly }),
 					INNER_RUNS,
 					run.concurrency
 				),
 				shrink: boundedShrink(10)
 			},
-			(value, c: Case<Inner>) =>
+			({ value, steered: drawnSteered }, c: Case<Inner>) =>
 				Effect.sync(() => {
 					c.note("common")
-					if (reachesRare(sketch.rare, value, Option.isSome(c.steering))) {
+					if (reachesRare(sketch.rare, value, drawnSteered)) {
 						c.note("rare")
 					}
-					if (Option.isSome(c.steering)) {
+					if (drawnSteered) {
 						witnesses.push(value)
 					}
 				})
@@ -1378,9 +1388,33 @@ const fidelitySketches: Gen<FidelitySketch> = (source) => ({
 /** The values an inner exhaustion enumerates. */
 const spaceValues = int(0, 59)
 
-/** What a case of the replay oracle's inner property saw: its value, its own draw, whether it aimed that draw at a
- * pending "rare", and whether it was steered at all. */
-type Seen = Readonly<{ value: number; drew: number; aimed: boolean; steered: boolean }>
+/**
+ * A case of the replay oracle's inner search: its value, whether its generator aimed the property's draw at a pending
+ * "rare" (wider while it is pending), and whether it was steered at all, as its generator saw its steering.
+ */
+type FidelityCase = Readonly<{ value: number; aimed: boolean; steered: boolean }>
+
+/** What a case of the replay oracle's inner property saw: its case, and its own draw. */
+type Seen = FidelityCase & Readonly<{ drew: number }>
+
+/** The inner exploration's draw: a value, aimed at "rare" while it is pending, so one tape decodes differently under
+ * different steering. */
+const fidelityDraw = steered(
+	(steering: Option.Option<Pending<"rare">>) =>
+		(source): FidelityCase => ({
+			value: source.draw(innerValues),
+			aimed: Option.exists(steering, (pending) => pending.has("rare")),
+			steered: Option.isSome(steering)
+		}),
+	(sketch) => sketch
+)
+
+/** The inner exhaustion's cases: every value of 0..59, which nothing steers. */
+const fidelitySpace: Gen<FidelityCase> = (source) => ({
+	value: source.draw(spaceValues),
+	aimed: false,
+	steered: false
+})
 
 const failsOn = (failing: Failing, seen: Seen): boolean => {
 	switch (failing) {
@@ -1395,20 +1429,18 @@ const failsOn = (failing: Failing, seen: Seen): boolean => {
 	}
 }
 
-/** The replay oracle's inner property: it aims its own draw wider while "rare" is pending, so its tape decodes
- * differently under different steering, and fails as its sketch says. It yields first, so the cases a search runs at
- * once interleave. */
+/** The replay oracle's inner property: it draws wider where its case was aimed at "rare", and fails as its sketch
+ * says. It yields first, so the cases a search runs at once interleave. */
 const failingProperty =
 	(failing: Failing) =>
-	(value: number, c: Case<"rare">): Effect.Effect<void> =>
+	(drawnCase: FidelityCase, c: Case<"rare">): Effect.Effect<void> =>
 		Effect.gen(function* () {
 			yield* Effect.yieldNow
-			const aimed = Option.exists(c.steering, (pending) => pending.has("rare"))
-			const drew = c.draw(int(0, aimed ? 99 : 9))
-			if (value % 50 === 1) {
+			const drew = c.draw(int(0, drawnCase.aimed ? 99 : 9))
+			if (drawnCase.value % 50 === 1) {
 				c.note("rare")
 			}
-			if (failsOn(failing, { value, drew, aimed, steered: Option.isSome(c.steering) })) {
+			if (failsOn(failing, { ...drawnCase, drew })) {
 				return yield* Effect.die("falsified")
 			}
 		})
@@ -1417,7 +1449,7 @@ const failingProperty =
 const fidelitySearch = (
 	sketch: FidelitySketch,
 	run: InnerRun,
-	kept: ReadonlyArray<Kept<number, "rare">>,
+	kept: ReadonlyArray<Kept<FidelityCase, "rare">>,
 	replay: Option.Option<ReplayCase>
 ) => {
 	const search =
@@ -1425,9 +1457,9 @@ const fidelitySearch = (
 			? Effect.asVoid(
 					explore(
 						{
-							...searchOf(
+							...searchOver(
 								sketch.label,
-								innerValues,
+								fidelityDraw,
 								required<"rare">(["rare"], { cases: sketch.budget, sense: notesOnly }),
 								INNER_RUNS,
 								run.concurrency
@@ -1447,8 +1479,8 @@ const fidelitySearch = (
 								name: "a property planted to fail as its sketch says"
 							},
 							box: "every value of 0..59, with the draw its property makes",
-							generator: spaceValues,
-							literal: String,
+							generator: fidelitySpace,
+							literal: Formatter.format,
 							coverage: requiredInSpace<"rare">(["rare"]),
 							caseHang: Duration.minutes(1),
 							concurrency: run.concurrency
@@ -1478,10 +1510,15 @@ const caseOf = (
 ): Option.Option<readonly [phase: CasePhase, replay: Option.Option<ReplayCase>]> =>
 	Option.map(failure, (falsified) => [falsified.phase, falsified.replay] as const)
 
-/** The kept case a failure's token prints, its sketch and its property's draws read back from the token's tape. */
-const keptOf = (replayed: ReplayCase): Kept<number, "rare"> => {
+/** The kept case an unsteered failure's token prints, its sketch and its property's draws read back from the token's
+ * tape. */
+const keptOf = (replayed: ReplayCase): Kept<FidelityCase, "rare"> => {
 	const values = Float64Array.from(replayed.values)
-	const generated = generate(recorder(), innerValues, forcedChooser(values, values.length))
+	const generated = generate(
+		recorder(),
+		fidelityDraw.generator(Option.none()),
+		forcedChooser(values, values.length)
+	)
 	return {
 		note: "the failure",
 		sketch: generated.value,
@@ -1489,6 +1526,111 @@ const keptOf = (replayed: ReplayCase): Kept<number, "rare"> => {
 		reaches: ["rare"]
 	}
 }
+
+/**
+ * What the aimed-case oracle draws: an inner search's label, the value a case aimed at its pending "rare" draws, which
+ * no plain draw of 0..9 reaches, and how many of its cases run at once.
+ */
+type AimedSketch = Readonly<{ label: Label; aimedAt: number; concurrency: 1 | 4 | 16 }>
+
+const aimedSketches: Gen<AimedSketch> = (source) => ({
+	label: source.draw(element(LABELS)),
+	aimedAt: source.draw(int(10, 99)),
+	concurrency: source.draw(element([1, 4, 16] as const))
+})
+
+type AimedFeature = "replayed as printed" | "kept as printed"
+
+/**
+ * The aimed-case oracle's inner search: values of 0..9, a case aimed at "rare" drawing `aimedAt` instead (aimed), the
+ * one value that reaches "rare" and fails; its failure, a PropertyFalsified the search must end with.
+ */
+const aimedSearch = (
+	sketch: AimedSketch,
+	kept: ReadonlyArray<Kept<number, "rare">>,
+	replay: Option.Option<ReplayCase>
+) =>
+	explore(
+		{
+			...searchOver(
+				sketch.label,
+				aimed(int(0, 9), [["rare", constant(sketch.aimedAt)]]),
+				required<"rare">(["rare"], { cases: 16, sense: notesOnly }),
+				INNER_RUNS,
+				sketch.concurrency
+			),
+			literal: String,
+			kept
+		},
+		(value, c: Case<"rare">) =>
+			Effect.gen(function* () {
+				if (value === sketch.aimedAt) {
+					c.note("rare")
+					return yield* Effect.die("falsified")
+				}
+			})
+	).pipe(
+		Effect.flatMap(() => Effect.die("the aimed search ends falsified, not passed")),
+		Effect.catchTag("PropertyFalsified", (falsified) => Effect.succeed(falsified)),
+		Effect.provideService(
+			Run,
+			runOf(
+				7,
+				Option.map(replay, (replayed) => ({ suite: sketch.label, replayed }))
+			)
+		)
+	)
+
+/** Whether a failure's report prints `value` as its counterexample and as the sketch of the kept case it offers. */
+const printsCase = (falsified: PropertyFalsified, value: number): boolean =>
+	Str.includes(`counterexample: ${String(value)}\n`)(falsified.message) &&
+	Str.includes(`sketch: ${String(value)},`)(falsified.message)
+
+describe("an aimed case", () => {
+	it.effect(
+		"is the case that ran, the one its failure prints, its token replays and its printed kept case runs again",
+		(ctx) =>
+			searched(
+				ctx,
+				explore(
+					outerOf(
+						"aimed cases",
+						"one case: the case an aim drew is the one run, printed, replayed and kept",
+						aimedSketches,
+						required<AimedFeature>(["replayed as printed", "kept as printed"], {
+							cases: 8,
+							sense: notesOnly
+						})
+					),
+					(sketch, c) =>
+						Effect.gen(function* () {
+							const failed = yield* aimedSearch(sketch, [], Option.none())
+							strictEqual(failed.phase, "floor")
+							assertTrue(
+								printsCase(failed, sketch.aimedAt),
+								`the report prints the aimed case ${String(sketch.aimedAt)}: ${failed.message}`
+							)
+							if (Option.isNone(failed.replay)) {
+								return assertTrue(false, "a floor case's failure carries its replay token")
+							}
+							const replayed = yield* aimedSearch(sketch, [], failed.replay)
+							strictEqual(replayed.phase, "replayed")
+							assertTrue(printsCase(replayed, sketch.aimedAt), replayed.message)
+							c.note("replayed as printed")
+							const kept = yield* aimedSearch(
+								sketch,
+								[
+									{ note: "the printed case", sketch: sketch.aimedAt, draws: "", reaches: ["rare"] }
+								],
+								Option.none()
+							)
+							strictEqual(kept.phase, "kept")
+							c.note("kept as printed")
+						})
+				)
+			)
+	)
+})
 
 describe("replay fidelity", () => {
 	it.effect(
