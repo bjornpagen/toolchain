@@ -6,7 +6,8 @@
 #                                   oxfmt's check of the staged files and the AST-only oxlint (oxlint.ast.config.ts)
 #                                   on the staged files it reads, side by side
 #   toolchain-gate push             the push gate (lefthook's pre-push, with use_stdin): `pnpm check` on each commit the
-#                                   push sends, read from git's pre-push lines on stdin (HEAD when there are none)
+#                                   push sends, read from git's pre-push lines on stdin (HEAD when there are none);
+#                                   once a day `pnpm check:full` instead, where the repository has one
 #   toolchain-gate run <index|commit> <command> [arguments]
 #                                   any command on what the index holds, or on a commit
 #
@@ -171,10 +172,19 @@ case $mode in
 		fi
 		[ "$lines" -gt 0 ] || pushed=$(git rev-parse HEAD)
 		for commit in $pushed; do
-			printf 'toolchain-gate: pnpm check on %s\n' "$commit" >&2
 			(
 				enter push "$commit"
-				pnpm check
+				# The push snapshot keeps the incremental typecheck's build info between runs, so `pnpm check` re-checks
+				# what changed. A repository whose check:full runs the same gate from scratch (no build info, every task
+				# forced) has it run once a day (Bjorn, 2026-11-15), so a stale result from build info lives a day at most;
+				# the stamp is written only when it passes.
+				check=check
+				if grep -q '"check:full"' package.json && [ -z "$(find "$cache/push.full" -mtime -1 2>/dev/null)" ]; then
+					check=check:full
+				fi
+				printf 'toolchain-gate: pnpm %s on %s\n' "$check" "$commit" >&2
+				pnpm "$check"
+				[ "$check" = check ] || touch "$cache/push.full"
 			)
 		done
 		;;
