@@ -15,11 +15,13 @@
  * The climb through V8's block coverage is steer-by-coverage.test.ts, a process of its own. Each lock is a planted
  * capability problem, its verdict the specification's: a steered search reaches what it requires within its budget.
  *
- * Plants (~/.cache/grizzle-release/BR07/plants): steer-fresh-only.patch (every steered case a fresh draw) turns the
- * first property red; coverage-verdict-run-seeded.patch (the steered stream drawn from the run's seed) the second.
- * Plants (~/.cache/grizzle-release/BACKFILLPROBE/plants): turns-first-pending.patch (every case of a window aimed at
- * the first pending requirement) and turns-restart-each-window.patch (each window's i-th case aimed at the i-th pending
- * requirement, its stream's last aim forgotten) turn the third red.
+ * @plant plants/testing/steer-fresh-only.patch Every steered case a fresh draw; the first property, the climb, fails.
+ * @plant plants/testing/coverage-verdict-run-seeded.patch The steered stream drawn from the run's seed; the second
+ * property, the witnesses the suite label's alone, fails.
+ * @plant plants/testing/turns-first-pending.patch Every case of a window aimed at the first pending requirement; the
+ * third property, the turns, fails.
+ * @plant plants/testing/turns-restart-each-window.patch Each window's i-th case aimed at the i-th pending requirement,
+ * its stream's last aim forgotten; the third property, the turns, fails.
  */
 import { describe, it } from "@effect/vitest"
 import { assertTrue, deepStrictEqual, strictEqual } from "@effect/vitest/utils"

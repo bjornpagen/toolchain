@@ -1,0 +1,11 @@
+--- a/packages/testing/src/features.ts
++++ b/packages/testing/src/features.ts
+@@ -339,7 +339,7 @@ export const turnsOf = (): Turns => {
+ 			if (cases > 0) {
+ 				last = Option.getOrElse(Arr.head(turnOf(pending, after, cases - 1)), () => after)
+ 			}
+-			return (offset) => turnOf(pending, after, offset)
++			return () => pending
+ 		}
+ 	}
+ }
