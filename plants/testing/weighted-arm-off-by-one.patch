@@ -1,0 +1,11 @@
+--- a/packages/testing/src/gen.ts
++++ b/packages/testing/src/gen.ts
+@@ -111,7 +111,7 @@
+ 	let rest = pick
+ 	for (let at = 0; at < arms.length - 1; at += 1) {
+ 		const [weight, generator] = Arr.getUnsafe(arms, at)
+-		if (rest < weight) {
++		if (rest <= weight) {
+ 			return generator
+ 		}
+ 		rest -= weight

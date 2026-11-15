@@ -1,0 +1,14 @@
+--- a/packages/testing/src/random.ts
++++ b/packages/testing/src/random.ts
+@@ -71,8 +71,10 @@
+  * xoshiro128** seeded through splitmix32: fast, small-state, and the same generator Effect's own property runner uses.
+  * https://prng.di.unimi.it/xoshiro128starstar.c
+  */
++let split = 0
++
+ export const wordsOf = (seed: number): Words => {
+-	let split = seed >>> 0
++	split = (split + seed) >>> 0
+ 	const splitmix = (): number => {
+ 		split = (split + 0x9e37_79b9) >>> 0
+ 		let z = split

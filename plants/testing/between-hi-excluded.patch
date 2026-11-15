@@ -1,0 +1,11 @@
+--- a/packages/testing/src/random.ts
++++ b/packages/testing/src/random.ts
+@@ -119,7 +119,7 @@
+ 	while (word >= limit) {
+ 		word = words.next()
+ 	}
+-	return lo + (word % range)
++	return lo + (word % (range - 1))
+ }
+ 
+ /** The widest range a random search draws uniformly; a wider one leans toward its ends. */

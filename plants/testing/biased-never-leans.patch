@@ -1,0 +1,11 @@
+--- a/packages/testing/src/source.ts
++++ b/packages/testing/src/source.ts
+@@ -48,7 +48,7 @@
+ 	draw: (lo, hi, _at, spread) => {
+ 		switch (spread) {
+ 			case "leaning":
+-				return biased(words, lo, hi)
++				return between(words, lo, hi)
+ 			case "uniform":
+ 				return between(words, lo, hi)
+ 		}

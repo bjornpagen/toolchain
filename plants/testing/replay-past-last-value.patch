@@ -1,0 +1,11 @@
+--- a/packages/testing/src/source.ts
++++ b/packages/testing/src/source.ts
+@@ -63,7 +63,7 @@
+ 
+ /** Exactly the first `length` of these values, and nothing after them: a replay, or a shrink candidate. */
+ export const forcedChooser = (values: Float64Array, length: number): Chooser => ({
+-	exhausted: (at) => at >= length,
++	exhausted: (at) => at >= length - 1,
+ 	draw: (_lo, _hi, at) => values[at] ?? 0
+ })
+ 

@@ -1,0 +1,11 @@
+--- a/packages/testing/src/tape.ts
++++ b/packages/testing/src/tape.ts
+@@ -77,7 +77,7 @@
+ /** A tape's values as a compact token a person can paste back to replay exactly that case. */
+ export const tokenOf = (values: Float64Array, length: number): string =>
+ 	Arr.join(
+-		Arr.map(Arr.fromIterable(values.subarray(0, length)), (value) => value.toString(36)),
++		Arr.map(Arr.fromIterable(values.subarray(0, length - 1)), (value) => value.toString(36)),
+ 		TOKEN_SEPARATOR
+ 	)
+ 

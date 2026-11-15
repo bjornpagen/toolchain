@@ -1,0 +1,12 @@
+--- a/packages/testing/src/source.ts
++++ b/packages/testing/src/source.ts
+@@ -145,9 +145,6 @@
+ 		}
+ 		const offered = chooser.exhausted(length) ? lo - 1 : chooser.draw(lo, hi, length, spread)
+ 		const fits = offered >= lo && offered <= hi
+-		if (!fits && status === "complete") {
+-			status = "overrun"
+-		}
+ 		return append(fits ? offered : lo, lo, hi)
+ 	}
+ 	const source: Source = {

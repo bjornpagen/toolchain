@@ -1,0 +1,11 @@
+--- a/packages/testing/src/source.ts
++++ b/packages/testing/src/source.ts
+@@ -268,7 +268,7 @@
+ 	const recorded = recorder()
+ 	const cases: Array<A> = []
+ 	for (let index = 0; index < count; index += 1) {
+-		cases.push(generate(recorded, generator, randomChooser(wordsOf(caseSeed(stream, index)))).value)
++		cases.push(generate(recorded, generator, randomChooser(wordsOf(stream + index))).value)
+ 	}
+ 	return cases
+ }

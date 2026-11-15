@@ -7,9 +7,25 @@
  * leaning magnitude from the same words; every case of a generator once, in its order, all of them counted; a stream's
  * cases from its seed alone.
  *
- * Plants (~/.cache/grizzle-release/BR07/plants), one a property in this order: between-hi-excluded,
- * case-seed-unmixed, replay-past-last-value, token-drops-last, replay-token-suite-colon, overrun-unmarked,
- * weighted-arm-off-by-one, biased-never-leans, enumeration-skips-values, case-seed-unmixed.
+ * @plant plants/testing/between-hi-excluded.patch between never draws its range's highest value; the range property
+ * fails.
+ * @plant plants/testing/words-share-splitmix-state.patch wordsOf keeps splitmix's state from one call to the next, so
+ * a second word source from one seed draws another stream; the one-stream property fails.
+ * @plant plants/testing/replay-past-last-value.patch A forced replay counts its last value as past its end, so a
+ * case's last decision replays at its simplest; the tape replay property fails.
+ * @plant plants/testing/token-drops-last.patch A tape's token drops its last value; the token property fails.
+ * @plant plants/testing/replay-token-suite-colon.patch A replay token's steering is read from its first colon, so a
+ * token whose suite holds a colon is unreadable; the replay token property fails.
+ * @plant plants/testing/overrun-unmarked.patch A replay that runs out finishes on simplest values without marking its
+ * tape overrun; the run-out property fails.
+ * @plant plants/testing/weighted-arm-off-by-one.patch Each arm of a weighted choice but the last takes one pick more
+ * than its weight; the weighted shares property fails.
+ * @plant plants/testing/biased-never-leans.patch The random chooser draws a leaning magnitude uniformly, as between
+ * does, never as biased does; the chooser property fails.
+ * @plant plants/testing/enumeration-skips-values.patch Enumeration counts each decision up by two, skipping every
+ * other value below its highest; the enumeration property fails.
+ * @plant plants/testing/case-seed-unmixed.patch sample seeds each case with its stream plus its index, unmixed, not
+ * with caseSeed; the sampling property fails.
  */
 import { describe, it } from "@effect/vitest"
 import { deepStrictEqual } from "@effect/vitest/utils"
