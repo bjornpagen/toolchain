@@ -1,0 +1,11 @@
+--- a/packages/testing/src/features.ts
++++ b/packages/testing/src/features.ts
+@@ -220,7 +220,7 @@
+ export const residualOf = (tally: Tally<"independent">): Residual => {
+ 	const counts = Arr.fromIterable(tally.counts.values())
+ 	const singletons = Arr.filter(counts, (count) => count === 1).length
+-	const doubletons = Arr.filter(counts, (count) => count === 2).length
++	const doubletons = Arr.filter(counts, (count) => count >= 2).length
+ 	const risk: Risk =
+ 		tally.cases === 0
+ 			? { kind: "unknown", why: "no-cases" }

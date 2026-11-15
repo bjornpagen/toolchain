@@ -1,0 +1,11 @@
+--- a/packages/testing/src/explore.ts
++++ b/packages/testing/src/explore.ts
+@@ -1090,7 +1090,7 @@
+ 			property,
+ 			forcedChooser(values, values.length),
+ 			[],
+-			underOf(search.situations, replayed.drawn),
++			underOf(search.situations, { kind: "unsteered" }),
+ 			search.caseHang,
+ 			life,
+ 			keepNothing,

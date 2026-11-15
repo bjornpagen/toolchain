@@ -1,0 +1,11 @@
+--- a/packages/testing/src/explore.ts
++++ b/packages/testing/src/explore.ts
+@@ -1394,7 +1394,7 @@
+ 								})
+ 							)
+ 						}
+-						const missing = Arr.filter(kept.reaches, (feature) => !keptRun.notes.has(feature))
++						const missing = Arr.filter(kept.reaches, () => false)
+ 						return Arr.isReadonlyArrayNonEmpty(missing)
+ 							? Effect.fail(
+ 									KeptUnreached.make({

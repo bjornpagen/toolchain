@@ -20,12 +20,50 @@
  * - A synchronous case runs inline: twice the cases arm no more timers or event-loop hops than the runtime's own
  *   yields allow (SCHEDULED_PER_CASE). Its wall time is no verdict.
  *
- * Oracles are stated per search. Plants (~/.cache/grizzle-release/BR07/plants): explore-floor-rounded-down,
- * shrink-binary-short, replay-leftover-accepted, kept-requirement-counted, kept-unreached-unchecked,
- * hang-on-test-clock (red by the test's own timeout), misuse-unjudged, kept-draws-unprinted, kept-ran-out-filled,
- * observe-draws, exhaust-deadline-passed (TESTLINT/plants), residual-doubletons-wide, residual-bound-halved,
- * residual-estimate-shifted, agree-set-repeats, steering-offered-rotating, coverage-verdict-run-seeded,
- * replay-unsteered, sync-case-forked: one a property, in this order.
+ * Oracles are stated per search.
+ *
+ * @plant plants/testing/explore-floor-rounded-down.patch The floor stream runs a quarter of the rotating stream's
+ * cases rounded down, not up; the streams property fails.
+ * @plant plants/testing/shrink-binary-short.patch Lowering a decision by binary search stops one short, above the
+ * least value that still fails; the shrunk draws property fails.
+ * @plant plants/testing/replay-leftover-accepted.patch A replay whose property leaves some of its token's draws over
+ * passes, its leftover draws accepted; the stale replay property fails.
+ * @plant plants/testing/kept-requirement-counted.patch A kept case's notes count toward the required situations, so a
+ * situation only a kept case reaches is met; the kept-only property fails.
+ * @plant plants/testing/kept-unreached-unchecked.patch A kept case is never checked against the situations it names,
+ * so one that drifted away from them passes; the drifted kept case property fails.
+ * @plant plants/testing/hang-on-test-clock.patch The hang guard sleeps on the Effect clock, which a TestClock never
+ * moves, so a hanging case is never stopped; the hanging case property fails, red by the test's own timeout.
+ * @plant plants/testing/misuse-unjudged.patch A passing case is judged by its outcome alone, never as misused, so a
+ * note or a draw after the case ended goes unreported; the late use property fails.
+ * @plant plants/testing/exhaust-deadline-passed.patch An exhaustion reads a case its test's deadline cut as a pass, so
+ * a space the deadline cuts passes with no case run; the exhaustive spaces property fails.
+ * @plant plants/testing/exhaust-sketch-ends-one-decision-late.patch A sketch's run ends one decision late, so it runs
+ * on into the next sketch's first case, which runs twice; the exhaustive spaces property fails.
+ * @plant plants/testing/exhaust-window-steering-never-rerun.patch A sketch whose earlier sketches in its window reached
+ * a requirement never runs again under the steering they leave, so a window run at once finds what one sketch at a time
+ * does not; the exhaust at once property fails.
+ * @plant plants/testing/residual-doubletons-wide.patch Every situation seen twice or more counts as a doubleton, not
+ * only those seen exactly twice; the recount property fails.
+ * @plant plants/testing/residual-bound-halved.patch The risk's 95% bound is half what it is, so it is exceeded more
+ * often than one run in twenty; the bound property fails.
+ * @plant plants/testing/residual-estimate-shifted.patch The risk's estimate divides the singletons by one case more
+ * than ran; the Good–Turing property fails.
+ * @plant plants/testing/agree-set-repeats.patch A side repeating an item agrees as a set; the agree property fails.
+ * @plant plants/testing/kept-draws-unprinted.patch A kept case's failure prints no draws, so the report's kept case no
+ * longer replays it; the kept draws property fails.
+ * @plant plants/testing/kept-ran-out-filled.patch A kept case whose draws run out is filled in with simplest values,
+ * not failed as stale; the stale draws property fails.
+ * @plant plants/testing/observe-draws.patch An observation past a kept case's draws counts as a draw that ran out, so a
+ * kept case that observes is stale; the observations property fails.
+ * @plant plants/testing/steering-offered-rotating.patch The rotating stream's cases are offered the floor's steering;
+ * the steering property fails.
+ * @plant plants/testing/coverage-verdict-run-seeded.patch The steered phase's stream is drawn from the run's seed, so
+ * the coverage verdict moves with the seed; the coverage verdict property fails.
+ * @plant plants/testing/replay-unsteered.patch A replay runs its case unsteered, whatever steering its token records;
+ * the replay fidelity property fails.
+ * @plant plants/testing/sync-case-forked.patch Every case starts in a forked fiber on a later turn, arming its hang
+ * guard's timer, never inline; the synchronous case property fails.
  */
 import { createHook } from "node:async_hooks"
 import { describe, it } from "@effect/vitest"

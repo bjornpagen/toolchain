@@ -1,0 +1,12 @@
+--- a/packages/testing/src/source.ts
++++ b/packages/testing/src/source.ts
+@@ -179,6 +179,9 @@
+ 			return value
+ 		},
+ 		observe: (value) => {
++			if (chooser.exhausted(length) && status === "complete") {
++				status = "overrun"
++			}
+ 			const offered = chooser.exhausted(length)
+ 				? value
+ 				: chooser.draw(value, value, length, "uniform")

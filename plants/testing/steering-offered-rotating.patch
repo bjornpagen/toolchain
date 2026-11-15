@@ -1,0 +1,15 @@
+--- a/packages/testing/src/explore.ts
++++ b/packages/testing/src/explore.ts
+@@ -1726,7 +1726,11 @@
+ 				)
+ 				const window = yield* casesOf(
+ 					indices,
+-					(index) => caseOf(randomChooser(wordsOf(caseSeed(rotating, index))), unsteered),
++					(index, offset) =>
++						caseOf(
++							randomChooser(wordsOf(caseSeed(rotating, index))),
++							steeredBy(situations, [floorTally.tally()], turnsOf(), indices.length)(offset)
++						),
+ 					spec.concurrency
+ 				)
+ 				for (const [offset, caseRun] of window) {

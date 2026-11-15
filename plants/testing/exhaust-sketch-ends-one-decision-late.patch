@@ -1,0 +1,11 @@
+--- a/packages/testing/src/explore.ts
++++ b/packages/testing/src/explore.ts
+@@ -1934,7 +1934,7 @@
+ 						own.add(caseRun.notes)
+ 						branch = Option.filter(
+ 							nextBranch(caseRun.kept),
+-							(after) => after.length > sketch.decisions
++							(after) => after.length >= sketch.decisions
+ 						)
+ 					}
+ 					return { passed, stopped: Option.none() }

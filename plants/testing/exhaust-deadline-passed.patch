@@ -1,0 +1,18 @@
+--- a/packages/testing/src/explore.ts
++++ b/packages/testing/src/explore.ts
+@@ -2015,14 +2015,7 @@
+ 								})
+ 							)
+ 						},
+-						cut: (cut) =>
+-							deadlineReachedIn(
+-								run,
+-								spec.suite,
+-								where,
+-								spec.literal(caseRun.sketch),
+-								Option.some(replayCaseOf(under.drawn, cut.tape))
+-							),
++						cut: () => Effect.void,
+ 						failed: (failed) =>
+ 							Effect.flatMap(
+ 								shrinkAttempt(

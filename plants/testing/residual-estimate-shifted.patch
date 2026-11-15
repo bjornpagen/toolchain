@@ -1,0 +1,11 @@
+--- a/packages/testing/src/features.ts
++++ b/packages/testing/src/features.ts
+@@ -228,7 +228,7 @@
+ 				? { kind: "unknown", why: "nothing-noted" }
+ 				: {
+ 						kind: "estimated",
+-						estimate: singletons / tally.cases,
++						estimate: singletons / (tally.cases + 1),
+ 						bound: riskBoundOf(tally.cases, tally.sinceNew)
+ 					}
+ 	return {

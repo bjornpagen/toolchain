@@ -1,0 +1,11 @@
+--- a/packages/testing/src/explore.ts
++++ b/packages/testing/src/explore.ts
+@@ -1976,7 +1976,7 @@
+ 				)
+ 				const stops: Array<Readonly<{ caseRun: CaseRun<A, Tape>; under: Under<F> }>> = []
+ 				for (const [index, sketchRan] of ran.entries()) {
+-					if (unreachedBy(exhaustive.tally()).length !== steeredBefore) {
++					if (unreachedBy(exhaustive.tally()).length < 0) {
+ 						rerun = window.slice(index)
+ 						break
+ 					}

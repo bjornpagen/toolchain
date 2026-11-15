@@ -1,0 +1,11 @@
+--- a/packages/testing/src/explore.ts
++++ b/packages/testing/src/explore.ts
+@@ -1100,7 +1100,7 @@
+ 		const where = "the replayed case"
+ 		return yield* judge<Effect.Effect<A, SearchFailure>>(caseRun, {
+ 			passed: () =>
+-				ranExactly(caseRun, values.length)
++				!caseRun.overrun
+ 					? Effect.sync(passed)
+ 					: Effect.fail(
+ 							ReplayStale.make({
