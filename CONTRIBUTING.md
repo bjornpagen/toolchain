@@ -97,6 +97,26 @@ style linter and the workspace gate read files as text. A new rule goes, in this
 
 A rule that needs the checker and fits none of these is a decision for the owner, not a new program.
 
+The SQL rules know Drizzle by import (`src/oxlint/drizzle.ts`): a `sql` template is Drizzle's when the file imports
+its tag from drizzle-orm, by name, renamed or off a namespace import. `devtools/no-raw-sql` reads those templates and
+nothing else: a `::` cast in one, outside its quoted strings and identifiers, comments and dollar-quoted bodies, as
+PostgreSQL's scanner reads the text Drizzle sends, is reported outside the rule's `writers`. A string literal, an
+untagged template or another tag's template is never SQL to it, so a `::` in a regular expression, an ARN or prose
+passes.
+
+## Effect diagnostics
+
+The shared base lists every diagnostic the installed @effect/tsgo ships (the workspace gate's diagnostic-roster), each
+at `"error"`, but those the toolchain drops for every repository, which it lists at `"off"`: `DROPPED_DIAGNOSTICS` in
+`packages/devtools/src/workspace/tsconfigs.ts`, each with its reason. Every tsconfig that restates the plugin sets a
+dropped diagnostic off and each of the repository's own rejections (`toolchain.config.ts`'s `rejected.diagnostics`)
+off, and every other diagnostic to error, which the gate's rejected-diagnostics holds. Dropping a diagnostic for every
+repository is the owner's decision, as a repository's rejection is.
+
+`missingConcurrencyOption` is dropped (Bjorn, 2026-11-14): it demanded a `concurrency` option on every `Effect.forEach`
+and `Effect.all`, so code stated `{ concurrency: 1 }`, the default, to please it. Write no concurrency where the run is
+sequential; a wider one is a limit, and it answers to the policy below.
+
 ## The gate: snapshots
 
 `toolchain-gate` (`packages/devtools/bin/gate.sh`) runs a check on exactly one snapshot of the repository, never on the
@@ -139,3 +159,20 @@ without hashing it, since none changes a result. beefy-workspace sets the machin
 | `TURBO_CACHE_DIR`          | where turbo keeps its cache: one directory shared by every clone of a repository             | turbo, and the gate, which passes it on |
 
 Never set `cacheDir` in turbo.json: a machine-wide `TURBO_CACHE_DIR` is what lets clones share one cache.
+
+## Concurrency limits
+
+Every number that bounds concurrency answers to the indefensible-numbers policy (edullm's
+`.agents/skills/indefensible-numbers/SKILL.md`): its JSDoc names a published, measured or derived authority with
+`@limitKind`, `@owner`, `@unit` and `@scope`, or it goes. A `0` or `1` identity needs no citation, and a width the data
+gives (two streams read at once, the sessions a run started) is no limit. A knob above holds no number of its own:
+unset, each tool keeps its own default; set, the number is the machine owner's (beefy-workspace's).
+
+| Limit                                              | Where                                | Authority                                                                                                                                                                                                                                                                                                           |
+| -------------------------------------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Test processes at once, `testWorkers`              | `packages/testing/src/workers.ts`    | derived: one forked test process a logical CPU (`availableParallelism()`), or `TOOLCHAIN_TEST_WORKERS`                                                                                                                                                                                                              |
+| Mutants judged at once, without `--workers`        | `packages/testing/scripts/mutate.ts` | derived (`defaultWorkers`): `testWorkers` over the processes one mutant's Vitest holds, so a mutation run holds no more test processes than a test run                                                                                                                                                              |
+| turbo's tasks at once, `"concurrency": "100%"`     | `turbo.json`                         | derived: one task a logical processor; turbo documents `100%` as "all available logical processors" and 10 tasks as its default (https://turborepo.dev/docs/reference/configuration, verified 2026-11-15). Each task's own threads are the knobs' to cap. JSON carries no comment, so this row is its documentation |
+| tsrs's checkers, tsgolint's `GOMAXPROCS`           | `bin/typecheck.sh`, `bin/oxlint.sh`  | the tool's own default while the knob is unset: tsrs's checker count, and Go's, the logical CPUs the process may use (https://pkg.go.dev/runtime, verified 2026-11-15)                                                                                                                                              |
+| One gate run per snapshot                          | `bin/gate.sh`                        | an identity: a snapshot is one directory that a run rewrites                                                                                                                                                                                                                                                        |
+| A search's cases at once, a search's `concurrency` | each test's `explore` or `exhaust`   | the test's own input, no resource's bound: the engine finds the same cases at any concurrency, and a sense that reads process-wide counters (guided coverage) runs its cases one at a time, an identity                                                                                                             |

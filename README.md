@@ -19,7 +19,7 @@ What a repository changes to take the toolchain from the check-pipeline plan on 
 2026-11-14). Each part names the commits that bring it. Pin `vendor/toolchain` at a commit whose README holds this
 whole section, and do every part: the parts are one migration, in the order a repository can typecheck them.
 
-### 1. Dependencies (ad8d0ec)
+### 1. Dependencies (ad8d0ec, 3a4a777, 175689e)
 
 - The catalog's versions: `@effect/tsgo` 0.69.0 (tsrs 0.25.0) with `typescript` 7.1.0-beta, `oxlint` 1.93.0,
   `oxlint-tsgolint` 7.0.2007, `turbo` 2.11.11, `vitest` 5.1.0, `oxfmt` 0.78.0, `fallow` 3.43.0 or later,
@@ -28,11 +28,16 @@ whole section, and do every part: the parts are one migration, in the order a re
   A pin newer than the repository's `minimumReleaseAge` allows waits a day.
 - Babel 8 carries its own types: drop `@types/babel__core`.
 - @effect/tsgo 0.69.0 ships two new Effect diagnostics, `missingConcurrencyOption` and `onExitFailureToOnError`. Every
-  tsconfig that restates the `@effect/language-service` plugin lists both at `"error"`, as the shared base does, unless
-  the owner rejects one in `toolchain.config.ts`'s `rejected.diagnostics` with its reason.
-  `missingConcurrencyOption` refuses every `Effect.forEach` and `Effect.all` without a `concurrency` option: add
-  `{ concurrency: 1 }`, the sequential run it had by default (or a wider one where that is meant), to the options
-  object, or as a new last argument.
+  tsconfig that restates the `@effect/language-service` plugin lists `onExitFailureToOnError` at `"error"`, as the
+  shared base does, unless the owner rejects it in `toolchain.config.ts`'s `rejected.diagnostics` with its reason.
+- `missingConcurrencyOption` is gone for every repository (Bjorn, 2026-11-14): no `Effect.forEach` or `Effect.all`
+  states a concurrency to please a diagnostic. The shared base lists it at `"off"`, and so does every tsconfig that
+  restates the plugin: change `"missingConcurrencyOption": "error"` to `"off"` (the workspace gate's
+  rejected-diagnostics names a tsconfig that sets it to error), and reject nothing for it. Delete every
+  `{ concurrency: 1 }` added for it, keeping `discard: true` where the options held it (`{ concurrency: 1, discard:
+  true }` becomes `{ discard: true }`): one is Effect's default, a sequential run, so nothing runs differently. A
+  concurrency wider than one is a limit, and it answers to the indefensible-numbers policy where it is written (a
+  published, measured or derived authority in its JSDoc), not to a diagnostic.
 - fallow 3.43 reads more: it reports catalog entries no package names with `catalog:`, reads any directory that holds
   its own `pnpm-workspace.yaml` (ignore build output such as `out/**`), and takes a tsconfig plugin's name for a
   package (`@effect/language-service` belongs in `ignoreDependencies`).
@@ -149,7 +154,7 @@ that moved into oxlint are AST-only, so the commit gate's `oxlint.ast.config.ts`
 | rejected-diagnostics, diagnostic-roster, effect-plugin-block, effect-free-packages (tsconfigs and manifests), ts-only-extensions (root)                                                                                                                                            | the `workspace-gate` command, which reads JSON and git's file list; same rule names, messages and toolchain.config.ts keys                                            |
 | no-drizzle-write-without-where (drizzle)                                                                                                                                                                                                                                           | `devtools/no-drizzle-write-without-where` (ported: eslint-plugin-drizzle does not load under oxlint as published), option `receivers`                                 |
 | no-implicit-select-all, no-bare-materialized-view-joins, sql-aliased-table-reference, sql-distinct-window, sql-dynamic-schema, sql-executor-contract, sql-json-owner, sql-leaf-owners-only, sql-number-decoder, sql-query-deadline, sql-raw-execution, sql-raw-statement (drizzle) | `devtools/<the same id>`, the drizzle part, every file                                                                                                                |
-| sql-cast-owner (drizzle)                                                                                                                                                                                                                                                           | `devtools/no-raw-sql`, now in the core: its `writers` are the old cast owners                                                                                         |
+| sql-cast-owner (drizzle)                                                                                                                                                                                                                                                           | `devtools/no-raw-sql`, now in the core, on Drizzle `sql` templates only: its `writers` are the old cast owners                                                        |
 | sql-array-parameter, sql-case-arm-cast (drizzle)                                                                                                                                                                                                                                   | deleted                                                                                                                                                               |
 | no-case-list (grizzle)                                                                                                                                                                                                                                                             | `devtools/no-case-list`, the grizzle part, every file                                                                                                                 |
 | no-environment (grizzle)                                                                                                                                                                                                                                                           | the preset's environment bans: `environment` in `lintConfig` turns on node/no-process-env and eslint/no-restricted-imports, -properties and -globals over the library |
@@ -191,8 +196,12 @@ that moved into oxlint are AST-only, so the commit gate's `oxlint.ast.config.ts`
     when it is the result of an imported function `tuples` names, by import specifier as the code writes it.
   - `"no-raw-sql": { sources, writers }`, every repository, since the rule is in the core now: `sources`, the
     directories whose code writes SQL; `writers`, the files that may write a `::` cast as text (the old
-    sqlCastOwner owners). It reads every string and template under `sources`, not only Drizzle's `sql`, so a `::` in
-    a regular expression or an ARN needs its file among `writers` or an override.
+    sqlCastOwner owners). It reads Drizzle `sql` templates only (e56b3f8): a template whose tag the file imports
+    from drizzle-orm, by name, renamed or off a namespace import, read as Drizzle sends it, with a `::` inside a
+    quoted string or identifier, a comment or a dollar-quoted body passing. A string literal, an untagged template
+    and another tag's template are no SQL to it, so a `::` in a regular expression, an ARN or a PL/pgSQL body held
+    in a plain template needs no writer or override. A repository whose SQL is no Drizzle template (grizzle's
+    printer builds strings) gets nothing from it.
   - grizzle pack (grizzle, den, the toolchain): `"no-case-list": { searches, generators, cases }`. Searches and
     generators are named by the module the code imports them from, not by repository path:
     `searches: [{ module: "@bjornpagen/testing/explore", name: "exhaust", space: "generator" }, { module:
@@ -284,6 +293,9 @@ options name (`TIMEBACK_*SERVER_URL`, `TIMEBACK_*TOKEN_URL`) outside them, or it
   - `noEnvironment`: `environment: { library: ["packages/engine/src", "packages/grizzle/src"], readers:
     ["packages/grizzle/src/adapter/connection/environment.ts"] }`.
   - `noCaseList`: `"no-case-list"` with the searches and generators above and `cases: ["test/"]`; its dictionaries go.
+  - `"no-raw-sql"`: the engine's SQL is strings its printer builds, and the rule reads Drizzle `sql` templates only,
+    so it finds nothing in grizzle whatever its `sources` and `writers` name; the printer, lexer and constants stay
+    the writers only by name.
   - no-spread-argument's `tuples`: `[{ module: "#test/support/list.ts", names: ["argumentsOf", "nonEmptyArgumentsOf"]
     }, { module: "#compiler/allen/atoms.ts", names: ["atomOperands"] }]`.
   - `testCaseIsSearch.exempt`: its five groups, with their reasons, become `examples.exempt` in `vitest.config.ts`
@@ -303,14 +315,13 @@ options name (`TIMEBACK_*SERVER_URL`, `TIMEBACK_*TOKEN_URL`) outside them, or it
   - `noEnvironment` named no files: `environment: { library: [], readers: [] }`.
 - **superstarter**
   - `core`: deleted. `drizzle({ ... })`: `drizzle()`, its options moved as above.
-  - `"no-raw-sql": { sources: ["packages/database/src"], writers: ["packages/database/src/postgres/rds.ts"] }` (the
-    IAM ARN regular expression holds `::`).
+  - `"no-raw-sql": { sources: ["packages/database/src"], writers: [] }`: rds.ts's IAM ARN pattern is a string, which
+    the rule no longer reads, so its writer entry and the JSDoc on it go.
   - `examples: { kind: "allowed" }` in each Vitest config.
 - **edullm**
   - `core`: deleted. `drizzle({ ... })`: `drizzle()`, its options moved as above.
-  - `"no-raw-sql": { sources: ["packages/data/database/src"], writers: ["packages/data/database/src/sql/cast.ts",
-    "packages/data/database/src/archive/load.ts"] }` (load.ts's ISO_INSTANT regular expression holds `(?::`), or an
-    override with its reason.
+  - `"no-raw-sql": { sources: ["packages/data/database/src"], writers: ["packages/data/database/src/sql/cast.ts"] }`:
+    load.ts's ISO_INSTANT pattern is a string, which the rule no longer reads.
   - `QTI_PIE_SETTINGS` (`effect-free-packages` on `packages/qti-pie/`): stays, the workspace gate's.
   - `PROVIDER_ADDRESSES` and `own`: as "A repository's own superlint rules" says.
   - If the root oxlint reaches `packages/qti-pie`, sql-raw-execution refuses the pg `client.query` at
@@ -330,10 +341,10 @@ options name (`TIMEBACK_*SERVER_URL`, `TIMEBACK_*TOKEN_URL`) outside them, or it
 - no-null-undefined-union reads written types (parameters, properties, return types) through the file's own aliases,
   no longer inferred returns or aliases from other modules.
 - no-case-list no longer follows lists imported from support modules.
-- The drizzle rules know Drizzle by import: a `sql` template is Drizzle's when its tag is imported from drizzle-orm,
-  and a value is Drizzle's or pg's when the file traces it to such a call, instance or annotated type. A value
-  imported from another module cannot be followed (name views through no-bare-materialized-view-joins' `modules`,
-  handles through no-drizzle-write-without-where's `receivers`), and `sql<Alias>` is read as written.
+- The drizzle rules and no-raw-sql know Drizzle by import: a `sql` template is Drizzle's when its tag is imported
+  from drizzle-orm, and a value is Drizzle's or pg's when the file traces it to such a call, instance or annotated
+  type. A value imported from another module cannot be followed (name views through no-bare-materialized-view-joins'
+  `modules`, handles through no-drizzle-write-without-where's `receivers`), and `sql<Alias>` is read as written.
 - The environment bans refuse an imported value at its import rather than where it is read, and ban
   `globalThis.process` and `navigator` in the library wholesale.
 - Scans of today's trees with the final rules: den and superstarter 0 findings; grizzle 3 to fix (catalogue.test.ts
