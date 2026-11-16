@@ -1,20 +1,29 @@
+import type { NodeServices } from "@effect/platform-node/NodeServices"
 import {
 	Array as Arr,
+	Console,
+	Context,
 	Effect,
 	type FileSystem,
 	Option,
 	type Path,
-	type Scope,
+	Scope,
 	String as Str
 } from "effect"
 import type { Oracle } from "#explore.ts"
+import { failureText } from "#failure.ts"
 import { liveMillis } from "#live.ts"
 import type { Kill, PropertyId, PropertyKind } from "#property.ts"
+import { PgCluster } from "#resources/cluster.ts"
+import { collect, templatesOf } from "#resources/collect.ts"
+import type { DatabaseTemplate } from "#resources/template.ts"
 import { type RunnerConfig, SMALL_STACK } from "#runner/config.ts"
 import { runnerLimits } from "#runner/limits.ts"
 import { configOf, type Discovered, discover, type LoadFailed, matchedBy } from "#runner/load.ts"
+import { moduleClosureAt } from "#runner/module-closure.ts"
 import { type Pool, PoolFailed, poolOf } from "#runner/pool.ts"
 import type { Reach, Verdict } from "#runner/protocol.ts"
+import { ModuleClosure, WorkerIndex } from "#runner/services.ts"
 import { labelOf, runOfLabel, type Stack } from "#runner/stack.ts"
 import { testWorkers } from "#workers.ts"
 
@@ -146,20 +155,70 @@ export const loadPackage = (
 	})
 
 /**
+ * Collects the cluster before a run whose properties declare database templates: once, in this process, with the
+ * repository's services built here (its PgCluster), every clone of an ended worker and every template none of the run's
+ * properties declares is dropped (resources/collect.ts), so what killed runs and stale declarations left on the
+ * cluster is gone before the run clones again. A run that declares no template builds no service and collects nothing;
+ * a repository that provides no cluster has nothing to collect. A collection that fails says so on stderr and the run
+ * goes on: its properties' needs open, or fail, as they would.
+ */
+const collected = (
+	config: RunnerConfig,
+	root: string,
+	templates: ReadonlyArray<DatabaseTemplate>
+): Effect.Effect<void, never, NodeServices> =>
+	Arr.isReadonlyArrayNonEmpty(templates)
+		? Effect.scoped(
+				Effect.gen(function* () {
+					const scope = yield* Scope.Scope
+					const closures = yield* moduleClosureAt(root)
+					const platform = yield* Effect.context<NodeServices>()
+					const runner = Context.add(
+						Context.add(
+							Context.merge(Context.make(WorkerIndex, { index: 0, workers: 1 }), platform),
+							ModuleClosure,
+							closures
+						),
+						Scope.Scope,
+						scope
+					)
+					const built = yield* Effect.provideContext(config.services, runner)
+					yield* Option.match(Context.getOption(built, PgCluster), {
+						onNone: () => Effect.void,
+						onSome: (cluster) =>
+							Effect.asVoid(
+								collect(templates).pipe(
+									Effect.provideService(PgCluster, cluster),
+									Effect.provideService(ModuleClosure, closures)
+								)
+							)
+					})
+				}).pipe(
+					Effect.catchCause((cause) =>
+						Console.error(
+							`toolchain-test: the cluster was not collected before the run (its stale clones and templates stay): ${failureText(cause)}`
+						)
+					)
+				)
+			)
+		: Effect.void
+
+/**
  * Runs a package's properties on the pool, every property's search at once, its cases spread over every worker:
  * loads the package's runner config and the test modules the request names, forks the pool (one worker a core, under
  * this process's flags, the hardened flags and the config's conditions among them), and gives each property's verdict.
  */
 export const runPackage = (
 	request: RunRequest
-): Effect.Effect<
-	RunOutcome,
-	LoadFailed | PoolFailed,
-	Scope.Scope | FileSystem.FileSystem | Path.Path
-> =>
+): Effect.Effect<RunOutcome, LoadFailed | PoolFailed, Scope.Scope | NodeServices> =>
 	Effect.gen(function* () {
 		const began = yield* liveMillis
-		const { discovered, stacksOf } = yield* loadPackage(request.root, request.selected)
+		const { config, discovered, stacksOf } = yield* loadPackage(request.root, request.selected)
+		yield* collected(
+			config,
+			request.root,
+			Arr.flatMap(discovered, (found) => templatesOf(found.property.needs))
+		)
 		const runs = Arr.flatMap(discovered, (found) =>
 			Arr.map(stacksOf(found), (stack) => ({ found, stack }))
 		)
@@ -202,6 +261,7 @@ export const runPackage = (
 						evaluator,
 						reach: request.reach
 					})
+					yield* pool.retire(label)
 					const end = yield* liveMillis
 					return {
 						id: found.id,

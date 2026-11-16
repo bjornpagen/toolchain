@@ -16,17 +16,22 @@
  *   slower to open than the case deadline hangs no case.
  * - A need that does not open on a process (its open fails, or runs past the open bound) fails its property once, with
  *   the need and why, and no case of the property runs there.
+ * - A process holds a need open while a property readied there that uses it has not retired: a retirement releases
+ *   exactly the keys no other live property uses, and a released need's scope is closed (what it acquired released)
+ *   and opens again when asked.
  *
  * Oracles are stated per property.
  */
-import { Clock, Effect, Option } from "effect"
+import { Array as Arr, Clock, Effect, Option, Order } from "effect"
 import { TestClock } from "effect/testing"
 import { deepStrictEqual, strictEqual } from "#assert.ts"
 import { aimed, int } from "#gen.ts"
 import { property } from "#property.ts"
 import {
+	cycledReleases,
 	FAILED_OPEN,
 	hanging,
+	holdingHistories,
 	LATE_USES,
 	lateUses,
 	graceMillis,
@@ -34,6 +39,7 @@ import {
 	lifetimesOf,
 	needing,
 	pastTheGrace,
+	releasedAt,
 	shortReleases,
 	SYNC_PROPERTIES,
 	scheduledBy,
@@ -44,6 +50,7 @@ import {
 	unopenedEndings,
 	usingLate
 } from "#runner/case.fixtures.ts"
+import { holdingsOf } from "#runner/case.ts"
 import { runnerLimits } from "#runner/limits.ts"
 import {
 	findingOf,
@@ -308,6 +315,84 @@ export const unopenedOnce = property.explore(
 				original: "\t\t\t\t\t\t\t\tliveSleep(Duration.millis(bound)),",
 				replacement: "\t\t\t\t\t\t\t\tEffect.never,",
 				why: "A need's open has no bound, so one that never ends holds its process forever, and one past the bound opens late instead of failing its property; the outrunning need's property passes, and this property fails."
+			}
+		]
+	}
+)
+
+export const heldUntilRetired = property.explore(holdingHistories, {
+	needs: {},
+	situations: ["a key another live property shares", "a key its last user releases"],
+	check: (_resources, c) => (history) =>
+		Effect.sync(() => {
+			const holdings = holdingsOf()
+			const released = Arr.map(history, (step) => {
+				switch (step.kind) {
+					case "readied":
+						holdings.readied(step.property, step.keys)
+						return []
+					case "retired":
+						return holdings.retired(step.property)
+				}
+			})
+			const expected = Arr.map(history, (_, at) => releasedAt(history, at))
+			for (const [at, step] of history.entries()) {
+				if (step.kind === "retired") {
+					c.note(
+						(expected[at]?.length ?? 0) > 0
+							? "a key its last user releases"
+							: "a key another live property shares"
+					)
+				}
+			}
+			deepStrictEqual(
+				Arr.map(released, (keys) => Arr.sort(keys, Order.String)),
+				Arr.map(expected, (keys) => Arr.sort(keys, Order.String))
+			)
+		}),
+	oracle: {
+		kind: "second-implementation",
+		name: "a retirement releases the keys no property readied before it and not retired still uses, recounted from the history"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/runner/case.ts",
+			original: "\t\t\t\tif (using.size > 0) {",
+			replacement: "\t\t\t\tif (false) {",
+			why: "A retirement releases every key of the retired property, whatever other property readied on the worker still uses it, so a need another property's next case takes is closed under it; this property fails."
+		}
+	]
+})
+
+export const releasedNeedsClose = property.explore(
+	(source) => ({ cycles: source.draw(int(1, 4)), kept: source.draw(int(0, 2)) }),
+	{
+		needs: {},
+		situations: [],
+		check: () => (shape) =>
+			Effect.gen(function* () {
+				const cycled = yield* cycledReleases(shape.cycles, shape.kept)
+				deepStrictEqual(cycled, {
+					after: Array.from({ length: shape.cycles }, (_, at) => ({
+						opens: at + 1,
+						releases: at + 1,
+						others: 0
+					})),
+					kept: Option.some(shape.kept)
+				})
+			}),
+		oracle: {
+			kind: "specification",
+			name: "a released need's scope is closed, what its open acquired released, and it opens again when asked; other needs are untouched"
+		},
+		kept: [],
+		kills: [
+			{
+				file: "packages/testing/src/runner/case.ts",
+				original: "\t\t\t\t\t\t\tonSome: (open) => Scope.close(open, Exit.void)",
+				replacement: "\t\t\t\t\t\t\tonSome: () => Effect.void",
+				why: "A released need is forgotten but its scope is never closed, so the clones, sessions and lease permits its open acquired stay held for the worker's life (GZ-FOUNDATION: LeaseBudgetExhausted over a full run); this property fails."
 			}
 		]
 	}

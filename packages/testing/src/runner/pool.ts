@@ -105,11 +105,13 @@ export type PoolSpec = Readonly<{
 }>
 
 /**
- * The pool as a run uses it: the evaluator every search shares, how many cases each worker finished, and how many
- * modules each holds (readied a property of).
+ * The pool as a run uses it: the evaluator every search shares; `retire`, which tells every worker a property's search
+ * ended, so a worker releases the needs only that property held there; how many cases each worker finished, and how
+ * many modules each holds (readied a property of).
  */
 export type Pool = Readonly<{
 	evaluator: Evaluator
+	retire: (property: string) => Effect.Effect<void>
 	cases: Effect.Effect<ReadonlyArray<number>>
 	held: Effect.Effect<ReadonlyArray<number>>
 }>
@@ -601,6 +603,14 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 		}
 		return {
 			evaluator,
+			retire: (property) =>
+				Effect.sync(() => {
+					for (const worker of workers) {
+						if (worker.ready && worker.child.connected) {
+							send(worker, { kind: "retire", property })
+						}
+					}
+				}),
 			cases: Effect.sync(() => Arr.copy(counts)),
 			held: Effect.sync(() => scheduler.held())
 		}

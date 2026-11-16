@@ -1,9 +1,14 @@
 import { createHook } from "node:async_hooks"
-import { Duration, Effect, Record as Rec } from "effect"
+import type { NodeServices } from "@effect/platform-node/NodeServices"
+import { Array as Arr, Context, Duration, Effect, Option, Record as Rec, Scope } from "effect"
 import { element, finite, type Gen, int, map } from "#gen.ts"
 import { HUNG_CLEANUP_GRACE, liveSleep } from "#live.ts"
 import { type Case, type Need, NeedFailed, type Property, property } from "#property.ts"
+import { needCacheOf } from "#runner/case.ts"
+import { runnerLimits } from "#runner/limits.ts"
+import { moduleClosureAt } from "#runner/module-closure.ts"
 import { widths } from "#runner/search.fixtures.ts"
+import { ModuleClosure, WorkerIndex } from "#runner/services.ts"
 
 /**
  * What the meta-tests of a case's evaluation (runner/case.ts) share: inner properties that hang, that use their case
@@ -296,3 +301,136 @@ export const slowOpens: Gen<SlowOpen> = (source) => {
 	const deadline = source.draw(int(10, 50))
 	return { deadline, openMillis: source.draw(int(3 * deadline, 8 * deadline)) }
 }
+
+/** The need keys a holdings history draws from. */
+const HELD_KEYS = ["k0", "k1", "k2", "k3"] as const
+
+/** One step of a holdings history: a property readied with its needs' keys, or a property retired. */
+export type HoldingStep =
+	| Readonly<{ kind: "readied"; property: string; keys: ReadonlyArray<string> }>
+	| Readonly<{ kind: "retired"; property: string }>
+
+/**
+ * Histories of up to six properties on one process: each readied once with one to three of four need keys, some
+ * retired later, in a drawn order.
+ */
+export const holdingHistories: Gen<ReadonlyArray<HoldingStep>> = (source) => {
+	const count = source.draw(int(1, 6))
+	const keysOf = Array.from({ length: count }, () =>
+		Arr.dedupe(
+			Array.from({ length: source.draw(int(1, 3)) }, () => source.draw(element(HELD_KEYS)))
+		)
+	)
+	const steps: Array<HoldingStep> = []
+	const unreadied = Array.from({ length: count }, (_, at) => at)
+	const live: Array<number> = []
+	while (unreadied.length > 0 || live.length > 0) {
+		const readying = unreadied.length > 0 && (live.length === 0 || source.draw(int(0, 1)) === 0)
+		if (readying) {
+			const [at] = unreadied.splice(source.draw(int(0, unreadied.length - 1)), 1)
+			if (at !== undefined) {
+				steps.push({ kind: "readied", property: `p${at}`, keys: keysOf[at] ?? [] })
+				live.push(at)
+			}
+			continue
+		}
+		const [at] = live.splice(source.draw(int(0, live.length - 1)), 1)
+		if (at !== undefined && source.draw(int(0, 3)) > 0) {
+			steps.push({ kind: "retired", property: `p${at}` })
+		}
+	}
+	return steps
+}
+
+/**
+ * The keys a retirement at `at` of a history releases, recounted from the history: the retired property's keys that no
+ * property readied before it and not retired before it uses.
+ */
+export const releasedAt = (
+	history: ReadonlyArray<HoldingStep>,
+	at: number
+): ReadonlyArray<string> => {
+	const step = history[at]
+	if (step?.kind !== "retired") {
+		return []
+	}
+	const before = Arr.take(history, at)
+	const keysOf = (named: string) =>
+		Arr.flatMap(before, (earlier) =>
+			earlier.kind === "readied" && earlier.property === named ? earlier.keys : []
+		)
+	const retired = new Set(
+		Arr.flatMap(before, (earlier) => (earlier.kind === "retired" ? [earlier.property] : []))
+	)
+	const live = Arr.flatMap(before, (earlier) =>
+		earlier.kind === "readied" &&
+		earlier.property !== step.property &&
+		!retired.has(earlier.property)
+			? [earlier.property]
+			: []
+	)
+	return Arr.filter(
+		keysOf(step.property),
+		(key) => !Arr.some(live, (other) => Arr.contains(keysOf(other), key))
+	)
+}
+
+/** What a released need counted: its opens and the releases of what each open acquired. */
+type HeldCounts = { opens: number; releases: number }
+
+/** A need of key `key` whose open acquires one resource in the need's scope, counted in `counts`. */
+const countedNeed = (key: string, counts: HeldCounts): Need<number> => ({
+	key,
+	open: Effect.map(
+		Effect.acquireRelease(
+			Effect.sync(() => {
+				counts.opens += 1
+				return counts.opens
+			}),
+			() =>
+				Effect.sync(() => {
+					counts.releases += 1
+				})
+		),
+		(opened) => Effect.succeed(opened)
+	)
+})
+
+/**
+ * A need cache of this process, as a worker of one keeps it, its needs opening in `scope` (a case's) with the platform,
+ * worker 0 of 1 and this package's module closures.
+ */
+const processNeedCache = Effect.gen(function* () {
+	const scope = yield* Scope.Scope
+	const platform = yield* Effect.context<NodeServices>()
+	const closures = yield* moduleClosureAt(process.cwd())
+	const context = Context.add(
+		Context.add(
+			Context.add(platform, WorkerIndex, { index: 0, workers: 1 }),
+			ModuleClosure,
+			closures
+		),
+		Scope.Scope,
+		scope
+	)
+	return needCacheOf(Effect.succeed(context))
+})
+
+/** An open, released and opened again need's counts after each release, from `cycles` cycles. */
+export const cycledReleases = (cycles: number, kept: number) =>
+	Effect.gen(function* () {
+		const cache = yield* processNeedCache
+		const cycled: HeldCounts = { opens: 0, releases: 0 }
+		const others: HeldCounts = { opens: 0, releases: 0 }
+		const keptNeeds = Array.from({ length: kept }, (_, at) => countedNeed(`kept${at}`, others))
+		for (const need of keptNeeds) {
+			yield* Effect.ignore(cache.opened(need, runnerLimits.open))
+		}
+		const after: Array<Readonly<{ opens: number; releases: number; others: number }>> = []
+		for (let cycle = 0; cycle < cycles; cycle += 1) {
+			yield* Effect.ignore(cache.opened(countedNeed("cycled", cycled), runnerLimits.open))
+			yield* cache.release(["cycled"])
+			after.push({ opens: cycled.opens, releases: cycled.releases, others: others.releases })
+		}
+		return { after, kept: Option.some(others.opens) }
+	})

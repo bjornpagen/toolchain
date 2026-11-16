@@ -316,15 +316,19 @@ export type Verdict =
 	| Readonly<{ kind: "replayed"; printed: Printed }>
 	| Readonly<{ kind: "failed"; finding: Finding }>
 
-/** A message from the parent to a worker: evaluate these units, each a batch under its id; give back these
- * unstarted units; or the closure hash of a module it asked for (runner/closure-requests.ts). */
+/**
+ * A message from the parent to a worker: evaluate these units, each a batch under its id; give back these unstarted
+ * units; the closure hash of a module it asked for (runner/closure-requests.ts); or a property retired, its search
+ * ended, so no unit of it comes after the ones already sent.
+ */
 export const ToWorker = Schema.Union([
 	Schema.Struct({
 		kind: Schema.Literal("evaluate"),
 		units: Schema.NonEmptyArray(Schema.Struct({ unit: Schema.Finite, batch: Batch }))
 	}),
 	Schema.Struct({ kind: Schema.Literal("revoke"), units: Schema.Array(Schema.Finite) }),
-	Schema.Struct({ kind: Schema.Literal("closure"), module: Schema.String, answer: ClosureAnswer })
+	Schema.Struct({ kind: Schema.Literal("closure"), module: Schema.String, answer: ClosureAnswer }),
+	Schema.Struct({ kind: Schema.Literal("retire"), property: Schema.String })
 ])
 
 export type ToWorker = typeof ToWorker.Type

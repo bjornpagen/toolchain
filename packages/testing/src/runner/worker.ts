@@ -11,9 +11,11 @@ import {
 	Scope
 } from "effect"
 import {
+	holdingsOf,
 	LateUses,
 	NeedCache,
 	needCacheOf,
+	needKeysOf,
 	type Readied,
 	readiedOf,
 	resultsOf,
@@ -36,7 +38,8 @@ import { startProcessCoverage } from "#sense.ts"
  * parent of: its module is imported (once, and it stays loaded) and its needs are opened within the open bound its
  * orders carry (each once per key, staying open in the worker's scope until the parent disconnects), before any case
  * of it starts and outside every case's deadline. A property that could not be readied (its module did not load, a
- * need did not open) gives every case of it here that one outcome. When its run guides a search by blocks, it starts
+ * need did not open) gives every case of it here that one outcome. When the parent retires a property (its search
+ * ended), after the units of it sent before, the needs no other property readied here uses are released. When its run guides a search by blocks, it starts
  * V8's precise coverage before it loads any module.
  *
  *   node runner/worker.ts <package root> <index> <workers> <notes | blocks>
@@ -44,6 +47,12 @@ import { startProcessCoverage } from "#sense.ts"
 
 /** One unit the parent sent: its id, and the batch it evaluates. */
 type Unit = Readonly<{ unit: number; batch: Batch }>
+
+/**
+ * What the worker does next, in the order the parent sent it: evaluate a unit, or retire a property whose search ended
+ * (after every unit of it sent before), releasing the needs no other property readied here still uses.
+ */
+type Work = Readonly<{ kind: "unit"; unit: Unit }> | Readonly<{ kind: "retire"; property: string }>
 
 /** What the worker was forked with, from its arguments. */
 const Arguments = Schema.Tuple([
@@ -89,7 +98,8 @@ const main = Effect.gen(function* () {
 	const cache = needCacheOf(services)
 	const stopped = stoppedOf()
 	const perception = yield* perceptionOf
-	const pending: Array<Unit> = []
+	const pending: Array<Work> = []
+	const holdings = holdingsOf()
 	const work = Latch.makeUnsafe(false)
 	const inbox = yield* Queue.unbounded<unknown>()
 	process.on("message", (message: unknown) => {
@@ -111,23 +121,36 @@ const main = Effect.gen(function* () {
 			switch (order.kind) {
 				case "evaluate":
 					for (const unit of order.units) {
-						pending.push(unit)
+						pending.push({ kind: "unit", unit })
 					}
 					work.openUnsafe()
 					break
 				case "revoke": {
 					const revoked = new Set(order.units)
-					const given = Arr.filter(pending, (unit) => revoked.has(unit.unit))
-					const kept = Arr.filter(pending, (unit) => !revoked.has(unit.unit))
+					const given = Arr.filter(
+						pending,
+						(next) => next.kind === "unit" && revoked.has(next.unit.unit)
+					)
+					const kept = Arr.filter(
+						pending,
+						(next) => next.kind !== "unit" || !revoked.has(next.unit.unit)
+					)
 					pending.length = 0
-					for (const unit of kept) {
-						pending.push(unit)
+					for (const next of kept) {
+						pending.push(next)
 					}
-					yield* send({ kind: "revoked", units: Arr.map(given, (unit) => unit.unit) })
+					yield* send({
+						kind: "revoked",
+						units: Arr.flatMap(given, (next) => (next.kind === "unit" ? [next.unit.unit] : []))
+					})
 					break
 				}
 				case "closure":
 					yield* closures.answered(order.module, order.answer)
+					break
+				case "retire":
+					pending.push({ kind: "retire", property: order.property })
+					work.openUnsafe()
 					break
 			}
 		}
@@ -135,14 +158,26 @@ const main = Effect.gen(function* () {
 
 	const readied = new Map<string, Readied>()
 
-	/** A property readied here, its module imported and its needs opened within `bound`, before any case of it. */
+	/**
+	 * A property readied here, its module imported and its needs opened within `bound`, before any case of it; its needs'
+	 * keys are held for it until it retires.
+	 */
 	const ready = (label: string, bound: number): Effect.Effect<Readied> =>
 		Effect.matchEffect(propertyAt(root, runOfLabel(label).id), {
 			onFailure: (failed) =>
 				Effect.succeed<Readied>({ kind: "refused", result: lostResult(failed.message) }),
-			onSuccess: (property) =>
-				readiedOf(property.ready, bound).pipe(Effect.provideService(NeedCache, cache))
+			onSuccess: (property) => {
+				holdings.readied(label, needKeysOf(property.needs))
+				return readiedOf(property.ready, bound).pipe(Effect.provideService(NeedCache, cache))
+			}
 		}).pipe(Effect.provideContext(platform))
+
+	/** Retires a property: no unit of it comes again, so the needs only it held here are released. */
+	const retire = (label: string) =>
+		Effect.suspend(() => {
+			readied.delete(label)
+			return cache.release(holdings.retired(label))
+		})
 
 	/**
 	 * The unit's property as this worker readied it, readying it first when it is new here: the parent is told when
@@ -193,7 +228,14 @@ const main = Effect.gen(function* () {
 				continue
 			}
 			yield* stopped.drained
-			yield* evaluate(next)
+			switch (next.kind) {
+				case "unit":
+					yield* evaluate(next.unit)
+					break
+				case "retire":
+					yield* retire(next.property)
+					break
+			}
 		}
 	})
 

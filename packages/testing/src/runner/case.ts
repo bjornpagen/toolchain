@@ -12,7 +12,7 @@ import {
 	Option,
 	Record as Rec,
 	Result,
-	type Scope,
+	Scope,
 	Struct
 } from "effect"
 import { failureText } from "#failure.ts"
@@ -59,20 +59,26 @@ type Taker<A> = Effect.Effect<A, NeedFailed, Scope.Scope>
 /** The cache a process keeps its opened needs in: what a need's `open` gave, by the need's key. */
 type NeedSlot<A> = Deferred.Deferred<Taker<A>, NeedFailed>
 
+/** The identifier of the slot a need's opening is kept under, by its key. */
+const slotIdOf = (key: string) => `@bjornpagen/testing/runner/case/need/${key}`
+
 /** The slot a need's opening is kept under in a process's cache: one per key, so needs of one key share it. */
-const needSlotOf = <A>(need: Need<A>) =>
-	Context.Service<NeedSlot<A>>(`@bjornpagen/testing/runner/case/need/${need.key}`)
+const needSlotOf = <A>(need: Need<A>) => Context.Service<NeedSlot<A>>(slotIdOf(need.key))
 
 /**
  * The needs an evaluating process has opened. `opened` opens a need the first time the process asks for it (needs of
- * one key share it), in the process's own scope and services and on a fiber of its own, within `bound` milliseconds on
- * the live clock; every later ask gets what that open gave: the need's taker, or the NeedFailed it failed with (its
- * open past the bound among them), which no later ask retries. What a need keeps warm stays warm across cases and
- * properties.
+ * one key share it), in a scope of its own under the process's and with the process's services, on a fiber of its own,
+ * within `bound` milliseconds on the live clock; every later ask gets what that open gave: the need's taker, or the
+ * NeedFailed it failed with (its open past the bound among them), which no later ask retries. What a need keeps warm
+ * stays warm across cases and properties until `release` closes its scope (what it holds: clones, sessions, lease
+ * permits, released) and forgets it, so a later ask opens it again.
  */
 export class NeedCache extends Context.Service<
 	NeedCache,
-	Readonly<{ opened: <A>(need: Need<A>, bound: number) => Effect.Effect<Taker<A>, NeedFailed> }>
+	Readonly<{
+		opened: <A>(need: Need<A>, bound: number) => Effect.Effect<Taker<A>, NeedFailed>
+		release: (keys: ReadonlyArray<string>) => Effect.Effect<void>
+	}>
 >()("@bjornpagen/testing/runner/case/NeedCache") {}
 
 /**
@@ -84,6 +90,7 @@ export const needCacheOf = (
 	services: Effect.Effect<Context.Context<NeedContext>, RunnerServicesFailed>
 ): Context.Service.Shape<typeof NeedCache> => {
 	let slots: Context.Context<never> = Context.empty()
+	const scopes = new Map<string, Scope.Closeable>()
 	return {
 		opened: <A>(need: Need<A>, bound: number) =>
 			Effect.suspend(() =>
@@ -97,7 +104,14 @@ export const needCacheOf = (
 								Effect.mapError(services, (failed) =>
 									NeedFailed.make({ need: need.key, message: failed.message })
 								),
-								(context) => Effect.provideContext(need.open, context)
+								(context) =>
+									Effect.flatMap(Scope.fork(Context.get(context, Scope.Scope)), (scope) => {
+										scopes.set(need.key, scope)
+										return Effect.provideContext(
+											need.open,
+											Context.add(context, Scope.Scope, scope)
+										)
+									})
 							),
 							Effect.andThen(
 								liveSleep(Duration.millis(bound)),
@@ -115,9 +129,68 @@ export const needCacheOf = (
 						)
 					}
 				})
+			),
+		release: (keys) =>
+			Effect.forEach(
+				keys,
+				(key) =>
+					Effect.suspend(() => {
+						const scope = Option.fromUndefinedOr(scopes.get(key))
+						scopes.delete(key)
+						slots = Context.omit(Context.Service<NeedSlot<unknown>>(slotIdOf(key)))(slots)
+						return Option.match(scope, {
+							onNone: () => Effect.void,
+							onSome: (open) => Scope.close(open, Exit.void)
+						})
+					}),
+				{ discard: true }
 			)
 	}
 }
+
+/**
+ * Which needs a process holds open for which of its properties: a property readied there uses the keys of its needs;
+ * once every property that used a key has retired (its search ended, so no case of it comes again), the key is no
+ * longer used and is released, so a worker holds a held need (a seat's clone and session, a lease's permit) only while
+ * a property that needs it may still run there.
+ */
+export type Holdings = Readonly<{
+	/** A property readied here uses these need keys. */
+	readied: (property: string, keys: ReadonlyArray<string>) => void
+	/** A property retired: the keys no property readied here and not retired uses any more, to release. */
+	retired: (property: string) => ReadonlyArray<string>
+}>
+
+/** A process's holdings, holding nothing. */
+export const holdingsOf = (): Holdings => {
+	const users = new Map<string, Set<string>>()
+	const keysOf = new Map<string, ReadonlyArray<string>>()
+	return {
+		readied: (property, keys) => {
+			keysOf.set(property, keys)
+			for (const key of keys) {
+				users.set(key, (users.get(key) ?? new Set()).add(property))
+			}
+		},
+		retired: (property) => {
+			const keys = keysOf.get(property) ?? []
+			keysOf.delete(property)
+			return Arr.filter(keys, (key) => {
+				const using = users.get(key) ?? new Set<string>()
+				using.delete(property)
+				if (using.size > 0) {
+					return false
+				}
+				users.delete(key)
+				return true
+			})
+		}
+	}
+}
+
+/** The keys of a property's needs, each once. */
+export const needKeysOf = (needs: Needs): ReadonlyArray<string> =>
+	Arr.dedupe(Arr.map(Rec.values(needs), (need) => need.key))
 
 /**
  * What an evaluating process provides every case of a property it readied: its opened needs, its perception and the
