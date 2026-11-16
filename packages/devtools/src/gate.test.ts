@@ -14,6 +14,7 @@
  */
 import { deepStrictEqual } from "@bjornpagen/testing/assert"
 import { Checkout } from "@bjornpagen/testing/checkout"
+import { finite } from "@bjornpagen/testing/gen"
 import { property } from "@bjornpagen/testing/property"
 import { Scratch } from "@bjornpagen/testing/resources"
 import { Array as Arr, Effect, Order } from "effect"
@@ -47,7 +48,8 @@ import {
 	versionFilesOf
 } from "#gate.fixtures.ts"
 
-export const sharedSnapshot = property.explore(sharings, {
+export const sharedSnapshot = property.exhaust(finite(sharings), {
+	box: "every way three runs fall among up to three clones of one repository, each leaving a stamp",
 	needs: { dir: Scratch.dir, checkout: Checkout.dir },
 	situations: [
 		"a second clone's first run finds what a first run left under .gitignore",
@@ -94,7 +96,8 @@ export const sharedSnapshot = property.explore(sharings, {
 	]
 })
 
-export const checkedCommit = property.explore(checkings, {
+export const checkedCommit = property.exhaust(finite(checkings), {
+	box: "two clones of every shape (a commit of its own or none, uncommitted edits or none), checked by three runs in turn",
 	needs: { dir: Scratch.dir, checkout: Checkout.dir },
 	situations: [
 		"a commit checked after another clone's different commit",
@@ -145,7 +148,8 @@ export const checkedCommit = property.explore(checkings, {
 	]
 })
 
-export const filledSubmodule = property.explore(fillings, {
+export const filledSubmodule = property.exhaust(finite(fillings), {
+	box: "a submodule of two versions recorded at either, and two clones of every committed and checked-out version, run in turn",
 	needs: { dir: Scratch.dir, checkout: Checkout.dir },
 	situations: [
 		"a submodule at the commit the repository recorded",
@@ -190,7 +194,8 @@ export const filledSubmodule = property.explore(fillings, {
 	]
 })
 
-export const collectedSnapshots = property.explore(collectings, {
+export const collectedSnapshots = property.exhaust(finite(collectings), {
+	box: "one key directory of every kind, fate and lock beside the one the run checks",
 	needs: { dir: Scratch.dir, checkout: Checkout.dir },
 	situations: [
 		"a key directory whose clones are all gone is collected",

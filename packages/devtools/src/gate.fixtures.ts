@@ -1,7 +1,7 @@
 import { pid } from "node:process"
 import { deepStrictEqual, fail } from "@bjornpagen/testing/assert"
 import type { CheckoutDir } from "@bjornpagen/testing/checkout"
-import { array, boolean, element, type Gen, int } from "@bjornpagen/testing/gen"
+import { boolean, element, type Gen, int } from "@bjornpagen/testing/gen"
 import {
 	Array as Arr,
 	Effect,
@@ -337,11 +337,6 @@ export const commonDirectory = (clone: string): string => `${clone}/.git`
 /** A clone's objects, which the snapshot borrows while a run checks the clone's commit. */
 export const objectsOf = (clone: string): string => `${clone}/.git/objects`
 
-/** Between one and `max` items of `item`: the first drawn alone, so the array is never empty. */
-const nonEmpty =
-	<A>(item: Gen<A>, max: number): Gen<Arr.NonEmptyReadonlyArray<A>> =>
-	(source) => [source.draw(item), ...source.draw(array(item, { min: 0, max: max - 1 }))]
-
 /** The runs before the one at `index`. */
 const before = <A>(runs: ReadonlyArray<A>, index: number): ReadonlyArray<A> => Arr.take(runs, index)
 
@@ -373,17 +368,22 @@ export type Sharing = Readonly<{
 	runs: Arr.NonEmptyReadonlyArray<Readonly<{ clone: number; stamps: boolean }>>
 }>
 
-/** Up to three clones and up to four runs among them. */
+/**
+ * Every way three runs fall among up to three clones, each clone named by the run that first uses it (the first run
+ * in c0, a new clone the next of c1, c2), each run leaving a stamp: five layouts, the smallest that reach every
+ * situation (a second clone's first run after a first's stamp, a clone again after another, three clones on one
+ * snapshot).
+ */
 export const sharings: Gen<Sharing> = (source) => {
-	const clones = source.draw(int(1, 3))
+	const second = source.draw(int(0, 1))
+	const third = source.draw(int(0, second + 1))
 	return {
-		clones,
-		runs: source.draw(
-			nonEmpty(
-				(inner) => ({ clone: inner.draw(int(0, clones - 1)), stamps: inner.draw(boolean) }),
-				4
-			)
-		)
+		clones: Math.max(second, third) + 1,
+		runs: [
+			{ clone: 0, stamps: true },
+			{ clone: second, stamps: true },
+			{ clone: third, stamps: true }
+		]
 	}
 }
 
@@ -441,24 +441,25 @@ export type Checking = Readonly<{
 	runs: Arr.NonEmptyReadonlyArray<Readonly<{ clone: number; strays: boolean }>>
 }>
 
-/** Up to three clones and up to four runs among them. */
-export const checkings: Gen<Checking> = (source) => {
-	const clones = source.draw(
-		nonEmpty((inner) => ({ ownFile: inner.draw(boolean), edited: inner.draw(boolean) }), 3)
-	)
-	return {
-		clones,
-		runs: source.draw(
-			nonEmpty(
-				(inner) => ({
-					clone: inner.draw(int(0, clones.length - 1)),
-					strays: inner.draw(boolean)
-				}),
-				4
-			)
-		)
-	}
-}
+/** A clone with a commit of its own or none, and edits it has not committed or none. */
+const checkedShapes: Gen<CheckedClone> = (source) => ({
+	ownFile: source.draw(boolean),
+	edited: source.draw(boolean)
+})
+
+/**
+ * Two clones of every shape (sixteen layouts), checked in turn by three runs: the first clone's run leaves a stray
+ * file, then the second clone's run, then the first clone's again, the smallest protocol that reaches every situation
+ * (a commit after another clone's different one, a file the commit before held, uncommitted edits, an earlier stray).
+ */
+export const checkings: Gen<Checking> = (source) => ({
+	clones: [source.draw(checkedShapes), source.draw(checkedShapes)],
+	runs: [
+		{ clone: 0, strays: true },
+		{ clone: 1, strays: false },
+		{ clone: 0, strays: false }
+	]
+})
 
 /** The situations a Checking puts the snapshot in. */
 export type CheckingFeature =
@@ -529,20 +530,23 @@ export type Filling = Readonly<{
 	runs: Arr.NonEmptyReadonlyArray<number>
 }>
 
-/** A submodule of up to three versions, up to two clones and up to three runs among them. */
-export const fillings: Gen<Filling> = (source) => {
-	const versions = source.draw(int(1, 3))
-	const version = int(0, versions - 1)
-	const clones = source.draw(
-		nonEmpty((inner) => ({ committed: inner.draw(version), checkedOut: inner.draw(version) }), 2)
-	)
-	return {
-		versions,
-		recorded: source.draw(version),
-		clones,
-		runs: source.draw(nonEmpty(int(0, clones.length - 1), 3))
-	}
-}
+/** A clone's submodule versions, of the two a Filling's submodule has: the one it commits and the one it checks out. */
+const submoduleShapes: Gen<SubmoduleClone> = (source) => ({
+	committed: source.draw(int(0, 1)),
+	checkedOut: source.draw(int(0, 1))
+})
+
+/**
+ * A submodule of two versions, recorded at either, and two clones of every shape, run in turn: thirty-two layouts, the
+ * smallest that reach every situation (the recorded version, one a clone's own commit moved, one behind the tip, a
+ * working tree checked out at another, a fill at another version by the run before).
+ */
+export const fillings: Gen<Filling> = (source) => ({
+	versions: 2,
+	recorded: source.draw(int(0, 1)),
+	clones: [source.draw(submoduleShapes), source.draw(submoduleShapes)],
+	runs: [0, 1]
+})
 
 /** The situations a Filling puts the snapshot's submodule in. */
 export type FillingFeature =
@@ -626,20 +630,33 @@ export type Entry =
 	| Readonly<{ kind: "repository"; fate: Fate; lock: Lock }>
 	| Readonly<{ kind: "old layout"; held: boolean }>
 
-const fateGen: Gen<Fate> = element(["present", "removed", "re-pointed"] as const)
+const FATES = ["present", "removed", "re-pointed"] as const
 
-const lockGen: Gen<Lock> = (source) => {
-	const kind = source.draw(element(["none", "live", "stale"] as const))
-	return kind === "none"
-		? { kind }
-		: { kind, snapshot: source.draw(element(["commit", "push"] as const)) }
+const fateGen: Gen<Fate> = (source) => Arr.getUnsafe(FATES, source.draw(int(0, FATES.length - 1)))
+
+/** The fates of one or two clones, as a multiset: the second never before the first, so each is drawn once. */
+const fatesGen: Gen<Arr.NonEmptyReadonlyArray<Fate>> = (source) => {
+	const first = source.draw(int(0, FATES.length - 1))
+	return source.draw(boolean)
+		? [Arr.getUnsafe(FATES, first), Arr.getUnsafe(FATES, source.draw(int(first, FATES.length - 1)))]
+		: [Arr.getUnsafe(FATES, first)]
 }
+
+/** No lock, a live one, or a stale one: which snapshot a lock is on decides nothing a run does with it. */
+const lockGen: Gen<Lock> = (source) =>
+	source.draw(
+		element([
+			{ kind: "none" },
+			{ kind: "live", snapshot: "commit" },
+			{ kind: "stale", snapshot: "push" }
+		] as const)
+	)
 
 const entryGen: Gen<Entry> = (source) => {
 	const kind = source.draw(element(["clones", "repository", "old layout"] as const))
 	switch (kind) {
 		case "clones":
-			return { kind, fates: source.draw(nonEmpty(fateGen, 2)), lock: source.draw(lockGen) }
+			return { kind, fates: source.draw(fatesGen), lock: source.draw(lockGen) }
 		case "repository":
 			return { kind, fate: source.draw(fateGen), lock: source.draw(lockGen) }
 		case "old layout":
@@ -647,8 +664,14 @@ const entryGen: Gen<Entry> = (source) => {
 	}
 }
 
-/** Up to three key directories beside the one the run checks. */
-export const collectings: Gen<Arr.NonEmptyReadonlyArray<Entry>> = nonEmpty(entryGen, 3)
+/**
+ * One key directory beside the one the run checks, of every kind: a repository's clones (one or two, each fate) or a
+ * repository with no origin remote, each under no lock, a live one or a stale one; or the old layout, held or not.
+ * Thirty-eight layouts; a run judges each key directory alone, so one a case reaches every situation.
+ */
+export const collectings: Gen<Arr.NonEmptyReadonlyArray<Entry>> = (source) => [
+	source.draw(entryGen)
+]
 
 /** The fates of the clones a key directory lists, or none for one of the old layout, which lists none. */
 const fatesOf = (entry: Entry): ReadonlyArray<Fate> => {
