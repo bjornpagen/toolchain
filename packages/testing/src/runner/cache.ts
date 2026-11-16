@@ -1,13 +1,4 @@
-import {
-	Array as Arr,
-	Brand,
-	Effect,
-	FileSystem,
-	Option,
-	Order,
-	Schema,
-	String as Str
-} from "effect"
+import { Array as Arr, Brand, Effect, FileSystem, Order, Schema, String as Str } from "effect"
 import { Digest } from "effect/crypto"
 import type { PropertyId } from "#property.ts"
 import type { ClosureHash } from "#runner/closure-hash.ts"
@@ -17,17 +8,19 @@ import type { ContentHash } from "#runner/closure.ts"
  * The verdict cache: which properties passed, keyed by everything their verdict depends on, so a pass is a known answer
  * for as long as its key stands and is never recomputed. A key is a property's identity, the closure hash of its module
  * (closure.ts), how the run seeded its cases, and its kills, each with the bytes of the file it mutates. Only passes are
- * stored, as files named by the hash of their key: a failure writes nothing, so a failure is never read as a pass.
+ * stored, as files named by the hash of their key: a failure removes the pass its own key held and writes nothing, so a
+ * failure is never read as a pass.
  *
- * A property keeps one record at most: its newest verdict's. Every write collects its property's other records, so a
- * pass leaves its own record alone and a failure leaves none; what goes is decided by the key a verdict was recorded
- * under, never by an age.
+ * Records are content-addressed and immutable: every pass is kept under its own key, so lanes that push different
+ * trees one after another each find the passes of the trees before theirs, and no write removes another key's record.
+ * Nothing is collected by age or by property: a record is a few hundred bytes, and one whose closure no live tree can
+ * produce any more is the only kind a collection may remove. A record is safe to delete at any time; its property runs
+ * again.
  *
- * Layout: `<directory>/<SHA-256 of the property id>/<SHA-256 of the key>.json`, each file the key itself as JSON, so a
- * property's records are one directory. A write goes to a temporary file in that directory and is renamed into place, so
- * a reader sees a whole record or none, and takes no lock: a record a concurrent writer's collection removes costs its
- * property one run, never a pass it did not earn. A record whose text is not its key's is refused (VerdictCorrupt),
- * never read as a pass.
+ * Layout: `<directory>/<SHA-256 of the property id>/<SHA-256 of the key>.json`, each file the key itself as JSON. A write
+ * goes to a temporary file in its directory and is renamed into place, so a reader sees a whole record or none, and
+ * writers of distinct keys touch distinct files and take no lock. A record whose text is not its key's is refused
+ * (VerdictCorrupt), never read as a pass.
  */
 
 /**
@@ -159,30 +152,21 @@ export const verdictCacheAt = (
 			record: (key, verdict) =>
 				Effect.gen(function* () {
 					const { shard, file, record } = yield* placed(key)
-					if (verdict === "passed") {
-						yield* Effect.mapError(fs.makeDirectory(shard, { recursive: true }), unusable(shard))
-						const temporary = yield* Effect.mapError(
-							fs.makeTempFile({ directory: shard, prefix: ".verdict-" }),
-							unusable(shard)
-						)
-						yield* Effect.mapError(fs.writeFileString(temporary, record), unusable(temporary))
-						yield* Effect.mapError(fs.rename(temporary, file), unusable(file))
+					switch (verdict) {
+						case "passed": {
+							yield* Effect.mapError(fs.makeDirectory(shard, { recursive: true }), unusable(shard))
+							const temporary = yield* Effect.mapError(
+								fs.makeTempFile({ directory: shard, prefix: ".verdict-" }),
+								unusable(shard)
+							)
+							yield* Effect.mapError(fs.writeFileString(temporary, record), unusable(temporary))
+							yield* Effect.mapError(fs.rename(temporary, file), unusable(file))
+							return
+						}
+						case "failed":
+							yield* Effect.mapError(fs.remove(file, { force: true }), unusable(file))
+							return
 					}
-					const kept =
-						verdict === "passed" ? Option.some(Str.slice(shard.length + 1)(file)) : Option.none()
-					const names = yield* fs.readDirectory(shard).pipe(
-						Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed([])),
-						Effect.mapError(unusable(shard))
-					)
-					yield* Effect.forEach(
-						Arr.filter(
-							names,
-							(name) => Str.endsWith(".json")(name) && !Option.contains(kept, name)
-						),
-						(name) =>
-							Effect.mapError(fs.remove(`${shard}/${name}`, { force: true }), unusable(shard)),
-						{ discard: true }
-					)
 				})
 		}
 	})

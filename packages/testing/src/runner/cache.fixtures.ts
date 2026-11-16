@@ -115,7 +115,7 @@ const programs: Gen<Program> = array(
 					{ min: 1, max: 4 }
 				)
 			),
-			(left, right) => left.key.property === right.key.property
+			(left, right) => identityOf(left.key) === identityOf(right.key)
 		),
 	{ min: 1, max: 6 }
 )
@@ -177,11 +177,11 @@ const keyOf = (hashes: Hashes, key: KeyModel): VerdictKey => ({
 })
 
 /**
- * What one key's record holds in the model: nothing (never passed, cleared by a failure under its own key, or collected
- * by a newer verdict of its property), a pass (and the kill order it was passed with), or a foreign text.
+ * What one key's record holds in the model: nothing (never passed, or cleared by a failure under its own key), a pass
+ * (and the kill order it was passed with), or a foreign text.
  */
 export type Held =
-	| Readonly<{ kind: "absent"; why: "never" | "cleared" | "collected" }>
+	| Readonly<{ kind: "absent"; why: "never" | "cleared" }>
 	| Readonly<{ kind: "passed"; listed: string }>
 	| Readonly<{ kind: "corrupt" }>
 
@@ -276,7 +276,7 @@ export type CacheSituation =
 	| "a pass read back"
 	| "a key never passed read as none"
 	| "a key read as none after a failure cleared its pass"
-	| "a pass collected by a newer verdict of its property read as none"
+	| "a pass read beside another pass of its property"
 	| "a corrupt record refused"
 	| "kills in another order answering as one key"
 	| "a key whose property alone differs from a pass read as none"
@@ -315,22 +315,9 @@ const LONE_FIELD_SITUATIONS: Readonly<Record<KeyField, CacheSituation>> = {
 }
 
 /** What a read of an absent key reaches, by why it is absent. */
-const ABSENT_SITUATIONS: Readonly<Record<"never" | "cleared" | "collected", CacheSituation>> = {
+const ABSENT_SITUATIONS: Readonly<Record<"never" | "cleared", CacheSituation>> = {
 	never: "a key never passed read as none",
-	cleared: "a key read as none after a failure cleared its pass",
-	collected: "a pass collected by a newer verdict of its property read as none"
-}
-
-/** A write's collection in the model: every record its property holds under another key goes. */
-const collect = (
-	ledger: Map<string, Readonly<{ key: KeyModel; held: Held }>>,
-	key: KeyModel
-): void => {
-	for (const [identity, entry] of ledger) {
-		if (entry.key.property === key.property && entry.held.kind !== "absent") {
-			ledger.set(identity, { key: entry.key, held: { kind: "absent", why: "collected" } })
-		}
-	}
+	cleared: "a key read as none after a failure cleared its pass"
 }
 
 /** What the model holds: each key's identity, the key last recorded under it, and what is held. */
@@ -377,17 +364,26 @@ export const roundOf = (
 								? "a pass read back"
 								: "kills in another order answering as one key"
 						)
+						if (
+							Arr.some(
+								Arr.fromIterable(held.entries()),
+								([other, entry]) =>
+									other !== identity &&
+									entry.key.property === key.property &&
+									entry.held.kind === "passed"
+							)
+						) {
+							situations.add("a pass read beside another pass of its property")
+						}
 						return Option.some("passed")
 					case "corrupt":
 						situations.add("a corrupt record refused")
 						return Option.some("corrupt")
 				}
 			case "pass":
-				collect(after, key)
 				after.set(identity, { key, held: { kind: "passed", listed: listedOf(key) } })
 				return Option.none()
 			case "fail":
-				collect(after, key)
 				after.set(identity, {
 					key,
 					held: { kind: "absent", why: state.kind === "passed" ? "cleared" : "never" }
@@ -472,12 +468,12 @@ const clearedPrograms: Gen<Program> = (source) => {
 }
 
 /** A program that passes a key, then another key of its property, and reads the first, before rounds of its own. */
-const collectedPrograms: Gen<Program> = (source) => {
+const keptPrograms: Gen<Program> = (source) => {
 	const key = source.draw(keys)
 	const newer: KeyModel = { ...key, closure: 1 - key.closure }
 	return [
 		[{ key, action: "pass" }],
-		[{ key: newer, action: source.draw(element(["pass", "fail"])) }],
+		[{ key: newer, action: "pass" }],
 		[{ key, action: "read" }],
 		...source.draw(programs)
 	]
@@ -493,8 +489,8 @@ const thenRead =
 
 /**
  * Programs, aimed at what a read meets after one write of its key's property: a pass under the same key, a corrupt
- * record, a pass under a key one seed policy away, kills listed in another order, a failure after a pass, and a pass a
- * newer verdict of its property collected.
+ * record, a pass under a key one seed policy away, kills listed in another order, a failure after a pass, and a pass
+ * read after a newer pass of its property.
  */
 export const aimedPrograms = aimed<Program, CacheSituation>(programs, [
 	["a pass read back", thenRead("pass", (key) => key)],
@@ -505,5 +501,5 @@ export const aimedPrograms = aimed<Program, CacheSituation>(programs, [
 	],
 	["kills in another order answering as one key", reorderedPrograms],
 	["a key read as none after a failure cleared its pass", clearedPrograms],
-	["a pass collected by a newer verdict of its property read as none", collectedPrograms]
+	["a pass read beside another pass of its property", keptPrograms]
 ])

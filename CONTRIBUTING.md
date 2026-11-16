@@ -154,12 +154,13 @@ absolute common git directory. Every clone of one repository (grizzle's lanes cl
 `~/.cache/grizzle-release/<LANE>/`) shares one commit snapshot and one push snapshot and takes turns under the lock, so
 a clone's first run is warm: the install and the typecheck's build info are already there.
 
-| Path under `<key>/`        | What it is                                                                       |
-| -------------------------- | -------------------------------------------------------------------------------- |
-| `clones`                   | The common git directories of the clones that ran here, one a line.              |
-| `commit`, `push`           | The snapshots' checkouts; `commit.git` and `push.git` are their git directories. |
-| `commit.lock`, `push.lock` | A directory holding a pid file while a run uses the snapshot.                    |
-| `push.full`                | Stamped when the daily `check:full` passed.                                      |
+| Path under `<key>/`        | What it is                                                                                                                 |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `clones`                   | The common git directories of the clones that ran here, one a line.                                                        |
+| `commit`, `push`           | The snapshots' checkouts; `commit.git` and `push.git` are their git directories.                                           |
+| `commit.lock`, `push.lock` | A directory holding a pid file while a run uses the snapshot.                                                              |
+| `push.full`                | Stamped when the daily `check:full` passed.                                                                                |
+| `push.passed/<tree>`       | Stamped when every check of the push gate passed on that tree: a push sending it again waits for no lock and runs nothing. |
 
 A snapshot's git directory borrows objects (alternates) from one repository. Each run rewrites the alternates to the
 objects of the clone whose commit it checks, under the lock and before `read-tree`: that clone is the only one certain
@@ -194,8 +195,8 @@ unit. A specifier that resolves to nothing, an undeclared package or a key the l
 
 What a property reads without importing it, a fixture file read at run time or code a child process runs, is outside
 its closure: the full run per production version, `toolchain-test run`, covers it. It reads no cached pass: every
-property named runs, then the kills of each whose search passed, and every verdict is recorded, so a property whose
-kills did not all turn red fails the run and is never a cached pass.
+property named runs, then the kills of each whose search passed (save those whose verdict the cache holds), and every
+verdict is recorded, so a property whose kills did not all turn red fails the run and is never a cached pass.
 
 Verdicts live per repository, shared by every clone and the gate's snapshots (the push snapshot carries the
 repository's origin URL so it names the repository as the clones do):
@@ -204,10 +205,15 @@ repository's origin URL so it names the repository as the clones do):
 | -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `${XDG_CACHE_HOME:-~/.cache}/toolchain-test/<key>/verdicts/<property>/<key hash>.json` | One pass: `<property>` is the SHA-256 of the property id, `<key hash>` that of the key, and the file holds the key itself. A record whose text is not its key is refused and its property runs. `<key>` is the gate's key. |
 
-A property keeps one record at most, its newest verdict's: every write collects the property's other records, so a
-pass keeps only its own and a failure keeps none. What goes is decided by the key, never by an age. Writes go to a
-temporary file beside the record and are renamed into place, so no lock is needed; a record a concurrent writer's
-collection removes costs its property one run. A record is safe to delete at any time.
+Records are content-addressed and immutable: every pass stays under its own key, so lanes that push different trees one
+after another find each other's passes, and a failure removes only the pass under its own key. Nothing is collected by
+age or by property; a record whose closure no live tree can produce is the only kind a collection may remove. Writes go
+to a temporary file beside the record and are renamed into place, so no lock is needed. A record is safe to delete at any
+time.
+
+A kill's verdict is a record of the same cache: its key is the property's joint closure, the kill with the content hash
+of the file it mutates, and the kill gate's seed policy. A kill that turned its property red is a known answer that
+`run`, `affected` and `kills` do not judge again; a changed property, kill or file makes its key new.
 
 ### Properties that need a database
 

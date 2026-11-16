@@ -20,6 +20,7 @@ import { realPathOf } from "#mutate/mutated.ts"
 import { type Choice, type MutantJudged, mutationOf } from "#mutate/operators.ts"
 import type { Subject } from "#mutate/schedule.ts"
 import { treesOf } from "#mutate/tree.ts"
+import { killVerdictsAt } from "#runner/affected.ts"
 import { runnerLimits } from "#runner/limits.ts"
 import type { Discovered } from "#runner/load.ts"
 import { loadPackage } from "#runner/run.ts"
@@ -95,8 +96,10 @@ const failingLine = (judged: Judged): ReadonlyArray<string> => {
 
 /**
  * `kills [paths | ids]`: every kill of every property named, each applied in the checkout and the property's
- * witnesses run on workers leased for that kill alone (mutate/kills.ts), every kill at once over the pool. One line
- * per property with kills, each failing kill under it, and a summary; 1 when any kill survives or is stale.
+ * witnesses run on workers leased for that kill alone (mutate/kills.ts), every kill at once over the pool, but a kill
+ * the verdict cache answers (runner/affected.ts: it turned its property red under the same closure, kill and file
+ * content) is not run again, and each judged kill's verdict is recorded. One line per property with kills, each
+ * failing kill under it, each cached kill, and a summary; 1 when any kill survives or is stale.
  */
 export const killsCommand = (root: string, selected: ReadonlyArray<string>) =>
 	Effect.scoped(
@@ -105,9 +108,11 @@ export const killsCommand = (root: string, selected: ReadonlyArray<string>) =>
 			const checkout = yield* checkoutOf(root)
 			const packageRoot = yield* realPathOf(root)
 			const { discovered } = yield* loadPackage(root, selected)
-			const subjects = Arr.filter(subjectsOf(discovered), (subject) =>
-				Arr.isReadonlyArrayNonEmpty(subject.property.kills)
+			const verdicts = yield* killVerdictsAt(root, selected)
+			const { fresh, cached } = yield* verdicts.split(
+				Arr.filter(discovered, (found) => Arr.isReadonlyArrayNonEmpty(found.property.kills))
 			)
+			const subjects = subjectsOf(fresh)
 			const pool = mutatorPool(checkout, packageRoot)
 			const trees = yield* treesOf(checkout)
 			const images = yield* imagesOf(checkout, trees)
@@ -118,6 +123,7 @@ export const killsCommand = (root: string, selected: ReadonlyArray<string>) =>
 				images,
 				subjects
 			)
+			yield* verdicts.record(judged)
 			const ended = yield* liveMillis
 			const byProperty = Arr.map(subjects, (subject): readonly [Subject, ReadonlyArray<Judged>] => [
 				subject,
@@ -132,8 +138,12 @@ export const killsCommand = (root: string, selected: ReadonlyArray<string>) =>
 							`${subject.id}: ${String(Arr.filter(its, (one) => one.verdict.kind === "killed").length)} of ${String(its.length)} kills killed`,
 							...Arr.flatMap(its, failingLine)
 						]),
+						...Arr.map(
+							cached,
+							(one) => `${one.property}: killed (a cached verdict): ${one.kill.why}`
+						),
 						"",
-						`${String(judged.length)} kills of ${String(subjects.length)} properties: ${String(count("killed"))} killed, ${String(count("survived"))} survived, ${String(count("stale"))} stale, in ${String(Math.round(ended - began))} ms on ${String(pool.width)} workers`
+						`${String(judged.length)} kills of ${String(subjects.length)} properties: ${String(count("killed"))} killed, ${String(count("survived"))} survived, ${String(count("stale"))} stale, in ${String(Math.round(ended - began))} ms on ${String(pool.width)} workers; ${String(cached.length)} kills a cached verdict answered`
 					],
 					"\n"
 				)

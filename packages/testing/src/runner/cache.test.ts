@@ -19,8 +19,8 @@ import {
 import { repositoryKeyOf } from "#runner/cache.ts"
 
 /**
- * The verdict cache answers a key with a pass exactly when a pass was last recorded under it: a failure removes the
- * pass, a key one field away (its property, closure, seed policy or kills) is another key, kills listed in another
+ * The verdict cache answers a key with a pass exactly when a pass was last recorded under it, every key's record kept
+ * beside the others of its property: a failure removes the pass under its own key alone, a key one field away (its property, closure, seed policy or kills) is another key, kills listed in another
  * order are the same key, a record whose text is not its key is refused rather than read as a pass, and passes of
  * distinct keys written at once all land. Oracle: a map from each key's identity to what was last recorded under it.
  */
@@ -30,7 +30,7 @@ export const verdictsAreWhatWasLastRecorded = property.explore(aimedPrograms, {
 		"a pass read back",
 		"a key never passed read as none",
 		"a key read as none after a failure cleared its pass",
-		"a pass collected by a newer verdict of its property read as none",
+		"a pass read beside another pass of its property",
 		"a corrupt record refused",
 		"kills in another order answering as one key",
 		"a key whose property alone differs from a pass read as none",
@@ -80,16 +80,9 @@ export const verdictsAreWhatWasLastRecorded = property.explore(aimedPrograms, {
 		},
 		{
 			file: "packages/testing/src/runner/cache.ts",
-			original:
-				'verdict === "passed" ? Option.some(Str.slice(shard.length + 1)(file)) : Option.none()',
-			replacement: "Option.some(Str.slice(shard.length + 1)(file))",
+			original: "yield* Effect.mapError(fs.remove(file, { force: true }), unusable(file))",
+			replacement: "yield* Effect.void",
 			why: "a failure that leaves the pass its key held: the failure is read as a pass"
-		},
-		{
-			file: "packages/testing/src/runner/cache.ts",
-			original: "!Option.contains(kept, name)",
-			replacement: "false",
-			why: "a write that collects nothing: a pass its property's newer verdict replaced is still read as a pass"
 		},
 		{
 			file: "packages/testing/src/runner/cache.ts",

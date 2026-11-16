@@ -22,12 +22,13 @@ import { type Judged, killsOf } from "#mutate/kills.ts"
 import { mutatorPool } from "#mutate/lease.ts"
 import { realPathOf } from "#mutate/mutated.ts"
 import { treesOf } from "#mutate/tree.ts"
-import type { Kill, PropertyId } from "#property.ts"
+import { type Kill, Property, type PropertyId } from "#property.ts"
 import {
 	type KillContent,
 	repositoryKeyOf,
 	SeedPolicy,
 	type VerdictCache,
+	type VerdictCacheUnusable,
 	type VerdictKey,
 	verdictCacheAt
 } from "#runner/cache.ts"
@@ -74,6 +75,15 @@ import { loadPackage, type RunOutcome, runPackage, WORKER_ENTRY } from "#runner/
  */
 const RUN_SEEDS = SeedPolicy(
 	"full reach: floor and steered phases seeded by the property's identity, the rotating stream by the run's seed"
+)
+
+/**
+ * The seed policy of a cached kill verdict: the property's witnesses (kept tokens, floor and steered phase, fixed by
+ * its identity) under the kill's mutant, as the kill gate runs them. A kill that turned them red is a known answer for
+ * as long as the property's closure, the kill and its file's content stand.
+ */
+const KILL_SEEDS = SeedPolicy(
+	"witnesses under the kill's mutant: kept tokens, floor and steered phase, fixed by the property's identity"
 )
 
 /** The affected command could not run: its usage, the repository or a ref it could not read. */
@@ -159,7 +169,12 @@ const killContentOf = (tree: Files, kill: Kill) =>
 	)
 
 /** One property as the gate weighs it: what it is, its joint closure, and its key (none when a kill's file is gone). */
-type Weighed = Readonly<{ found: Discovered; closure: Closure; key: Option.Option<VerdictKey> }>
+type Weighed = Readonly<{
+	found: Discovered
+	closure: Closure
+	key: Option.Option<VerdictKey>
+	killKeys: ReadonlyArray<readonly [Kill, Option.Option<VerdictKey>]>
+}>
 
 /** A judged kill as the gate reports it. */
 export const killLine = (judged: Judged): string => {
@@ -295,7 +310,18 @@ const weighingOf = (packageRoot: string, repository: string, selected: ReadonlyA
 					seeds: RUN_SEEDS,
 					kills: contents
 				}))
-				return { found, closure, key } satisfies Weighed
+				const killKeys = Arr.zip(
+					found.property.kills,
+					Arr.map(kills, (content) =>
+						Option.map(content, (one): VerdictKey => ({
+							property: found.id,
+							closure: closure.hash,
+							seeds: KILL_SEEDS,
+							kills: [one]
+						}))
+					)
+				)
+				return { found, closure, key, killKeys } satisfies Weighed
 			})
 		)
 		const repositoryKey = yield* repositoryKeyOf(identity).pipe(Effect.provide(hashing))
@@ -305,8 +331,126 @@ const weighingOf = (packageRoot: string, repository: string, selected: ReadonlyA
 		return { repository, packageRoot, cache, weighed } satisfies Weighing
 	})
 
-/** What a run settles to: the kills it judged, and the properties that passed with every kill turning them red. */
-type Settled = Readonly<{ judged: ReadonlyArray<Judged>; passing: ReadonlySet<PropertyId> }>
+/**
+ * What a run settles to: a line for each kill (judged now, or a cached verdict), and the properties that passed with
+ * every kill turning them red.
+ */
+type Settled = Readonly<{ lines: ReadonlyArray<string>; passing: ReadonlySet<PropertyId> }>
+
+/** A kill whose verdict the cache already holds: it turned its property red under the same closure and file. */
+type CachedKill = Readonly<{ property: PropertyId; kill: Kill }>
+
+/**
+ * A package's kill verdicts: `split` sets apart the kills of `subjects` the cache answers (each property's remaining
+ * kills are the ones to judge), and `record` keeps each judged kill's verdict under its key, a kill that turned its
+ * property red as a pass and any other as a failure. With no weighing (no git repository, no lockfile, a closure that
+ * would not hash) nothing is answered and nothing recorded.
+ */
+type KillVerdicts = Readonly<{
+	split: (
+		subjects: ReadonlyArray<Discovered>
+	) => Effect.Effect<
+		Readonly<{ fresh: ReadonlyArray<Discovered>; cached: ReadonlyArray<CachedKill> }>,
+		VerdictCacheUnusable
+	>
+	record: (judged: ReadonlyArray<Judged>) => Effect.Effect<void, VerdictCacheUnusable>
+}>
+
+/** A property whose kills are `kills`: the same search, needs and evaluation, judged against those kills alone. */
+const withKills = (property: Property, kills: ReadonlyArray<Kill>): Property =>
+	new Property({
+		kind: property.kind,
+		needs: property.needs,
+		guide: property.guide,
+		oracle: property.oracle,
+		kills,
+		search: property.search,
+		replay: property.replay,
+		keep: property.keep,
+		ready: property.ready
+	})
+
+/** The kill verdicts of a weighing, or none to keep. */
+const killVerdictsOf = (weighing: Option.Option<Weighing>): KillVerdicts => {
+	const keyOf = (id: PropertyId, kill: Kill): Option.Option<VerdictKey> =>
+		Option.flatMap(weighing, (weighed) =>
+			Option.flatMap(
+				Arr.findFirst(weighed.weighed, (one) => one.found.id === id),
+				(one) =>
+					Option.flatten(
+						Option.map(
+							Arr.findFirst(one.killKeys, ([own]) => own === kill),
+							([, key]) => key
+						)
+					)
+			)
+		)
+	const cache = Option.map(weighing, (weighed) => weighed.cache)
+	const answered = (id: PropertyId, kill: Kill) =>
+		Effect.gen(function* () {
+			const key = keyOf(id, kill)
+			if (Option.isNone(key) || Option.isNone(cache)) {
+				return false
+			}
+			return yield* cache.value
+				.passed(key.value)
+				.pipe(Effect.catchTag("VerdictCorrupt", () => Effect.succeed(false)))
+		})
+	return {
+		split: (subjects) =>
+			Effect.gen(function* () {
+				const fresh: Array<Discovered> = []
+				const cached: Array<CachedKill> = []
+				for (const found of subjects) {
+					const remaining: Array<Kill> = []
+					for (const kill of found.property.kills) {
+						if (yield* answered(found.id, kill)) {
+							cached.push({ property: found.id, kill })
+						} else {
+							remaining.push(kill)
+						}
+					}
+					if (Arr.isReadonlyArrayNonEmpty(remaining)) {
+						fresh.push({ ...found, property: withKills(found.property, remaining) })
+					}
+				}
+				return { fresh, cached }
+			}),
+		record: (judged) =>
+			Effect.forEach(
+				judged,
+				(one) =>
+					Effect.gen(function* () {
+						const key = keyOf(one.property, one.kill)
+						if (Option.isSome(key) && Option.isSome(cache)) {
+							yield* cache.value.record(
+								key.value,
+								one.verdict.kind === "killed" ? "passed" : "failed"
+							)
+						}
+					}),
+				{ discard: true }
+			)
+	}
+}
+
+/** A cached kill as a run reports it. */
+const cachedLine = (cached: CachedKill): string =>
+	`${cached.property}: killed (a cached verdict): ${cached.kill.why}`
+
+/**
+ * The kill verdicts of the package at `root` for the properties `selected` names, for a command that judges kills
+ * itself (`toolchain-test kills`): none when the package has no verdict key.
+ */
+export const killVerdictsAt = (root: string, selected: ReadonlyArray<string>) =>
+	Effect.gen(function* () {
+		const grounds = yield* groundsOf(root)
+		const weighing = yield* Option.match(grounds.repository, {
+			onNone: () => Effect.succeedNone,
+			onSome: (repository) => Effect.option(weighingOf(grounds.packageRoot, repository, selected))
+		})
+		return killVerdictsOf(weighing)
+	})
 
 /** Whether every run of a property (on every stack it ran on) passed its search, and it ran at all. */
 const searchedPassed = (outcome: RunOutcome, id: PropertyId): boolean => {
@@ -340,6 +484,20 @@ const judgedOf = (repository: string, packageRoot: string, subjects: ReadonlyArr
 				loading: loadingOf(found.property.needs)
 			}))
 		)
+	})
+
+/** The kills of `subjects` judged, those the cache answers left alone, and every judged verdict recorded. */
+const settledKills = (
+	verdicts: KillVerdicts,
+	repository: string,
+	packageRoot: string,
+	subjects: ReadonlyArray<Discovered>
+) =>
+	Effect.gen(function* () {
+		const { fresh, cached } = yield* verdicts.split(subjects)
+		const judged = yield* judgedOf(repository, packageRoot, fresh)
+		yield* verdicts.record(judged)
+		return { judged, lines: [...Arr.map(judged, killLine), ...Arr.map(cached, cachedLine)] }
 	})
 
 /** The properties whose searches passed and whose every judged kill turned them red. */
@@ -391,18 +549,23 @@ export const recordedRun = (root: string, selected: ReadonlyArray<string>, outco
 			yield* Console.log(
 				`kills not judged and verdicts not recorded: ${root} lies in no git repository`
 			)
-			return { judged: [], passing: passingOf(outcome, ids, []) } satisfies Settled
+			return { lines: [], passing: passingOf(outcome, ids, []) } satisfies Settled
 		}
 		const repository = grounds.repository.value
-		const judged = yield* judgedOf(repository, grounds.packageRoot, passed)
-		const passing = passingOf(outcome, ids, judged)
 		const weighing = yield* Effect.result(weighingOf(grounds.packageRoot, repository, selected))
+		const { judged, lines } = yield* settledKills(
+			killVerdictsOf(Result.getSuccess(weighing)),
+			repository,
+			grounds.packageRoot,
+			passed
+		)
+		const passing = passingOf(outcome, ids, judged)
 		yield* Result.match(weighing, {
 			onSuccess: (weighed) => recorded(weighed.cache, weighed.weighed, passing),
 			onFailure: (why) =>
 				Console.log(`verdicts not recorded: ${Inspectable.toStringUnknown(why, 0)}`)
 		})
-		return { judged, passing } satisfies Settled
+		return { lines, passing } satisfies Settled
 	})
 
 /** `affected <ref>` in the package at `root`: 0 when every affected property and its kills passed, 1 otherwise. */
@@ -468,7 +631,8 @@ export const affected = (root: string, args: ReadonlyArray<string>) =>
 				reach: "full",
 				selected: Arr.map(due, (one) => one.found.id)
 			})
-			const judged = yield* judgedOf(
+			const { judged, lines } = yield* settledKills(
+				killVerdictsOf(Option.some(weighing)),
 				weighing.repository,
 				weighing.packageRoot,
 				Arr.filter(
@@ -488,7 +652,7 @@ export const affected = (root: string, args: ReadonlyArray<string>) =>
 				Arr.join(
 					[
 						...Arr.map(outcome.properties, (ran) => lineOf(ran.label, ran.oracle, ran.verdict)),
-						...Arr.map(judged, killLine),
+						...lines,
 						...Arr.flatMap(failed, (ran) => ["", `${ran.label}:`, ...failureLines(ran.verdict)]),
 						"",
 						`${answered.length} properties: ${cachedCount} cached passes; ${due.length} run (${changedCount} changed since ${ref}, ${due.length - changedCount} not verified at this content), ${failing} failed, in ${Math.round(outcome.millis)} ms on ${outcome.workers.length} workers`

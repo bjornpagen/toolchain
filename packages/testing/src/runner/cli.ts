@@ -98,7 +98,7 @@ const run = (selected: ReadonlyArray<string>) =>
 			const { judged, passing } = yield* Result.match(loaded, {
 				onSuccess: (module) =>
 					Effect.map(module.recordedRun(root, selected, outcome), (settled) => ({
-						judged: Arr.map(settled.judged, module.killLine),
+						judged: settled.lines,
 						passing: settled.passing
 					})),
 				onFailure: (failure) =>

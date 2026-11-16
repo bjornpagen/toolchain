@@ -33,6 +33,7 @@
 #   <key>/commit, push    the snapshots' checkouts           <key>/commit.git, push.git   their git directories
 #   <key>/commit.lock, push.lock   held (a pid file in a directory) while a run uses the snapshot
 #   <key>/push.full       stamped when the daily check:full passed
+#   <key>/push.passed/<tree>   stamped when every check of the push gate passed on that tree
 #
 # The snapshot's git directory borrows objects (alternates) from ONE repository, and a shared snapshot has several
 # candidates. Each run rewrites the alternates to the objects of the clone whose commit it checks, under the lock and
@@ -295,6 +296,14 @@ case $mode in
 		for pair in $pushed; do
 			commit=${pair%%:*}
 			base=${pair#*:}
+			# A tree this gate passed before passes again: the gate's verdict is a function of the commit's tree, so a push
+			# that sends a tree already gated (a ref race that threw the push away, a re-push) waits for no lock and runs
+			# nothing. The stamp is written only when every check of the tree passed.
+			tree=$(git rev-parse "$commit^{tree}")
+			if [ -f "$cache/push.passed/$tree" ]; then
+				printf 'toolchain-gate: the tree of %s (%s) passed this gate before\n' "$commit" "$tree" >&2
+				continue
+			fi
 			(
 				enter push "$commit"
 				# The push snapshot keeps the incremental typecheck's build info between runs, so `pnpm check` re-checks
@@ -326,6 +335,8 @@ case $mode in
 				done
 				unset IFS
 				set +f
+				mkdir -p "$cache/push.passed"
+				touch "$cache/push.passed/$tree"
 			)
 		done
 		;;
