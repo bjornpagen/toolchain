@@ -70,6 +70,9 @@ const sendNow = (message: FromWorker): void => {
 /** Sends a message to the parent over the IPC channel the worker was forked with. */
 const send = (message: FromWorker): Effect.Effect<void> => Effect.sync(() => sendNow(message))
 
+/** Milliseconds of a reading of CPU, user and system. */
+const millisOf = (spent: NodeJS.CpuUsage): number => (spent.user + spent.system) / 1000
+
 const main = Effect.gen(function* () {
 	const [root, index, workers, guide] = yield* Schema.decodeUnknownEffect(Arguments)(
 		Arr.drop(process.argv, 2)
@@ -190,9 +193,15 @@ const main = Effect.gen(function* () {
 			onNone: () =>
 				Effect.gen(function* () {
 					yield* send({ kind: "readying", unit: unit.unit })
+					const cpu = process.cpuUsage()
 					const [took, made] = yield* Effect.timed(ready(first.property, first.open))
 					readied.set(first.property, made)
-					yield* send({ kind: "readied", unit: unit.unit, millis: Duration.toMillis(took) })
+					yield* send({
+						kind: "readied",
+						unit: unit.unit,
+						millis: Duration.toMillis(took),
+						cpu: millisOf(process.cpuUsage(cpu))
+					})
 					return made
 				})
 		})
@@ -216,7 +225,7 @@ const main = Effect.gen(function* () {
 				}),
 				Effect.provideContext(platform)
 			)
-			yield* send({ kind: "done", unit: unit.unit, results })
+			yield* send({ kind: "done", unit: unit.unit, results, cpu: millisOf(process.cpuUsage()) })
 		})
 
 	const evaluating = Effect.gen(function* () {
@@ -239,7 +248,7 @@ const main = Effect.gen(function* () {
 		}
 	})
 
-	yield* send({ kind: "ready" })
+	yield* send({ kind: "ready", cpu: millisOf(process.cpuUsage()) })
 	yield* Effect.raceFirst(receive, evaluating)
 })
 

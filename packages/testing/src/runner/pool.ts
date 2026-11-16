@@ -31,6 +31,7 @@ import {
 	schedulerOf,
 	type View
 } from "#runner/schedule.ts"
+import type { PoolUsage, PropertyUsage } from "#runner/usage.ts"
 
 /**
  * The pool: worker processes, one a core, that evaluate the cases of every property of a run, and the parent's side of
@@ -83,6 +84,7 @@ type Worker = {
 	revokingFor: Option.Option<Worker>
 	awaiting: Option.Option<Worker>
 	output: string
+	usage: { started: number; reported: number }
 }
 
 /** How much of what a worker wrote the parent keeps, to report a lost case with: the end of it. */
@@ -106,14 +108,15 @@ export type PoolSpec = Readonly<{
 
 /**
  * The pool as a run uses it: the evaluator every search shares; `retire`, which tells every worker a property's search
- * ended, so a worker releases the needs only that property held there; how many cases each worker finished, and how
- * many modules each holds (readied a property of).
+ * ended, so a worker releases the needs only that property held there; how many cases each worker finished, how many
+ * modules each holds (readied a property of), and what its workers measured of their CPU (runner/usage.ts).
  */
 export type Pool = Readonly<{
 	evaluator: Evaluator
 	retire: (property: string) => Effect.Effect<void>
 	cases: Effect.Effect<ReadonlyArray<number>>
 	held: Effect.Effect<ReadonlyArray<number>>
+	usage: Effect.Effect<PoolUsage>
 }>
 
 /** The pool failed to start: a worker could not load the package's runner config, and why. */
@@ -184,6 +187,19 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 		const workers: Array<Worker> = []
 		const counts: Array<number> = Array.from({ length: spec.workers }, () => 0)
 		const lateUses = new Map<number, Map<number, Printed>>()
+		const properties = new Map<string, PropertyUsage>()
+		const processes: Array<Worker["usage"]> = []
+
+		/** Adds what a property's cases or readying cost to its usage. */
+		const spent = (label: string, cases: number, casesCpu: number, readyingCpu: number) => {
+			const before = properties.get(label) ?? { label, cases: 0, casesCpu: 0, readyingCpu: 0 }
+			properties.set(label, {
+				label,
+				cases: before.cases + cases,
+				casesCpu: before.casesCpu + casesCpu,
+				readyingCpu: before.readyingCpu + readyingCpu
+			})
+		}
 		const broken = new Set<number>()
 		const started = yield* Deferred.make<void, PoolFailed>()
 		let unitIds = 0
@@ -298,6 +314,12 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 				results.length,
 				Arr.reduce(results, 0, (total, result) => total + result.millis)
 			)
+			spent(
+				unit.property,
+				results.length,
+				Arr.reduce(results, 0, (total, result) => total + result.cpu),
+				0
+			)
 			Deferred.doneUnsafe(unit.done, Effect.succeed(results))
 		}
 
@@ -321,8 +343,10 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 				running: Option.none(),
 				revokingFor: Option.none(),
 				awaiting: Option.none(),
-				output: ""
+				output: "",
+				usage: { started: 0, reported: 0 }
 			}
+			processes.push(worker.usage)
 			const keep = (chunk: unknown) => {
 				worker.output = Str.slice(-OUTPUT_TAIL)(worker.output + String(chunk))
 			}
@@ -448,6 +472,8 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 						const received = decoded.value
 						switch (received.kind) {
 							case "ready":
+								worker.usage.started = received.cpu
+								worker.usage.reported = received.cpu
 								worker.ready = true
 								yield* Deferred.succeed(started, undefined)
 								feedAll()
@@ -463,6 +489,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 									Arr.findFirst(worker.sent, (sent) => sent.id === received.unit),
 									(unit) => {
 										scheduler.readied(worker.index, unit.module, received.millis)
+										spent(unit.property, 0, 0, received.cpu)
 										afterFinished(scheduler, view, apply, worker.index, unit.module)
 									}
 								)
@@ -471,6 +498,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 								yield* watch(worker, received.unit, "evaluating")
 								return
 							case "done": {
+								worker.usage.reported = received.cpu
 								const unit = Arr.findFirst(worker.sent, (sent) => sent.id === received.unit)
 								if (Option.isSome(unit)) {
 									yield* settle(worker)
@@ -612,6 +640,10 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 					}
 				}),
 			cases: Effect.sync(() => Arr.copy(counts)),
-			held: Effect.sync(() => scheduler.held())
+			held: Effect.sync(() => scheduler.held()),
+			usage: Effect.sync((): PoolUsage => ({
+				properties: Arr.fromIterable(properties.values()),
+				workers: Arr.map(processes, (usage) => ({ ...usage }))
+			}))
 		}
 	})

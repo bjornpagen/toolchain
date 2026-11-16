@@ -503,6 +503,16 @@ const guarded = <E, R>(
 /** Milliseconds since a moment of liveNanos. */
 const millisSince = (began: bigint) => Effect.map(liveNanos, (now) => Number(now - began) / 1e6)
 
+/** This process's CPU so far, user and system: what a case's CPU is measured from. */
+const cpuNow = Effect.sync(() => process.cpuUsage())
+
+/** Milliseconds of this process's CPU, user and system, since a reading of cpuNow. */
+const cpuSince = (began: NodeJS.CpuUsage) =>
+	Effect.sync(() => {
+		const spent = process.cpuUsage(began)
+		return (spent.user + spent.system) / 1000
+	})
+
 /** The outcome of a case that drew its value and settled. */
 const outcomeOf = (
 	settled: Settled,
@@ -666,8 +676,8 @@ const ranOf = <S, F extends string>(
 	}
 }
 
-/** A case's result from its run and its measured time. */
-const resultOf = (recorded: Recording, ran: Ran, millis: number): CaseResult => ({
+/** A case's result from its run, its measured time and its process's CPU meanwhile. */
+const resultOf = (recorded: Recording, ran: Ran, millis: number, cpu: number): CaseResult => ({
 	decisions: recorded.decided(),
 	sketchDecisions: ran.sketchDecisions,
 	overrun: recorded.status() === "overrun",
@@ -675,7 +685,8 @@ const resultOf = (recorded: Recording, ran: Ran, millis: number): CaseResult => 
 	measures: ran.measures,
 	trace: ran.trace,
 	outcome: ran.outcome,
-	millis
+	millis,
+	cpu
 })
 
 /** The report a case leaves should it block its process's event loop, which the watchdog prints as it ends it. */
@@ -724,6 +735,7 @@ const evaluateCase =
 	(order: CaseOrder): Effect.Effect<CaseResult, never, CaseEnv> =>
 		Effect.gen(function* () {
 			const began = yield* liveNanos
+			const cpuBegan = yield* cpuNow
 			const lateUses = yield* LateUses
 			const slot = slotOf(drawing, lateUses, order, 0)
 			const ran = yield* watchedCase(
@@ -761,7 +773,8 @@ const evaluateCase =
 			)
 			const recorded = slot.kind === "drawn" ? slot.drawn.recorded : slot.recorded
 			const millis = yield* millisSince(began)
-			return resultOf(recorded, ran, millis)
+			const cpu = yield* cpuSince(cpuBegan)
+			return resultOf(recorded, ran, millis, cpu)
 		})
 
 /**
@@ -784,7 +797,7 @@ export const casesReadied =
  * on fails alone, undrawn), runs `checkAll` on the drawn cases under the case deadline times their count in the batch's
  * scope, where it takes its needs' resources (opened on this process before it), then each case's own effect under the case deadline as its verdict. A check that
  * fails or hangs as a whole fails or hangs every case it held; a case it gave no verdict fails. Each case's measured
- * time is the batch's, shared evenly.
+ * time and CPU are the batch's, shared evenly.
  */
 const evaluateBatch =
 	<S, F extends string, N extends Needs, E>(
@@ -795,6 +808,7 @@ const evaluateBatch =
 	(batch) =>
 		Effect.gen(function* () {
 			const began = yield* liveNanos
+			const cpuBegan = yield* cpuNow
 			const lateUses = yield* LateUses
 			const [, slots] = Arr.mapAccum(batch, 0, (drawnSoFar, order) => {
 				const slot = slotOf(drawing, lateUses, order, drawnSoFar)
@@ -806,8 +820,9 @@ const evaluateBatch =
 				runsOf(drawing, needs, checkAll, Arr.headNonEmpty(batch).open, slots, deadlineOf(batch))
 			)
 			const millis = (yield* millisSince(began)) / batch.length
+			const cpu = (yield* cpuSince(cpuBegan)) / batch.length
 			return Arr.zipWith(slots, runs, (slot, ran) =>
-				resultOf(slot.kind === "drawn" ? slot.drawn.recorded : slot.recorded, ran, millis)
+				resultOf(slot.kind === "drawn" ? slot.drawn.recorded : slot.recorded, ran, millis, cpu)
 			)
 		})
 

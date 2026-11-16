@@ -181,7 +181,8 @@ export type Trace = typeof Trace.Type
 /**
  * One case's result: how many decisions it made, how many of them drew its value (the rest are its property's own
  * draws), whether a forced chooser ran out or no longer fit (`overrun`), the situations it noted, what it measured
- * (Case.measure, by name), its trace, how it ended, and how long it took in milliseconds.
+ * (Case.measure, by name), its trace, how it ended, how long it took in milliseconds, and how many milliseconds of its
+ * process's CPU (user and system) it took meanwhile.
  */
 const CaseResult = Schema.Struct({
 	decisions: Schema.Finite,
@@ -191,7 +192,8 @@ const CaseResult = Schema.Struct({
 	measures: Schema.Array(Schema.Tuple([Schema.String, Schema.Finite])),
 	trace: Trace,
 	outcome: CaseOutcome,
-	millis: Schema.Finite
+	millis: Schema.Finite,
+	cpu: Schema.Finite
 })
 
 export type CaseResult = typeof CaseResult.Type
@@ -205,7 +207,8 @@ const unranResult = (outcome: CaseOutcome): CaseResult => ({
 	measures: [],
 	trace: [],
 	outcome,
-	millis: 0
+	millis: 0,
+	cpu: 0
 })
 
 /** A result no process gave: the case's process ended while it ran, with what the process last wrote. */
@@ -334,22 +337,29 @@ export const ToWorker = Schema.Union([
 export type ToWorker = typeof ToWorker.Type
 
 /**
- * A message from a worker to the parent: it is ready; it is readying a unit's property, the first unit of it the
- * worker took (importing its module and opening its needs, within the open bound); it readied it, in how many
- * milliseconds (what scheduling measures a module's readying by); it started a unit's cases; it
- * finished one, with each order's result; it gave back these units, of those the parent revoked, none of which it had
- * started; a case (a unit's `at`-th order) was used after it ended, printed as it ran; it cannot start, and why; or it
- * asks for a module's closure hash, which the parent computes once for the whole pool.
+ * A message from a worker to the parent: it is ready, and how many milliseconds of CPU it took to start; it is readying
+ * a unit's property, the first unit of it the worker took (importing its module and opening its needs, within the open
+ * bound); it readied it, in how many milliseconds (what scheduling measures a module's readying by) and how many of
+ * CPU; it started a unit's cases; it finished one, with each order's result and the worker's CPU so far; it gave back
+ * these units, of those the parent revoked, none of which it had started; a case (a unit's `at`-th order) was used
+ * after it ended, printed as it ran; it cannot start, and why; or it asks for a module's closure hash, which the parent
+ * computes once for the whole pool.
  */
 export const FromWorker = Schema.Union([
-	Schema.Struct({ kind: Schema.Literal("ready") }),
+	Schema.Struct({ kind: Schema.Literal("ready"), cpu: Schema.Finite }),
 	Schema.Struct({ kind: Schema.Literal("readying"), unit: Schema.Finite }),
-	Schema.Struct({ kind: Schema.Literal("readied"), unit: Schema.Finite, millis: Schema.Finite }),
+	Schema.Struct({
+		kind: Schema.Literal("readied"),
+		unit: Schema.Finite,
+		millis: Schema.Finite,
+		cpu: Schema.Finite
+	}),
 	Schema.Struct({ kind: Schema.Literal("started"), unit: Schema.Finite }),
 	Schema.Struct({
 		kind: Schema.Literal("done"),
 		unit: Schema.Finite,
-		results: Schema.Array(CaseResult)
+		results: Schema.Array(CaseResult),
+		cpu: Schema.Finite
 	}),
 	Schema.Struct({ kind: Schema.Literal("revoked"), units: Schema.Array(Schema.Finite) }),
 	Schema.Struct({

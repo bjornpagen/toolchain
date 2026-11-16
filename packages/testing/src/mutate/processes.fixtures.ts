@@ -14,7 +14,8 @@ export const passed: CaseResult = {
 	measures: [],
 	trace: [],
 	outcome: { kind: "passed", kept: { kind: "nothing" }, shown: { kind: "unshown" } },
-	millis: 0
+	millis: 0,
+	cpu: 0
 }
 
 /** A case whose worker answered it red, with what it printed. */

@@ -6,6 +6,7 @@ import {
 	Config,
 	Console,
 	Effect,
+	FileSystem,
 	Formatter,
 	Inspectable,
 	Option,
@@ -21,6 +22,7 @@ import { fuzz } from "#runner/fuzz.ts"
 import { configOf, keptValuesAt } from "#runner/load.ts"
 import { failureLines, lineOf } from "#runner/report.ts"
 import { loadPackage, replayToken, runPackage } from "#runner/run.ts"
+import { reportOf, type UsageReport, usageJson, usageLines } from "#runner/usage.ts"
 
 /**
  * `toolchain-test`, the runner's command, run from a package's root (its test.config.ts):
@@ -60,6 +62,25 @@ const seedOf = Effect.gen(function* () {
 const root = process.cwd()
 
 /**
+ * Writes a run's CPU report as JSON under toolchain-test's cache, beside every repository's verdicts:
+ * `${XDG_CACHE_HOME:-~/.cache}/toolchain-test/runs/<seed>-<pid>.json`, and the same as `runs/last.json`, with the
+ * package root, the run's seed and its wall time; and gives the run's path.
+ */
+const usageWritten = (packageRoot: string, seed: number, millis: number, usage: UsageReport) =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		const home = yield* Config.String("HOME")
+		const cacheHome = yield* Config.withDefault(Config.String("XDG_CACHE_HOME"), `${home}/.cache`)
+		const runs = `${cacheHome}/toolchain-test/runs`
+		const file = `${runs}/${seed}-${process.pid}.json`
+		const json = yield* usageJson({ root: packageRoot, seed, millis, report: usage })
+		yield* fs.makeDirectory(runs, { recursive: true })
+		yield* fs.writeFileString(file, `${json}\n`)
+		yield* fs.writeFileString(`${runs}/last.json`, `${json}\n`)
+		return file
+	})
+
+/**
  * `run [paths | ids]`, the full run per production version: every property named, reading no cached pass; then the
  * kills of each whose searches passed, and every verdict recorded in the verdict cache (affected.ts recordedRun); each
  * run's line, every judged kill, then every failure; 1 when any search failed or any kill did not turn its property red.
@@ -94,6 +115,8 @@ const run = (selected: ReadonlyArray<string>) =>
 						)
 					})
 			})
+			const usage = reportOf(outcome.usage)
+			const written = yield* usageWritten(root, seed, outcome.millis, usage)
 			const failed = Arr.filter(outcome.properties, (ran) => ran.verdict.kind === "failed")
 			const failing = Arr.filter(
 				Arr.dedupe(Arr.map(outcome.properties, (ran) => ran.id)),
@@ -105,6 +128,9 @@ const run = (selected: ReadonlyArray<string>) =>
 						...Arr.map(outcome.properties, (ran) => lineOf(ran.label, ran.oracle, ran.verdict)),
 						...judged,
 						...Arr.flatMap(failed, (ran) => ["", `${ran.label}:`, ...failureLines(ran.verdict)]),
+						"",
+						...usageLines(usage),
+						`its CPU, as JSON: ${written}`,
 						"",
 						`${outcome.properties.length} properties, ${failing} failed, in ${Math.round(outcome.millis)} ms on ${outcome.workers.length} workers`
 					],

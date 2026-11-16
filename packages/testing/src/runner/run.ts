@@ -25,6 +25,7 @@ import { type Pool, PoolFailed, poolOf } from "#runner/pool.ts"
 import type { Reach, Verdict } from "#runner/protocol.ts"
 import { ModuleClosure, WorkerIndex } from "#runner/services.ts"
 import { labelOf, runOfLabel, type Stack } from "#runner/stack.ts"
+import type { RunUsage } from "#runner/usage.ts"
 import { testWorkers } from "#workers.ts"
 
 /**
@@ -50,14 +51,16 @@ export type PropertyRun = Readonly<{
 }>
 
 /**
- * A whole run: each property's run in discovery order, the run's wall time, how many cases each worker ran, and how many
- * test modules each worker held (readied a property of).
+ * A whole run: each property's run in discovery order, the run's wall time, how many cases each worker ran, how many
+ * test modules each worker held (readied a property of), and what the run cost in CPU, the parent's and its workers'
+ * (runner/usage.ts).
  */
 export type RunOutcome = Readonly<{
 	properties: ReadonlyArray<PropertyRun>
 	millis: number
 	workers: ReadonlyArray<number>
 	held: ReadonlyArray<number>
+	usage: RunUsage
 }>
 
 /**
@@ -279,12 +282,19 @@ export const runPackage = (
 		)
 		const counted = yield* Effect.forEach(Arr.fromIterable(pools.values()), (pool) => pool.cases)
 		const held = yield* Effect.forEach(Arr.fromIterable(pools.values()), (pool) => pool.held)
+		const usages = yield* Effect.forEach(Arr.fromIterable(pools.values()), (pool) => pool.usage)
+		const parent = yield* Effect.sync(() => process.cpuUsage())
 		const ended = yield* liveMillis
 		return {
 			properties,
 			millis: ended - began,
 			workers: Arr.flatten(counted),
-			held: Arr.flatten(held)
+			held: Arr.flatten(held),
+			usage: {
+				parent: (parent.user + parent.system) / 1000,
+				properties: Arr.flatMap(usages, (usage) => usage.properties),
+				workers: Arr.flatMap(usages, (usage) => usage.workers)
+			}
 		}
 	})
 
