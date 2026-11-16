@@ -108,7 +108,11 @@ type Event =
  */
 const SILENCE_GRACE_MILLIS = 2 * WATCHDOG_GRACE_MILLIS + Duration.toMillis(HUNG_CLEANUP_GRACE)
 
-/** Forks the pool's workers, in the run's scope: each is disconnected, and so ends, when the scope closes. */
+/**
+ * Forks the pool's workers, in the run's scope: closing it disconnects each worker and waits for it to exit on its own
+ * (its finalizers run, a coverage dump is written), and kills one still alive past SILENCE_GRACE_MILLIS, a finalizer
+ * that hangs.
+ */
 export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Scope> =>
 	Effect.gen(function* () {
 		const scope = yield* Scope.Scope
@@ -418,16 +422,24 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 				Effect.forEach(
 					workers,
 					(worker) =>
-						Effect.callback<void>((resume) => {
-							if (worker.child.exitCode !== null || worker.child.signalCode !== null) {
-								resume(Effect.void)
-								return
-							}
-							worker.child.once("exit", () => resume(Effect.void))
-							if (worker.child.connected) {
-								worker.child.disconnect()
-							}
-						}),
+						Effect.raceFirst(
+							Effect.callback<void>((resume) => {
+								if (worker.child.exitCode !== null || worker.child.signalCode !== null) {
+									resume(Effect.void)
+									return
+								}
+								worker.child.once("exit", () => resume(Effect.void))
+								if (worker.child.connected) {
+									worker.child.disconnect()
+								}
+							}),
+							Effect.andThen(
+								Effect.sleep(Duration.millis(SILENCE_GRACE_MILLIS)),
+								Effect.sync(() => {
+									worker.child.kill("SIGKILL")
+								})
+							)
+						),
 					{ concurrency: "unbounded", discard: true }
 				)
 			).pipe(Effect.uninterruptible)
