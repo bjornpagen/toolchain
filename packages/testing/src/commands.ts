@@ -362,24 +362,26 @@ export interface Rule<M, P, O extends string, X> {
 }
 
 /**
- * A reactive state machine, Hypothesis's rule-based state machine: the model's initial state and its rules, each
- * named, with the parameters each takes, the closed vocabulary `O` of the outcomes its observations name and what the
- * system shows `X`. Its steps are drawn as the run goes, each in the state the system's observations led the model
- * to, so a model whose outcomes branch is checked as readily as one that predicts. An interface, so its type keeps
- * its arguments.
+ * A reactive state machine, Hypothesis's rule-based state machine: its rules, each named, with the parameters each
+ * takes, the closed vocabulary `O` of the outcomes its observations name and what the system shows `X`. Its steps are
+ * drawn as the run goes, each in the state the system's observations led the model to, so a model whose outcomes
+ * branch is checked as readily as one that predicts; the state it starts in is its real's (ReactiveReal `start`),
+ * since the system a case builds (an installation, a staged reality) decides it. An interface, so its type keeps its
+ * arguments.
  */
 export interface ReactiveMachine<M, P, O extends string, X> {
-	readonly initial: M
 	readonly rules: { readonly [K in keyof P]: Rule<M, P[K], O, X> }
 }
 
 /**
- * How a reactive machine's rules run on the real system: each step, given its parameters, the model's state before it
- * and the outcomes the model allows, acts and answers what the system observed; `holds` then checks the system is in
- * the state the outcome its observation chose leads to. Supplied when a case runs, so it closes over the case's
- * resources.
+ * How a reactive machine's rules run on the real system a case built: `start` is the model's state the system starts
+ * in; each step, given its parameters, the model's state before it and the outcomes the model allows, acts and answers
+ * what the system observed; `holds` checks the system is in a state of the model's, the start before any step and,
+ * after each, the state the outcome its observation chose leads to. Supplied when a case runs, so it closes over the
+ * case's resources and draws.
  */
 export type ReactiveReal<M, P, O extends string, X, E, R> = Readonly<{
+	start: M
 	steps: {
 		readonly [K in keyof P]: (
 			parameters: P[K],
@@ -451,8 +453,9 @@ const allowedOf = <M, P, O extends string, X>(
 	Arr.dedupe(Arr.map(allowed, (outcome): OutcomeFeature<P, O> => `${rule} ${outcome.outcome}`))
 
 /**
- * Runs a reactive machine on the real system as its steps are drawn: each step is drawn from the case (`draw`, its own
- * tape) in the state the run reached (reactiveStep), the model judges it, its real run acts and answers an
+ * Runs a reactive machine on the real system as its steps are drawn, from the state the system starts in, which `holds`
+ * checks first: each step is drawn from the case (`draw`, its own tape) in the state the run reached (reactiveStep),
+ * the model judges it, its real run acts and answers an
  * observation, and the outcome the observation names, whose state can hold what the system showed, is taken: the first
  * such of the outcomes the model allows, in the order it allows them; `holds` checks the system is in that outcome's
  * state, and the model advances to it. It succeeds with the model's final state and every step's feature; it fails
@@ -479,7 +482,8 @@ export const runReactive = Effect.fn("testing.commands.react")(function* <
 		before: M,
 		allowed: Arr.NonEmptyReadonlyArray<Branch<M, O, X>>
 	) => real.steps[rule](parameters, before, allowed)
-	let model = machine.initial
+	yield* real.holds(real.start)
+	let model = real.start
 	const outcomes: Array<OutcomeFeature<P, O>> = []
 	for (let at = 0; ; at += 1) {
 		const step = draw(reactiveStep(machine, size, drawn, model, at))

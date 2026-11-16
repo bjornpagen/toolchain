@@ -407,9 +407,8 @@ export const channelMeetsModel = property.stateful(
 			{
 				file: "packages/testing/src/commands.ts",
 				original: "\t\tconst step = draw(reactiveStep(machine, size, drawn, model, at))",
-				replacement:
-					"\t\tconst step = draw(reactiveStep(machine, size, drawn, machine.initial, at))",
-				why: "Each step is drawn in the initial state, not the state the run reached, so no peek is ever drawn."
+				replacement: "\t\tconst step = draw(reactiveStep(machine, size, drawn, real.start, at))",
+				why: "Each step is drawn in the state the system started in, not the state the run reached, so no peek is ever drawn."
 			},
 			{
 				file: "packages/testing/src/commands.ts",

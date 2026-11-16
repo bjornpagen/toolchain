@@ -44,7 +44,6 @@ const showing = (outcome: ChannelOutcome, expected: number, next: InFlight) => (
  * none; a peek names a position in flight, the harness's own invariant, and sees the message there.
  */
 export const CHANNEL: ReactiveMachine<InFlight, ChannelParameters, ChannelOutcome, Shown> = {
-	initial: [],
 	rules: {
 		send: {
 			weight: 2,
@@ -123,12 +122,14 @@ const nothing = (outcome: ChannelOutcome): Observation<ChannelOutcome, Shown> =>
 })
 
 /**
- * Each rule run on a channel: it acts and answers what the channel did; `holds` checks the channel holds exactly the
- * messages the model has in flight, by its size as well, so a message it keeps where nothing serves it is seen.
+ * Each rule run on a channel, which starts empty: it acts and answers what the channel did; `holds` checks the channel
+ * holds exactly the messages the model has in flight, by its size as well, so a message it keeps where nothing serves
+ * it is seen.
  */
 export const channelReal = (
 	channel: ReturnType<typeof channelOf>
 ): ReactiveReal<InFlight, ChannelParameters, ChannelOutcome, Shown, never, never> => ({
+	start: [],
 	steps: {
 		send: (message) => Effect.sync(() => nothing(channel.send(message) ? "delivered" : "dropped")),
 		receive: () =>
