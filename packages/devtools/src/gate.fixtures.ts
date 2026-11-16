@@ -1,5 +1,6 @@
 import { pid } from "node:process"
 import { deepStrictEqual, fail } from "@bjornpagen/testing/assert"
+import type { CheckoutDir } from "@bjornpagen/testing/checkout"
 import { array, boolean, element, type Gen, int } from "@bjornpagen/testing/gen"
 import {
 	Array as Arr,
@@ -20,8 +21,6 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process"
  * cache, and with no git configuration but its own, so nothing of the machine's moves a case.
  */
 
-const GATE = new URL("../bin/gate.sh", import.meta.url).pathname
-
 /** The environment every command of a case runs with: a git identity, local file transport for submodules, and no
  * global or system git configuration. */
 const IDENTITY: Readonly<Record<string, string>> = Object.freeze({
@@ -35,14 +34,16 @@ const IDENTITY: Readonly<Record<string, string>> = Object.freeze({
 })
 
 /** A case's sandbox, in its scratch directory: the directory its repositories are made in, its gate cache
- * (XDG_CACHE_HOME), and the cache's root, where the key directories are. */
-type Sandbox = Readonly<{ dir: string; cache: string; root: string }>
+ * (XDG_CACHE_HOME), the cache's root, where the key directories are, and the gate it runs: the checkout's bin/gate.sh,
+ * so a mutant of the gate in a worker tree is the gate the case runs. */
+type Sandbox = Readonly<{ dir: string; cache: string; root: string; gate: string }>
 
-/** The sandbox in a case's scratch directory. */
-export const sandboxOf = (dir: string): Sandbox => ({
+/** The sandbox in a case's scratch directory, running the gate of the dev tools' directory in the checkout. */
+export const sandboxOf = (dir: string, checkout: CheckoutDir): Sandbox => ({
 	dir,
 	cache: `${dir}/xdg`,
-	root: `${dir}/xdg/toolchain-gate`
+	root: `${dir}/xdg/toolchain-gate`,
+	gate: `${checkout}/bin/gate.sh`
 })
 
 /** A command's exit status and its output. */
@@ -99,7 +100,7 @@ const sh = Effect.fn("sh")(function* (
 
 /** The gate's run of a shell script on HEAD's commit, in a clone, which must succeed. */
 const gated = Effect.fn("gated")(function* (sandbox: Sandbox, clone: string, script: string) {
-	const done = yield* ran(sandbox, clone, "sh", [GATE, "run", "HEAD", "sh", "-c", script])
+	const done = yield* ran(sandbox, clone, "sh", [sandbox.gate, "run", "HEAD", "sh", "-c", script])
 	deepStrictEqual(
 		done.status,
 		0,

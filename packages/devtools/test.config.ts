@@ -8,6 +8,7 @@ import { Layer } from "effect"
  */
 export default defineRunner({
 	include: [
+		"src/gate.test.ts",
 		"src/workspace/tsconfigs.test.ts",
 		"src/oxlint/rules/bearer-owners.test.ts",
 		"src/oxlint/rules/side-effect-free.test.ts",

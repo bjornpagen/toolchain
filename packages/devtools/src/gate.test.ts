@@ -13,6 +13,7 @@
  * leaving the old per-path layout alone.
  */
 import { deepStrictEqual } from "@bjornpagen/testing/assert"
+import { Checkout } from "@bjornpagen/testing/checkout"
 import { property } from "@bjornpagen/testing/property"
 import { Scratch } from "@bjornpagen/testing/resources"
 import { Array as Arr, Effect, Order } from "effect"
@@ -47,18 +48,20 @@ import {
 } from "#gate.fixtures.ts"
 
 export const sharedSnapshot = property.explore(sharings, {
-	needs: { dir: Scratch.dir },
+	needs: { dir: Scratch.dir, checkout: Checkout.dir },
 	situations: [
 		"a second clone's first run finds what a first run left under .gitignore",
 		"a clone runs again after another clone's run",
 		"three clones share one snapshot"
 	],
 	check:
-		({ dir }, c) =>
+		({ dir, checkout }, c) =>
 		(sharing) =>
 			Effect.gen(function* () {
 				c.noteAll(sharingFeatures(sharing))
-				const sandbox = yield* Effect.map(dir, sandboxOf)
+				const scratch = yield* dir
+				const gateCheckout = yield* checkout
+				const sandbox = sandboxOf(scratch, gateCheckout)
 				const { clones } = yield* clonedRepository(sandbox, sharing.clones)
 				yield* Effect.forEach(sharing.runs, (run, index) =>
 					Effect.gen(function* () {
@@ -92,7 +95,7 @@ export const sharedSnapshot = property.explore(sharings, {
 })
 
 export const checkedCommit = property.explore(checkings, {
-	needs: { dir: Scratch.dir },
+	needs: { dir: Scratch.dir, checkout: Checkout.dir },
 	situations: [
 		"a commit checked after another clone's different commit",
 		"a commit lacking a file the commit checked before held",
@@ -100,11 +103,13 @@ export const checkedCommit = property.explore(checkings, {
 		"a stray file an earlier run left"
 	],
 	check:
-		({ dir }, c) =>
+		({ dir, checkout }, c) =>
 		(checking) =>
 			Effect.gen(function* () {
 				c.noteAll(checkingFeatures(checking))
-				const sandbox = yield* Effect.map(dir, sandboxOf)
+				const scratch = yield* dir
+				const gateCheckout = yield* checkout
+				const sandbox = sandboxOf(scratch, gateCheckout)
 				const { clones } = yield* checkedClones(sandbox, checking.clones)
 				yield* Effect.forEach(checking.runs, (run, index) =>
 					Effect.gen(function* () {
@@ -141,7 +146,7 @@ export const checkedCommit = property.explore(checkings, {
 })
 
 export const filledSubmodule = property.explore(fillings, {
-	needs: { dir: Scratch.dir },
+	needs: { dir: Scratch.dir, checkout: Checkout.dir },
 	situations: [
 		"a submodule at the commit the repository recorded",
 		"a submodule its clone's own commit moved",
@@ -150,11 +155,13 @@ export const filledSubmodule = property.explore(fillings, {
 		"a submodule filled at another commit by the run before"
 	],
 	check:
-		({ dir }, c) =>
+		({ dir, checkout }, c) =>
 		(filling) =>
 			Effect.gen(function* () {
 				c.noteAll(fillingFeatures(filling))
-				const sandbox = yield* Effect.map(dir, sandboxOf)
+				const scratch = yield* dir
+				const gateCheckout = yield* checkout
+				const sandbox = sandboxOf(scratch, gateCheckout)
 				const { clones } = yield* submoduleClones(sandbox, filling)
 				yield* Effect.forEach(filling.runs, (at, index) =>
 					Effect.gen(function* () {
@@ -184,7 +191,7 @@ export const filledSubmodule = property.explore(fillings, {
 })
 
 export const collectedSnapshots = property.explore(collectings, {
-	needs: { dir: Scratch.dir },
+	needs: { dir: Scratch.dir, checkout: Checkout.dir },
 	situations: [
 		"a key directory whose clones are all gone is collected",
 		"a key directory kept by a clone still there among gone ones",
@@ -196,11 +203,13 @@ export const collectedSnapshots = property.explore(collectings, {
 		"a held old-layout directory left alone"
 	],
 	check:
-		({ dir }, c) =>
+		({ dir, checkout }, c) =>
 		(entries) =>
 			Effect.gen(function* () {
 				c.noteAll(collectingFeatures(entries))
-				const sandbox = yield* Effect.map(dir, sandboxOf)
+				const scratch = yield* dir
+				const gateCheckout = yield* checkout
+				const sandbox = sandboxOf(scratch, gateCheckout)
 				const made = yield* Effect.forEach(entries, (entry, index) =>
 					registered(sandbox, entry, index)
 				)
