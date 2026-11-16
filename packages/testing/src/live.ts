@@ -1,6 +1,62 @@
 import { isMainThread, Worker } from "node:worker_threads"
-import { hungCleanupGraceSeconds, watchdogGraceMillis } from "@bjornpagen/limits"
 import { Array as Arr, Clock, Duration, Effect, Fiber, Option, Record as Rec } from "effect"
+
+/**
+ * How long the main thread may go without answering the watchdog once a case in flight has passed the moment its
+ * guard would have stopped it (live.ts's watchdog). A live thread answers a ping as soon as the synchronous work it is
+ * in yields, so this bounds how long a live case may hold the thread past that moment, not the case's hang limit. A
+ * Node 26 thread cannot be stopped inside synchronous JavaScript without aborting the process, so a case that never
+ * yields ends its process here, and this grace is what separates it from one that is merely slow.
+ *
+ * @limitKind measured
+ * @owner the choice-stream testing library (live.ts's watchdog)
+ * @unit milliseconds
+ * @scope every case a search runs on a process's main thread, once it is past its hang limit or its search's deadline
+ * @evidence packages/testing/out/watchdog-grace/20261116T064618/ in the toolchain's checkout on cassowary
+ *   (/Users/bjorn/Documents/toolchain), the uncommitted record of `sh run.sh` there: probe.mjs, whose worker pings the
+ *   main thread as the watchdog does (postMessage, the answer through shared memory) while the main thread runs
+ *   synchronous segments that allocate, between yields; alone-1.json to alone-3.json and together-1.json to
+ *   together-4.json, every ping's latency; runs.log and environment.txt. packages/testing/src/blocking.test.ts
+ *   re-verifies the grace's use: its well-behaved bodies hold the main thread past their hang limit and are never
+ *   ended, and its runaways end within their limit and this grace
+ * @observed 2026-11-16 06:46:22 to 06:47:27 UTC
+ * @environment cassowary, Ubuntu 26.04.1 (Linux 7.0.0-1016-aws) on an AWS Graviton3 (Neoverse-V1, arm64) instance with
+ *   64 logical CPUs and 247 GiB, Node 26.13.1; load average 105 to 155 from other sessions throughout
+ * @workload seven runs, three of 15 s one after another and four of 20 s at once; in each the main thread runs
+ *   synchronous segments of 1, 5, 20, 50, 100 and 200 ms in turn, allocating throughout, and the worker sends its next
+ *   ping after a random wait of 0 to 20 ms once the last is answered: 1,436 pings
+ * @result per run p50 46 to 49 ms, p99 197 to 200 ms, slowest 198.7 to 201.0 ms; the slowest answer of all 201.0 ms. A
+ *   ping waits for the segment in flight, so every answer came within the longest segment, 200 ms, and the machine's
+ *   scheduling delay. No errors; the watchdog's own cost per case was not measured again
+ * @decision 5 s is 24 times the slowest answer seen and allows a live case a synchronous segment of seconds past its
+ *   moment; a case past its moment is a hang whichever way it ends, so the grace only decides whether its verdict is
+ *   the guard's typed one or the watchdog's report. Kept at the old record's value, whose slowest answer, 386 ms on a
+ *   macOS VM loaded four to six times over its ten cores, shows the machine sets the latency
+ * @revalidate a Node or V8 upgrade; a different machine; a suite whose property holds the thread in one synchronous
+ *   segment for seconds; a process the watchdog ended whose report shows a case that yields
+ */
+const watchdogGraceMillis = 5000
+
+/**
+ * How long a search waits on a hung case's cleanup, on the live clock, before it reports the hang or goes on to its next
+ * case (live.ts's awaitWithinGrace). The case stays among the fibers its search awaits before it returns, so a cleanup
+ * past the grace delays the search's end and never outlives it.
+ *
+ * @limitKind provisional
+ * @owner the choice-stream testing library (live.ts, a hung case's cleanup)
+ * @unit seconds
+ * @scope the cleanup of each case a search stops as hung, before the search reports or runs its next case
+ * @guards without it a search waits on a hung case's cleanup for as long as the cleanup takes, so a cleanup that
+ *   itself hangs holds the hang's report, and the next case, until the test's own timeout
+ * @measure time the cleanup of every case the library's and the consumers' suites stop as hung (their releases: a
+ *   fiber's finalizers, a database schema's drop), on cassowary, with the suites running at their usual width; the
+ *   grace is the slowest cleanup seen, with its headroom stated, and never shorter than the slowest release the report
+ *   margin is measured against
+ * @origin written with no evidence before the testing library came into this repository as one package in 20b4112
+ *   (2026-11-13), from grizzle's, superstarter's and edullm's copies
+ * @recorded 2026-11-16
+ */
+const hungCleanupGraceSeconds = 5
 
 /** A sleep on the live clock, whatever clock the caller runs under: a hang guard must not wait on a TestClock. */
 export const liveSleep = (duration: Duration.Input) =>
@@ -25,10 +81,10 @@ export const liveSleepUntil = (moment: number): Effect.Effect<void> =>
 
 /**
  * How long a search waits on a hung case's cleanup, on the live clock, before it reports the hang or goes on to its next
- * case: @bjornpagen/limits's hungCleanupGraceSeconds. The case stays among the fibers its search awaits before it
+ * case: hungCleanupGraceSeconds. The case stays among the fibers its search awaits before it
  * returns (explore.ts withCaseLives), so a cleanup past the grace delays the search's end and never outlives it.
  */
-export const HUNG_CLEANUP_GRACE = Duration.seconds(hungCleanupGraceSeconds.value)
+export const HUNG_CLEANUP_GRACE = Duration.seconds(hungCleanupGraceSeconds)
 
 /** Interrupts a fiber without waiting for its cleanup: its caller keeps the fiber and awaits it later. */
 export const abandon = <A, E>(running: Fiber.Fiber<A, E>): Effect.Effect<void> =>
@@ -262,10 +318,10 @@ const watchdogOfProcess = (): Watchdog => {
 
 /**
  * How long the main thread may go without answering the watchdog once a case in flight has passed the moment its
- * guard would have stopped it: @bjornpagen/limits's watchdogGraceMillis, measured, whose evidence says why a case that
+ * guard would have stopped it: watchdogGraceMillis, measured, whose evidence says why a case that
  * never yields ends its process here.
  */
-export const WATCHDOG_GRACE_MILLIS = watchdogGraceMillis.value
+export const WATCHDOG_GRACE_MILLIS = watchdogGraceMillis
 
 /**
  * When a case's guard would stop it: its hang limit after it began, or its search's cut, the moment its deadline

@@ -184,7 +184,6 @@ export const GENERIC_RULES = {
 	},
 	drizzle: {},
 	grizzle: {},
-	limits: {},
 	properties: {},
 	web: {
 		"jsx-a11y/anchor-ambiguous-text": "error",
@@ -347,9 +346,7 @@ const PLACES = {
 	"brands-sole-mint": { part: "core", scope: "every file" },
 	"effect-free-imports": { part: "core", scope: "effect-free code" },
 	"import-doors": { part: "core", scope: "every file" },
-	"limits-sole-mint": { part: "limits", scope: "every file" },
 	markup: { part: "web", scope: "tailwind apps" },
-	"no-bare-limit": { part: "limits", scope: "every file" },
 	"no-bare-materialized-view-joins": { part: "drizzle", scope: "every file" },
 	"no-case-list": { part: "core", scope: "every file" },
 	"no-collation": { part: "drizzle", scope: "every file" },
@@ -528,16 +525,6 @@ export const ownPlugin = <const P extends Plugin>(
 		)
 	}
 }
-
-/**
- * The test files the limit rules (no-bare-limit, limits-sole-mint) leave alone, which a repository passes as their
- * `tests`, or its own lists in their place: a test's times, widths and sizes are its own inputs, and a test may mint a
- * Limit to drive the code it tests. bench/ is no test: a benchmark's numbers are limits.
- */
-export const LIMIT_TESTS = {
-	suffixes: [".test.ts", ".test.tsx", ".fixtures.ts"],
-	directories: ["test", "tests", "fixtures"]
-} as const
 
 /** Test modules, by their suffix. */
 const TEST_FILES: ReadonlyArray<string> = Arr.map(TEST_SUFFIXES, (suffix) => `**/*${suffix}`)

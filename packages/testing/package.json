@@ -45,7 +45,8 @@
 		"./runner": "./src/runner/config.ts",
 		"./resources": "./src/resources/resources.ts",
 		"./oxlint": "./src/oxlint/plugin.ts",
-		"./workers": "./src/workers.ts"
+		"./workers": "./src/workers.ts",
+		"./vitest.config": "./vitest.config.ts"
 	},
 	"bin": {
 		"toolchain-test": "./scripts/toolchain-test.sh"
@@ -60,8 +61,6 @@
 		"codemod": "node scripts/codemod/main.ts"
 	},
 	"dependencies": {
-		"@bjornpagen/limit": "workspace:*",
-		"@bjornpagen/limits": "workspace:*",
 		"@effect/platform-node": "catalog:",
 		"@effect/vitest": "catalog:",
 		"arkregex": "catalog:",

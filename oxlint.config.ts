@@ -1,4 +1,4 @@
-import { LIMIT_TESTS, standard } from "@bjornpagen/devtools/preset"
+import { standard } from "@bjornpagen/devtools/preset"
 import {
 	CASE_LISTS,
 	CLOCK_RULES,
@@ -17,9 +17,6 @@ const ZOD = {
 	message:
 		"Zod is banned. Effect Schema admits a foreign value once at its boundary, into a type that carries the proof."
 } as const
-
-/** Where the toolchain's limits are minted and written, and the test files the limit rules leave alone. */
-const LIMITS = { packages: ["packages/limits"], tests: LIMIT_TESTS } as const
 
 /** The toolchain repository's lists for the shared standard; everything else comes from the dev tools' preset. */
 export default defineConfig(
@@ -41,8 +38,6 @@ export default defineConfig(
 				]
 			},
 			"import-doors": { doors: [] },
-			"limits-sole-mint": LIMITS,
-			"no-bare-limit": LIMITS,
 			"no-case-list": {
 				searches: [
 					...CASE_LISTS.searches,
@@ -67,23 +62,7 @@ export default defineConfig(
 			"no-raw-sql": { sources: ["packages/testing/src"], writers: [] },
 			"no-spread-argument": { tuples: [] },
 			"side-effect-free": {
-				modules: [
-					{
-						file: "packages/limit/src/limit.ts",
-						specifiers: ["@bjornpagen/limit"],
-						functions: [
-							{ name: "published", returns: "values", invokes: [] },
-							{ name: "measured", returns: "values", invokes: [] },
-							{
-								name: "derived",
-								returns: "values",
-								invokes: [{ parameter: 0, property: "compute" }]
-							},
-							{ name: "provisional", returns: "values", invokes: [] }
-						],
-						constants: []
-					}
-				]
+				modules: []
 			},
 			"single-permit-owners": { owners: [] },
 			"test-no-prose-search": {
@@ -138,12 +117,7 @@ export default defineConfig(
 			},
 			{
 				files: ["packages/testing/src/engine.bench.ts"],
-				rules: active({
-					/** The engine bench's generator ranges are its workload, the cases it times (a collection of up to 16 items,
-					 * every list of up to three digits, 1,111 cases, a shrink from ten items): data that defines what it measures,
-					 * no bound, which syntax cannot tell from one. Its cases have no hang limit, since none could hang. */
-					"devtools/no-bare-limit": "off"
-				})
+				rules: active({})
 			},
 			{
 				files: ["packages/testing/src/blocking.fixtures.ts"],

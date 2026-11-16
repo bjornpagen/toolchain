@@ -1,8 +1,7 @@
 # Contributing to the toolchain
 
-The toolchain is four workspace packages, `@bjornpagen/devtools`, `@bjornpagen/testing`, `@bjornpagen/limit` (the
-Limit and its mints) and `@bjornpagen/limits` (the toolchain's own limits), which every repository takes as the
-submodule `vendor/toolchain`. This file says how the checks run, here and in every repository that takes
+The toolchain is two workspace packages, `@bjornpagen/devtools` and `@bjornpagen/testing`, which every repository
+takes as the submodule `vendor/toolchain`. This file says how the checks run, here and in every repository that takes
 the toolchain; README.md says what a repository changes to take it.
 
 ## When each check runs
@@ -246,28 +245,14 @@ share one cache.
 
 ## Limits
 
-Every number that bounds something, here and in every repository, answers to the limits skill
-(`packages/devtools/skills/limits/SKILL.md`, linked as `.agents/skills/limits`), which keeps the indefensible-numbers
-policy. Its first question is whether a cap should exist at all: one that guards nothing named is deleted, not minted.
-What stays is a `Limit` of `@bjornpagen/limit`, `published`, `measured`, `derived` or `provisional`, minted in the
-repository's own limits package and read by its `.value`.
+Every number that bounds something, here and in every repository, answers to the indefensible-numbers skill
+(`packages/devtools/skills/indefensible-numbers/SKILL.md`, linked as `.agents/skills/indefensible-numbers`). Its first
+question is whether a cap should exist at all: one that guards nothing named is deleted. What stays is a plain constant
+in the module that uses it, its evidence in its JSDoc: `@limitKind` `published`, `measured`, `derived` or
+`provisional`, with `@owner`, `@unit`, `@scope` and the kind's tags. Review holds the policy; no rule does.
 
-The toolchain's own limits are `@bjornpagen/limits` (`packages/limits/src/limits.ts`); its README lists what it holds.
-Two rules of the devtools plugin hold that by syntax, in the limits pack (`limits()` in `toolchain.config.ts`), with
-`{ packages: ["packages/limits"], tests: LIMIT_TESTS }` as their options in `oxlint.config.ts`:
-
-- `devtools/no-bare-limit` refuses a numeric literal in a governed place outside the limits package: a value whose
-  name carries bound vocabulary, a Duration, Schedule or Effect time or count, a semaphore's permits, a timer's delay, a
-  duration as text. The not-a-limit list passes where syntax shows it.
-- `devtools/limits-sole-mint` refuses a call of a mint of `@bjornpagen/limit` outside the limits package.
-
-Test files (`*.test.ts`, `*.test.tsx`, `*.fixtures.ts`, and every `test/`, `tests/` and `fixtures/` directory) are exempt
-from both; `bench` files are not. An exception is an override block in `oxlint.config.ts` with its reason: the engine
-bench's is the only one, since its generator ranges are its workload.
-
-A shell script reads a limit from `packages/limits/limits.env`, which `src/data.ts` generates from the Limits
-(`pnpm --filter @bjornpagen/limits limits:data`); `limits:check`, in `pnpm check`, refuses the file when it differs.
-`bin/gate.sh` reads its lock poll and its daily check:full period there.
+A shell script keeps its number as a `readonly` at its top with the same tags above it: `bin/gate.sh`'s lock poll and
+its daily check:full period.
 
 A number the machine reports is read where it is used, never minted, and widths computed from it are no limit:
 

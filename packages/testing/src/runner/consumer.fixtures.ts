@@ -57,7 +57,7 @@ const repositoryOf = (packageDirectory: string): string =>
 	Arr.join(Arr.dropRight(Str.split("/")(packageDirectory), 2), "/")
 
 /** The library's packages a consumer holds, by their directory under packages/. */
-const LIBRARY = ["testing", "limits", "limit"] as const
+const LIBRARY = ["testing"] as const
 
 /** Copies every file under `from` into `to`, node_modules aside. */
 const copied = (

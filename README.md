@@ -8,68 +8,31 @@ The dev tools and the testing library that Bjorn's TypeScript repositories share
   checks) and `superstyle` (a Tailwind app's stylesheet contract). No check builds a TypeScript program but the
   typecheck.
 - `@bjornpagen/testing` (`packages/testing`): the choice-stream testing library on Effect and Vitest.
-- `@bjornpagen/limit` (`packages/limit`): the `Limit`, a number with its evidence, and its four mints, `published`,
-  `measured`, `derived` and `provisional`; pure TypeScript with no runtime dependencies.
-- `@bjornpagen/limits` (`packages/limits`): the toolchain's own limits, which the testing library and the gate read.
 
 A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at a commit; its pnpm workspace lists
-`vendor/toolchain/packages/devtools`, `vendor/toolchain/packages/testing`, `vendor/toolchain/packages/limit` and
-`vendor/toolchain/packages/limits`, so all four run from source, and it keeps its own decisions in
+`vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
-## Consumer migration: limits (2026-11-16)
+## Consumer migration: limits retired (2026-11-16)
 
-Every number a repository bounds something by becomes a `Limit` in its own limits package, read by `.value`; the
-`@limitKind` JSDoc tags and the `indefensible-numbers` skill copies are retired (Bjorn, 2026-11-16: "we can easily lint
-for this too with oxlint"). The policy is the limits skill, `vendor/toolchain/packages/devtools/skills/limits/SKILL.md`;
-its first section decides whether a cap should exist at all, and a cap that guards nothing is deleted, not minted. Pin
-`vendor/toolchain` at a commit whose README holds this section, then:
+The limits packages, `@bjornpagen/limit`, the `limits()` pack and its two rules (`no-bare-limit`, `limits-sole-mint`)
+are gone (Bjorn, 2026-11-16: "hard retire and totally delete the limit package from every project, and codemod inline
+them all back into jsdoc"). Every limit is a plain constant in the module that uses it, its evidence in its JSDoc
+(`@limitKind` and the kind's tags), as the `indefensible-numbers` skill says. Before you move `vendor/toolchain` past
+this section:
 
-1. **Workspace.** Add `vendor/toolchain/packages/limit` and `vendor/toolchain/packages/limits` to
-   `pnpm-workspace.yaml`'s `packages`: the testing library depends on `@bjornpagen/limits` at run time, so an install
-   without them fails. Run `pnpm install`.
-2. **Your limits package.** Create `packages/limits`, named `<scope>/limits` (`@edullm/limits`, `@grizzle/limits`): a
-   package.json with `"type": "module"`, `"sideEffects": false`, `"exports": { ".": "./src/limits.ts" }`, the usual
-   `typecheck`, `typecheck:full` and `oxlint` scripts, and `"dependencies": { "@bjornpagen/limit": "workspace:*" }`; a
-   tsconfig.json that extends `@bjornpagen/devtools/tsconfig.effect-free.json` (or your own plugin-free base); and
-   `src/limits.ts`. List it in `toolchain.config.ts`'s `effectFree`, and add it to your fallow boundaries if you have
-   them. Write a short README.md there: the skill tells every agent to read it. `vendor/toolchain/packages/limits` is a
-   worked example.
-3. **Mint.** For every `@limitKind` tag and every number the rules below refuse, ask the skill's five questions first;
-   delete what guards nothing, make a choice the caller's required input, and mint what stays in `src/limits.ts` with
-   `published`, `measured`, `derived` or `provisional` (`import { published, ... } from "@bjornpagen/limit"`). At the
-   old site, import the limit and read `.value` (a local constant holding exactly `limit.value` is fine). Delete every
-   `@limitKind` tag. A measured record whose revalidation has fired (another machine, an upgrade) is re-measured or
-   minted `provisional` with the record in `origin`, never kept as `measured`.
-4. **Non-TypeScript readers.** A shell script, SQL or config that needs a limit reads a file your limits package
-   generates from its Limits, with a script that checks the file matches, run by `pnpm check` (the toolchain's
-   `packages/limits/src/data.ts`, `limits.env` and `limits:check` are the example).
-5. **Rules.** Add `limits()` (from `@bjornpagen/devtools/config`) to `toolchain.config.ts`'s `packs`, and in
-   `oxlint.config.ts`:
-
-   ```ts
-   import { LIMIT_TESTS, standard } from "@bjornpagen/devtools/preset"
-
-   const LIMITS = { packages: ["packages/limits"], tests: LIMIT_TESTS } as const
-   // lintConfig's plugin:
-   "no-bare-limit": LIMITS,
-   "limits-sole-mint": LIMITS,
-   ```
-
-   `packages` lists every limits package (a repository with two names both). `tests` is the test files both rules
-   leave alone; `LIMIT_TESTS` is `*.test.ts`, `*.test.tsx`, `*.fixtures.ts` and every `test/`, `tests/` and `fixtures/`
-   directory at any depth, and a repository passes its own `{ suffixes, directories }` to change it. `bench` files are
-   in scope. A number the rule refuses that the skill says is no limit (a format's width, a layout) is written so
-   syntax shows it, with a `@formatConstant` JSDoc or a closed-vocabulary type; a whole file whose numbers are data the
-   rule cannot tell from bounds (a bench's workload) gets an override block with its reason. `pnpm check` must lint
-   clean.
-
-6. **Skill.** Delete `.agents/skills/indefensible-numbers` and link the limits skill in its place:
-   `ln -s ../../vendor/toolchain/packages/devtools/skills/limits .agents/skills/limits` (`.claude/skills` follows where
-   it links to `.agents/skills`). Point AGENTS.md, CLAUDE.md and CONTRIBUTING at it, and drop any prose that names
-   `@limitKind`.
-7. **testWorkers.** Unchanged: `@bjornpagen/testing/workers`'s `testWorkers` is what the machine reports, never a
-   Limit; a repository that minted its worker count reads `availableParallelism()` or `testWorkers` instead.
+1. **Your limits package.** Turn every mint back into a constant next to its readers and delete the package (the retire
+   codemod did this for every repository on 2026-11-16: a limit with one reader goes to that module; with several in a
+   package, to the one that reads it most; across packages, to the lowest package the others depend on).
+2. **Workspace.** Drop `vendor/toolchain/packages/limit` and `vendor/toolchain/packages/limits` from
+   `pnpm-workspace.yaml`, and `@bjornpagen/limit` from every package.json; run `pnpm install`.
+3. **Rules.** Drop `limits()` from `toolchain.config.ts`'s `packs`, and `no-bare-limit`, `limits-sole-mint` and
+   `LIMIT_TESTS` from `oxlint.config.ts`.
+4. **Non-TypeScript readers.** A script that read a generated limits file holds its literal with the evidence above it.
+5. **Skill.** Replace `.agents/skills/limits` with
+   `ln -s ../../vendor/toolchain/packages/devtools/skills/indefensible-numbers .agents/skills/indefensible-numbers`.
+6. **testing.** The testing library takes plain numbers where it took a `Limit` (a property's `caseDeadline`, among
+   them): pass the constant.
 
 ## Consumer migration: the test system's lints and gates (2026-11-16)
 

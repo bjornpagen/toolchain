@@ -1,4 +1,3 @@
-import type { Limit } from "@bjornpagen/limit"
 import type { NodeServices } from "@effect/platform-node/NodeServices"
 import { Array as Arr, Brand, Effect, Formatter, Option, type Scope } from "effect"
 import type { NoCommands, StatefulMachine, StatefulSpec } from "#commands.ts"
@@ -134,13 +133,13 @@ type Stated<S, F extends string, N extends Needs, E> = Readonly<{
 	 * How long one of its cases may run, in milliseconds, when the runner's case deadline (caseDeadlineMillis) is too
 	 * short for its honest work: a Limit, with the evidence that its cases take that long. Without one, the runner's.
 	 */
-	caseDeadline?: Limit
+	caseDeadline?: number
 	/**
 	 * How many steered cases its search may run while a required situation is unreached, when the runner's
 	 * (steeredCases) is too few for its situations (a property that requires more situations than the runner's witnesses
 	 * can reach one each): a Limit, with the evidence that its situations need that many. Without one, the runner's.
 	 */
-	steeredCases?: Limit
+	steeredCases?: number
 }>
 
 /**
@@ -351,7 +350,7 @@ const exploredAs =
 	}
 
 /** The runner's limits a property may replace with a Limit it cites, each the runner's where it cites none. */
-type Cited = Readonly<{ caseDeadline?: Limit; steeredCases?: Limit }>
+type Cited = Readonly<{ caseDeadline?: number; steeredCases?: number }>
 
 /** A search run under the limits a property cites in place of the runner's, and the runner's otherwise. */
 const citedIn =
@@ -360,8 +359,8 @@ const citedIn =
 		...run,
 		limits: {
 			...run.limits,
-			deadline: cited.caseDeadline?.value ?? run.limits.deadline,
-			steered: cited.steeredCases?.value ?? run.limits.steered
+			deadline: cited.caseDeadline ?? run.limits.deadline,
+			steered: cited.steeredCases ?? run.limits.steered
 		}
 	})
 

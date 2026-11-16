@@ -19,17 +19,15 @@ export type Rejected = Readonly<{
 	diagnostics: Readonly<Record<string, string>>
 }>
 
-/** A pack beside the core: the SQL and Drizzle rules of a repository that owns an application database, grizzle's rules,
- * the limit rules of a repository that keeps its limits in a limits package (no-bare-limit and limits-sole-mint), the
+/** A pack beside the core: the SQL and Drizzle rules of a repository that owns an application database, grizzle's rules, the
  * web rules of a repository with React apps (the React, jsx-a11y and Next plugins with the React Compiler's
  * rules, the browser rules, each Tailwind app's class, markup and paint rules, and the style linter's stylesheet
  * contract), or the properties pack of a repository whose tests are the toolchain runner's properties. The web pack
- * carries each app's style names; the drizzle, grizzle and limits packs' names are the repository's oxlint.config.ts's,
+ * carries each app's style names; the drizzle and grizzle packs' names are the repository's oxlint.config.ts's,
  * given to the preset's `lintConfig`. */
 export type Pack =
 	| Readonly<{ pack: "drizzle" }>
 	| Readonly<{ pack: "grizzle" }>
-	| Readonly<{ pack: "limits" }>
 	| Readonly<{ pack: "properties" }>
 	| Readonly<{ pack: "web"; options: WebOptions }>
 
@@ -46,11 +44,6 @@ export const drizzle = (): PackOf<"drizzle"> => ({ pack: "drizzle" })
 /** The grizzle pack. Its rules are the oxlint plugin's, so the repository's names for them are its oxlint.config.ts's,
  * and the pack takes none here. */
 export const grizzle = (): PackOf<"grizzle"> => ({ pack: "grizzle" })
-
-/** The limits pack, which a repository runs once its limits live in its limits package (packages/limits): no-bare-limit
- * and limits-sole-mint. Their names, the limits packages and the test files, are the repository's oxlint.config.ts's,
- * and the pack takes none here. */
-export const limits = (): PackOf<"limits"> => ({ pack: "limits" })
 
 /**
  * The properties pack, which a repository's conversion to the toolchain's runner turns on: its test modules hold

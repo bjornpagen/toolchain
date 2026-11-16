@@ -1,4 +1,3 @@
-import { jsonBranchMax, jsonKeyMax, jsonStringMax } from "@bjornpagen/limits"
 import { Array as Arr, BigInt as BigInteger, pipe, Record as Rec, String as Str } from "effect"
 import {
 	array,
@@ -14,6 +13,60 @@ import {
 	string,
 	weighted
 } from "#gen.ts"
+
+/**
+ * The longest string a `json` value holds (values.ts): printable ASCII, so a value stays readable when printed.
+ *
+ * @limitKind provisional
+ * @owner the choice-stream testing library (values.ts, the json generator)
+ * @unit characters
+ * @scope each string scalar of one drawn json value
+ * @guards without a most, a drawn string has no end, so a json value's cases and their printed reports grow without
+ *   bound
+ * @measure run the consumers' properties that draw json against their plants at most-lengths of 4, 8, 32 and 128, and
+ *   keep the smallest that turns as many red, measuring the cases' cost beside; or, better, make it the generator's
+ *   caller input, required, as `depth` is
+ * @origin written with no evidence before the testing library came into this repository as one package in 20b4112
+ *   (2026-11-13), from grizzle's, superstarter's and edullm's copies
+ * @recorded 2026-11-16
+ */
+const jsonStringMax = 8
+
+/**
+ * The longest key a `json` object holds (values.ts), from six letters, so keys repeat and collide.
+ *
+ * @limitKind provisional
+ * @owner the choice-stream testing library (values.ts, the json generator)
+ * @unit characters
+ * @scope each key of one drawn json object
+ * @guards without a most, keys have no end and almost never repeat, so the objects that collide on a key, which the
+ *   generator draws on purpose, would hardly be drawn
+ * @measure draw json objects at most-lengths of 1, 2, 3 and 5 and measure how often two keys of one object collide;
+ *   keep the length at which collisions are common without every object having one; or, better, make it the
+ *   generator's caller input, required, as `depth` is
+ * @origin written with no evidence before the testing library came into this repository as one package in 20b4112
+ *   (2026-11-13), from grizzle's, superstarter's and edullm's copies
+ * @recorded 2026-11-16
+ */
+const jsonKeyMax = 3
+
+/**
+ * The most items a `json` array, and the most keys a `json` object, holds at each level (values.ts).
+ *
+ * @limitKind provisional
+ * @owner the choice-stream testing library (values.ts, the json generator)
+ * @unit items or keys
+ * @scope each array and each object of one drawn json value, at every level of its nesting
+ * @guards without a most, a nested value's size grows with its width to the power of its depth, so a json value of
+ *   depth two or three could hold thousands of nodes
+ * @measure run the consumers' properties that draw json against their plants at most-widths of 2, 3, 5 and 8, and keep
+ *   the smallest that turns as many red, measuring the cases' cost beside; or, better, make it the generator's caller
+ *   input, required, as `depth` is
+ * @origin written with no evidence before the testing library came into this repository as one package in 20b4112
+ *   (2026-11-13), from grizzle's, superstarter's and edullm's copies
+ * @recorded 2026-11-16
+ */
+const jsonBranchMax = 3
 
 const LIMB = 0x1_0000_0000n
 
@@ -231,14 +284,14 @@ const jsonScalar = oneOf<Json>([
 	constant(null),
 	boolean,
 	double(-Number.MAX_VALUE, Number.MAX_VALUE),
-	string(codePoint(0x20, 0x7e), { min: 0, max: jsonStringMax.value })
+	string(codePoint(0x20, 0x7e), { min: 0, max: jsonStringMax })
 ])
 
-const jsonKey = string(codePoint(0x61, 0x66), { min: 0, max: jsonKeyMax.value })
+const jsonKey = string(codePoint(0x61, 0x66), { min: 0, max: jsonKeyMax })
 
 /**
  * A JSON value nested at most `depth` levels: scalars, arrays of up to three items and objects of up to three keys
- * drawn from a few letters, so keys repeat and collide (@bjornpagen/limits's jsonStringMax, jsonKeyMax and
+ * drawn from a few letters, so keys repeat and collide (jsonStringMax, jsonKeyMax and
  * jsonBranchMax). Shrinks toward `null`.
  */
 export const json = (depth: number): Gen<Json> =>
@@ -246,11 +299,11 @@ export const json = (depth: number): Gen<Json> =>
 		jsonScalar,
 		(inner) =>
 			oneOf<Json>([
-				array(inner, { min: 0, max: jsonBranchMax.value }),
+				array(inner, { min: 0, max: jsonBranchMax }),
 				map(
 					array((source) => [source.draw(jsonKey), source.draw(inner)] as const, {
 						min: 0,
-						max: jsonBranchMax.value
+						max: jsonBranchMax
 					}),
 					Rec.fromEntries
 				)

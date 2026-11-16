@@ -1,14 +1,47 @@
-import { nudgeMax, pointEditsMax } from "@bjornpagen/limits"
 import { Option } from "effect"
 import { between, type Words } from "#random.ts"
 import type { Tape } from "#tape.ts"
 
+/**
+ * How many decisions one mutation of a case edits in place, at most, before its one structural edit (mutate.ts).
+ *
+ * @limitKind provisional
+ * @owner the choice-stream testing library (mutate.ts, a case's mutation)
+ * @unit point edits
+ * @scope one mutation of one case's tape
+ * @guards without a most, a mutation's run of point edits, which halves in likelihood with each, could edit a tape all
+ *   over, so a mutant would keep nothing of the seed it came from
+ * @measure fuzz the library's plants for a fixed budget with at most 1, 2, 4 and 8 point edits a mutation, several
+ *   seeds each, and keep the most that turns the most plants red soonest
+ * @origin written with no evidence before the testing library came into this repository as one package in 20b4112
+ *   (2026-11-13), from grizzle's, superstarter's and edullm's copies
+ * @recorded 2026-11-16
+ */
+const pointEditsMax = 4
+
+/**
+ * How far a nudge moves one decision of a mutated case, at most (mutate.ts).
+ *
+ * @limitKind provisional
+ * @owner the choice-stream testing library (mutate.ts, a case's mutation)
+ * @unit steps of a decision's range
+ * @scope one nudge of one decision of a mutated case
+ * @guards without a most, a nudge is a redraw anywhere in the decision's range, so a mutation could not explore the
+ *   values beside one that reached something new
+ * @measure fuzz the library's plants for a fixed budget with nudges of at most 4, 16, 64 and 256 steps, several seeds
+ *   each, and keep the most that turns the most plants red soonest
+ * @origin written with no evidence before the testing library came into this repository as one package in 20b4112
+ *   (2026-11-13), from grizzle's, superstarter's and edullm's copies
+ * @recorded 2026-11-16
+ */
+const nudgeMax = 16
+
 /** The values a mutated case replays before its fresh decisions take over. */
 export type Mutant = Readonly<{ values: Float64Array; length: number }>
 
-/** How many decisions one mutation edits in place, at most, before its one structural edit: @bjornpagen/limits's
+/** How many decisions one mutation edits in place, at most, before its one structural edit:
  * pointEditsMax. */
-const MAX_POINT_EDITS = pointEditsMax.value
+const MAX_POINT_EDITS = pointEditsMax
 
 /**
  * How many decisions a mutation edits in place: one half the time, two a quarter of the time, and so on up to the most,
@@ -22,8 +55,8 @@ const pointEditsOf = (words: Words): number => {
 	return edits
 }
 
-/** How far a nudge moves a decision, at most: @bjornpagen/limits's nudgeMax. */
-const MAX_NUDGE = nudgeMax.value
+/** How far a nudge moves a decision, at most: nudgeMax. */
+const MAX_NUDGE = nudgeMax
 
 /** A decision's value moved to one end of its range, nudged, or redrawn anywhere in it. */
 const pointEdit = (tape: Tape, values: Float64Array, words: Words) => {

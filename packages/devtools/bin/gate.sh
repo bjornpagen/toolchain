@@ -69,21 +69,34 @@ key_of() {
 
 cache="$cache_root/$(key_of "$common_dir")"
 
-# The limits the gate reads, GATE_LOCK_POLL_SECONDS and GATE_FULL_CHECK_DAYS: the toolchain's packages/limits/limits.env,
-# which packages/limits generates from its Limits and `pnpm check` holds to them. It sits beside the dev tools, found from
-# this script's own path through any link to it (node_modules/.bin/toolchain-gate).
-script=$0
-while [ -L "$script" ]; do
-	target=$(readlink -- "$script")
-	case $target in
-		/*) script=$target ;;
-		*) script=$(dirname -- "$script")/$target ;;
-	esac
-done
-limits_env=$(dirname -- "$script")/../../limits/limits.env
-[ -f "$limits_env" ] || die "$limits_env is missing: the toolchain's limits package generates it (pnpm limits:data)"
-# shellcheck source=../../limits/limits.env
-. "$limits_env"
+# How long the gate waits between two looks at a snapshot's lock that another run holds (devtools/bin/gate.sh).
+#
+# @limitKind provisional
+# @owner the dev tools' gate (packages/devtools/bin/gate.sh, lock)
+# @unit seconds
+# @scope each wait of one gate run for the run that holds its snapshot's lock
+# @guards with no wait between looks a waiting run spins a CPU for as long as the other run holds the lock, a whole
+#   `pnpm check` at the push
+# @measure time how long a waiting gate takes to start after the lock is let go, on cassowary with the hooks of
+#   several lanes waiting at once, at polls of 0.1, 0.5, 1 and 2 s, and keep the longest whose delay stays a small
+#   share of the commit gate's run
+# @origin written with the snapshot gate in e277d8d (2026-11-14), with no evidence
+# @recorded 2026-11-16
+readonly GATE_LOCK_POLL_SECONDS=1
+
+# How long the push gate's last passing check:full counts, before the next push runs check:full again (gate.sh).
+#
+# @limitKind provisional
+# @owner the dev tools' gate (packages/devtools/bin/gate.sh, the push)
+# @unit days
+# @scope the age of the push snapshot's last passing check:full, in a repository that has one
+# @guards without a period a stale result of the incremental typecheck's build info (TypeScript #64386 and #64591)
+#   could pass every push for ever; with none at all every push runs the gate from scratch
+# @measure over a few weeks of pushes, record each check:full that failed where the incremental check before it
+#   passed, and how long the build info had then been kept; choose the period below the shortest such age
+# @origin Bjorn's decision of 2026-11-15, "once a day", written with db83729, with no evidence
+# @recorded 2026-11-16
+readonly GATE_FULL_CHECK_DAYS=1
 
 # fill <git dir> <commit> <directory> <snapshot git dir> <checkout>: <directory> is a checkout of <commit>, whose git
 # directory, <snapshot git dir>, borrows <git dir>'s objects and holds HEAD at <commit>; each submodule is filled the

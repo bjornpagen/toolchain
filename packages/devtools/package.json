@@ -37,7 +37,6 @@
 		"test": "vitest run"
 	},
 	"devDependencies": {
-		"@bjornpagen/limits": "workspace:*",
 		"@bjornpagen/testing": "workspace:*",
 		"@effect/vitest": "catalog:",
 		"@types/node": "catalog:",

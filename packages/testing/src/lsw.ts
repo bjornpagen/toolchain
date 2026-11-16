@@ -1,4 +1,3 @@
-import { lswKeyMax } from "@bjornpagen/limits"
 import { Array as Arr, Formatter, Option, Schema } from "effect"
 import {
 	boolean,
@@ -14,6 +13,22 @@ import {
 	weighted
 } from "#gen.ts"
 import { bigint, type Json, json } from "#values.ts"
+
+/**
+ * The longest key a hostile throwing getter is drawn under (lsw.ts's wild values), from the lower-case letters.
+ *
+ * @limitKind provisional
+ * @owner the choice-stream testing library (lsw.ts, the wild values)
+ * @unit characters
+ * @scope the key of each drawn throwing getter
+ * @guards without a most, a drawn key has no end, so a wild value's cases and reports grow without bound
+ * @measure run the properties that draw wild values against their plants at most-lengths of 1, 4, 8 and 32, and keep
+ *   the smallest that turns as many red; or, better, make it the wild values' caller input, required
+ * @origin written with no evidence before the testing library came into this repository as one package in 20b4112
+ *   (2026-11-13), from grizzle's, superstarter's and edullm's copies
+ * @recorded 2026-11-16
+ */
+const lswKeyMax = 8
 
 /** The kinds of wild value, the simplest first: anything JavaScript can pass that a boundary's types refuse. */
 export const WILD_KINDS = [
@@ -88,13 +103,10 @@ const WILD = {
 	symbol: map(text(4), (description) => ({ kind: "symbol", description })),
 	function: constant({ kind: "function" }),
 	proxy: constant({ kind: "proxy" }),
-	"throwing-getter": map(
-		string(codePoint(0x61, 0x7a), { min: 1, max: lswKeyMax.value }),
-		(key) => ({
-			kind: "throwing-getter",
-			key
-		})
-	),
+	"throwing-getter": map(string(codePoint(0x61, 0x7a), { min: 1, max: lswKeyMax }), (key) => ({
+		kind: "throwing-getter",
+		key
+	})),
 	anything: map(json(2), (value) => ({ kind: "anything", value }))
 } as const satisfies { readonly [K in WildKind]: Gen<WildOf<K>> }
 

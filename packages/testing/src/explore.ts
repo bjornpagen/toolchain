@@ -1,4 +1,3 @@
-import { fuzzStatusEveryMillis, reportMarginMillis } from "@bjornpagen/limits"
 import {
 	Array as Arr,
 	Cause,
@@ -94,6 +93,49 @@ import {
 } from "#source.ts"
 import { type Tape, tokenOf, valuesFromToken } from "#tape.ts"
 
+/**
+ * How long before its test's deadline a search stops its work and reports (explore.ts's cut): the time from the moment
+ * it is due to stop to the moment its test's function has failed with the report, which then beats the test's own
+ * timeout. In it the search logs its report, then awaits the cleanup of every case it stopped.
+ *
+ * @limitKind provisional
+ * @owner the choice-stream testing library (explore.ts, a search's cut before its test's deadline)
+ * @unit milliseconds
+ * @scope every search under a bounded deadline (Run.deadline), in each test process alone
+ * @guards a search would work up to its test's own timeout, which fails the test as a bare timeout: the smallest
+ *   failing case a cut shrink reached, or the case a search had in flight, would go unreported; and a margin shorter
+ *   than a stopped case's cleanup loses the typed failure to the timeout
+ * @measure re-run the old record's two measurements on cassowary: about 240 cut searches with reports of 1.6 KB and 68
+ *   KB and grizzle's write-oracle literal, four test files at once and while the library's whole suite runs, timing
+ *   each from its cut to its failure leaving the test's logging; and grizzle's release of a stopped case's schema
+ *   (DROP OWNED BY, DROP ROLE, DROP SCHEMA CASCADE) at the largest size a test held and at ten times it, ten runs
+ *   each, on grizzle's PostgreSQL cluster. The margin is the slowest report and literal plus the longer of the slowest
+ *   large release and three slowest test-sized ones, with its headroom stated
+ * @origin a measured record of 2026-11-04 to 2026-11-07 on a macOS (Darwin 27.0.0) arm64 VM on 10 cores, Node 26.13.0,
+ *   Vitest 5.1.0, effect 4.1.2 and PostgreSQL 19rc1, load average 27 to 85 (packages/testing/out/print-margin/ in
+ *   superstarter's and grizzle's checkouts there): reports at most 30 ms, the literal at most 87 ms, releases at most
+ *   2,186 ms large and 801 ms test-sized, about 2,520 ms in all, with 480 ms left for late timers. The machine
+ *   changed, which its revalidation names, and its run output stayed with the VM, so the record no longer stands
+ * @recorded 2026-11-16
+ */
+const reportMarginMillis = 3000
+
+/**
+ * How often a fuzz run prints its progress (explore.ts), in milliseconds of wall time. The fuzz run is `go test -fuzz`'s
+ * in this library (its -fuzztime grammar, its corpus), so it reports as often as Go's fuzzing coordinator does: often
+ * enough that a person watching sees it move, and seldom enough that the status lines cost the run nothing.
+ *
+ * @limitKind published
+ * @owner Go 1.27.4's fuzzing coordinator (go test -fuzz), whose status interval the library's fuzz run takes
+ * @unit milliseconds
+ * @scope the wait between two status lines of one fuzz run
+ * @constraint compile-time constant
+ * @source https://github.com/golang/go/blob/go1.27.4/src/internal/fuzz/fuzz.go#L205
+ * @quote statTicker := time.NewTicker(3 * time.Second)
+ * @verified 2026-11-16
+ */
+const fuzzStatusEveryMillis = 3 * 1000
+
 /** How a run came by its seed: given in the environment to replay a run, or freshly drawn. */
 export type SeedSource = "environment" | "fresh"
 
@@ -126,9 +168,9 @@ export const noDeadline: Deadline = { kind: "unbounded" }
  * to the moment its test's function has failed with the report, which then beats the test's own timeout. In it the
  * search logs its report, then awaits the cleanup of every case it stopped (withCaseLives), so a report outlives a
  * cleanup slower than the margin, and only the typed failure is lost to the test's own timeout. It is
- * @bjornpagen/limits's reportMarginMillis, provisional since its measured record's machine was retired.
+ * reportMarginMillis, provisional since its measured record's machine was retired.
  */
-export const PRINT_MARGIN_MILLIS = reportMarginMillis.value
+export const PRINT_MARGIN_MILLIS = reportMarginMillis
 
 /** The run an exploration draws from, as the test it runs in sees it: the process's run, and its test's deadline. */
 export class Run extends Context.Service<Run, ProcessRun & Readonly<{ deadline: Deadline }>>()(
@@ -1176,8 +1218,8 @@ const liveLog = (line: string) =>
 const liveReport = (report: string) =>
 	Console.error(report).pipe(Effect.provideService(Console.Console, Console.Console.defaultValue()))
 
-/** How often a fuzz run reports its progress, in milliseconds of wall time: @bjornpagen/limits's fuzzStatusEveryMillis. */
-const STATUS_EVERY = fuzzStatusEveryMillis.value
+/** How often a fuzz run reports its progress, in milliseconds of wall time: fuzzStatusEveryMillis. */
+const STATUS_EVERY = fuzzStatusEveryMillis
 
 /** Whether a fuzz run has spent its budget, after `cases` cases and `elapsed` milliseconds. */
 const spent = (budget: FuzzBudget, cases: number, elapsed: number): boolean => {

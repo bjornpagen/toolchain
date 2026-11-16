@@ -17,7 +17,7 @@
 	},
 	"scripts": {
 		"prepare": "effect-tsgo patch",
-		"check": "turbo run typecheck:full oxlint format dead-code dedupe workspace-gate fixtures:style fixtures:oxlint fixtures:workspace-gate limits:check --continue=dependencies-successful",
+		"check": "turbo run typecheck:full oxlint format dead-code dedupe workspace-gate fixtures:style fixtures:oxlint fixtures:workspace-gate --continue=dependencies-successful",
 		"types": "turbo run typecheck",
 		"typecheck": "toolchain-typecheck",
 		"typecheck:full": "toolchain-typecheck --incremental false",
