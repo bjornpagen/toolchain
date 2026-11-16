@@ -1,6 +1,14 @@
-import { Array as Arr, Effect, Schema, Struct } from "effect"
+import { Array as Arr, Effect, Formatter, Option, Schema, Struct } from "effect"
 import type { Gen, Size, Weight } from "#gen.ts"
-import type { Case, CheckContext, ExploreSpec, Needs, Resources, Space } from "#property.ts"
+import type {
+	Case,
+	CheckContext,
+	ExploreSpec,
+	ExploreStated,
+	Needs,
+	Resources,
+	Space
+} from "#property.ts"
 import type { Source } from "#source.ts"
 import { type Swarm, weightOf } from "#swarm.ts"
 
@@ -104,8 +112,10 @@ export class StepInapplicable extends Schema.TaggedError<
 >()("StepInapplicable", { at: Schema.Finite, command: Schema.String, message: Schema.String }) {}
 
 /**
- * The system answered a step otherwise than its model predicted: it took a step the model refuses, refused one the
- * model accepts, or refused by another refusal. `predicted` and `answered` are the step's features (`StepFeature`).
+ * The system answered a step otherwise than its model allows: a planned machine's step it took where the model refuses
+ * it, refused where the model accepts it, or refused by another refusal; a reactive machine's step whose observation
+ * names no outcome the model allows there, or names one whose state cannot hold what the system showed. `allowed` are
+ * the features the model allows the step (one, for a planned machine) and `answered` the feature the system answered.
  */
 export class VerdictDiverged extends Schema.TaggedError<
 	VerdictDiverged,
@@ -113,7 +123,7 @@ export class VerdictDiverged extends Schema.TaggedError<
 >()("VerdictDiverged", {
 	at: Schema.Finite,
 	command: Schema.String,
-	predicted: Schema.String,
+	allowed: Schema.Array(Schema.String),
 	answered: Schema.String,
 	message: Schema.String
 }) {}
@@ -292,7 +302,7 @@ export const runProgram = Effect.fn("testing.commands.run")(function* <
 			return yield* VerdictDiverged.make({
 				at,
 				command,
-				predicted,
+				allowed: [predicted],
 				answered,
 				message: `step ${at}: the model predicts ${predicted}, and the system answered ${answered}`
 			})
@@ -320,44 +330,324 @@ export const programs =
 		source.draw(program(machine, size, source.draw(mix)))
 
 /**
- * A stateful property, `property.stateful(machine, spec)`: each case is a program of the machine, the constructor's
- * first argument, so the program's type is fixed before the spec is read; of `size` steps, over a swarm drawn from
- * `mix` (`programs`); and its check runs the program (runProgram) on the real system `real` builds for the case, on the
- * case's resources and in its scope, noting every step's feature (StepFeature), so a property requires the verdicts it
- * must meet among its situations; `real` may note situations of its own and draw from the case. The case fails at the
- * first step the system answers otherwise than the model, or whose real run fails.
+ * One outcome a reactive machine's model allows a step: the name the system's observation gives it, and the state it
+ * leads to from what the system showed, none when what it showed is no state this outcome allows (a value it never
+ * held, an identity it never drew).
  */
-export type StatefulSpec<M, P, V extends string, N extends Needs, F extends string, E> = Omit<
-	ExploreSpec<Program<NoInfer<P>>, StepFeature<NoInfer<P>, NoInfer<V>> | F, N, never>,
-	"check" | "space"
+export type Branch<M, O extends string, X> = Readonly<{
+	outcome: O
+	next: (shown: X) => Option.Option<M>
+}>
+
+/** An outcome whose state is `next` whatever the system showed. */
+export const branch = <M, O extends string>(outcome: O, next: M): Branch<M, O, unknown> => ({
+	outcome,
+	next: () => Option.some(next)
+})
+
+/** What the system answered a step of a reactive machine: the outcome its observation names, and what it showed. */
+export type Observation<O extends string, X> = Readonly<{ outcome: O; shown: X }>
+
+/**
+ * One rule of a reactive machine, judged by its model alone, as a planned machine's Command is:
+ * - `weight`, `applies` and `parameters` are a Command's, read in the state the run actually reached;
+ * - `judge` is every outcome the model allows the step (Branch), at least one: the system's observation chooses among
+ *   them, as nature does, so a model states what may happen, never what will.
+ */
+export interface Rule<M, P, O extends string, X> {
+	readonly weight: Weight
+	readonly applies: (model: M) => boolean
+	readonly parameters: (model: M) => Gen<P>
+	readonly judge: (model: M, parameters: P) => Arr.NonEmptyReadonlyArray<Branch<M, O, X>>
+}
+
+/**
+ * A reactive state machine, Hypothesis's rule-based state machine: the model's initial state and its rules, each
+ * named, with the parameters each takes, the closed vocabulary `O` of the outcomes its observations name and what the
+ * system shows `X`. Its steps are drawn as the run goes, each in the state the system's observations led the model
+ * to, so a model whose outcomes branch is checked as readily as one that predicts. An interface, so its type keeps
+ * its arguments.
+ */
+export interface ReactiveMachine<M, P, O extends string, X> {
+	readonly initial: M
+	readonly rules: { readonly [K in keyof P]: Rule<M, P[K], O, X> }
+}
+
+/**
+ * How a reactive machine's rules run on the real system: each step, given its parameters, the model's state before it
+ * and the outcomes the model allows, acts and answers what the system observed; `holds` then checks the system is in
+ * the state the outcome its observation chose leads to. Supplied when a case runs, so it closes over the case's
+ * resources.
+ */
+export type ReactiveReal<M, P, O extends string, X, E, R> = Readonly<{
+	steps: {
+		readonly [K in keyof P]: (
+			parameters: P[K],
+			before: M,
+			allowed: Arr.NonEmptyReadonlyArray<Branch<M, O, X>>
+		) => Effect.Effect<Observation<O, X>, E, R>
+	}
+	holds: (after: M) => Effect.Effect<void, E, R>
+}>
+
+/** A reactive machine's step as a feature: its rule and the outcome the system's observation named, `"send dropped"`. */
+export type OutcomeFeature<P, O extends string> = `${CommandName<P>} ${O}`
+
+/** A reactive run: the model's final state, and each step's feature in order. */
+export type Reacted<M, P, O extends string> = Readonly<{
+	model: M
+	outcomes: ReadonlyArray<OutcomeFeature<P, O>>
+}>
+
+/**
+ * The next step of a reactive run, drawn in the state `model` the run reached, as one span, so shrinking deletes a
+ * step and simplifies its draws, and the steps after it are drawn again in the state the edit leaves: none where the
+ * run ends. A run takes `size.min` steps, then before each further step draws whether it goes on (stopping is the
+ * simplest value, so a shrink ends a run sooner) until `size.max`; it also ends where no rule the swarm turns on
+ * applies. A rule is picked among those on by weight and presence, again among those that apply when it does not, as
+ * `program` picks a command.
+ */
+const reactiveStep =
+	<M, P, O extends string, X>(
+		machine: ReactiveMachine<M, P, O, X>,
+		size: Size,
+		drawn: Swarm<CommandName<P>>,
+		model: M,
+		at: number
+	): Gen<Option.Option<Step<P>>> =>
+	(source) => {
+		const names: ReadonlyArray<CommandName<P>> = Struct.keys(machine.rules)
+		const on = Arr.flatMap(names, (name) => {
+			const presence = weightOf(drawn, name)
+			return presence > 0 ? [[name, machine.rules[name].weight * presence] as const] : []
+		})
+		const applicable = Arr.filter(on, ([name]) => machine.rules[name].applies(model))
+		if (
+			at >= size.max ||
+			!Arr.isReadonlyArrayNonEmpty(on) ||
+			!Arr.isReadonlyArrayNonEmpty(applicable)
+		) {
+			return Option.none()
+		}
+		return source.span("element", () => {
+			if (at >= size.min && source.pick(0, size.max - size.min) === 0) {
+				return Option.none()
+			}
+			const named = pickOf(source, on)
+			const rule = machine.rules[named].applies(model) ? named : pickOf(source, applicable)
+			const step: StepOf<P>[typeof rule] = {
+				command: rule,
+				parameters: source.draw(machine.rules[rule].parameters(model))
+			}
+			return Option.some(step)
+		})
+	}
+
+/** The outcomes a rule allows a step, as features, for a divergence's report. */
+const allowedOf = <M, P, O extends string, X>(
+	rule: CommandName<P>,
+	allowed: Arr.NonEmptyReadonlyArray<Branch<M, O, X>>
+): ReadonlyArray<OutcomeFeature<P, O>> =>
+	Arr.dedupe(Arr.map(allowed, (outcome): OutcomeFeature<P, O> => `${rule} ${outcome.outcome}`))
+
+/**
+ * Runs a reactive machine on the real system as its steps are drawn: each step is drawn from the case (`draw`, its own
+ * tape) in the state the run reached (reactiveStep), the model judges it, its real run acts and answers an
+ * observation, and the outcome the observation names, whose state can hold what the system showed, is taken: the first
+ * such of the outcomes the model allows, in the order it allows them; `holds` checks the system is in that outcome's
+ * state, and the model advances to it. It succeeds with the model's final state and every step's feature; it fails
+ * with the first step whose run fails, or with `VerdictDiverged` for the first step the system answered with no outcome
+ * the model allows.
+ */
+export const runReactive = Effect.fn("testing.commands.react")(function* <
+	M,
+	P,
+	O extends string,
+	X,
+	E,
+	R
+>(
+	machine: ReactiveMachine<M, P, O, X>,
+	real: ReactiveReal<M, P, O, X, E, R>,
+	size: Size,
+	drawn: Swarm<CommandName<P>>,
+	draw: <A>(generator: Gen<A>) => A
+) {
+	const runStep = <K extends CommandName<P>>(
+		rule: K,
+		parameters: P[K],
+		before: M,
+		allowed: Arr.NonEmptyReadonlyArray<Branch<M, O, X>>
+	) => real.steps[rule](parameters, before, allowed)
+	let model = machine.initial
+	const outcomes: Array<OutcomeFeature<P, O>> = []
+	for (let at = 0; ; at += 1) {
+		const step = draw(reactiveStep(machine, size, drawn, model, at))
+		if (Option.isNone(step)) {
+			break
+		}
+		const { command: rule, parameters } = step.value
+		const allowed = machine.rules[rule].judge(model, parameters)
+		const observed = yield* runStep(rule, parameters, model, allowed)
+		const answered: OutcomeFeature<P, O> = `${rule} ${observed.outcome}`
+		const taken = Arr.findFirst(allowed, (outcome) =>
+			outcome.outcome === observed.outcome ? outcome.next(observed.shown) : Option.none()
+		)
+		if (Option.isNone(taken)) {
+			const features = allowedOf(rule, allowed)
+			return yield* VerdictDiverged.make({
+				at,
+				command: rule,
+				allowed: features,
+				answered,
+				message: Arr.contains(features, answered)
+					? `step ${at}: the system answered ${answered}, showing ${Formatter.format(observed.shown)}, which the model's ${answered} there does not allow`
+					: `step ${at}: the model allows ${Arr.join(features, " or ")}, and the system answered ${answered}`
+			})
+		}
+		yield* real.holds(taken.value)
+		outcomes.push(answered)
+		model = taken.value
+	}
+	const reacted: Reacted<M, P, O> = { model, outcomes }
+	return reacted
+})
+
+declare const noCommand: unique symbol
+
+/**
+ * The parameters of the kind of machine a stateful property does not run: no command name (its one key is a symbol), so
+ * that kind's step features are none, and property.stateful's defaults for the kind it is not given.
+ */
+export type NoCommands = Readonly<{ [noCommand]: never }>
+
+/** The command names of a stateful property's machine, of either kind (the other kind's are none). */
+type NamesOf<PP, PR> = CommandName<PP> | CommandName<PR>
+
+/**
+ * A stateful property's machine with the real system it runs on, by the kind of machine, its first argument:
+ * - `planned`: a Machine, whose programs are drawn whole before they run, so a case is its program, printed and kept
+ *   as the literal it is; its real (Real) checks the state the model's one verdict claims;
+ * - `reactive`: a ReactiveMachine, whose steps are drawn as the run goes, so a case is its swarm and its steps are its
+ *   draws, printed beside it; its real (ReactiveReal) answers observations, whose outcome the model's branches choose.
+ * `real` builds the system on the case's resources, in its scope, and may note situations of its own and draw from the
+ * case. The machine and its real are one value, so a machine is never run on the other kind's real.
+ */
+export type StatefulMachine<
+	M,
+	PP,
+	V extends string,
+	PR,
+	O extends string,
+	X,
+	N extends Needs,
+	F extends string,
+	E
+> =
+	| Readonly<{
+			kind: "planned"
+			machine: Machine<M, PP, V>
+			real: (
+				resources: Resources<N>,
+				c: Case<F>
+			) => Effect.Effect<
+				Real<NoInfer<M>, NoInfer<PP>, NoInfer<V>, E, CheckContext>,
+				E,
+				CheckContext
+			>
+	  }>
+	| Readonly<{
+			kind: "reactive"
+			machine: ReactiveMachine<M, PR, O, X>
+			real: (
+				resources: Resources<N>,
+				c: Case<F>
+			) => Effect.Effect<
+				ReactiveReal<NoInfer<M>, NoInfer<PR>, NoInfer<O>, NoInfer<X>, E, CheckContext>,
+				E,
+				CheckContext
+			>
+	  }>
+
+/**
+ * What a stateful property states beside its machine: programs of `size` steps over a swarm drawn from `mix`
+ * (`swarm(names)` for each case its own lopsided mix, `constant(fullSwarm(names))` every command at its weight), and
+ * what every property states, its situations among its machine's step features (StepFeature, or OutcomeFeature) and
+ * its real's own notes. A case prints in its structural form.
+ */
+export type StatefulSpec<
+	PP,
+	V extends string,
+	PR,
+	O extends string,
+	N extends Needs,
+	F extends string
+> = Omit<
+	ExploreStated<
+		never,
+		StepFeature<NoInfer<PP>, NoInfer<V>> | OutcomeFeature<NoInfer<PR>, NoInfer<O>> | F,
+		N,
+		never
+	>,
+	"check" | "show"
 > &
 	Readonly<{
 		size: Size
-		mix: Gen<Swarm<CommandName<NoInfer<P>>>>
-		real: (
-			resources: Resources<N>,
-			c: Case<F>
-		) => Effect.Effect<Real<NoInfer<M>, NoInfer<P>, NoInfer<V>, E, CheckContext>, E, CheckContext>
+		mix: Gen<Swarm<NamesOf<NoInfer<PP>, NoInfer<PR>>>>
 	}>
 
 /**
- * The exploration a stateful property is: the machine's programs as its space, its needs, situations, oracle, kept
- * cases and kills as stated, and a check that runs the case's program on its real system and notes each step's
+ * The exploration a stateful property is, handed to `explored` (CORE's constructor), whatever its case type: a planned
+ * machine's programs as its space, and a check that runs the case's program (runProgram); or a reactive machine's
+ * swarms as its space, and a check that runs its steps as they are drawn (runReactive). Either notes each step's
  * feature.
  */
-export const statefulExplore = <M, P, V extends string, N extends Needs, F extends string, E>(
-	machine: Machine<M, P, V>,
-	spec: StatefulSpec<M, P, V, N, F, E>
-): ExploreSpec<Program<P>, StepFeature<P, V> | F, N, E | StepInapplicable | VerdictDiverged> => {
-	const { size, mix, real, ...stated } = spec
-	return {
-		...stated,
-		space: programs(machine, size, mix),
-		check: (resources, c) => (steps) =>
-			Effect.gen(function* () {
-				const system = yield* real(resources, c)
-				const ran = yield* runProgram(machine, system, steps)
-				c.noteAll(ran.verdicts)
+export const statefulExplore = <
+	M,
+	PP,
+	V extends string,
+	PR,
+	O extends string,
+	X,
+	N extends Needs,
+	F extends string,
+	E,
+	Built
+>(
+	machine: StatefulMachine<M, PP, V, PR, O, X, N, F, E>,
+	spec: StatefulSpec<PP, V, PR, O, N, F>,
+	explored: <S>(
+		explore: ExploreSpec<
+			S,
+			StepFeature<PP, V> | OutcomeFeature<PR, O> | F,
+			N,
+			E | StepInapplicable | VerdictDiverged
+		>
+	) => Built
+): Built => {
+	const { size, mix, ...stated } = spec
+	switch (machine.kind) {
+		case "planned":
+			return explored({
+				...stated,
+				space: programs(machine.machine, size, mix),
+				check: (resources, c) => (steps) =>
+					Effect.gen(function* () {
+						const system = yield* machine.real(resources, c)
+						const ran = yield* runProgram(machine.machine, system, steps)
+						c.noteAll(ran.verdicts)
+					})
+			})
+		case "reactive":
+			return explored({
+				...stated,
+				space: mix,
+				check: (resources, c) => (drawn) =>
+					Effect.gen(function* () {
+						const system = yield* machine.real(resources, c)
+						const reacted = yield* runReactive(machine.machine, system, size, drawn, c.draw)
+						c.noteAll(reacted.outcomes)
+					})
 			})
 	}
 }

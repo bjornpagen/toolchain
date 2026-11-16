@@ -6,6 +6,15 @@ import { Array as Arr, Effect, Exit, Formatter, Option, Order, Schema, Struct } 
 import { assertTrue, deepStrictEqual, strictEqual } from "#assert.ts"
 import { everyCase, everyValue, type Fraction, fraction, plus, shareOf } from "#chance.fixtures.ts"
 import {
+	CHANNEL,
+	CHANNEL_FEATURES,
+	channelBuilds,
+	channelOf,
+	channelReal,
+	isRightChannel,
+	RULES
+} from "#channel.fixtures.ts"
+import {
 	anyProgram,
 	answerOf,
 	builds,
@@ -121,13 +130,13 @@ export const verdicts = property.explore(swarmedPrograms(QUEUE, { min: 0, max: 8
 				deepStrictEqual(
 					Option.map(failed, (error) =>
 						error._tag === "VerdictDiverged"
-							? [error.at, error.command, error.predicted, error.answered]
+							? [error.at, error.command, error.allowed, error.answered]
 							: [error._tag]
 					),
 					Option.some([
 						firstLie.value,
 						step.command,
-						stepFeature<QueueParameters, QueueRefusal>(step.command, answerOf(verdict)),
+						[stepFeature<QueueParameters, QueueRefusal>(step.command, answerOf(verdict))],
 						stepFeature<QueueParameters, QueueRefusal>(step.command, lieAbout(verdict))
 					])
 				)
@@ -166,29 +175,38 @@ export const verdicts = property.explore(swarmedPrograms(QUEUE, { min: 0, max: 8
  * A ring buffer built right meets its queue model on every program, its refusals included: a property of
  * property.stateful, whose every step's feature is noted.
  */
-export const ringBufferMeetsQueue = property.stateful(QUEUE, {
-	size: { min: 0, max: 12 },
-	mix: swarm(COMMANDS),
-	needs: {},
-	real: () => Effect.sync(() => realOf(ringBuffer(rightly))),
-	situations: STEP_FEATURES,
-	oracle: { kind: "second-implementation", name: "the bounded queue model's verdicts and states" },
-	kept: [],
-	kills: [
-		{
-			file: "packages/testing/src/commands.ts",
-			original: '\t\tcase "refused":\n\t\t\treturn verdict',
-			replacement: '\t\tcase "refused":\n\t\t\treturn took',
-			why: "A step the model refuses is predicted to be taken, so a correct system's refusal diverges."
+export const ringBufferMeetsQueue = property.stateful(
+	{
+		kind: "planned",
+		machine: QUEUE,
+		real: () => Effect.sync(() => realOf(ringBuffer(rightly)))
+	},
+	{
+		size: { min: 0, max: 12 },
+		mix: swarm(COMMANDS),
+		needs: {},
+		situations: STEP_FEATURES,
+		oracle: {
+			kind: "second-implementation",
+			name: "the bounded queue model's verdicts and states"
 		},
-		{
-			file: "packages/testing/src/commands.ts",
-			original: "\t\t\t\tc.noteAll(ran.verdicts)\n",
-			replacement: "",
-			why: "property.stateful notes no step's feature, so no required verdict is reached."
-		}
-	]
-})
+		kept: [],
+		kills: [
+			{
+				file: "packages/testing/src/commands.ts",
+				original: '\t\tcase "refused":\n\t\t\treturn verdict',
+				replacement: '\t\tcase "refused":\n\t\t\treturn took',
+				why: "A step the model refuses is predicted to be taken, so a correct system's refusal diverges."
+			},
+			{
+				file: "packages/testing/src/commands.ts",
+				original: "\t\t\t\tc.noteAll(ran.verdicts)\n",
+				replacement: "",
+				why: "property.stateful notes no step's feature, so no required verdict is reached."
+			}
+		]
+	}
+)
 
 /**
  * Each command is drawn as often as its weight times its presence, a pick it cannot write drawn again among those it
@@ -265,16 +283,22 @@ export const shrinksToShortest = property.exhaust(finite(builds), {
 			const space = programs(QUEUE, { min: 0, max: 12 }, swarm(COMMANDS))
 			const id = `commands.test.ts#shrinksToShortest/${Formatter.format(build)}`
 			const verdict = yield* searchInline(
-				property.stateful(QUEUE, {
-					size: { min: 0, max: 12 },
-					mix: swarm(COMMANDS),
-					needs: {},
-					real: () => Effect.sync(() => realOf(ringBuffer(build))),
-					situations: [],
-					oracle: { kind: "specification", name: "a ring buffer built as the case says" },
-					kept: [],
-					kills: []
-				}),
+				property.stateful(
+					{
+						kind: "planned",
+						machine: QUEUE,
+						real: () => Effect.sync(() => realOf(ringBuffer(build)))
+					},
+					{
+						size: { min: 0, max: 12 },
+						mix: swarm(COMMANDS),
+						needs: {},
+						situations: [],
+						oracle: { kind: "specification", name: "a ring buffer built as the case says" },
+						kept: [],
+						kills: []
+					}
+				),
 				inlineRun(id, fnv1a32(id))
 			)
 			if (isRight(build)) {
@@ -342,6 +366,112 @@ export const inapplicableRefused = property.explore(anyProgram, {
 			original: `\t\tif (!machine.commands[command].applies(model)) {\n\t\t\treturn yield* StepInapplicable.make({\n\t\t\t\tat,\n\t\t\t\tcommand,\n\t\t\t\tmessage: \`step \${at} runs \${command}, which the model does not allow in its state there\`\n\t\t\t})\n\t\t}\n`,
 			replacement: "",
 			why: "A step its model does not allow there runs instead of refusing the program at it."
+		}
+	]
+})
+
+/**
+ * A lossy channel built right meets its model, whose sends may be delivered or dropped: property.stateful's reactive
+ * form, each step drawn in the state the channel's observations led the model to, the channel's capacity, which the
+ * model never reads, drawn from the case.
+ */
+export const channelMeetsModel = property.stateful(
+	{
+		kind: "reactive",
+		machine: CHANNEL,
+		real: (_resources, c) =>
+			Effect.sync(() =>
+				channelReal(
+					channelOf({ capacity: c.draw(int(1, 3)), reorders: false, leaksDropped: false })
+				)
+			)
+	},
+	{
+		size: { min: 0, max: 16 },
+		mix: swarm(RULES),
+		needs: {},
+		situations: CHANNEL_FEATURES,
+		oracle: {
+			kind: "second-implementation",
+			name: "the lossy FIFO channel's model, its outcomes chosen by the channel's observations"
+		},
+		kept: [],
+		kills: [
+			{
+				file: "packages/testing/src/commands.ts",
+				original:
+					"\t\t\toutcome.outcome === observed.outcome ? outcome.next(observed.shown) : Option.none()",
+				replacement: "\t\t\toutcome.next(observed.shown)",
+				why: "A step takes the first outcome whose state holds what the system showed, whatever outcome its observation names, so a dropped send is taken as delivered."
+			},
+			{
+				file: "packages/testing/src/commands.ts",
+				original: "\t\tconst step = draw(reactiveStep(machine, size, drawn, model, at))",
+				replacement:
+					"\t\tconst step = draw(reactiveStep(machine, size, drawn, machine.initial, at))",
+				why: "Each step is drawn in the initial state, not the state the run reached, so no peek is ever drawn."
+			},
+			{
+				file: "packages/testing/src/commands.ts",
+				original: "\t\t\t\t\t\tc.noteAll(reacted.outcomes)\n",
+				replacement: "",
+				why: "property.stateful's reactive form notes no step's feature, so no required outcome is reached."
+			}
+		]
+	}
+)
+
+/**
+ * A search over a channel built wrong, serving the newest of the messages it holds or keeping a dropped one where only
+ * its size shows it, is falsified, and one that behaves as the model's channel passes (one holding a message at most
+ * serves the newest as the oldest): every way to build one, each searched inline (runner/inline.ts) as
+ * property.stateful's reactive form.
+ */
+export const wrongChannelsCaught = property.exhaust(finite(channelBuilds), {
+	box: "every channel of capacity 1 or 2, serving the oldest message or the newest, keeping a dropped message or not",
+	needs: {},
+	situations: ["a right channel passes", "a wrong channel is falsified"],
+	check: (_resources, c) => (build) =>
+		Effect.gen(function* () {
+			const id = `commands.test.ts#wrongChannelsCaught/${Formatter.format(build)}`
+			const verdict = yield* searchInline(
+				property.stateful(
+					{
+						kind: "reactive",
+						machine: CHANNEL,
+						real: () => Effect.sync(() => channelReal(channelOf(build)))
+					},
+					{
+						size: { min: 0, max: 16 },
+						mix: swarm(RULES),
+						needs: {},
+						situations: [],
+						oracle: { kind: "specification", name: "a channel built as the case says" },
+						kept: [],
+						kills: []
+					}
+				),
+				inlineRun(id, fnv1a32(id))
+			)
+			if (isRightChannel(build)) {
+				strictEqual(verdict.kind, "explored")
+				c.note("a right channel passes")
+				return
+			}
+			strictEqual(verdict.kind === "failed" ? verdict.finding.kind : verdict.kind, "falsified")
+			c.note("a wrong channel is falsified")
+		}),
+	oracle: {
+		kind: "specification",
+		name: "a channel that reorders or keeps a dropped message is not the lossy FIFO channel its model allows"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/commands.ts",
+			original: "\t\tyield* real.holds(taken.value)\n",
+			replacement: "",
+			why: "No step checks the system holds the state its outcome leads to, so a channel that keeps a dropped message where nothing serves it passes."
 		}
 	]
 })

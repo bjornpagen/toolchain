@@ -1,6 +1,6 @@
 import type { NodeServices } from "@effect/platform-node/NodeServices"
 import { Array as Arr, Brand, Effect, Formatter, Option, type Scope } from "effect"
-import type { Machine, StatefulSpec } from "#commands.ts"
+import type { NoCommands, StatefulMachine, StatefulSpec } from "#commands.ts"
 import { statefulExplore } from "#commands.ts"
 import type { Oracle } from "#explore.ts"
 import { keyOf, type Pending, pendingAt, type Reached } from "#features.ts"
@@ -394,10 +394,20 @@ export const property = {
 		spec: InterleaveSpec<C, S, M, O, Q, A, W, N, F, E, J>
 	): Property => exploredAs("interleave")(interleaveExplore(space, spec)),
 	/** Programs of a machine's commands run against the real system and its model (commands.ts). */
-	stateful: <M, P, V extends string, N extends Needs, const F extends string, E>(
-		machine: Machine<M, P, V>,
-		spec: StatefulSpec<M, P, V, N, F, E>
-	): Property => exploredAs("stateful")(statefulExplore(machine, spec))
+	stateful: <
+		M,
+		N extends Needs,
+		const F extends string,
+		E,
+		PP = NoCommands,
+		V extends string = never,
+		PR = NoCommands,
+		O extends string = never,
+		X = never
+	>(
+		machine: StatefulMachine<M, PP, V, PR, O, X, N, F, E>,
+		spec: StatefulSpec<PP, V, PR, O, N, F>
+	): Property => statefulExplore(machine, spec, exploredAs("stateful"))
 } as const
 
 /** A harness's properties under keys, which the runner runs as `<export>/<key>`. */
