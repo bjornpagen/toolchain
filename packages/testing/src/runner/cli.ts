@@ -7,14 +7,15 @@ import {
 	Console,
 	Effect,
 	Formatter,
+	Inspectable,
 	Option,
+	Predicate,
 	Random,
 	Record as Rec,
+	Result,
 	Schema
 } from "effect"
-import { judgedLine, killsCommand, mutateCommand } from "#mutate/commands.ts"
 import { replayOf, replayTokenOf } from "#replay.ts"
-import { affected, recordedRun } from "#runner/affected.ts"
 import { HARDENED_FLAGS } from "#runner/config.ts"
 import { fuzz } from "#runner/fuzz.ts"
 import { configOf, keptValuesAt } from "#runner/load.ts"
@@ -71,7 +72,28 @@ const run = (selected: ReadonlyArray<string>) =>
 				`TEST_SEED=${seed}${drawn ? " (drawn by this run; set it to reproduce the run)" : ""}`
 			)
 			const outcome = yield* runPackage({ root, seed, reach: "full", selected })
-			const { judged, passing } = yield* recordedRun(root, selected, outcome)
+			const loaded = yield* Effect.result(affectedModule)
+			const { judged, passing } = yield* Result.match(loaded, {
+				onSuccess: (module) =>
+					Effect.map(module.recordedRun(root, selected, outcome), (settled) => ({
+						judged: Arr.map(settled.judged, module.killLine),
+						passing: settled.passing
+					})),
+				onFailure: (failure) =>
+					Effect.as(Console.log(`kills not judged and verdicts not recorded: ${failure.message}`), {
+						judged: [],
+						passing: new Set(
+							Arr.filter(
+								Arr.map(outcome.properties, (ran) => ran.id),
+								(id) =>
+									!Arr.some(
+										outcome.properties,
+										(ran) => ran.id === id && ran.verdict.kind === "failed"
+									)
+							)
+						)
+					})
+			})
 			const failed = Arr.filter(outcome.properties, (ran) => ran.verdict.kind === "failed")
 			const failing = Arr.filter(
 				Arr.dedupe(Arr.map(outcome.properties, (ran) => ran.id)),
@@ -81,7 +103,7 @@ const run = (selected: ReadonlyArray<string>) =>
 				Arr.join(
 					[
 						...Arr.map(outcome.properties, (ran) => lineOf(ran.label, ran.oracle, ran.verdict)),
-						...Arr.map(judged, judgedLine),
+						...judged,
 						...Arr.flatMap(failed, (ran) => ["", `${ran.label}:`, ...failureLines(ran.verdict)]),
 						"",
 						`${outcome.properties.length} properties, ${failing} failed, in ${Math.round(outcome.millis)} ms on ${outcome.workers.length} workers`
@@ -134,8 +156,37 @@ export class CommandFailed extends Schema.TaggedError<
 /** A command's own failures, of any kind, as CommandFailed with their report. */
 const failing = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, CommandFailed, R> =>
 	Effect.catchCause(effect, (cause) =>
-		Effect.fail(CommandFailed.make({ message: Cause.pretty(cause) }))
+		Effect.fail(
+			CommandFailed.make({
+				message: Option.match(Cause.findErrorOption(cause), {
+					onNone: () => Cause.pretty(cause),
+					onSome: (error) =>
+						Schema.is(CommandFailed)(error) ? error.message : Inspectable.toStringUnknown(error)
+				})
+			})
+		)
 	)
+
+/**
+ * The modules that load TypeScript's native compiler, an optional peer of the library: the verdict cache's
+ * (affected.ts, with closure.ts) and the mutator's (mutate/commands.ts, with mutants.ts). Only the commands that use
+ * them load them, so `run`, `replay`, `fuzz` and `keep` start without TypeScript installed.
+ */
+const affectedModule = Effect.tryPromise({
+	try: () => import("#runner/affected.ts"),
+	catch: (cause) =>
+		CommandFailed.make({
+			message: `the closure hasher did not load (TypeScript 7, an optional peer, must be installed): ${Predicate.isError(cause) ? cause.message : Inspectable.toStringUnknown(cause)}`
+		})
+})
+
+const mutateModule = Effect.tryPromise({
+	try: () => import("#mutate/commands.ts"),
+	catch: (cause) =>
+		CommandFailed.make({
+			message: `the mutator did not load (TypeScript 7, an optional peer, must be installed): ${Predicate.isError(cause) ? cause.message : Inspectable.toStringUnknown(cause)}`
+		})
+})
 
 /**
  * `keep <id> <value file>`: each value the file keeps (its default export, an array of { value, reason, since }) as the
@@ -183,9 +234,12 @@ const keep = (args: ReadonlyArray<string>) =>
 const commands: Readonly<Record<string, Command>> = {
 	run: (args) => failing(run(args)),
 	replay: (args) => failing(replay(args)),
-	kills: (args) => failing(killsCommand(root, args)),
-	mutate: (args) => failing(mutateCommand(root, args)),
-	affected: (args) => failing(affected(root, args)),
+	kills: (args) =>
+		failing(Effect.flatMap(mutateModule, (module) => module.killsCommand(root, args))),
+	mutate: (args) =>
+		failing(Effect.flatMap(mutateModule, (module) => module.mutateCommand(root, args))),
+	affected: (args) =>
+		failing(Effect.flatMap(affectedModule, (module) => module.affected(root, args))),
 	fuzz: (args) => failing(fuzz(root, args)),
 	keep: (args) => failing(keep(args))
 }

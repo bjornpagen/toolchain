@@ -1,34 +1,34 @@
 import { fileURLToPath } from "node:url"
 import { layerDigest } from "@effect/platform-node/NodeCrypto"
+import { layer as fileSystemLayer } from "@effect/platform-node/NodeFileSystem"
 import {
 	Array as Arr,
-	type Context,
+	Context,
+	Deferred,
 	Effect,
 	FileSystem,
 	Inspectable,
 	Layer,
 	Option,
+	Predicate,
 	Scope,
 	String as Str
 } from "effect"
-import {
-	type ClosureHash,
-	closuresOf,
-	nativeSyntax,
-	repoPathOf,
-	workingTree
-} from "#runner/closure.ts"
+import type { ClosureHash } from "#runner/closure-hash.ts"
 import { ModuleClosure, NeedFailed } from "#runner/services.ts"
 
 /**
- * The runner's ModuleClosure in one process: a module's import-closure hash, as closure.ts computes it for a verdict
- * key, so a need whose identity reads it (a template, by the module that declares it) changes identity exactly when
- * that module or anything it loads changes. The modules resolve under the conditions this process runs with (the
- * runner config's, which every process of a run is started with), over the workspace whose lockfile is nearest above
- * the package root: the checkout's, or a worker tree's, which then hashes the tree's files.
+ * ModuleClosure computed in this process: a module's import-closure hash, as closure.ts computes it for a verdict key,
+ * so a need whose identity reads it (a template, by the module that declares it) changes identity exactly when that
+ * module or anything it loads changes. The pool's parent holds one for the pool's root and answers every worker's
+ * request from it (runner/closure-requests.ts), so a run hashes each module once, not once a worker; an inline search
+ * holds its own. The modules resolve under the conditions this process runs with (the runner config's, which every
+ * process of a run is started with), over the workspace whose lockfile is nearest above the root: the checkout's, or
+ * a worker tree's.
  *
- * The parser starts the first time a hash is asked for, in the process's scope, and each module's hash is kept for the
- * process's life: a run's files do not change under it.
+ * Nothing here loads the compiler until a hash is first asked for: closure.ts, and TypeScript's native parser with it
+ * (an optional peer of the library), are imported then, in this process's scope; each module's hash is kept for the
+ * process's life, every request for it after the first awaiting the same computation.
  */
 
 /** The export conditions a process was started with: each `--conditions=<c>`, `--conditions <c>` or `-C <c>`. */
@@ -40,7 +40,7 @@ const conditionsOf = (flags: ReadonlyArray<string>): ReadonlyArray<string> =>
 		return flag === "--conditions" || flag === "-C" ? Option.toArray(Arr.get(flags, at + 1)) : []
 	})
 
-/** The workspace a package root lies in: the nearest directory at or above it holding pnpm-lock.yaml. */
+/** The workspace a directory lies in: the nearest directory at or above it holding pnpm-lock.yaml. */
 const workspaceOf = (
 	fs: FileSystem.FileSystem,
 	directory: string
@@ -57,31 +57,42 @@ const workspaceOf = (
 	)
 
 /**
- * The ModuleClosure of the package at `root` (a real path), its parser and hashes held in `scope`'s lifetime: the
- * worker's, or an inline search's caller's.
+ * The ModuleClosure of the package at `root`, its compiler and hashes held in the enclosing scope's lifetime: the
+ * pool's, or an inline search's caller's.
  */
 export const moduleClosureAt = (
 	root: string
-): Effect.Effect<
-	Context.Service.Shape<typeof ModuleClosure>,
-	never,
-	Scope.Scope | FileSystem.FileSystem
-> =>
+): Effect.Effect<Context.Service.Shape<typeof ModuleClosure>, never, Scope.Scope> =>
 	Effect.gen(function* () {
-		const fs = yield* FileSystem.FileSystem
 		const scope = yield* Scope.Scope
-		const hashing = yield* Effect.cached(
-			Scope.provide(scope)(Layer.build(Layer.merge(nativeSyntax, layerDigest)))
-		)
-		const conditions = conditionsOf(process.execArgv)
-		const hashes = new Map<string, Effect.Effect<ClosureHash, NeedFailed>>()
+		const platform = yield* Layer.build(fileSystemLayer)
+		const fs = Context.get(platform, FileSystem.FileSystem)
 		const failed = (module: string) => (cause: unknown) =>
 			NeedFailed.make({
 				need: "ModuleClosure",
 				message: `the closure of ${module} could not be hashed: ${Inspectable.toStringUnknown(cause)}`
 			})
+		const compiler = yield* Effect.cached(
+			Effect.gen(function* () {
+				const closure = yield* Effect.tryPromise({
+					try: () => import("#runner/closure.ts"),
+					catch: (cause) =>
+						NeedFailed.make({
+							need: "ModuleClosure",
+							message: `the closure hasher did not load (TypeScript 7, an optional peer, must be installed): ${Predicate.isError(cause) ? cause.message : Inspectable.toStringUnknown(cause)}`
+						})
+				})
+				const services = yield* Effect.mapError(
+					Scope.provide(scope)(Layer.build(Layer.merge(closure.nativeSyntax, layerDigest))),
+					(cause) => NeedFailed.make({ need: "ModuleClosure", message: cause.message })
+				)
+				return { closure, services }
+			})
+		)
+		const conditions = conditionsOf(process.execArgv)
 		const hashOf = (module: string): Effect.Effect<ClosureHash, NeedFailed> =>
 			Effect.gen(function* () {
+				const { closure, services } = yield* compiler
 				const found = yield* workspaceOf(fs, root)
 				const nearest = yield* Effect.mapError(Effect.fromOption(found), () =>
 					NeedFailed.make({ need: "ModuleClosure", message: `${root} lies in no pnpm workspace` })
@@ -91,7 +102,7 @@ export const moduleClosureAt = (
 				const path = yield* Effect.mapError(
 					Effect.fromOption(
 						Str.startsWith(`${workspace}/`)(real)
-							? repoPathOf(Str.slice(workspace.length + 1)(real))
+							? closure.repoPathOf(Str.slice(workspace.length + 1)(real))
 							: Option.none()
 					),
 					() =>
@@ -100,29 +111,35 @@ export const moduleClosureAt = (
 							message: `${module} lies outside the workspace ${workspace}`
 						})
 				)
-				const services = yield* Effect.mapError(hashing, failed(module))
-				const tree = yield* workingTree(workspace)
+				const tree = yield* closure
+					.workingTree(workspace)
+					.pipe(Effect.provideService(FileSystem.FileSystem, fs))
 				const closures = yield* Effect.mapError(
-					closuresOf({ tree, conditions, runtime: process.version, roots: [path] }).pipe(
-						Effect.provideContext(services)
-					),
+					closure
+						.closuresOf({ tree, conditions, runtime: process.version, roots: [path] })
+						.pipe(Effect.provideContext(services)),
 					failed(module)
 				)
-				const closure = yield* Effect.mapError(
+				const hashed = yield* Effect.mapError(
 					Effect.fromOption(Option.fromUndefinedOr(closures.get(path))),
 					failed(module)
 				)
-				return closure.hash
-			}).pipe(Effect.provideService(FileSystem.FileSystem, fs))
+				return hashed.hash
+			})
+		const hashes = new Map<string, Deferred.Deferred<ClosureHash, NeedFailed>>()
 		return ModuleClosure.of({
 			hashOf: (module) =>
-				Option.match(Option.fromUndefinedOr(hashes.get(module)), {
-					onSome: (held) => held,
-					onNone: () =>
-						Effect.flatMap(Effect.cached(hashOf(module)), (held) => {
-							hashes.set(module, held)
-							return held
-						})
+				Effect.suspend(() => {
+					const held = hashes.get(module)
+					if (held !== undefined) {
+						return Deferred.await(held)
+					}
+					const made = Deferred.makeUnsafe<ClosureHash, NeedFailed>()
+					hashes.set(module, made)
+					return Effect.andThen(
+						Effect.onExit(hashOf(module), (exit) => Deferred.done(made, exit)),
+						Deferred.await(made)
+					)
 				})
 		})
 	})

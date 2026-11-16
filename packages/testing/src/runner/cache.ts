@@ -10,7 +10,8 @@ import {
 } from "effect"
 import { Digest } from "effect/crypto"
 import type { PropertyId } from "#property.ts"
-import type { ClosureHash, ContentHash } from "#runner/closure.ts"
+import type { ClosureHash } from "#runner/closure-hash.ts"
+import type { ContentHash } from "#runner/closure.ts"
 
 /**
  * The verdict cache: which properties passed, keyed by everything their verdict depends on, so a pass is a known answer

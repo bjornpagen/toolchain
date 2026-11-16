@@ -6,9 +6,11 @@ import {
 	Console,
 	Effect,
 	FileSystem,
+	Inspectable,
 	Layer,
 	Option,
 	Random,
+	Result,
 	Schema,
 	Stream,
 	String as Str
@@ -160,7 +162,7 @@ const killContentOf = (tree: Files, kill: Kill) =>
 type Weighed = Readonly<{ found: Discovered; closure: Closure; key: Option.Option<VerdictKey> }>
 
 /** A judged kill as the gate reports it. */
-const killLine = (judged: Judged): string => {
+export const killLine = (judged: Judged): string => {
 	const verdict = judged.verdict
 	switch (verdict.kind) {
 		case "killed":
@@ -186,6 +188,21 @@ const seedOf = Effect.gen(function* () {
 	return { seed, drawn: true }
 })
 
+/** Where a package stands: its root, and the repository it lies in, none when it lies in no git repository. */
+type Grounds = Readonly<{ packageRoot: string; repository: Option.Option<string> }>
+
+/** The package at `root` and the git repository it lies in (real paths). */
+const groundsOf = (root: string) =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		const packageRoot = yield* fs.realPath(root)
+		const toplevel = yield* gitOf(packageRoot, ["rev-parse", "--show-toplevel"])
+		const repository = yield* Effect.transposeOption(
+			Option.map(Option.map(toplevel, Str.trim), (top) => fs.realPath(top))
+		)
+		return { packageRoot, repository } satisfies Grounds
+	})
+
 /**
  * A package weighed for the verdict cache: its repository and package root (real paths), the repository's verdict
  * cache, and each property `selected` names (every one when it names none) with its joint closure and key.
@@ -197,17 +214,30 @@ type Weighing = Readonly<{
 	weighed: ReadonlyArray<Weighed>
 }>
 
-/** Weighs the properties `selected` names in the package at `root`: their closures, keys and the repository's cache. */
-const weighingOf = (root: string, selected: ReadonlyArray<string>) =>
+/**
+ * The runner's own entry modules as roots of every verdict key, when they are files of the repository (the toolchain's
+ * own packages, a workspace link such as grizzle's vendor/toolchain): the CLI, which reaches the search, its limits and
+ * the pool, and the worker, which the pool forks by path. An installed runner (under node_modules, or outside the
+ * repository) is no root: the package's test.config.ts imports it, and its closure holds it as every external package
+ * is held, by its lockfile entry.
+ */
+const runnerRootsOf = (repository: string) =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem
-		const packageRoot = yield* fs.realPath(root)
-		const toplevel = yield* required(
-			packageRoot,
-			["rev-parse", "--show-toplevel"],
-			`${root} lies in no git repository`
+		const entries = yield* Effect.forEach([`${import.meta.dirname}/cli.ts`, WORKER_ENTRY], (file) =>
+			fs.realPath(file)
 		)
-		const repository = yield* fs.realPath(toplevel)
+		const own = Arr.every(
+			entries,
+			(real) => Str.startsWith(`${repository}/`)(real) && !Str.includes("/node_modules/")(real)
+		)
+		return own ? yield* Effect.forEach(entries, (real) => underRepository(repository, real)) : []
+	})
+
+/** Weighs the properties `selected` names in a package of a repository: their closures, keys and the repository's cache. */
+const weighingOf = (packageRoot: string, repository: string, selected: ReadonlyArray<string>) =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
 		const identity = yield* Effect.flatMap(
 			gitOf(repository, ["config", "--get", "remote.origin.url"]),
 			(url) =>
@@ -223,14 +253,15 @@ const weighingOf = (root: string, selected: ReadonlyArray<string>) =>
 		)
 		const home = yield* Config.String("HOME")
 		const cacheHome = yield* Config.withDefault(Config.String("XDG_CACHE_HOME"), `${home}/.cache`)
-		const { config, discovered } = yield* loadPackage(root, selected)
+		const { config, discovered } = yield* loadPackage(packageRoot, selected)
 		const hashing = yield* Layer.build(Layer.merge(nativeSyntax, layerDigest))
 		const tree = yield* workingTree(repository)
 		const packageFile = (path: string) => underRepository(repository, `${packageRoot}/${path}`)
-		const runner = yield* Effect.forEach(
-			[`${import.meta.dirname}/cli.ts`, WORKER_ENTRY, `${packageRoot}/test.config.ts`],
-			(file) => Effect.flatMap(fs.realPath(file), (real) => underRepository(repository, real))
+		const runnerRoots = yield* runnerRootsOf(repository)
+		const configRoot = yield* Effect.flatMap(fs.realPath(`${packageRoot}/test.config.ts`), (real) =>
+			underRepository(repository, real)
 		)
+		const runner = [...runnerRoots, configRoot]
 		const modules = yield* Effect.forEach(
 			Arr.dedupe(Arr.map(discovered, (found) => found.module)),
 			(module) => Effect.map(packageFile(module), (path) => [module, path] as const)
@@ -277,77 +308,101 @@ const weighingOf = (root: string, selected: ReadonlyArray<string>) =>
 /** What a run settles to: the kills it judged, and the properties that passed with every kill turning them red. */
 type Settled = Readonly<{ judged: ReadonlyArray<Judged>; passing: ReadonlySet<PropertyId> }>
 
-/**
- * Settles a run of `due`: the kills of each property whose searches passed (on every stack it ran on) are judged on leased workers (MUTATOR's
- * killsOf), and each property's verdict is recorded under its key: a pass when its search passed and every kill turned
- * its witnesses red, a failure otherwise. A property with no key (a kill's file gone) records nothing; its kill is
- * judged stale.
- */
-const settledOf = (weighing: Weighing, due: ReadonlyArray<Weighed>, outcome: RunOutcome) =>
+/** Whether every run of a property (on every stack it ran on) passed its search, and it ran at all. */
+const searchedPassed = (outcome: RunOutcome, id: PropertyId): boolean => {
+	const runs = Arr.filter(outcome.properties, (ran) => ran.id === id)
+	return (
+		Arr.isReadonlyArrayNonEmpty(runs) && Arr.every(runs, (ran) => ran.verdict.kind !== "failed")
+	)
+}
+
+/** The kills of `subjects` judged on leased workers (MUTATOR's killsOf), in the checkout of `repository`. */
+const judgedOf = (repository: string, packageRoot: string, subjects: ReadonlyArray<Discovered>) =>
 	Effect.gen(function* () {
-		const passedSearch = Arr.filter(due, (one) => {
-			const runs = Arr.filter(outcome.properties, (ran) => ran.id === one.found.id)
-			return (
-				Arr.isReadonlyArrayNonEmpty(runs) && Arr.every(runs, (ran) => ran.verdict.kind !== "failed")
-			)
-		})
-		const killed = Arr.filter(passedSearch, (one) =>
-			Arr.isReadonlyArrayNonEmpty(one.found.property.kills)
+		const killed = Arr.filter(subjects, (found) =>
+			Arr.isReadonlyArrayNonEmpty(found.property.kills)
 		)
-		const checkout = yield* realPathOf(weighing.repository)
-		const killedRoot = yield* realPathOf(weighing.packageRoot)
-		const judged = Arr.isReadonlyArrayNonEmpty(killed)
-			? yield* Effect.flatMap(
-					Effect.flatMap(treesOf(checkout), (trees) => imagesOf(checkout, trees)),
-					(images) =>
-						killsOf(
-							mutatorPool(checkout, killedRoot),
-							{ seed: 0, limits: runnerLimits },
-							checkout,
-							images,
-							Arr.map(killed, ({ found }) => ({
-								id: found.id,
-								property: found.property,
-								loading: loadingOf(found.property.needs)
-							}))
-						)
-				)
-			: []
-		const passing: ReadonlySet<PropertyId> = new Set(
-			Arr.map(
-				Arr.filter(
-					passedSearch,
-					(one) =>
-						!Arr.some(
-							judged,
-							(verdict) => verdict.property === one.found.id && verdict.verdict.kind !== "killed"
-						)
-				),
-				(one) => one.found.id
-			)
+		if (!Arr.isReadonlyArrayNonEmpty(killed)) {
+			return []
+		}
+		const checkout = yield* realPathOf(repository)
+		const killedRoot = yield* realPathOf(packageRoot)
+		const trees = yield* treesOf(checkout)
+		const images = yield* imagesOf(checkout, trees)
+		return yield* killsOf(
+			mutatorPool(checkout, killedRoot),
+			{ seed: 0, limits: runnerLimits },
+			checkout,
+			images,
+			Arr.map(killed, (found) => ({
+				id: found.id,
+				property: found.property,
+				loading: loadingOf(found.property.needs)
+			}))
 		)
-		yield* Effect.forEach(
-			due,
-			(one) =>
-				Option.match(one.key, {
-					onNone: () => Effect.void,
-					onSome: (key) =>
-						weighing.cache.record(key, passing.has(one.found.id) ? "passed" : "failed")
-				}),
-			{ discard: true }
-		)
-		return { judged, passing } satisfies Settled
 	})
+
+/** The properties whose searches passed and whose every judged kill turned them red. */
+const passingOf = (
+	outcome: RunOutcome,
+	ids: ReadonlyArray<PropertyId>,
+	judged: ReadonlyArray<Judged>
+): ReadonlySet<PropertyId> =>
+	new Set(
+		Arr.filter(
+			ids,
+			(id) =>
+				searchedPassed(outcome, id) &&
+				!Arr.some(judged, (verdict) => verdict.property === id && verdict.verdict.kind !== "killed")
+		)
+	)
+
+/** Records each weighed property's verdict under its key: a pass when it is passing, a failure otherwise. */
+const recorded = (
+	cache: VerdictCache,
+	due: ReadonlyArray<Weighed>,
+	passing: ReadonlySet<PropertyId>
+) =>
+	Effect.forEach(
+		due,
+		(one) =>
+			Option.match(one.key, {
+				onNone: () => Effect.void,
+				onSome: (key) => cache.record(key, passing.has(one.found.id) ? "passed" : "failed")
+			}),
+		{ discard: true }
+	)
 
 /**
  * The verdict cache's side of `toolchain-test run`, the full run per production version: it reads no cached pass, so
- * every property `selected` names ran (`outcome`); this judges the kills of each whose search passed and records every
- * verdict, so a property whose kills did not all turn red is a failure of the run, never a cached pass.
+ * every property `selected` names ran (`outcome`); this judges the kills of each whose searches passed and records every
+ * verdict, so a property whose kills did not all turn red is a failure of the run, never a cached pass. A package in no
+ * git repository has no checkout to mutate and no verdict key: its kills are not judged and nothing is recorded. A
+ * package whose properties have no verdict key (no lockfile, a module that resolves to nothing) has its kills judged
+ * and records nothing. Each says so once, and the run's verdict is its searches' and kills'.
  */
 export const recordedRun = (root: string, selected: ReadonlyArray<string>, outcome: RunOutcome) =>
-	Effect.flatMap(weighingOf(root, selected), (weighing) =>
-		settledOf(weighing, weighing.weighed, outcome)
-	)
+	Effect.gen(function* () {
+		const grounds = yield* groundsOf(root)
+		const { discovered } = yield* loadPackage(root, selected)
+		const passed = Arr.filter(discovered, (found) => searchedPassed(outcome, found.id))
+		const ids = Arr.map(discovered, (found) => found.id)
+		if (Option.isNone(grounds.repository)) {
+			yield* Console.log(
+				`kills not judged and verdicts not recorded: ${root} lies in no git repository`
+			)
+			return { judged: [], passing: passingOf(outcome, ids, []) } satisfies Settled
+		}
+		const repository = grounds.repository.value
+		const judged = yield* judgedOf(repository, grounds.packageRoot, passed)
+		const passing = passingOf(outcome, ids, judged)
+		const weighing = yield* Effect.result(weighingOf(grounds.packageRoot, repository, selected))
+		yield* Result.match(weighing, {
+			onSuccess: (weighed) => recorded(weighed.cache, weighed.weighed, passing),
+			onFailure: (why) => Console.log(`verdicts not recorded: ${Inspectable.toStringUnknown(why)}`)
+		})
+		return { judged, passing } satisfies Settled
+	})
 
 /** `affected <ref>` in the package at `root`: 0 when every affected property and its kills passed, 1 otherwise. */
 export const affected = (root: string, args: ReadonlyArray<string>) =>
@@ -360,7 +415,11 @@ export const affected = (root: string, args: ReadonlyArray<string>) =>
 						"affected takes one ref, what the report counts changes against: toolchain-test affected <ref>"
 				})
 			}
-			const weighing = yield* weighingOf(root, [])
+			const grounds = yield* groundsOf(root)
+			const repository = yield* Effect.mapError(Effect.fromOption(grounds.repository), () =>
+				AffectedRefused.make({ message: `${root} lies in no git repository` })
+			)
+			const weighing = yield* weighingOf(grounds.packageRoot, repository, [])
 			const base = yield* required(
 				weighing.repository,
 				["rev-parse", "--verify", "--quiet", `${ref}^{tree}`],
@@ -408,7 +467,20 @@ export const affected = (root: string, args: ReadonlyArray<string>) =>
 				reach: "full",
 				selected: Arr.map(due, (one) => one.found.id)
 			})
-			const { judged, passing } = yield* settledOf(weighing, due, outcome)
+			const judged = yield* judgedOf(
+				weighing.repository,
+				weighing.packageRoot,
+				Arr.filter(
+					Arr.map(due, (one) => one.found),
+					(found) => searchedPassed(outcome, found.id)
+				)
+			)
+			const passing = passingOf(
+				outcome,
+				Arr.map(due, (one) => one.found.id),
+				judged
+			)
+			yield* recorded(weighing.cache, due, passing)
 			const failed = Arr.filter(outcome.properties, (ran) => ran.verdict.kind === "failed")
 			const failing = due.length - passing.size
 			yield* Console.log(

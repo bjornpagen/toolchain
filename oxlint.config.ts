@@ -153,6 +153,18 @@ export default defineConfig(
 				})
 			},
 			{
+				files: [
+					"packages/testing/src/runner/cli.ts",
+					"packages/testing/src/runner/module-closure.ts"
+				],
+				rules: active({
+					/** The modules that load TypeScript's native compiler, an optional peer of the library (closure.ts, mutants.ts),
+					 * loaded only by the commands and the service that use them, so a consumer runs `toolchain-test run` without
+					 * TypeScript installed (TESTSYS, 2026-11-16). */
+					"devtools/no-dynamic-imports": "off"
+				})
+			},
+			{
 				files: ["packages/testing/src/runner/load.ts"],
 				rules: active({
 					/** The runner's one load of a package's test.config.ts and test modules, whose paths it learns only at run

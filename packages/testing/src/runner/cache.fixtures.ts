@@ -33,8 +33,8 @@ import {
 	verdictCacheAt,
 	verdictFileOf
 } from "#runner/cache.ts"
+import type { ClosureHash } from "#runner/closure-hash.ts"
 import {
-	type ClosureHash,
 	type ContentHash,
 	closuresOf,
 	contentHashOf,

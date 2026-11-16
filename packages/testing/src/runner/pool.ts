@@ -7,12 +7,14 @@ import {
 	Fiber,
 	Option,
 	Queue,
+	Result,
 	Schema,
 	Scope,
 	String as Str
 } from "effect"
 import { HUNG_CLEANUP_GRACE, WATCHDOG_GRACE_MILLIS } from "#live.ts"
 import { withLateUses } from "#runner/case.ts"
+import { moduleClosureAt } from "#runner/module-closure.ts"
 import {
 	type Batch,
 	type CaseResult,
@@ -116,6 +118,7 @@ const SILENCE_GRACE_MILLIS = 2 * WATCHDOG_GRACE_MILLIS + Duration.toMillis(HUNG_
 export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Scope> =>
 	Effect.gen(function* () {
 		const scope = yield* Scope.Scope
+		const closures = yield* moduleClosureAt(spec.root)
 		const events = yield* Queue.unbounded<Event>()
 		const queue: Array<Unit> = []
 		const workers: Array<Worker> = []
@@ -394,6 +397,25 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 								const marks = lateUses.get(received.unit) ?? new Map<number, Printed>()
 								marks.set(received.at, received.printed)
 								lateUses.set(received.unit, marks)
+								return
+							}
+							case "closure": {
+								const module = received.module
+								yield* Effect.forkIn(
+									Effect.flatMap(Effect.result(closures.hashOf(module)), (hashed) =>
+										Effect.sync(() => {
+											send(worker, {
+												kind: "closure",
+												module,
+												answer: Result.match(hashed, {
+													onSuccess: (hash) => ({ kind: "hashed", hash }),
+													onFailure: (failure) => ({ kind: "unhashed", message: failure.message })
+												})
+											})
+										})
+									),
+									scope
+								)
 								return
 							}
 							case "revoked": {

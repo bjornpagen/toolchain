@@ -20,6 +20,7 @@ import { Digest } from "effect/crypto"
 import { Yaml } from "effect/encoding"
 import * as ts from "typescript/ast"
 import { API } from "typescript/sync"
+import type { ClosureHash } from "#runner/closure-hash.ts"
 
 /**
  * A module's import closure as one content hash: the module's own bytes, and those of every module it loads, as Node
@@ -50,10 +51,8 @@ export type ContentHash = string & Brand.Brand<"ContentHash">
 
 const ContentHash = Brand.nominal<ContentHash>()
 
-/** The hex SHA-256 of a module's closure: equal for two modules exactly when their closures are equal. */
-export type ClosureHash = string & Brand.Brand<"ClosureHash">
-
-const ClosureHash = Brand.nominal<ClosureHash>()
+/** A closure hash as closure.ts makes it, from the SHA-256 it computed: its one trusted mint. */
+const closureHash = Brand.nominal<ClosureHash>()
 
 /** A package as the lockfile names it, `name@version` with its peers' versions in parentheses after. */
 export type PackageKey = string & Brand.Brand<"PackageKey">
@@ -1142,7 +1141,7 @@ export const closuresOf = Effect.fn("closuresOf")(function* (input: ClosureInput
 		}
 		const component = Arr.getUnsafe(componentHashes, Arr.getUnsafe(componentOf, root))
 		const hash = yield* linesHashOf([context, component])
-		closures.set(path, { hash: ClosureHash(hash), ...membersOf(walked, root) })
+		closures.set(path, { hash: closureHash(hash), ...membersOf(walked, root) })
 	}
 	return closures
 })
@@ -1200,7 +1199,7 @@ export const jointClosureOf = Effect.fn("jointClosureOf")(function* (
 	const union = <A extends string>(pick: (closure: Closure) => ReadonlyArray<A>) =>
 		Arr.sort(Arr.dedupe(Arr.flatMap(closures, pick)), Str.Order)
 	return {
-		hash: ClosureHash(hash),
+		hash: closureHash(hash),
 		files: union((closure) => closure.files),
 		packages: union((closure) => closure.packages),
 		builtins: union((closure) => closure.builtins),

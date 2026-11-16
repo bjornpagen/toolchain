@@ -1,6 +1,7 @@
 import { Array as Arr, type Effect, Schema } from "effect"
 import type { Residual } from "#features.ts"
 import { wordsOf } from "#random.ts"
+import { ClosureAnswer } from "#runner/closure-hash.ts"
 import type { Limits } from "#runner/limits.ts"
 import {
 	type Chooser,
@@ -300,14 +301,15 @@ export type Verdict =
 	| Readonly<{ kind: "replayed"; printed: Printed }>
 	| Readonly<{ kind: "failed"; finding: Finding }>
 
-/** A message from the parent to a worker: evaluate these units, each a batch under its id; or give back these
- * unstarted units. */
+/** A message from the parent to a worker: evaluate these units, each a batch under its id; give back these
+ * unstarted units; or the closure hash of a module it asked for (runner/closure-requests.ts). */
 export const ToWorker = Schema.Union([
 	Schema.Struct({
 		kind: Schema.Literal("evaluate"),
 		units: Schema.NonEmptyArray(Schema.Struct({ unit: Schema.Finite, batch: Batch }))
 	}),
-	Schema.Struct({ kind: Schema.Literal("revoke"), units: Schema.Array(Schema.Finite) })
+	Schema.Struct({ kind: Schema.Literal("revoke"), units: Schema.Array(Schema.Finite) }),
+	Schema.Struct({ kind: Schema.Literal("closure"), module: Schema.String, answer: ClosureAnswer })
 ])
 
 export type ToWorker = typeof ToWorker.Type
@@ -315,7 +317,8 @@ export type ToWorker = typeof ToWorker.Type
 /**
  * A message from a worker to the parent: it is ready; it started a unit; it finished one, with each order's result; it
  * gave back these units, of those the parent revoked, none of which it had started; a case (a unit's `at`-th order) was
- * used after it ended, printed as it ran; or it cannot start, and why.
+ * used after it ended, printed as it ran; it cannot start, and why; or it asks for a module's closure hash, which the
+ * parent computes once for the whole pool.
  */
 export const FromWorker = Schema.Union([
 	Schema.Struct({ kind: Schema.Literal("ready") }),
@@ -332,7 +335,8 @@ export const FromWorker = Schema.Union([
 		at: Schema.Finite,
 		printed: Printed
 	}),
-	Schema.Struct({ kind: Schema.Literal("failed"), message: Schema.String })
+	Schema.Struct({ kind: Schema.Literal("failed"), message: Schema.String }),
+	Schema.Struct({ kind: Schema.Literal("closure"), module: Schema.String })
 ])
 
 export type FromWorker = typeof FromWorker.Type

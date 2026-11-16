@@ -1,5 +1,5 @@
 import { Context, type Effect, Schema } from "effect"
-import type { ClosureHash } from "#runner/closure.ts"
+import type { ClosureHash } from "#runner/closure-hash.ts"
 
 /** A need failed to open or to give a case its resource: the case fails with it, never the run silently. */
 export class NeedFailed extends Schema.TaggedError<NeedFailed, { readonly brand: unique symbol }>()(

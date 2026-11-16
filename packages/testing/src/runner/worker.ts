@@ -1,8 +1,8 @@
 import { NodeRuntime, NodeServices } from "@effect/platform-node"
 import { Array as Arr, Context, Effect, Latch, Option, Queue, Schema, Scope } from "effect"
 import { LateUses, NeedCache, needCacheOf, Stopped, stoppedOf } from "#runner/case.ts"
+import { askedClosuresOf } from "#runner/closure-requests.ts"
 import { configOf, propertyAt } from "#runner/load.ts"
-import { moduleClosureAt } from "#runner/module-closure.ts"
 import { Perception, perceptionOf } from "#runner/perceive.ts"
 import { type Batch, FromWorker, lostResult, ToWorker } from "#runner/protocol.ts"
 import { ModuleClosure, WorkerIndex } from "#runner/services.ts"
@@ -49,12 +49,12 @@ const main = Effect.gen(function* () {
 	const config = yield* configOf(root)
 	const scope = yield* Scope.Scope
 	const platform = yield* Effect.context<NodeServices.NodeServices>()
-	const closures = yield* moduleClosureAt(root)
+	const closures = askedClosuresOf((module) => send({ kind: "closure", module }))
 	const runner = Context.add(
 		Context.add(
 			Context.merge(Context.make(WorkerIndex, { index, workers }), platform),
 			ModuleClosure,
-			closures
+			closures.service
 		),
 		Scope.Scope,
 		scope
@@ -104,6 +104,9 @@ const main = Effect.gen(function* () {
 					yield* send({ kind: "revoked", units: Arr.map(given, (unit) => unit.unit) })
 					break
 				}
+				case "closure":
+					yield* closures.answered(order.module, order.answer)
+					break
 			}
 		}
 	})
