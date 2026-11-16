@@ -5,6 +5,7 @@ import { configOf, propertyAt } from "#runner/load.ts"
 import { Perception, perceptionOf } from "#runner/perceive.ts"
 import { type Batch, FromWorker, lostResult, ToWorker } from "#runner/protocol.ts"
 import { WorkerIndex } from "#runner/services.ts"
+import { runOfLabel } from "#runner/stack.ts"
 import { startProcessCoverage } from "#sense.ts"
 
 /**
@@ -101,7 +102,7 @@ const main = Effect.gen(function* () {
 	const evaluate = (unit: Unit) =>
 		Effect.andThen(
 			send({ kind: "started", unit: unit.unit }),
-			Effect.matchEffect(propertyAt(root, Arr.headNonEmpty(unit.batch).property), {
+			Effect.matchEffect(propertyAt(root, runOfLabel(Arr.headNonEmpty(unit.batch).property).id), {
 				onFailure: (failed) =>
 					send({
 						kind: "done",

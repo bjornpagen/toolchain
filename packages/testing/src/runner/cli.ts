@@ -70,8 +70,8 @@ const run = (selected: ReadonlyArray<string>) =>
 			yield* Console.log(
 				Arr.join(
 					[
-						...Arr.map(outcome.properties, (ran) => lineOf(ran.id, ran.oracle, ran.verdict)),
-						...Arr.flatMap(failed, (ran) => ["", `${ran.id}:`, ...failureLines(ran.verdict)]),
+						...Arr.map(outcome.properties, (ran) => lineOf(ran.label, ran.oracle, ran.verdict)),
+						...Arr.flatMap(failed, (ran) => ["", `${ran.label}:`, ...failureLines(ran.verdict)]),
 						"",
 						`${outcome.properties.length} properties, ${failed.length} failed, in ${Math.round(outcome.millis)} ms on ${outcome.workers.length} workers`
 					],

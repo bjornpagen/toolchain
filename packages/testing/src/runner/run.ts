@@ -10,11 +10,12 @@ import {
 import type { Oracle } from "#explore.ts"
 import { liveMillis } from "#live.ts"
 import type { Kill, PropertyId, PropertyKind } from "#property.ts"
-import type { RunnerConfig } from "#runner/config.ts"
+import { type RunnerConfig, SMALL_STACK } from "#runner/config.ts"
 import { runnerLimits } from "#runner/limits.ts"
-import { configOf, type Discovered, discover, type LoadFailed, modulesOf } from "#runner/load.ts"
-import { type PoolFailed, poolOf } from "#runner/pool.ts"
+import { configOf, type Discovered, discover, type LoadFailed, matchedBy } from "#runner/load.ts"
+import { type Pool, type PoolFailed, poolOf } from "#runner/pool.ts"
 import type { Reach, Verdict } from "#runner/protocol.ts"
+import { labelOf, runOfLabel, type Stack } from "#runner/stack.ts"
 import { testWorkers } from "#workers.ts"
 
 /**
@@ -23,9 +24,14 @@ import { testWorkers } from "#workers.ts"
  * command that judges kills or caches verdicts reads the same results.
  */
 
-/** One property's run: its identity, its module, its kind, its oracle and kills, its verdict and its wall time. */
+/**
+ * One property's run: its identity, the stack it ran on and the label that names both (`<id>`, or `<id>@small-stack`),
+ * its module, its kind, its oracle and kills, its verdict and its wall time.
+ */
 export type PropertyRun = Readonly<{
 	id: PropertyId
+	stack: Stack
+	label: string
 	module: string
 	kind: PropertyKind
 	oracle: Oracle
@@ -56,6 +62,16 @@ export type RunRequest = Readonly<{
 /** The worker's entry module, beside this one. */
 export const WORKER_ENTRY = `${import.meta.dirname}/worker.ts`
 
+/** The flags a stack's workers run under: this process's, and the small stack's on top for the small stack. */
+const flagsOf = (stack: Stack): ReadonlyArray<string> => {
+	switch (stack) {
+		case "default":
+			return process.execArgv
+		case "small":
+			return [...process.execArgv, SMALL_STACK]
+	}
+}
+
 /** Whether an argument names a property, by identity or by module. */
 const names = (argument: string, discovered: Discovered): boolean =>
 	Str.includes("#")(argument)
@@ -69,8 +85,15 @@ const moduleOfArgument = (argument: string): string =>
 		onSome: (hash) => Str.slice(0, hash)(argument)
 	})
 
-/** A package as a command loads it: its runner config, and the properties the arguments name, in discovery order. */
-type Loaded = Readonly<{ config: RunnerConfig; discovered: ReadonlyArray<Discovered> }>
+/**
+ * A package as a command loads it: its runner config, the properties the arguments name, in discovery order, and the
+ * stacks each runs on (the default, and the small stack for a module its config's smallStack names).
+ */
+type Loaded = Readonly<{
+	config: RunnerConfig
+	discovered: ReadonlyArray<Discovered>
+	stacksOf: (found: Discovered) => ReadonlyArray<Stack>
+}>
 
 /**
  * Loads a package's runner config and the properties `selected` names (every property when it names none): only the
@@ -82,7 +105,9 @@ export const loadPackage = (
 ): Effect.Effect<Loaded, LoadFailed, FileSystem.FileSystem | Path.Path> =>
 	Effect.gen(function* () {
 		const config = yield* configOf(root)
-		const modules = yield* modulesOf(root, config)
+		const modules = yield* matchedBy(root, config.include)
+		const smallModules = yield* matchedBy(root, config.smallStack)
+		const small = new Set(smallModules)
 		const wanted = Arr.isReadonlyArrayNonEmpty(selected)
 			? Arr.filter(modules, (module) =>
 					Arr.some(selected, (argument) => {
@@ -94,6 +119,7 @@ export const loadPackage = (
 		const loaded = yield* discover(root, wanted)
 		return {
 			config,
+			stacksOf: (found) => (small.has(found.module) ? ["default", "small"] : ["default"]),
 			discovered: Arr.filter(
 				loaded,
 				(found) =>
@@ -117,33 +143,48 @@ export const runPackage = (
 > =>
 	Effect.gen(function* () {
 		const began = yield* liveMillis
-		const { discovered } = yield* loadPackage(request.root, request.selected)
-		const pool = yield* poolOf({
-			entry: WORKER_ENTRY,
-			root: request.root,
-			cwd: request.root,
-			env: {},
-			workers: testWorkers,
-			execArgv: process.execArgv,
-			guide: Arr.some(discovered, (found) => found.property.guide.kind === "blocks")
-				? "blocks"
-				: "notes"
-		})
+		const { discovered, stacksOf } = yield* loadPackage(request.root, request.selected)
+		const runs = Arr.flatMap(discovered, (found) =>
+			Arr.map(stacksOf(found), (stack) => ({ found, stack }))
+		)
+		const poolFor = (stack: Stack) =>
+			poolOf({
+				entry: WORKER_ENTRY,
+				root: request.root,
+				cwd: request.root,
+				env: {},
+				workers: testWorkers,
+				execArgv: flagsOf(stack),
+				guide: Arr.some(discovered, (found) => found.property.guide.kind === "blocks")
+					? "blocks"
+					: "notes"
+			})
+		const pool = yield* poolFor("default")
+		const small: Option.Option<Pool> = yield* Arr.some(runs, (one) => one.stack === "small")
+			? Effect.asSome(poolFor("small"))
+			: Effect.succeedNone
 		const properties = yield* Effect.forEach(
-			discovered,
-			(found) =>
+			runs,
+			({ found, stack }) =>
 				Effect.gen(function* () {
 					const start = yield* liveMillis
+					const label = labelOf(found.id, stack)
+					const evaluator = Option.match(small, {
+						onNone: () => pool.evaluator,
+						onSome: (smallPool) => (stack === "small" ? smallPool.evaluator : pool.evaluator)
+					})
 					const verdict = yield* found.property.search({
-						id: found.id,
+						id: label,
 						seed: request.seed,
 						limits: runnerLimits,
-						evaluator: pool.evaluator,
+						evaluator,
 						reach: request.reach
 					})
 					const end = yield* liveMillis
 					return {
 						id: found.id,
+						stack,
+						label,
 						module: found.module,
 						kind: found.property.kind,
 						oracle: found.property.oracle,
@@ -171,16 +212,17 @@ export const replayToken = (
 > =>
 	Effect.gen(function* () {
 		yield* configOf(root)
-		const module = moduleOfArgument(id)
+		const named = runOfLabel(id)
+		const module = moduleOfArgument(named.id)
 		const loaded = yield* discover(root, [module])
-		const found = Arr.filter(loaded, (discovered) => discovered.id === id)
+		const found = Arr.filter(loaded, (discovered) => discovered.id === named.id)
 		const pool = yield* poolOf({
 			entry: WORKER_ENTRY,
 			root,
 			cwd: root,
 			env: {},
 			workers: 1,
-			execArgv: process.execArgv,
+			execArgv: flagsOf(named.stack),
 			guide: "notes"
 		})
 		return yield* Option.match(Arr.head(found), {

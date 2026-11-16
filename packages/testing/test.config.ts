@@ -14,6 +14,7 @@ export default defineRunner({
 		"src/interleave.test.ts",
 		"src/commands.test.ts"
 	],
+	smallStack: [],
 	conditions: [],
 	layer: Layer.empty,
 	families: []

@@ -34,6 +34,7 @@ import {
 	type SearchRun,
 	type Verdict
 } from "#runner/protocol.ts"
+import { runOfLabel } from "#runner/stack.ts"
 import { seedsOf } from "#seeds.ts"
 import {
 	boundedShrink,
@@ -293,7 +294,7 @@ const tokenCaseOf = (
 	Effect.flatMap(
 		Effect.mapError(replayOf(token), (unreadable) => unreadable.message),
 		(replay) => {
-			if (replay.suite !== run.id) {
+			if (runOfLabel(replay.suite).id !== runOfLabel(run.id).id) {
 				return Effect.fail(`the token names ${replay.suite}, not ${run.id}`)
 			}
 			return Option.match(undeclaredIn(replay.replayed.drawn, searched.situations.length), {

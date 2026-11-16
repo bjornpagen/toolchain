@@ -1,6 +1,6 @@
 import { Array as Arr, Config, Effect, Option } from "effect"
 import { defineConfig } from "vitest/config"
-import { HARDENED_FLAGS } from "#runner/config.ts"
+import { HARDENED_FLAGS, SMALL_STACK } from "#runner/config.ts"
 import { type Examples, residualReporter } from "#vitest/reporter.ts"
 import { testWorkers } from "#workers.ts"
 
@@ -13,16 +13,6 @@ export { HARDENED_FLAGS, testWorkers }
 export type Timeout =
 	| Readonly<{ kind: "unbounded" }>
 	| Readonly<{ kind: "bounded"; millis: number }>
-
-/**
- * The stack the small-stack project runs under: 160 KB, about a sixth of Node's default 984 KB, so a per-element use of
- * the stack (a spread argument, a recursion over a list) fails at the widths ordinary generators reach. A measured
- * limit: on Node 26.13.0 (V8 14.6.202.34), a small-stack worker boots and runs every one of grizzle's 52 small-stack
- * files at 107 KB and no lower (at 106 KB its bootstrap overflows compiling Node's own internals, before any test), and
- * 160 KB is that floor with half again as headroom for the runtime's own growth. At 160 KB a recursion over a list of
- * 1,000 elements and a spread of 16,000 arguments overflow, where the regular project runs both.
- */
-const SMALL_STACK = "--stack-size=160"
 
 /** The setup every project's test processes run, which leaves on each test whether it ran a search, for the reporter
  * that fails an example where the package bans them. */

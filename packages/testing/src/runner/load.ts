@@ -186,13 +186,13 @@ const globbed = (
 		})
 	})
 
-/** The test modules of a package: every file its config's globs match under its root, in path order. */
-export const modulesOf = (
+/** The files these globs (a config's include or smallStack) match under `root`, in path order. */
+export const matchedBy = (
 	root: string,
-	config: RunnerConfig
+	globs: ReadonlyArray<string>
 ): Effect.Effect<ReadonlyArray<string>, LoadFailed, FileSystem.FileSystem> =>
 	Effect.map(
-		Effect.forEach(config.include, (glob) => globbed(root, glob)),
+		Effect.forEach(globs, (glob) => globbed(root, glob)),
 		(found) => Arr.sort(Arr.dedupe(Arr.flatten(found)), Order.String)
 	)
 
