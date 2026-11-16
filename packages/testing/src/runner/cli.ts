@@ -17,6 +17,7 @@ import {
 	Schema
 } from "effect"
 import { replayOf, replayTokenOf } from "#replay.ts"
+import { compileCached } from "#runner/compile-cache.ts"
 import { HARDENED_FLAGS } from "#runner/config.ts"
 import { fuzz } from "#runner/fuzz.ts"
 import { configOf, keptValuesAt } from "#runner/load.ts"
@@ -294,6 +295,7 @@ const main = Effect.gen(function* () {
 			)
 		return child.status ?? 1
 	}
+	yield* compileCached
 	const command = Option.flatMap(Option.fromUndefinedOr(name), (named) =>
 		Option.fromUndefinedOr(commands[named])
 	)

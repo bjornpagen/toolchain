@@ -13,6 +13,7 @@ import {
 } from "effect"
 import { HUNG_CLEANUP_GRACE, WATCHDOG_GRACE_MILLIS } from "#live.ts"
 import { withLateUses } from "#runner/case.ts"
+import { compileCacheDirectory, readsCoverage } from "#runner/compile-cache.ts"
 import { moduleClosureAt } from "#runner/module-closure.ts"
 import {
 	type Batch,
@@ -174,6 +175,20 @@ const lostIn = (unit: Unit, phase: Phase): string => {
 }
 
 /**
+ * What a worker's environment adds for Node's compile cache (runner/compile-cache.ts): its directory, for workers that
+ * read no coverage (their guide is notes and neither their image nor this process names NODE_V8_COVERAGE), and nothing
+ * for the others.
+ */
+const compilingOf = (spec: PoolSpec) =>
+	Effect.gen(function* () {
+		const coverage = (yield* readsCoverage) || "NODE_V8_COVERAGE" in spec.env
+		if (spec.guide === "blocks" || coverage) {
+			return {}
+		}
+		return { NODE_COMPILE_CACHE: yield* compileCacheDirectory }
+	})
+
+/**
  * Forks the pool's workers, in the run's scope: closing it disconnects each worker and waits for it to exit on its own
  * (its finalizers run, a coverage dump is written), and kills one still alive past SILENCE_GRACE_MILLIS, a finalizer
  * that hangs.
@@ -184,6 +199,9 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 		const closures = yield* moduleClosureAt(spec.root)
 		const events = yield* Queue.unbounded<Event>()
 		const scheduler = schedulerOf<Unit>(spec.workers)
+		const compiling = yield* Effect.mapError(compilingOf(spec), (missing) =>
+			PoolFailed.make({ message: `the compile cache has no directory: ${missing.message}` })
+		)
 		const workers: Array<Worker> = []
 		const counts: Array<number> = Array.from({ length: spec.workers }, () => 0)
 		const lateUses = new Map<number, Map<number, Printed>>()
@@ -329,7 +347,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 				[spec.root, String(index), String(spec.workers), spec.guide],
 				{
 					cwd: spec.cwd,
-					env: { ...process.env, ...spec.env },
+					env: { ...process.env, ...spec.env, ...compiling },
 					execArgv: Arr.copy(spec.execArgv),
 					serialization: "advanced",
 					stdio: ["ignore", "pipe", "pipe", "ipc"]
