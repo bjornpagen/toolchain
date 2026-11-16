@@ -18,7 +18,8 @@ export default defineTestConfig({
 		"!src/agree.test.ts",
 		"!src/mutate/**",
 		"!src/fuzz.test.ts",
-		"!src/sense.test.ts"
+		"!src/sense.test.ts",
+		"!src/oxlint/rules.test.ts"
 	],
 	guided: [],
 	setup: [],

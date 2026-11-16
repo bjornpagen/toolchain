@@ -28,7 +28,8 @@ export default defineRunner({
 		"src/runner/search.test.ts",
 		"src/runner/case.test.ts",
 		"src/runner/steer.test.ts",
-		"src/mutate/*.test.ts"
+		"src/mutate/*.test.ts",
+		"src/oxlint/rules.test.ts"
 	],
 	smallStack: [],
 	conditions: [],
