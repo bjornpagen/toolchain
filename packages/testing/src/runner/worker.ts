@@ -1,3 +1,4 @@
+import { Worker } from "node:worker_threads"
 import { NodeRuntime, NodeServices } from "@effect/platform-node"
 import {
 	Array as Arr,
@@ -61,7 +62,8 @@ const Arguments = Schema.Tuple([
 	Schema.String,
 	Schema.FiniteFromString,
 	Schema.FiniteFromString,
-	Schema.Literals(["notes", "blocks"])
+	Schema.Literals(["notes", "blocks"]),
+	Schema.FiniteFromString
 ])
 
 /** Sends a message to the parent over the IPC channel the worker was forked with, now. */
@@ -78,10 +80,55 @@ const millisPerSecond = 1000
 /** Milliseconds of a reading of CPU, user and system. */
 const millisOf = (spent: NodeJS.CpuUsage): number => (spent.user + spent.system) / 1000
 
+/**
+ * @formatConstant how often a worker's orphan guard looks at its parent
+ *
+ * How often, in milliseconds, a worker's orphan guard (orphanGuard) reads its parent's process id: an orphaned worker
+ * runs on at most this long, against hours unwatched. A read is one system call on a thread of its own.
+ */
+const ORPHAN_LOOK_MILLIS = 500
+
+/**
+ * A worker's orphan guard: a thread of its own, evaluated from its source text, that reads the worker's parent process
+ * id every ORPHAN_LOOK_MILLIS and ends the worker with SIGKILL once it is no longer `parent`, the process that forked
+ * it, which may be gone before the guard first looks. A worker leads a process
+ * group of its own (pool.ts), so a parent killed with no finalizer run (a kill trial's worker past its deadline, a run
+ * ended by SIGKILL) leaves it behind, and one whose main thread is held (a load that never ends) cannot hear its channel
+ * close; this thread can. It starts as the worker's first act, before it loads anything of a repository's, over the
+ * parent the pool names in the worker's arguments, so a parent killed while the worker still started is seen gone at
+ * once; its open port keeps it alive (a wait on its cell alone would not), and the main thread unrefs it.
+ */
+const orphanGuard = (parent: number, looksMillis: number): void => {
+	process.getBuiltinModule("node:worker_threads").parentPort?.on("message", () => undefined)
+	const cell = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT))
+	const look = (): void => {
+		if (process.ppid !== parent) {
+			process.kill(process.pid, "SIGKILL")
+			return
+		}
+		const waited = Atomics.waitAsync(cell, 0, 0, looksMillis)
+		if (waited.async) {
+			void waited.value.then(look)
+		} else {
+			void Promise.resolve().then(look)
+		}
+	}
+	look()
+}
+
+/** Starts this worker's orphan guard over `parent`, the process that forked it. */
+const guardedFrom = (parent: number) =>
+	Effect.sync(() => {
+		new Worker(`(${orphanGuard.toString()})(${parent}, ${ORPHAN_LOOK_MILLIS})`, {
+			eval: true
+		}).unref()
+	})
+
 const main = Effect.gen(function* () {
-	const [root, index, workers, guide] = yield* Schema.decodeUnknownEffect(Arguments)(
+	const [root, index, workers, guide, parent] = yield* Schema.decodeUnknownEffect(Arguments)(
 		Arr.drop(process.argv, 2)
 	)
+	yield* guardedFrom(parent)
 	if (guide === "blocks") {
 		yield* startProcessCoverage
 	}

@@ -110,7 +110,9 @@ const OUTPUT_TAIL = 16_384
  * What the pool's workers start from: the worker's entry module, the package root its test modules load from, the
  * directory it runs in, its Node flags and what its environment adds to this process's; how many workers (one a core
  * for a run); and whether any search guides by blocks (each worker then starts V8's coverage before it loads a module).
- * A worker the parent kills is forked again from the same spec.
+ * A worker the parent kills is forked again from the same spec. `open` is the run's open bound: within it and the
+ * silence grace a worker must be ready (its runner config loaded, its services declared), or it is ended as one that
+ * cannot start.
  */
 export type PoolSpec = Readonly<{
 	entry: string
@@ -120,6 +122,7 @@ export type PoolSpec = Readonly<{
 	workers: number
 	execArgv: ReadonlyArray<string>
 	guide: "notes" | "blocks"
+	open: number
 }>
 
 /**
@@ -172,9 +175,12 @@ const endGroup = (child: ChildProcess): Effect.Effect<void> =>
 			)
 	})
 
-/** What happens to a worker, as the pool's one fiber handles it, in order: units sent to it, a message, its exit, or
- * its silence past a phase of a unit's bound and grace. */
+/** What happens to a worker, as the pool's one fiber handles it, in order: it was forked, or is still not ready past
+ * the open bound and the grace; units sent to it, a message, its exit, or its silence past a phase of a unit's bound and
+ * grace. */
 type Event =
+	| Readonly<{ kind: "forked"; worker: Worker }>
+	| Readonly<{ kind: "unready"; worker: Worker }>
 	| Readonly<{ kind: "sent"; worker: Worker; unit: number }>
 	| Readonly<{ kind: "message"; worker: Worker; message: unknown }>
 	| Readonly<{ kind: "exit"; worker: Worker; code: number | null; signal: string | null }>
@@ -432,7 +438,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 		const spawn = (index: number): Worker => {
 			const child = childProcesses.fork(
 				spec.entry,
-				[spec.root, String(index), String(spec.workers), spec.guide],
+				[spec.root, String(index), String(spec.workers), spec.guide, String(process.pid)],
 				{
 					cwd: spec.cwd,
 					env: { ...process.env, ...spec.env, ...compiling },
@@ -467,6 +473,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 			child.on("exit", (code, signal) => {
 				Queue.offerUnsafe(events, { kind: "exit", worker, code, signal })
 			})
+			Queue.offerUnsafe(events, { kind: "forked", worker })
 			return worker
 		}
 
@@ -524,6 +531,24 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 				now = yield* liveMillis
 				const worker = event.worker
 				switch (event.kind) {
+					case "forked":
+						yield* Effect.forkIn(
+							Effect.andThen(
+								Effect.sleep(Duration.millis(spec.open + SILENCE_GRACE_MILLIS)),
+								Queue.offer(events, { kind: "unready", worker })
+							).pipe(Effect.asVoid),
+							scope
+						)
+						return
+					case "unready":
+						if (!worker.ready && workers[worker.index] === worker) {
+							yield* breaks(
+								worker,
+								`a worker was not ready within the open bound of ${Duration.format(Duration.millis(spec.open))} and the grace (its runner config's load never ended, or its services never came), so it is ended and not forked again; what it last wrote:\n${worker.output}`
+							)
+							yield* endGroup(worker.child)
+						}
+						return
 					case "sent":
 						if (Option.isNone(worker.running)) {
 							yield* watch(worker, event.unit, "readying")

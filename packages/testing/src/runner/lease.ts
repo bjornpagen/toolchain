@@ -1,5 +1,6 @@
 import { Effect } from "effect"
 import { type MutantPool, rebasedTo, type WorkerImage } from "#mutate/pool.ts"
+import { runnerLimits } from "#runner/limits.ts"
 import { type PoolFailed, poolOf } from "#runner/pool.ts"
 import { WORKER_ENTRY } from "#runner/run.ts"
 import { testWorkers } from "#workers.ts"
@@ -26,7 +27,8 @@ export const mutantPoolOf = (checkout: string, packageRoot: string): MutantPool<
 				env: image.env,
 				workers,
 				execArgv: [...process.execArgv, ...image.execArgv],
-				guide: "notes"
+				guide: "notes",
+				open: runnerLimits.open
 			})
 			return pool.evaluator
 		})

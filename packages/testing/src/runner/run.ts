@@ -238,7 +238,8 @@ export const runPackage = (
 				env: {},
 				workers: testWorkers,
 				execArgv: flagsOf(stack),
-				guide
+				guide,
+				open: runnerLimits.open
 			})
 			pools.set(label, pool)
 		}
@@ -320,7 +321,8 @@ export const replayToken = (
 			env: {},
 			workers: 1,
 			execArgv: flagsOf(named.stack),
-			guide: "notes"
+			guide: "notes",
+			open: runnerLimits.open
 		})
 		return yield* Option.match(Arr.head(found), {
 			onNone: () =>

@@ -6,7 +6,9 @@
  * closes. A unit whose worker never finishes loading its module (its top level loops forever), whatever its property
  * needs, is reported lost while readying, within the open bound and the silence grace, never left waiting for a word
  * from a worker that cannot send one; and a unit sent to a worker that can no longer say anything (its main thread held
- * between units) is reported lost too, watched from the moment it was sent. Oracle: stated per property.
+ * between units) is reported lost too, watched from the moment it was sent; and a worker whose runner config's load never
+ * ends is ended within the open bound and the grace, its units lost, not waited for; and a worker whose parent is killed
+ * ends with it (its orphan guard), even with its main thread held. Oracle: stated per property.
  */
 import { Array as Arr, Effect, FileSystem, Option, String as Str } from "effect"
 import { deepStrictEqual } from "#assert.ts"
@@ -16,6 +18,7 @@ import { Checkout } from "#mutate/checkout.ts"
 import { property } from "#property.ts"
 import { Scratch } from "#resources/scratch.ts"
 import { runnerLimits } from "#runner/limits.ts"
+import { heldProgram, orphansProgram } from "#runner/orphans.fixtures.ts"
 import {
 	CHILD_FILE,
 	ended,
@@ -24,7 +27,8 @@ import {
 	loopingProperty,
 	plantedCase,
 	shortCase,
-	silencing
+	silencing,
+	unreadyRoot
 } from "#runner/pool.fixtures.ts"
 import { poolOf } from "#runner/pool.ts"
 import { WORKER_ENTRY } from "#runner/run.ts"
@@ -49,7 +53,8 @@ export const workersLeaveNoChild = property.exhaust(finite(leavings), {
 							env: { [CHILD_FILE]: file },
 							workers: 1,
 							execArgv: process.execArgv,
-							guide: "notes"
+							guide: "notes",
+							open: runnerLimits.open
 						})
 						const results = yield* pool.evaluator.evaluate(
 							[plantedCase(leaving, runnerLimits.deadline, runnerLimits.open)],
@@ -133,7 +138,8 @@ export const loadsNever = property.exhaust(finite(boolean), {
 							env: {},
 							workers: 1,
 							execArgv: process.execArgv,
-							guide: "notes"
+							guide: "notes",
+							open: runnerLimits.open
 						}),
 						(pool) =>
 							pool.evaluator.evaluate([shortCase(loopingProperty(needs), 100, 1000)], () => true)
@@ -182,7 +188,8 @@ export const silentBeforeReadying = property.exhaust(finite(boolean), {
 							env: {},
 							workers: 1,
 							execArgv: process.execArgv,
-							guide: "notes"
+							guide: "notes",
+							open: runnerLimits.open
 						})
 						const silenced = yield* pool.evaluator.evaluate(
 							[shortCase(planted.silences, runnerLimits.deadline, 1000)],
@@ -211,6 +218,105 @@ export const silentBeforeReadying = property.exhaust(finite(boolean), {
 				'\t\t\t\tQueue.offerUnsafe(events, { kind: "sent", worker, unit: Arr.headNonEmpty(sent).unit })\n',
 			replacement: "",
 			why: "A unit is watched only once its worker says it is readying it, as before: a worker that cannot get that word out (its main thread held, a load that never ends, a full channel) is never ended, so its unit is never reported and its search never returns (CATCH: a mutant's lease silent past an hour); this property's case hangs past its deadline."
+		}
+	]
+})
+
+export const startsNever = property.exhaust(finite(boolean), {
+	box: "a unit of a property with needs and one without",
+	needs: { directory: Scratch.dir },
+	situations: [],
+	check:
+		({ directory }) =>
+		(needs) =>
+			Effect.gen(function* () {
+				const scratch = yield* directory
+				const root = yield* unreadyRoot(scratch)
+				const results = yield* Effect.scoped(
+					Effect.flatMap(
+						poolOf({
+							entry: WORKER_ENTRY,
+							root,
+							cwd: root,
+							env: {},
+							workers: 1,
+							execArgv: process.execArgv,
+							guide: "notes",
+							open: 1000
+						}),
+						(pool) =>
+							pool.evaluator.evaluate([shortCase(loopingProperty(needs), 100, 1000)], () => true)
+					)
+				)
+				deepStrictEqual(
+					Arr.map(Arr.flatten(results), (result) =>
+						result.outcome.kind === "lost"
+							? Str.includes("was not ready within the open bound")(result.outcome.report)
+							: false
+					),
+					[true]
+				)
+			}),
+	oracle: {
+		kind: "specification",
+		name: "a worker whose runner config's load never ends is ended within the open bound and the grace, its units lost"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/runner/pool.ts",
+			original: '\t\t\tQueue.offerUnsafe(events, { kind: "forked", worker })\n',
+			replacement: "",
+			why: "A worker is watched only once it is ready, as before: one whose runner config's load never ends (CATCH: a mutant of grizzle's engine, which the runner config's support loads) is never ended, nor its units given back, and its search never returns; this property's case hangs past its deadline."
+		}
+	]
+})
+
+export const workersOutliveNoParent = property.exhaust(finite(boolean), {
+	box: "a worker held for ever whose parent is killed, twice over",
+	needs: { checkout: Checkout.dir, directory: Scratch.dir },
+	situations: [],
+	check:
+		({ checkout, directory }) =>
+		() =>
+			Effect.gen(function* () {
+				const dir = yield* checkout
+				const scratch = yield* directory
+				const pidFile = `${scratch}/worker`
+				const root = yield* unreadyRoot(scratch)
+				const held = yield* heldProgram(
+					orphansProgram(dir),
+					root,
+					pidFile,
+					runnerLimits.deadline / 2
+				)
+				const gone = yield* Option.match(held, {
+					onNone: () => Effect.succeed(Option.none<number>()),
+					onSome: ({ program, worker }) =>
+						Effect.ensuring(
+							Effect.andThen(
+								Effect.sync(() => process.kill(program, "SIGKILL")),
+								goneWithin(worker, WATCHDOG_GRACE_MILLIS)
+							),
+							ended(worker)
+						)
+				})
+				deepStrictEqual(
+					{ held: Option.isSome(held), gone: Option.isSome(gone) },
+					{ held: true, gone: true }
+				)
+			}),
+	oracle: {
+		kind: "specification",
+		name: "a worker whose parent is killed ends within the watchdog's grace, even with its main thread held for ever"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/runner/worker.ts",
+			original: "\t\t\teval: true\n\t\t}).unref()",
+			replacement: "\t\t\teval: true\n\t\t}).terminate()",
+			why: "A worker's orphan guard is terminated as it starts, as if it had none, as before: leading a process group of its own, it outlives a parent killed with no finalizer run, and one whose main thread is held runs on for ever (this lane's own kill trials left such workers at a core each); this property fails."
 		}
 	]
 })

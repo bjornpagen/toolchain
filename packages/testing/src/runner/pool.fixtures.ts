@@ -205,3 +205,31 @@ export const passesWithANeed = property.exhaust(finite(int(0, 1)), {
 	kept: [],
 	kills: []
 })
+
+/**
+ * Writes into `directory` a runner config whose load never ends, and gives the directory, a package root no worker
+ * started over it becomes ready in: its test.config.ts imports a module whose top level loops forever
+ * (loops.fixtures.ts), as a mutant's loop in a module a repository's runner config imports does. It is written where a
+ * case runs, never kept in the checkout, since every directory holding a test.config.ts is a package a gate runs. Each
+ * import is the file URL this module resolves (a file URL holds no quote), so the config loads the same modules a worker
+ * does.
+ */
+export const unreadyRoot = (directory: string) =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		yield* fs.writeFileString(
+			`${directory}/test.config.ts`,
+			Arr.join(
+				[
+					`import { Layer } from "${import.meta.resolve("effect")}"`,
+					`import { defineRunner } from "${import.meta.resolve("#runner/config.ts")}"`,
+					`import { withNeeds } from "${import.meta.resolve("#runner/loops.fixtures.ts")}"`,
+					"export default defineRunner({ include: [], smallStack: [], conditions: [], layer: Layer.empty, families: [] })",
+					"export const looping = withNeeds",
+					""
+				],
+				"\n"
+			)
+		)
+		return directory
+	})

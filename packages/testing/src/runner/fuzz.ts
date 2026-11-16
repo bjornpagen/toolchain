@@ -81,7 +81,8 @@ export const fuzz = (root: string, args: ReadonlyArray<string>) =>
 				execArgv: process.execArgv,
 				guide: Arr.some(sampled, (found) => found.property.guide.kind === "blocks")
 					? "blocks"
-					: "notes"
+					: "notes",
+				open: runnerLimits.open
 			})
 			const began = yield* liveMillis
 			let rounds = 0
