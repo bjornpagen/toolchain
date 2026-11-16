@@ -551,24 +551,33 @@ const cpuSince = (began: NodeJS.CpuUsage) =>
 		return (spent.user + spent.system) / 1000
 	})
 
-/** The outcome of a case that drew its value and settled. */
+/**
+ * The outcome of a case that drew its value and settled, printed (`printed`, which formats its value) only when the
+ * outcome shows it: a failing or hung case, or a passing one its order asks to show.
+ */
 const outcomeOf = (
 	settled: Settled,
 	order: CaseOrder,
 	recorded: Recording,
-	printed: Printed
+	printed: () => Printed
 ): CaseOutcome => {
 	switch (settled.kind) {
 		case "passed":
 			return {
 				kind: "passed",
 				kept: order.keep === "tape" ? { kind: "tape", tape: recorded.tape() } : { kind: "nothing" },
-				shown: order.print === "always" ? { kind: "shown", printed } : { kind: "unshown" }
+				shown:
+					order.print === "always" ? { kind: "shown", printed: printed() } : { kind: "unshown" }
 			}
 		case "failed":
-			return { kind: "failed", failure: failureText(settled.cause), tape: recorded.tape(), printed }
+			return {
+				kind: "failed",
+				failure: failureText(settled.cause),
+				tape: recorded.tape(),
+				printed: printed()
+			}
 		case "hung":
-			return { kind: "hung", tape: recorded.tape(), printed }
+			return { kind: "hung", tape: recorded.tape(), printed: printed() }
 	}
 }
 
@@ -716,10 +725,7 @@ const ranOf = <S, F extends string>(
 		notes: closed.notes,
 		measures: closed.measures,
 		trace,
-		outcome: outcomeOf(
-			settled,
-			drawn.order,
-			drawn.recorded,
+		outcome: outcomeOf(settled, drawn.order, drawn.recorded, () =>
 			printedOf(drawing.print, drawn.value, closed.drew)
 		)
 	}
