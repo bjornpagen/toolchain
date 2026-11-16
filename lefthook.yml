@@ -8,7 +8,7 @@ lefthook: node_modules/.bin/lefthook
 # files never fail another's commit or push. The commit's gate, on what the index holds, runs oxfmt's check of the
 # staged files and the AST-only oxlint (oxlint.ast.config.ts) on them, and builds no lint program; the push's gate runs
 # `toolchain-test affected` on each commit the push sends, which git names on stdin. Neither typechecks: main is
-# checked in full (`pnpm check`) every 30 minutes once changes are on it (Bjorn, 2026-11-16). A merge or rebase skips
+# checked in full (`pnpm check`) every 10 minutes once changes are on it (Bjorn, 2026-11-16). A merge or rebase skips
 # pre-commit; the push gate covers it.
 pre-commit:
   skip:

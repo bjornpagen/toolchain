@@ -10,8 +10,8 @@
 #                                   with a test.config.ts, `toolchain-test affected <what the remote held>`: every
 #                                   property with no cached pass, and its kills, at full width
 #
-# Neither gate typechecks or runs `pnpm check`: main is checked in full on a timer, every 30 minutes, once changes are
-# on it (Bjorn, 2026-11-16: "i would rather typecheck on a 30 min timer"), and a red there is fixed forward.
+# Neither gate typechecks or runs `pnpm check`: main is checked in full on a timer, every 10 minutes, once changes are
+# on it (Bjorn, 2026-11-16: "a global 10 minute typecheck across the same main that all the subagents are working on"), and a red there is fixed forward.
 #   toolchain-gate run <index|commit> <command> [arguments]
 #                                   any command on what the index holds, or on a commit
 #

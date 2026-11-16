@@ -187,7 +187,7 @@ whole section, and do every part: the parts are one migration, in the order a re
   `typecheck:full` in place of `typecheck`.
 - turbo.json: a `typecheck:full` task with the `typecheck` task's `dependsOn` and `inputs`, and `//#typecheck:full`;
   `NODE_OPTIONS` moves from `globalEnv` to `globalPassThroughEnv`. Never set `cacheDir`.
-- Agents' instructions: no typecheck after an edit or in a hook; main is checked in full (`pnpm check`) every 30
+- Agents' instructions: no typecheck after an edit or in a hook; main is checked in full (`pnpm check`) every 10
   minutes once changes are on it, and a red is fixed forward; never the root's `pnpm typecheck` (it checks the root's
   config files only); the hooks run the AST-only linter and the affected properties; never `--no-verify` in the main
   tree.
