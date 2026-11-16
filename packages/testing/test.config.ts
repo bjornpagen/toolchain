@@ -4,9 +4,8 @@ import { defineRunner } from "#runner/config.ts"
 /**
  * The testing library's runner config: the test modules toolchain-test runs, which Vitest's config leaves to it as
  * they are converted to properties; no export conditions; the PostgreSQL cluster libpq's environment names
- * (resources.fixtures.ts), built only when a case first opens a need, for the database resource properties
- * (src/resources/resources.test.ts), which join the include once the push gate's run has a cluster to reach; and the
- * library's operators alone for mutation.
+ * (resources.fixtures.ts; CONTRIBUTING.md, "Properties that need a database"), built only when a case first opens a
+ * need; and the library's operators alone for mutation.
  */
 export default defineRunner({
 	include: [
@@ -19,6 +18,8 @@ export default defineRunner({
 		"src/runner/cache.test.ts",
 		"src/runner/consumer.test.ts",
 		"src/resources/scratch.test.ts",
+		"src/resources/resources.test.ts",
+		"src/resources/local.test.ts",
 		"src/core.test.ts",
 		"src/idioms.test.ts",
 		"src/shrink.test.ts",

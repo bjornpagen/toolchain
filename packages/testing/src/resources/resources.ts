@@ -12,7 +12,12 @@ export {
 	type PgMember,
 	type PgSession
 } from "#resources/cluster.ts"
-export { Database, type DatabaseNeed, type Transaction } from "#resources/database.ts"
+export {
+	Database,
+	type DatabaseNeed,
+	type TemplateDatabase,
+	type Transaction
+} from "#resources/database.ts"
 export { Scratch, type ScratchDir } from "#resources/scratch.ts"
 export {
 	type Content,

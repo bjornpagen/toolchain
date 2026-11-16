@@ -24,6 +24,7 @@ import { PgCluster, single } from "#resources/cluster.ts"
 import { collect } from "#resources/collect.ts"
 import { Database } from "#resources/database.ts"
 import {
+	countedConnections,
 	dropTemplate,
 	exists,
 	inDatabase,
@@ -75,16 +76,22 @@ export const freshIsolation = property.explore(array(int(-5, 5), { min: 0, max: 
 							"SELECT pg_catalog.current_setting('default_transaction_isolation'), pg_catalog.current_setting('search_path'), pg_catalog.has_database_privilege('pg_monitor', pg_catalog.current_database(), 'TEMPORARY')::text, pg_catalog.has_database_privilege('public', pg_catalog.current_database(), 'TEMPORARY')::text",
 							[]
 						)
+						const origin = yield* inDatabase(
+							database,
+							"SELECT datistemplate::text, (NOT datallowconn)::text FROM pg_catalog.pg_database WHERE datname = $1::name",
+							[database.template]
+						)
 						const seeds = yield* inDatabase(
 							database,
 							"SELECT pg_catalog.count(*)::text FROM public.marks WHERE token = 'seed'",
 							[]
 						)
-						return { rows, token: token ?? "", seeds, settings }
+						return { rows, token: token ?? "", seeds, settings, origin }
 					}),
 					ctx
 				)
 				deepStrictEqual(seen.seeds, [["1"]])
+				deepStrictEqual(seen.origin, [["true", "true"]])
 				deepStrictEqual(seen.settings, [
 					["serializable", '"$user", public, pg_catalog', "true", "false"]
 				])
@@ -111,6 +118,12 @@ export const freshIsolation = property.explore(array(int(-5, 5), { min: 0, max: 
 			original: "replay(quoteIdent(made)),",
 			replacement: "[],",
 			why: "A clone is not given its template's settings and privileges, which CREATE DATABASE does not copy, so it serializes nothing by default and PUBLIC may create temporary tables in it; the property fails."
+		},
+		{
+			file: "packages/testing/src/resources/template.ts",
+			original: "return { member, name: made, template: name }",
+			replacement: "return { member, name: made, template: made }",
+			why: "A clone names itself as its template, so what a template's build made outside the database (roles named from its digest) cannot be found from a clone; the property fails."
 		}
 	]
 })
@@ -337,7 +350,13 @@ export const seatSettles = property.explore(
 			({ values, leaks }) =>
 				Effect.gen(function* () {
 					c.note(leaks ? "a seat replaced after a leak" : "a seat reset after rows")
-					const ctx = yield* context
+					const shared = yield* context
+					const open = yield* Ref.make(0)
+					const ctx = Context.add(
+						shared,
+						PgCluster,
+						countedConnections(Context.get(shared, PgCluster), open)
+					)
 					const outcome = yield* Effect.provideContext(
 						Effect.scoped(
 							Effect.gen(function* () {
@@ -357,6 +376,7 @@ export const seatSettles = property.explore(
 									yield* inDatabase(database, "INSERT INTO public.ledger VALUES ('leak')", [])
 								}
 								const closed = yield* Effect.exit(Scope.close(first, Exit.void))
+								const between = yield* Ref.get(open)
 								const again = yield* Effect.scoped(
 									Effect.gen(function* () {
 										const next = yield* take
@@ -383,12 +403,13 @@ export const seatSettles = property.explore(
 										return { name: next.name, items, ledger, ticket, id }
 									})
 								)
-								return { closed, again, first: database.name }
+								return { closed, between, again, first: database.name }
 							})
 						),
 						ctx
 					)
 					strictEqual(Exit.isFailure(outcome.closed), leaks)
+					strictEqual(outcome.between, 0)
 					strictEqual(outcome.again.name !== outcome.first, leaks)
 					deepStrictEqual(outcome.again.items, [["0"]])
 					deepStrictEqual(outcome.again.ledger, [["seed"]])
@@ -400,7 +421,14 @@ export const seatSettles = property.explore(
 			name: "a seat is its template again after every case (reset, sequences put back), or is replaced and the case fails"
 		},
 		kept: [],
-		kills: []
+		kills: [
+			{
+				file: "packages/testing/src/resources/database.ts",
+				original: "const read = yield* Effect.scoped(",
+				replacement: "const read = yield* Scope.provide(scope)(",
+				why: "A held clone keeps the session its baseline was read on for its life, so a worker holds a connection per seat template between cases, against its lease; the property fails."
+			}
+		]
 	}
 )
 

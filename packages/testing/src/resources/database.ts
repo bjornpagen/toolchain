@@ -187,20 +187,20 @@ const fingerprintOf = (
 	})
 
 /**
- * A worker's own clone of a template, held across its cases: the clone, kept in a scope of its own; an owner session
- * into it; the statement that puts its sequences back; and its fingerprint as cloned, which it must have again after
- * every case.
+ * A worker's own clone of a template, held across its cases: the clone, kept in a scope of its own; the statement that
+ * puts its sequences back; and its fingerprint as cloned, which it must have again after every case. It holds no
+ * session: each settle opens its own and closes it, so a worker serving many templates holds no connection for any of
+ * them between cases.
  */
 type Held = Readonly<{
 	database: Database
 	scope: Scope.Closeable
-	session: PgSession
 	sequences: string | null
 	contents: string | null
 	baseline: Fingerprint
 }>
 
-/** Clones the template into a scope of its own under `parent`, with a session into the clone, and reads its baseline. */
+/** Clones the template into a scope of its own under `parent` and reads its baseline on a session closed after. */
 const hold = (
 	opened: Opened<Database>,
 	parent: Scope.Scope
@@ -211,11 +211,16 @@ const hold = (
 		return yield* Effect.onError(
 			Effect.gen(function* () {
 				const database = yield* Scope.provide(opened.clone, scope)
-				const session = yield* Scope.provide(cluster.connect(database.member, database.name), scope)
-				const sequences = yield* single(session, sequencesQuery, [])
-				const contents = yield* single(session, contentsQuery, [])
-				const baseline = yield* fingerprintOf(session, contents)
-				return { database, scope, session, sequences, contents, baseline }
+				const read = yield* Effect.scoped(
+					Effect.gen(function* () {
+						const session = yield* cluster.connect(database.member, database.name)
+						const sequences = yield* single(session, sequencesQuery, [])
+						const contents = yield* single(session, contentsQuery, [])
+						const baseline = yield* fingerprintOf(session, contents)
+						return { sequences, contents, baseline }
+					})
+				)
+				return { database, scope, ...read }
 			}),
 			() => Scope.close(scope, Exit.void)
 		)
@@ -240,16 +245,20 @@ const settle = (
 			return
 		}
 		const current = holding.success
+		const cluster = yield* PgCluster
 		const settled = yield* Effect.result(
-			Effect.gen(function* () {
-				yield* Effect.forEach(reset, (statement) => run(current.session, statement, []), {
-					discard: true
+			Effect.scoped(
+				Effect.gen(function* () {
+					const session = yield* cluster.connect(current.database.member, current.database.name)
+					yield* Effect.forEach(reset, (statement) => run(session, statement, []), {
+						discard: true
+					})
+					if (current.sequences !== null) {
+						yield* run(session, current.sequences, [])
+					}
+					return yield* fingerprintOf(session, current.contents)
 				})
-				if (current.sequences !== null) {
-					yield* run(current.session, current.sequences, [])
-				}
-				return yield* fingerprintOf(current.session, current.contents)
-			})
+			)
 		)
 		if (
 			Result.isSuccess(settled) &&
@@ -390,8 +399,16 @@ const oneOf = <K extends string, A>(
 	form: (template: DatabaseTemplate) => DatabaseNeed<A>
 ): Readonly<Record<K, DatabaseNeed<A>>> => Rec.map(templates, form)
 
-/** A database a case reaches: the member it lives on and its name there. */
-export type Database = Readonly<{ member: PgMember; name: DatabaseName }>
+/**
+ * A database a case reaches: the member it lives on, its name there, and the template it was cloned from, by that
+ * template's name on the member (names.ts templateName: the prefix, `tpl_` and the template's identity digest), so what a
+ * template's build made outside the database, such as cluster-wide roles named from its digest, is reachable from
+ * every clone of it.
+ */
+export type Database = Readonly<{ member: PgMember; name: DatabaseName; template: DatabaseName }>
+
+/** A template's database while its build runs: the member it is built on and its name there (names.ts templateName). */
+export type TemplateDatabase = Readonly<{ member: PgMember; name: DatabaseName }>
 
 /** The database forms a case's needs take: fresh (a clone a case), seat, transaction and oneOf. */
 export const Database = { fresh, seat, transaction, oneOf } as const

@@ -1,3 +1,4 @@
+import { regex } from "arkregex"
 import {
 	Array as Arr,
 	Brand,
@@ -6,7 +7,10 @@ import {
 	Effect,
 	type Layer,
 	Option,
-	type Scope
+	Ref,
+	Result,
+	type Scope,
+	String as Str
 } from "effect"
 import pg from "pg"
 import type { Need } from "#property.ts"
@@ -22,7 +26,7 @@ import {
 	type DatabaseName,
 	type TextRows
 } from "#resources/cluster.ts"
-import type { Database } from "#resources/database.ts"
+import type { TemplateDatabase } from "#resources/database.ts"
 import { Template } from "#resources/template.ts"
 import { ModuleClosure, NeedFailed, WorkerIndex } from "#runner/services.ts"
 
@@ -37,16 +41,97 @@ const failed = (cause: unknown): NeedFailed =>
 	})
 
 /**
- * A session over the pg driver, as the bootstrap superuser over the Unix socket libpq's environment names (PGHOST, a
- * socket directory, and PGPORT), in pg's pipeline mode: a statement sent while another runs follows it on the wire,
- * each its own exchange ending in a Sync, so concurrent callers take turns in the server, and each statement goes out
- * on the extended protocol with its rows positional.
+ * A host libpq's environment may name for the fixture's cluster: one only this machine answers on, a Unix socket's
+ * directory (an absolute path) or a loopback address (localhost, ::1, or an IPv4 address in 127.0.0.0/8). Parsed once
+ * from PGHOST before anything connects, so no stray environment can point a property, or collection, at another
+ * machine's server.
+ */
+export type LocalHost =
+	| Readonly<{ kind: "socket"; directory: string }>
+	| Readonly<{ kind: "loopback"; address: string }>
+
+/** An IPv4 address in dotted decimal, its four octets captured. */
+const dottedQuad = regex("^([0-9]{1,3})\\.([0-9]{1,3})\\.([0-9]{1,3})\\.([0-9]{1,3})$")
+
+/**
+ * Whether `host` is an IPv4 address in 127.0.0.0/8: four decimal octets, none above 255, the first 127.
+ *
+ * @formatConstant IPv4's dotted decimal: four octets of 0 to 255; 127.0.0.0/8 is loopback (RFC 1122, 3.2.1.3)
+ */
+const loopbackQuad = (host: string): boolean =>
+	Option.exists(Option.fromNullishOr(dottedQuad.exec(host)), (match) => {
+		const octets = Arr.map([match[1], match[2], match[3], match[4]], Number)
+		return (
+			octets[0] === 127 && Arr.every(octets, (octet) => Number.isInteger(octet) && octet <= 255)
+		)
+	})
+
+/** The local host `host` names, or NeedFailed naming it when it names any other machine's server. */
+export const localHostOf = (host: string): Result.Result<LocalHost, NeedFailed> => {
+	if (Str.startsWith("/")(host)) {
+		return Result.succeed({ kind: "socket", directory: host })
+	}
+	if (host === "localhost" || host === "::1" || loopbackQuad(host)) {
+		return Result.succeed({ kind: "loopback", address: host })
+	}
+	return Result.fail(
+		NeedFailed.make({
+			need: "fixture cluster",
+			message: `PGHOST names ${host === "" ? "no host" : host}, which is no Unix socket directory and no loopback address: the fixture's cluster is this machine's alone`
+		})
+	)
+}
+
+/** Where the fixture's cluster is, from libpq's environment: a local host, the port, and the role to log in as. */
+type Target = Readonly<{ host: LocalHost; port: string; user: string }>
+
+/**
+ * The fixture's cluster as libpq's environment names it, read and refused (localHostOf) before every member's reading
+ * and every connection.
+ */
+const target: Effect.Effect<Target, NeedFailed> = Effect.gen(function* () {
+	const host = yield* Config.String("PGHOST")
+	const port = yield* Config.String("PGPORT")
+	const user = yield* Config.String("PGUSER")
+	return { host, port, user }
+}).pipe(
+	Effect.mapError((error) =>
+		NeedFailed.make({
+			need: "fixture cluster",
+			message: `the resource properties run against the PostgreSQL libpq's environment names (PGHOST, PGPORT, PGUSER): ${error.message}`
+		})
+	),
+	Effect.flatMap(({ host, port, user }) =>
+		Effect.map(Effect.fromResult(localHostOf(host)), (local) => ({ host: local, port, user }))
+	)
+)
+
+/** The host a pg client connects to for a local host: the socket's directory or the loopback address. */
+const hostText = (host: LocalHost): string =>
+	host.kind === "socket" ? host.directory : host.address
+
+/**
+ * A session over the pg driver to the local host libpq's environment names (target), as its PGUSER, in pg's pipeline
+ * mode: a statement sent while another runs follows it on the wire, each its own exchange ending in a Sync, so
+ * concurrent callers take turns in the server, and each statement goes out on the extended protocol with its rows
+ * positional. The host, port and role are given to the client from the parsed target, never left to the client's own
+ * reading of the environment.
  */
 const connect = (database: string): Effect.Effect<PgSession, NeedFailed, Scope.Scope> =>
 	Effect.map(
 		Effect.acquireRelease(
 			Effect.flatMap(
-				Effect.sync(() => new pg.Client({ database, pipeline: true })),
+				Effect.map(
+					target,
+					({ host, port, user }) =>
+						new pg.Client({
+							host: hostText(host),
+							port: Number(port),
+							user,
+							database,
+							pipeline: true
+						})
+				),
 				(client) =>
 					Effect.tap(Effect.succeed(client), () =>
 						Effect.tryPromise({ try: () => client.connect(), catch: failed })
@@ -68,24 +153,13 @@ const connect = (database: string): Effect.Effect<PgSession, NeedFailed, Scope.S
 	)
 
 /**
- * The cluster the library's own resource properties run against: one member, the PostgreSQL that libpq's environment
- * names (PGHOST and PGPORT, PGUSER a superuser), databases under `tc_`, templates built from template0, and the
- * owner's sessions in `postgres`.
+ * The cluster the library's own resource properties run against: one member, the PostgreSQL on this machine that libpq's
+ * environment names (PGHOST, a socket directory or a loopback address, refused otherwise; PGPORT; PGUSER, a superuser),
+ * databases under `tc_`, templates built from template0, and the owner's sessions in `postgres`.
  */
 const fixtureCluster: PgClusterSpec = {
 	prefix: DatabasePrefix("tc_"),
-	members: Effect.gen(function* () {
-		const host = yield* Config.String("PGHOST")
-		const port = yield* Config.String("PGPORT")
-		return [{ name: `${host}:${port}` }] as const
-	}).pipe(
-		Effect.mapError((error) =>
-			NeedFailed.make({
-				need: "fixture cluster",
-				message: `the resource properties run against the PostgreSQL libpq's environment names: ${error.message}`
-			})
-		)
-	),
+	members: Effect.map(target, ({ host, port }) => [{ name: `${hostText(host)}:${port}` }] as const),
 	base: "template0",
 	maintenance: "postgres",
 	connect: (_member, database) => connect(database)
@@ -116,7 +190,7 @@ export const services: Need<Services> = {
 
 /** One statement as the cluster's owner in `database` on the worker's member, its rows as text. */
 export const inDatabase = (
-	database: Database,
+	database: TemplateDatabase,
 	sql: string,
 	params: ReadonlyArray<string>
 ): Effect.Effect<TextRows, NeedFailed, PgCluster> =>
@@ -129,7 +203,7 @@ export const inDatabase = (
 	)
 
 /** Whether a database of `name` exists on the worker's member, as the owner's database sees it. */
-export const exists = (database: Database): Effect.Effect<boolean, NeedFailed, PgCluster> =>
+export const exists = (database: TemplateDatabase): Effect.Effect<boolean, NeedFailed, PgCluster> =>
 	Effect.scoped(
 		Effect.gen(function* () {
 			const cluster = yield* PgCluster
@@ -144,7 +218,9 @@ export const exists = (database: Database): Effect.Effect<boolean, NeedFailed, P
 	)
 
 /** Drops a template the properties built for one case, as collection would: no longer a template, then gone. */
-export const dropTemplate = (database: Database): Effect.Effect<void, NeedFailed, PgCluster> =>
+export const dropTemplate = (
+	database: TemplateDatabase
+): Effect.Effect<void, NeedFailed, PgCluster> =>
 	Effect.scoped(
 		Effect.gen(function* () {
 			const cluster = yield* PgCluster
@@ -157,10 +233,10 @@ export const dropTemplate = (database: Database): Effect.Effect<void, NeedFailed
 /** Runs `statements` in the template being built, as the cluster's owner, one after another. */
 const building =
 	(statements: ReadonlyArray<string>) =>
-	(target: Database): Effect.Effect<void, NeedFailed, Scope.Scope> =>
+	(built: TemplateDatabase): Effect.Effect<void, NeedFailed, Scope.Scope> =>
 		Effect.gen(function* () {
 			const cluster = yield* required(PgCluster, "the fixture's runner config provides it")
-			const session = yield* cluster.connect(target.member, target.name)
+			const session = yield* cluster.connect(built.member, built.name)
 			yield* Effect.forEach(statements, (statement) => run(session, statement, []), {
 				discard: true
 			})
@@ -216,7 +292,7 @@ export const seatReset = ["TRUNCATE public.items RESTART IDENTITY"] as const
 /** A template of one table whose identity is `token`, unique to the case that declares it, built by `build`. */
 export const tokenTemplate = (
 	token: string,
-	build: (target: Database) => Effect.Effect<void, NeedFailed, Scope.Scope>
+	build: (target: TemplateDatabase) => Effect.Effect<void, NeedFailed, Scope.Scope>
 ) =>
 	Template.database({
 		declaredIn: import.meta,
@@ -246,3 +322,22 @@ export const templateNameOf = databaseNameOf
 
 /** This module's URL: a module whose closure differs from a test module's that imports it, so its hash is another. */
 export const fixturesModule = import.meta.url
+
+/**
+ * `cluster` with every session its connect opens counted in `open` while it lives, so a property can see how many
+ * sessions the resources hold between cases.
+ */
+export const countedConnections = (
+	cluster: Context.Service.Shape<typeof PgCluster>,
+	open: Ref.Ref<number>
+): Context.Service.Shape<typeof PgCluster> => ({
+	...cluster,
+	connect: (member, database) =>
+		Effect.andThen(
+			Effect.acquireRelease(
+				Ref.update(open, (n) => n + 1),
+				() => Ref.update(open, (n) => n - 1)
+			),
+			cluster.connect(member, database)
+		)
+})

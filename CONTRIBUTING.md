@@ -210,6 +210,32 @@ pass keeps only its own and a failure keeps none. What goes is decided by the ke
 temporary file beside the record and are renamed into place, so no lock is needed; a record a concurrent writer's
 collection removes costs its property one run. A record is safe to delete at any time.
 
+### Properties that need a database
+
+The testing library's database resources (`@bjornpagen/testing/resources`) are proven against a real PostgreSQL:
+`packages/testing/test.config.ts`'s layer provides their cluster (`resources.fixtures.ts`) from the standard libpq
+environment, `PGHOST` (a socket directory or a host), `PGPORT` and `PGUSER`, with `PGPASSWORD` and `PGSSLMODE` where
+the server asks for them. `PGHOST` must name this machine: a Unix socket's directory (an absolute path) or a loopback
+address (`localhost`, `::1`, or an address in 127.0.0.0/8). The fixture refuses any other host, naming it, before it
+connects, builds or collects anything (`localHostOf`, proven by `src/resources/local.test.ts`), so no stray environment
+can point the properties, or collection, at another machine's server.
+
+The push gate passes the pusher's environment through to `toolchain-test`. No shell profile or machine configuration
+sets these variables, and none is to: they are unset in this machine's shells, and you set them on each push that needs
+them. Without them, a database property's need fails closed, naming the variable it lacks, so a push whose change
+reaches `src/resources/resources.test.ts`'s closure fails for anyone who does not set them. On cassowary the cluster is
+grizzle's default one, reached as its bootstrap superuser by peer authentication over its socket:
+
+```sh
+PGHOST=$HOME/.local/var/grizzle/pg19rc2/socket PGPORT=5433 PGUSER=postgres git push --no-thin
+```
+
+The properties make databases only under the prefix `tc_` (templates `tc_tpl_<digest>`, clones `tc_c_<owner>_<n>`)
+and, for the property about collection, a prefix of each case's own (`tcs<hex>_`); each case drops what it made, and
+`collect` (`resources/collect.ts`) drops what an ended or killed run left under `tc_`. A run killed in the collection
+property can leave `tcs<hex>_` databases, which go by hand (`DROP DATABASE ... WITH (FORCE)`, after `ALTER DATABASE ...
+IS_TEMPLATE false` for a template).
+
 `toolchain-test fuzz <fuzztime>` runs each round at reach `rotating`: a property's rotating stream alone, under a fresh
 seed, since its kept tokens, floor and steered phase are the same on every seed and every run and push checks them.
 

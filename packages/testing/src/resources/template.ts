@@ -21,7 +21,7 @@ import {
 	run,
 	single
 } from "#resources/cluster.ts"
-import type { Database } from "#resources/database.ts"
+import type { Database, TemplateDatabase } from "#resources/database.ts"
 import { cloneName, templateName } from "#resources/names.ts"
 import { ModuleClosure, NeedFailed, WorkerIndex } from "#runner/services.ts"
 
@@ -104,7 +104,7 @@ export class DatabaseTemplate implements Template<Database> {
 	readonly name: string
 	readonly content: string
 	readonly from: Origin
-	readonly build: (target: Database) => Effect.Effect<void, NeedFailed, NeedContext>
+	readonly build: (target: TemplateDatabase) => Effect.Effect<void, NeedFailed, NeedContext>
 	readonly open: Effect.Effect<Opened<Database>, NeedFailed, NeedContext>
 
 	constructor(spec: DatabaseTemplateSpec) {
@@ -132,7 +132,7 @@ export type DatabaseTemplateSpec = Readonly<{
 	name: string
 	content: Content
 	from: Origin
-	build: (target: Database) => Effect.Effect<void, NeedFailed, NeedContext>
+	build: (target: TemplateDatabase) => Effect.Effect<void, NeedFailed, NeedContext>
 }>
 
 /** An origin's key, as a template's key reads it. */
@@ -418,7 +418,7 @@ const openDatabaseTemplate = (
 					message: `clone ${made} of template ${template.name} does not hold the template's privileges and settings after their replay`
 				})
 			}
-			return { member, name: made }
+			return { member, name: made, template: name }
 		})
 		return { member, name, owner, clone }
 	})
