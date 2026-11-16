@@ -101,8 +101,10 @@ export type Scheduler<U extends Scheduled> = Readonly<{
 	outgrows: (module: string, view: View<U>) => boolean
 	/**
 	 * How many workers that hold nothing the queue would give work to now: one for each queued module no worker holds,
-	 * and one for each whose queued work outgrows what its holders drain within a new worker's start (`starting`, its
-	 * measured milliseconds; none before one started) and the module's readying. A pool sized to its work forks no more.
+	 * and, for each module whose queued work outgrows what its holders drain within a new worker's start (`starting`,
+	 * its measured milliseconds; none before one started) and the module's readying, as many as that wait divides the
+	 * undrained work into, since each further worker drains at most that much in it. A pool sized to its work forks no
+	 * more.
 	 */
 	wanted: (view: View<U>, starting: Option.Option<number>) => number
 	/** One message of the module's oldest queued property for `worker`, out of the queue, its module held from now on. */
@@ -238,18 +240,29 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 	 * holder drains what that time leaves after the work it was already sent. A module not yet readied anywhere has no
 	 * measured readying, and spreads to no further worker until it has.
 	 */
-	const outgrowsAfter = (module: string, view: View<U>, before: number): boolean => {
+	const outgrowsAfter = (module: string, view: View<U>, before: number): boolean =>
+		Option.exists(shortfallOf(module, view, before), ({ short }) => short > 0)
+
+	/**
+	 * How much of a module's queued work its holders leave undrained within a further worker's wait before its first case
+	 * of it (`before` and the module's measured readying), and that wait; none before the module was readied anywhere.
+	 */
+	const shortfallOf = (
+		module: string,
+		view: View<U>,
+		before: number
+	): Option.Option<Readonly<{ short: number; within: number }>> => {
 		const readying = readyings.get(module)
 		const queued = queue.get(module)
 		if (readying === undefined || queued === undefined) {
-			return false
+			return Option.none()
 		}
 		const within = before + readying
 		let drained = 0
 		for (const holder of holders.get(module) ?? []) {
 			drained += Math.max(0, within - workOf(view.sentOf(holder)))
 		}
-		return queuedWorkOf(queued) > drained
+		return Option.some({ short: queuedWorkOf(queued) - drained, within })
 	}
 
 	/** The module whose oldest queued unit is the oldest of those `admits`. */
@@ -440,10 +453,17 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 		wanted: (view, starting) => {
 			let wanted = 0
 			for (const module of queue.keys()) {
-				const held = (holders.get(module)?.size ?? 0) > 0
-				if (!held || Option.exists(starting, (millis) => outgrowsAfter(module, view, millis))) {
+				if ((holders.get(module)?.size ?? 0) === 0) {
 					wanted += 1
+					continue
 				}
+				wanted += Option.match(
+					Option.flatMap(starting, (millis) => shortfallOf(module, view, millis)),
+					{
+						onNone: () => 0,
+						onSome: ({ short, within }) => Math.max(0, Math.ceil(short / within))
+					}
+				)
 			}
 			return wanted
 		},
