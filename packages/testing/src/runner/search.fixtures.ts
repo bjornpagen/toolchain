@@ -20,6 +20,8 @@ import type {
 	Finding,
 	Printed,
 	Reach,
+	SketchesOrder,
+	SketchesRan,
 	Verdict
 } from "#runner/protocol.ts"
 import type { ModuleClosure, WorkerIndex } from "#runner/services.ts"
@@ -80,6 +82,11 @@ const widthEvaluator = (
 						(results) => Arr.flatten(results)
 					)
 			})
+		const sketched = (run: SketchesOrder, lane: number) =>
+			Option.match(Arr.get(lanes, lane), {
+				onNone: () => Effect.die(`no lane ${lane} of ${width}`),
+				onSome: (evaluator) => evaluator.sketch([run])
+			})
 		const evaluator: Evaluator = {
 			evaluate: (batches, stop) =>
 				Effect.gen(function* () {
@@ -94,6 +101,20 @@ const widthEvaluator = (
 						}
 					}
 					return judged
+				}),
+			sketch: (runs) =>
+				Effect.gen(function* () {
+					const summaries: Array<SketchesRan> = []
+					for (const group of Arr.chunksOf(runs, width)) {
+						const ran = yield* Effect.forEach(group, sketched, { concurrency: "unbounded" })
+						for (const summary of Arr.flatten(ran)) {
+							summaries.push(summary)
+							if (summary.stopped.kind === "stopped") {
+								return summaries
+							}
+						}
+					}
+					return summaries
 				}),
 			width: Effect.succeed(width)
 		}

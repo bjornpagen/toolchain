@@ -522,10 +522,10 @@ export const exhaustsEverything = property.explore(
 				why: "An exhaustion reads a space it could not count within the case deadline as a pass, with no case run (exhaust-deadline-passed, re-anchored from explore.ts's test-deadline cut to the new search's uncountable space); the exhaustive spaces property fails."
 			},
 			{
-				file: "packages/testing/src/runner/search.ts",
+				file: "packages/testing/src/runner/sketches.ts",
 				original: "Option.exists(decisions, (drawn) => branch.length > drawn)",
 				replacement: "Option.exists(decisions, (drawn) => branch.length >= drawn)",
-				why: "A sketch's run ends one decision late, so it runs on into the next sketch's first case, which runs twice (exhaust-sketch-ends-one-decision-late, re-anchored from explore.ts to the new search's rounds of sketches, windowRan); the exhaustive spaces property fails."
+				why: "A sketch's run ends one decision late, so it runs on into the next sketch's first case, which runs twice (exhaust-sketch-ends-one-decision-late, re-anchored from explore.ts to the search's rounds of sketches, which a run of sketches now runs on its process, sketches.ts sketchesRun); the exhaustive spaces property fails."
 			}
 		]
 	}

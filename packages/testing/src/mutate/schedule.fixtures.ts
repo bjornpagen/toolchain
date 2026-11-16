@@ -60,7 +60,20 @@ export const fakeProperty = (seen: Ref.Ref<Seen>): Property =>
 			}),
 		replay: () =>
 			Effect.succeed({ kind: "exhausted", cases: 1, box: "one fake case", measures: [] }),
-		ready: () => Effect.succeed(() => Effect.succeed([]))
+		ready: () =>
+			Effect.succeed({
+				cases: () => Effect.succeed([]),
+				sketches: () =>
+					Effect.succeed({
+						ran: 0,
+						passed: 0,
+						notes: [],
+						measures: [],
+						millis: 0,
+						cpu: 0,
+						stopped: { kind: "none" }
+					} as const)
+			})
 	})
 
 /** The image key of stage `stage` of trial `trial`, which its leases are known by. */
@@ -87,6 +100,7 @@ export const fakePool = (
 					leased: [...s.leased, workers]
 				})),
 				{
+					sketch: () => Effect.succeed([]),
 					evaluate: (batches: ReadonlyArray<Batch>) =>
 						Effect.forEach(batches, (batch) =>
 							Effect.forEach(batch, (order) => {

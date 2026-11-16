@@ -1,12 +1,5 @@
 import { Array as Arr, Duration, Effect, Option, String as Str } from "effect"
-import {
-	type Branch,
-	type Enumerated,
-	enumerated,
-	firstBranch,
-	nextBranch,
-	sizeOf
-} from "#enumerate.ts"
+import { type Branch, enumerated, firstBranch, sizeOf } from "#enumerate.ts"
 import { residualOf, type SteeringPhase, type Tally, tallyOf, turnsOf } from "#features.ts"
 import type { Gen } from "#gen.ts"
 import { mutate } from "#mutate.ts"
@@ -33,6 +26,7 @@ import {
 	type ChooserSpec,
 	type Finding,
 	type SearchRun,
+	type SketchesOrder,
 	type Verdict
 } from "#runner/protocol.ts"
 import { runOfLabel } from "#runner/stack.ts"
@@ -145,12 +139,14 @@ const tracerOf = (): ((trace: Trace) => Uint8Array) => {
 /** A search's measures being summed: `add` takes a passing case's, `sums` gives them by first use. */
 const measuring = () => {
 	const sums = new Map<string, number>()
+	const addAll = (measured: ReadonlyArray<readonly [string, number]>) => {
+		for (const [name, amount] of measured) {
+			sums.set(name, (sums.get(name) ?? 0) + amount)
+		}
+	}
 	return {
-		add: (result: CaseResult) => {
-			for (const [name, amount] of result.measures) {
-				sums.set(name, (sums.get(name) ?? 0) + amount)
-			}
-		},
+		add: (result: CaseResult) => addAll(result.measures),
+		addAll,
 		sums: (): Measures => Arr.fromIterable(sums.entries())
 	}
 }
@@ -654,86 +650,16 @@ export const exploreSearch =
 			}
 		})
 
-/** One sketch of an exhaustion's space: the branch its cases start at, and how many decisions its space draws there. */
-type Sketch = Readonly<{ start: Branch; decisions: number }>
-
-/** What one sketch's run found: each case that passed, in order, and the first case that did not. */
-type SketchRan = Readonly<{
-	passed: ReadonlyArray<CaseResult>
-	stopped: Option.Option<CaseResult>
-}>
-
-/** The chooser of an enumeration's branch: its fixed decisions, every later one at its simplest. */
-const branchChooser = (branch: Branch): ChooserSpec => ({
-	kind: "prefix",
-	values: branch.values.slice(0, branch.length),
-	rest: { kind: "simplest" }
-})
-
-/**
- * A window of sketches run in rounds: each round evaluates the next case of every sketch still going, `group` cases to
- * an evaluation (a batched exhaustion's batch), each case's tape giving its sketch's next case (the next branch its
- * property's draws enumerate). A sketch ends at its last case or its first that does not pass, and once a sketch has
- * stopped no later sketch is run further, since a later sketch's cases come after it in enumeration order. So the first
- * failing case in enumeration order is the same at any width and any batch size.
- */
-const windowRan = (
-	run: SearchRun,
-	window: ReadonlyArray<Sketch>,
-	group: number
-): Effect.Effect<ReadonlyArray<SketchRan>> =>
-	Effect.gen(function* () {
-		const passed: Array<Array<CaseResult>> = Arr.map(window, () => [])
-		const stopped: Array<Option.Option<CaseResult>> = Arr.map(window, () => Option.none())
-		let frontier: ReadonlyArray<readonly [number, Branch]> = Arr.map(
-			window,
-			(sketch, at) => [at, sketch.start] as const
-		)
-		while (Arr.isReadonlyArrayNonEmpty(frontier)) {
-			const results = yield* windowOf(
-				run,
-				Arr.map(frontier, ([, branch]): Draw => ({
-					chooser: branchChooser(branch),
-					drawn: { kind: "unsteered" }
-				})),
-				{ keep: "tape", sense: notesOnly, group }
-			)
-			const next: Array<readonly [number, Branch]> = []
-			for (const [[at], result] of Arr.zip(frontier, results)) {
-				const outcome = result.outcome
-				if (outcome.kind !== "passed") {
-					stopped[at] = Option.some(result)
-					continue
-				}
-				passed[at]?.push(result)
-				const decisions = Arr.get(window, at).pipe(Option.map((sketch) => sketch.decisions))
-				const after =
-					outcome.kept.kind === "tape"
-						? Option.filter(nextBranch(outcome.kept.tape), (branch) =>
-								Option.exists(decisions, (drawn) => branch.length > drawn)
-							)
-						: Option.none()
-				if (Option.isSome(after)) {
-					next.push([at, after.value])
-				}
-			}
-			const firstStop = Arr.findFirstIndex(stopped, Option.isSome)
-			frontier = Option.match(firstStop, {
-				onNone: () => next,
-				onSome: (stop) => Arr.filter(next, ([at]) => at < stop)
-			})
-		}
-		return Arr.zipWith(passed, stopped, (ran, stop): SketchRan => ({ passed: ran, stopped: stop }))
-	})
-
 /**
  * An exhaustion's search: kept tokens first; then its space counted before any case runs, within the case deadline,
  * since a space too large to count is too large to exhaust; then every case in enumeration order. The space is run by
- * sketches, one case of the space alone with every case its property's draws enumerate from it, a window of sketches at
- * once (as many as the evaluator has room for, a batch's worth per worker at least), in rounds (windowRan), `group`
- * cases to an evaluation (one, or a batched exhaustion's batch size); the results are judged in enumeration order, so the
- * first failing case is the same at any width, and it is shrunk alone for at most as many candidates as the space holds
- * cases. Every case is a witness, so every required situation must be reached by one of them.
+ * sketches, one case of the space alone with every case its property's draws enumerate from it, in windows of as many
+ * runs of sketches as the evaluator has room for, each run the steering window's count of sketches (a batch's worth at
+ * least) sent to one process as one unit (runner/sketches.ts): the process enumerates them from the run's first branch,
+ * runs their cases `group` to an evaluation (one, or a batched exhaustion's batch size), and gives back one summary, so
+ * no case crosses a process boundary alone. The runs are judged in enumeration order, so the first failing case is the
+ * same at any width, and it is shrunk alone for at most as many candidates as the space holds cases. Every case is a
+ * witness, so every required situation must be reached by one of them.
  */
 export const exhaustSearch =
 	(searched: Searched, space: Gen<unknown>, box: string, group: number) =>
@@ -757,22 +683,33 @@ export const exhaustSearch =
 			let next: Option.Option<Branch> = Option.some(firstBranch)
 			let cases = 0
 			while (Option.isSome(next)) {
-				const room = (yield* run.evaluator.width) * Math.max(run.limits.window, group)
-				const window: Array<Sketch> = []
-				while (Option.isSome(next) && window.length < room) {
-					const step: Enumerated<unknown> = enumerated(sketches, space, next.value)
-					window.push({ start: next.value, decisions: step.generated.tape.length })
-					next = step.next
-				}
-				const ran = yield* windowRan(run, window, group)
-				for (const sketchRan of ran) {
-					for (const passed of sketchRan.passed) {
-						cases += 1
-						tally.add(new Set(passed.notes))
-						measures.add(passed)
+				const width = yield* run.evaluator.width
+				const perRun = Math.max(run.limits.window, group)
+				const runs: Array<SketchesOrder> = []
+				while (Option.isSome(next) && runs.length < width) {
+					const start = next.value
+					let count = 0
+					while (Option.isSome(next) && count < perRun) {
+						next = enumerated(sketches, space, next.value).next
+						count += 1
 					}
-					if (Option.isSome(sketchRan.stopped)) {
-						const found = yield* findingOf(run, sketchRan.stopped.value, {
+					runs.push({
+						property: run.id,
+						start: start.values.slice(0, start.length),
+						length: start.length,
+						count,
+						group,
+						deadline: run.limits.deadline,
+						open: run.limits.open
+					})
+				}
+				const ran = yield* run.evaluator.sketch(runs)
+				for (const summary of ran) {
+					cases += summary.passed
+					tally.add(new Set(summary.notes))
+					measures.addAll(summary.measures)
+					if (summary.stopped.kind === "stopped") {
+						const found = yield* findingOf(run, summary.stopped.result, {
 							phase: "exhaustive",
 							where: `case ${cases} of the exhaustive space of ${size} cases`,
 							drawn: { kind: "unsteered" },

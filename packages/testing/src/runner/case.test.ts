@@ -249,9 +249,8 @@ export const opensOutsideTheCase = property.explore(slowOpens, {
 	kills: [
 		{
 			file: "packages/testing/src/runner/case.ts",
-			original:
-				"\t\tEffect.as(openAll(needs, bound), (batch: Arr.NonEmptyReadonlyArray<CaseOrder>) =>",
-			replacement: "\t\tEffect.as(Effect.void, (batch: Arr.NonEmptyReadonlyArray<CaseOrder>) =>",
+			original: "\t\t\topenAll(needs, bound),",
+			replacement: "\t\t\tEffect.void,",
 			why: "A property's needs are no longer opened when it is readied, so the first case that takes one opens it inside its own deadline (need-open-in-case, GZ-FOUNDATION's template forms killed at 60 s on their first cases); a need slower to open than the case deadline hangs that case, and the property fails."
 		}
 	]
@@ -304,10 +303,8 @@ export const unopenedOnce = property.explore(
 		kills: [
 			{
 				file: "packages/testing/src/runner/case.ts",
-				original:
-					"\t\tEffect.as(openAll(needs, bound), (batch: Arr.NonEmptyReadonlyArray<CaseOrder>) =>",
-				replacement:
-					"\t\tEffect.as(Effect.ignore(openAll(needs, bound)), (batch: Arr.NonEmptyReadonlyArray<CaseOrder>) =>",
+				original: "\t\t\topenAll(needs, bound),",
+				replacement: "\t\t\tEffect.ignore(openAll(needs, bound)),",
 				why: "A need that did not open is left to the cases, as 3714090 left it: each case takes it and fails on its failure, so the property is falsified case by case instead of failing once as unopened, and its cases run; the property fails."
 			},
 			{

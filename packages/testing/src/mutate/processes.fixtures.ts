@@ -62,7 +62,20 @@ export const checkProperty = (kills: ReadonlyArray<Kill>): Property =>
 			),
 		keep: () => ({ kind: "unfound", why: "a fixture keeps nothing" }),
 		replay: () => Effect.succeed({ kind: "exhausted", cases: 1, box: "the check", measures: [] }),
-		ready: () => Effect.succeed(() => Effect.succeed([]))
+		ready: () =>
+			Effect.succeed({
+				cases: () => Effect.succeed([]),
+				sketches: () =>
+					Effect.succeed({
+						ran: 0,
+						passed: 0,
+						notes: [],
+						measures: [],
+						millis: 0,
+						cpu: 0,
+						stopped: { kind: "none" }
+					} as const)
+			})
 	})
 
 /**
@@ -75,6 +88,7 @@ export const processPool = Effect.map(
 		width: 4,
 		lease: (image) =>
 			Effect.succeed({
+				sketch: () => Effect.succeed([]),
 				evaluate: (batches) =>
 					Effect.forEach(batches, (batch) =>
 						Effect.forEach(batch, (order) =>

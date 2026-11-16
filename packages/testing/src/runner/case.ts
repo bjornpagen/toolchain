@@ -29,11 +29,17 @@ import {
 	type CaseOutcome,
 	type CaseResult,
 	chooserOf,
+	type Done,
+	doneWith,
 	type Printed,
+	type SketchesOrder,
+	type SketchesRan,
 	type Trace,
-	unopenedResult
+	unopenedResult,
+	type Work
 } from "#runner/protocol.ts"
 import { NeedFailed } from "#runner/services.ts"
+import { sketchesRun } from "#runner/sketches.ts"
 import { type Observed, type Recording, recording, simplestChooser } from "#source.ts"
 
 /**
@@ -249,12 +255,44 @@ const resourcesOf = <N extends Needs>(
 	)
 
 /**
- * A property's evaluation of a batch of its cases on a process where its needs are open: the results, one an order, in
- * the batch's order.
+ * A property's evaluations on a process where its needs are open: of a batch of its cases (the results, one an order,
+ * in the batch's order), and of a run of its sketches, which the process enumerates over the property's space and runs
+ * as an exhaustion's window (runner/sketches.ts).
  */
-export type Evaluation = (
-	batch: Arr.NonEmptyReadonlyArray<CaseOrder>
-) => Effect.Effect<ReadonlyArray<CaseResult>, never, CaseEnv>
+export type Evaluation = Readonly<{
+	cases: (
+		batch: Arr.NonEmptyReadonlyArray<CaseOrder>
+	) => Effect.Effect<ReadonlyArray<CaseResult>, never, CaseEnv>
+	sketches: (run: SketchesOrder) => Effect.Effect<SketchesRan, never, CaseEnv>
+}>
+
+/**
+ * A property's evaluations from its evaluation of a batch: its sketches enumerated over the unsteered space, each case
+ * of them evaluated as a batch's, a late use of one reported to the run itself, which marks the case misused.
+ */
+const evaluationOf = <S, F extends string>(
+	drawing: Drawing<S, F>,
+	cases: Evaluation["cases"]
+): Evaluation => ({
+	cases,
+	sketches: (run) =>
+		Effect.suspend(() => {
+			const late = new Map<CaseOrder, Printed>()
+			return sketchesRun(
+				drawing.spaceUnder(Option.none()),
+				(batch) =>
+					cases(batch).pipe(
+						Effect.provideService(LateUses, {
+							report: (order, printed) => {
+								late.set(order, printed)
+							}
+						})
+					),
+				(order) => Option.fromUndefinedOr(late.get(order)),
+				run
+			)
+		})
+})
 
 /**
  * How a process readies a property for its cases: it opens the property's needs within `bound` milliseconds, before
@@ -565,16 +603,27 @@ export const readiedOf = (
 		onSuccess: (evaluate): Readied => ({ kind: "ready", evaluate })
 	})
 
-/** A batch's results on a process: its evaluation when its property is ready, the refusal for each case otherwise. */
-export const resultsOf = (
-	readied: Readied,
-	batch: Arr.NonEmptyReadonlyArray<CaseOrder>
-): Effect.Effect<ReadonlyArray<CaseResult>, never, CaseEnv> => {
+/**
+ * A unit's work done on a process: its batch evaluated, or its run of sketches, when its property is ready; the refusal
+ * for each of its cases otherwise.
+ */
+export const doneOf = (readied: Readied, work: Work): Effect.Effect<Done, never, CaseEnv> => {
 	switch (readied.kind) {
 		case "ready":
-			return readied.evaluate(batch)
+			switch (work.kind) {
+				case "cases":
+					return Effect.map(readied.evaluate.cases(work.batch), (results) => ({
+						kind: "cases",
+						results
+					}))
+				case "sketches":
+					return Effect.map(readied.evaluate.sketches(work.sketches), (ran) => ({
+						kind: "sketches",
+						ran
+					}))
+			}
 		case "refused":
-			return Effect.succeed(Arr.map(batch, () => readied.result))
+			return Effect.succeed(doneWith(work, readied.result))
 	}
 }
 
@@ -788,8 +837,9 @@ export const casesReadied =
 		check: CaseCheck<S, F, N, E>
 	): Readying =>
 	(bound) =>
-		Effect.as(openAll(needs, bound), (batch: Arr.NonEmptyReadonlyArray<CaseOrder>) =>
-			Effect.forEach(batch, evaluateCase(drawing, needs, check))
+		Effect.as(
+			openAll(needs, bound),
+			evaluationOf(drawing, (batch) => Effect.forEach(batch, evaluateCase(drawing, needs, check)))
 		)
 
 /**
@@ -804,7 +854,7 @@ const evaluateBatch =
 		drawing: Drawing<S, F>,
 		needs: N,
 		checkAll: BatchCheck<S, F, N, E>
-	): Evaluation =>
+	): Evaluation["cases"] =>
 	(batch) =>
 		Effect.gen(function* () {
 			const began = yield* liveNanos
@@ -835,7 +885,7 @@ export const batchesReadied =
 		checkAll: BatchCheck<S, F, N, E>
 	): Readying =>
 	(bound) =>
-		Effect.as(openAll(needs, bound), evaluateBatch(drawing, needs, checkAll))
+		Effect.as(openAll(needs, bound), evaluationOf(drawing, evaluateBatch(drawing, needs, checkAll)))
 
 /** Each case's run, in the batch's order: the batch's check over its drawn cases, then each case's verdict. */
 const runsOf = <S, F extends string, N extends Needs, E>(

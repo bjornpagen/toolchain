@@ -198,6 +198,79 @@ const CaseResult = Schema.Struct({
 
 export type CaseResult = typeof CaseResult.Type
 
+/**
+ * A run of an exhaustion's sketches on one process, the unit an exhaustion is sent in: its property, the branch of its
+ * first sketch (the first `length` of `start`), how many sketches it runs from there in enumeration order (fewer when
+ * the space ends first), how many of its cases one evaluation takes (`group`: one, or a batched exhaustion's size),
+ * and each case's deadline and its needs' open bound. A sketch is one case of the space and every case its property's
+ * own draws enumerate from it; the process enumerates the sketches and their cases itself, and gives back one summary,
+ * so its cases cross no process boundary one by one.
+ */
+const SketchesOrder = Schema.Struct({
+	property: Schema.String,
+	start: Float64s,
+	length: Schema.Finite,
+	count: Schema.Finite,
+	group: Schema.Finite,
+	deadline: Schema.Finite,
+	open: Schema.Finite
+})
+
+export type SketchesOrder = typeof SketchesOrder.Type
+
+/**
+ * What a run of sketches found, in enumeration order through its first sketch that stopped (every sketch, when none
+ * did): how many of those sketches' cases passed, the situations they noted, what they measured (by name, summed), and
+ * the first case that did not pass, if one did; and how many cases the process ran for it in all, with their
+ * milliseconds and CPU (cases of later sketches that ran in the same rounds among them).
+ */
+const SketchesRan = Schema.Struct({
+	ran: Schema.Finite,
+	passed: Schema.Finite,
+	notes: Schema.Array(Schema.String),
+	measures: Schema.Array(Schema.Tuple([Schema.String, Schema.Finite])),
+	millis: Schema.Finite,
+	cpu: Schema.Finite,
+	stopped: Schema.Union([
+		Schema.Struct({ kind: Schema.Literal("none") }),
+		Schema.Struct({ kind: Schema.Literal("stopped"), result: CaseResult })
+	])
+})
+
+export type SketchesRan = typeof SketchesRan.Type
+
+/** What a unit holds: a batch of one property's cases, or a run of an exhaustion's sketches. */
+const Work = Schema.Union([
+	Schema.Struct({ kind: Schema.Literal("cases"), batch: Batch }),
+	Schema.Struct({ kind: Schema.Literal("sketches"), sketches: SketchesOrder })
+])
+
+export type Work = typeof Work.Type
+
+/** The property a unit's work is of, and its needs' open bound, as its orders carry them. */
+export const workOf = (work: Work): Readonly<{ property: string; open: number; cases: number }> => {
+	switch (work.kind) {
+		case "cases": {
+			const first = Arr.headNonEmpty(work.batch)
+			return { property: first.property, open: first.open, cases: work.batch.length }
+		}
+		case "sketches":
+			return {
+				property: work.sketches.property,
+				open: work.sketches.open,
+				cases: work.sketches.count
+			}
+	}
+}
+
+/** What a unit gave back: its batch's results, one an order, or its sketches' summary. */
+const Done = Schema.Union([
+	Schema.Struct({ kind: Schema.Literal("cases"), results: Schema.Array(CaseResult) }),
+	Schema.Struct({ kind: Schema.Literal("sketches"), ran: SketchesRan })
+])
+
+export type Done = typeof Done.Type
+
 /** The result of a case that never ran: no decision made, nothing noted, measured or traced, and why. */
 const unranResult = (outcome: CaseOutcome): CaseResult => ({
 	decisions: 0,
@@ -211,8 +284,87 @@ const unranResult = (outcome: CaseOutcome): CaseResult => ({
 	cpu: 0
 })
 
+/**
+ * What bounds a unit's evaluation on a worker: each of its cases' deadlines, added up; a run of sketches, one deadline a
+ * sketch.
+ */
+export const deadlinesOf = (work: Work): number => {
+	switch (work.kind) {
+		case "cases":
+			return Arr.reduce(work.batch, 0, (total, order) => total + order.deadline)
+		case "sketches":
+			return work.sketches.count * work.sketches.deadline
+	}
+}
+
+/** How many cases a unit's answer says its worker ran, and their milliseconds and CPU. */
+export const ranOf = (done: Done): Readonly<{ cases: number; millis: number; cpu: number }> => {
+	switch (done.kind) {
+		case "cases":
+			return {
+				cases: done.results.length,
+				millis: Arr.reduce(done.results, 0, (total, result) => total + result.millis),
+				cpu: Arr.reduce(done.results, 0, (total, result) => total + result.cpu)
+			}
+		case "sketches":
+			return { cases: done.ran.ran, millis: done.ran.millis, cpu: done.ran.cpu }
+	}
+}
+
+/** The report of a worker that answered a unit with the other kind of answer: a defect of its process. */
+const misanswered = "its worker answered it with the other kind of answer than its unit holds"
+
+/** A batch's results, as its worker answered them; a run of sketches in their place is a lost case. */
+export const resultsOf = (done: Done): ReadonlyArray<CaseResult> => {
+	switch (done.kind) {
+		case "cases":
+			return done.results
+		case "sketches":
+			return [lostResult(misanswered)]
+	}
+}
+
+/** A run of sketches' summary, as its worker answered it; a batch's results in its place stop it, lost. */
+export const sketchesRanOf = (done: Done): SketchesRan => {
+	switch (done.kind) {
+		case "sketches":
+			return done.ran
+		case "cases":
+			return {
+				ran: 0,
+				passed: 0,
+				notes: [],
+				measures: [],
+				millis: 0,
+				cpu: 0,
+				stopped: { kind: "stopped", result: lostResult(misanswered) }
+			}
+	}
+}
+
 /** A result no process gave: the case's process ended while it ran, with what the process last wrote. */
 export const lostResult = (report: string): CaseResult => unranResult({ kind: "lost", report })
+
+/** What a unit no process could run gives back: each of its cases, or its run of sketches, ended as `result` says. */
+export const doneWith = (work: Work, result: CaseResult): Done => {
+	switch (work.kind) {
+		case "cases":
+			return { kind: "cases", results: Arr.map(work.batch, () => result) }
+		case "sketches":
+			return {
+				kind: "sketches",
+				ran: {
+					ran: 0,
+					passed: 0,
+					notes: [],
+					measures: [],
+					millis: 0,
+					cpu: 0,
+					stopped: { kind: "stopped", result }
+				}
+			}
+	}
+}
 
 /**
  * The result of a case whose property's need `need` did not open on its process: why (its NeedFailed's message, its
@@ -224,8 +376,10 @@ export const unopenedResult = (need: string, message: string): CaseResult =>
 /**
  * Where a search's cases evaluate. `evaluate` runs batches and gives back each batch's results in order, ending with the
  * first batch in order that holds a result `stop` holds of (a window whose case failed, a shrink whose candidate
- * failed); the batches after it that have not started are dropped, and those that have run to their end unread. `width` is how many batches could start at
- * once now, at least one, what a shrink speculates over. Two exist: the pool (a worker a core) and inline (this
+ * failed); the batches after it that have not started are dropped, and those that have run to their end unread.
+ * `sketch` runs an exhaustion's runs of sketches and gives back each one's summary in order, ending with the first
+ * whose case stopped, the same way. `width` is how many batches could start at once now, at least one, what a shrink
+ * speculates over and an exhaustion's window counts its runs by. Two exist: the pool (a worker a core) and inline (this
  * process, one batch at a time), and a search finds the same on either.
  */
 export type Evaluator = Readonly<{
@@ -233,6 +387,7 @@ export type Evaluator = Readonly<{
 		batches: ReadonlyArray<Batch>,
 		stop: (result: CaseResult) => boolean
 	) => Effect.Effect<ReadonlyArray<ReadonlyArray<CaseResult>>>
+	sketch: (runs: ReadonlyArray<SketchesOrder>) => Effect.Effect<ReadonlyArray<SketchesRan>>
 	width: Effect.Effect<number>
 }>
 
@@ -327,7 +482,7 @@ export type Verdict =
 export const ToWorker = Schema.Union([
 	Schema.Struct({
 		kind: Schema.Literal("evaluate"),
-		units: Schema.NonEmptyArray(Schema.Struct({ unit: Schema.Finite, batch: Batch }))
+		units: Schema.NonEmptyArray(Schema.Struct({ unit: Schema.Finite, work: Work }))
 	}),
 	Schema.Struct({ kind: Schema.Literal("revoke"), units: Schema.Array(Schema.Finite) }),
 	Schema.Struct({ kind: Schema.Literal("closure"), module: Schema.String, answer: ClosureAnswer }),
@@ -358,7 +513,7 @@ export const FromWorker = Schema.Union([
 	Schema.Struct({
 		kind: Schema.Literal("done"),
 		unit: Schema.Finite,
-		results: Schema.Array(CaseResult),
+		done: Done,
 		cpu: Schema.Finite
 	}),
 	Schema.Struct({ kind: Schema.Literal("revoked"), units: Schema.Array(Schema.Finite) }),

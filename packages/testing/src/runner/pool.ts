@@ -16,13 +16,19 @@ import { withLateUses } from "#runner/case.ts"
 import { compileCacheDirectory, readsCoverage } from "#runner/compile-cache.ts"
 import { moduleClosureAt } from "#runner/module-closure.ts"
 import {
-	type Batch,
-	type CaseResult,
+	type Done,
+	deadlinesOf,
+	doneWith,
 	type Evaluator,
 	FromWorker,
 	lostResult,
 	type Printed,
-	type ToWorker
+	ranOf,
+	resultsOf,
+	sketchesRanOf,
+	type ToWorker,
+	type Work,
+	workOf
 } from "#runner/protocol.ts"
 import {
 	afterFinished,
@@ -54,16 +60,16 @@ import type { PoolUsage, PropertyUsage } from "#runner/usage.ts"
  */
 
 /**
- * One unit of work: a batch of one property's orders, the module the property is declared in, how many cases the batch
- * holds, and where its results go.
+ * One unit of work: a batch of one property's orders or a run of an exhaustion's sketches, the property and the module
+ * it is declared in, how many cases it holds (a run, its sketches), and where what it gives back goes.
  */
 type Unit = Readonly<{
 	id: number
-	batch: Batch
+	work: Work
 	property: string
 	module: string
 	cases: number
-	done: Deferred.Deferred<ReadonlyArray<CaseResult>>
+	done: Deferred.Deferred<Done>
 }>
 
 /**
@@ -160,9 +166,9 @@ const SILENCE_GRACE_MILLIS = 2 * WATCHDOG_GRACE_MILLIS + Duration.toMillis(HUNG_
 const boundOf = (unit: Unit, phase: Phase): number => {
 	switch (phase) {
 		case "readying":
-			return Arr.headNonEmpty(unit.batch).open
+			return workOf(unit.work).open
 		case "evaluating":
-			return Arr.reduce(unit.batch, 0, (total, order) => total + order.deadline)
+			return deadlinesOf(unit.work)
 	}
 }
 
@@ -270,7 +276,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 		/** Sends a worker units to evaluate. */
 		const give = (worker: Worker, units: ReadonlyArray<Unit>) => {
 			worker.sent = [...units]
-			const sent = Arr.map(units, (unit) => ({ unit: unit.id, batch: unit.batch }))
+			const sent = Arr.map(units, (unit) => ({ unit: unit.id, work: unit.work }))
 			if (Arr.isReadonlyArrayNonEmpty(sent)) {
 				send(worker, { kind: "evaluate", units: sent })
 			}
@@ -355,21 +361,13 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 			}
 		}
 
-		const finish = (worker: Worker, unit: Unit, results: ReadonlyArray<CaseResult>) => {
+		const finish = (worker: Worker, unit: Unit, done: Done) => {
 			worker.sent = Arr.filter(worker.sent, (sent) => sent.id !== unit.id)
-			counts[worker.index] = (counts[worker.index] ?? 0) + results.length
-			scheduler.finished(
-				unit.property,
-				results.length,
-				Arr.reduce(results, 0, (total, result) => total + result.millis)
-			)
-			spent(
-				unit.property,
-				results.length,
-				Arr.reduce(results, 0, (total, result) => total + result.cpu),
-				0
-			)
-			Deferred.doneUnsafe(unit.done, Effect.succeed(results))
+			const ran = ranOf(done)
+			counts[worker.index] = (counts[worker.index] ?? 0) + ran.cases
+			scheduler.finished(unit.property, ran.cases, ran.millis)
+			spent(unit.property, ran.cases, ran.cpu, 0)
+			Deferred.doneUnsafe(unit.done, Effect.succeed(done))
 		}
 
 		const spawn = (index: number): Worker => {
@@ -455,10 +453,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 					other.sent = []
 				}
 				for (const unit of stranded) {
-					Deferred.doneUnsafe(
-						unit.done,
-						Effect.succeed(Arr.map(unit.batch, () => lostResult(report)))
-					)
+					Deferred.doneUnsafe(unit.done, Effect.succeed(doneWith(unit.work, lostResult(report))))
 				}
 			})
 
@@ -490,11 +485,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 						Option.map(lost, ({ unit, phase }) => {
 							const how = event.signal ?? `exit ${event.code}`
 							const report = `${lostIn(unit, phase)} ended (${how}), past its bound and grace or by a crash; what it last wrote:\n${worker.output}`
-							finish(
-								worker,
-								unit,
-								Arr.map(unit.batch, () => lostResult(report))
-							)
+							finish(worker, unit, doneWith(unit.work, lostResult(report)))
 						})
 						handBack(worker, [])
 						scheduler.requeue(requeued)
@@ -552,7 +543,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 								const unit = Arr.findFirst(worker.sent, (sent) => sent.id === received.unit)
 								if (Option.isSome(unit)) {
 									yield* settle(worker)
-									finish(worker, unit.value, received.results)
+									finish(worker, unit.value, received.done)
 									afterFinished(scheduler, view, apply, worker.index, unit.value.module)
 									grow()
 								}
@@ -628,52 +619,78 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 			).pipe(Effect.uninterruptible)
 		)
 
-		const enqueue = (batch: Batch): Unit => {
+		const enqueue = (work: Work): Unit => {
 			unitIds += 1
-			const property = Arr.headNonEmpty(batch).property
+			const { property, cases } = workOf(work)
 			const unit: Unit = {
 				id: unitIds,
-				batch,
+				work,
 				property,
 				module: moduleOfLabel(property),
-				cases: batch.length,
-				done: Deferred.makeUnsafe<ReadonlyArray<CaseResult>>()
+				cases,
+				done: Deferred.makeUnsafe<Done>()
 			}
 			scheduler.enqueue(unit)
 			return unit
 		}
 
+		/**
+		 * Queues units and gives back what each gave, in order, through the first that `stops`: the units after it that
+		 * have not started are taken out of the queue, and those that have run to their end are not read.
+		 */
+		const ranInOrder = <A>(
+			works: ReadonlyArray<Work>,
+			read: (done: Done) => A,
+			stops: (read: A) => boolean
+		): Effect.Effect<ReadonlyArray<readonly [Unit, A]>> =>
+			Effect.gen(function* () {
+				const units = Arr.map(works, enqueue)
+				feedAll()
+				const given: Array<readonly [Unit, A]> = []
+				for (const [at, unit] of units.entries()) {
+					const answered = yield* Deferred.await(unit.done)
+					const done = read(answered)
+					given.push([unit, done])
+					if (stops(done)) {
+						scheduler.drop(new Set(Arr.map(Arr.drop(units, at + 1), (other) => other.id)))
+						return given
+					}
+				}
+				return given
+			})
+
 		const evaluator: Evaluator = {
 			evaluate: (batches, stop) =>
-				Effect.gen(function* () {
-					const units = Arr.map(batches, enqueue)
-					feedAll()
-					const results: Array<ReadonlyArray<CaseResult>> = []
-					const judged = () => {
+				Effect.map(
+					ranInOrder(
+						Arr.map(batches, (batch): Work => ({ kind: "cases", batch })),
+						resultsOf,
+						(results) => Arr.some(results, stop)
+					),
+					(given) => {
 						const marked = withLateUses(
-							results,
+							Arr.map(given, ([, results]) => results),
 							(batchAt, at) =>
-								Option.flatMap(Arr.get(units, batchAt), (unit) =>
+								Option.flatMap(Arr.get(given, batchAt), ([unit]) =>
 									Option.fromUndefinedOr(lateUses.get(unit.id)?.get(at))
 								),
 							stop
 						)
-						for (const unit of units) {
+						for (const [unit] of given) {
 							lateUses.delete(unit.id)
 						}
 						return marked
 					}
-					for (const [at, unit] of units.entries()) {
-						const done = yield* Deferred.await(unit.done)
-						results.push(done)
-						if (!Arr.some(done, stop)) {
-							continue
-						}
-						scheduler.drop(new Set(Arr.map(Arr.drop(units, at + 1), (other) => other.id)))
-						return judged()
-					}
-					return judged()
-				}),
+				),
+			sketch: (runs) =>
+				Effect.map(
+					ranInOrder(
+						Arr.map(runs, (sketches): Work => ({ kind: "sketches", sketches })),
+						sketchesRanOf,
+						(ran) => ran.stopped.kind === "stopped"
+					),
+					Arr.map(([, ran]) => ran)
+				),
 			width: Effect.sync(() => Math.max(1, Arr.filter(workers, idle).length - scheduler.queued()))
 		}
 		return {

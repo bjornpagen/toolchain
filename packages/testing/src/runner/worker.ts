@@ -18,14 +18,14 @@ import {
 	needKeysOf,
 	type Readied,
 	readiedOf,
-	resultsOf,
+	doneOf,
 	Stopped,
 	stoppedOf
 } from "#runner/case.ts"
 import { askedClosuresOf } from "#runner/closure-requests.ts"
 import { configOf, propertyAt } from "#runner/load.ts"
 import { Perception, perceptionOf } from "#runner/perceive.ts"
-import { type Batch, FromWorker, lostResult, ToWorker } from "#runner/protocol.ts"
+import { FromWorker, lostResult, ToWorker, type Work, workOf } from "#runner/protocol.ts"
 import { ModuleClosure, WorkerIndex } from "#runner/services.ts"
 import { runOfLabel } from "#runner/stack.ts"
 import { startProcessCoverage } from "#sense.ts"
@@ -46,13 +46,13 @@ import { startProcessCoverage } from "#sense.ts"
  */
 
 /** One unit the parent sent: its id, and the batch it evaluates. */
-type Unit = Readonly<{ unit: number; batch: Batch }>
+type Unit = Readonly<{ unit: number; work: Work }>
 
 /**
  * What the worker does next, in the order the parent sent it: evaluate a unit, or retire a property whose search ended
  * (after every unit of it sent before), releasing the needs no other property readied here still uses.
  */
-type Work = Readonly<{ kind: "unit"; unit: Unit }> | Readonly<{ kind: "retire"; property: string }>
+type Next = Readonly<{ kind: "unit"; unit: Unit }> | Readonly<{ kind: "retire"; property: string }>
 
 /** What the worker was forked with, from its arguments. */
 const Arguments = Schema.Tuple([
@@ -104,7 +104,7 @@ const main = Effect.gen(function* () {
 	const cache = needCacheOf(services)
 	const stopped = stoppedOf()
 	const perception = yield* perceptionOf
-	const pending: Array<Work> = []
+	const pending: Array<Next> = []
 	const holdings = holdingsOf()
 	const work = Latch.makeUnsafe(false)
 	const inbox = yield* Queue.unbounded<unknown>()
@@ -190,7 +190,7 @@ const main = Effect.gen(function* () {
 	 * the readying starts, and how long it took.
 	 */
 	const readiedFor = (unit: Unit): Effect.Effect<Readied> => {
-		const first = Arr.headNonEmpty(unit.batch)
+		const first = workOf(unit.work)
 		return Option.match(Option.fromUndefinedOr(readied.get(first.property)), {
 			onSome: Effect.succeed,
 			onNone: () =>
@@ -214,21 +214,24 @@ const main = Effect.gen(function* () {
 		Effect.gen(function* () {
 			const made = yield* readiedFor(unit)
 			yield* send({ kind: "started", unit: unit.unit })
-			const results = yield* resultsOf(made, unit.batch).pipe(
+			const done = yield* doneOf(made, unit.work).pipe(
 				Effect.provideService(NeedCache, cache),
 				Effect.provideService(Perception, perception),
 				Effect.provideService(Stopped, stopped),
 				Effect.provideService(LateUses, {
 					report: (order, printed) => {
 						Option.map(
-							Arr.findFirstIndex(unit.batch, (sent) => sent === order),
+							Arr.findFirstIndex(
+								unit.work.kind === "cases" ? unit.work.batch : [],
+								(sent) => sent === order
+							),
 							(at) => sendNow({ kind: "misused", unit: unit.unit, at, printed })
 						)
 					}
 				}),
 				Effect.provideContext(platform)
 			)
-			yield* send({ kind: "done", unit: unit.unit, results, cpu: millisOf(process.cpuUsage()) })
+			yield* send({ kind: "done", unit: unit.unit, done, cpu: millisOf(process.cpuUsage()) })
 		})
 
 	const evaluating = Effect.gen(function* () {

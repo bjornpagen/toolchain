@@ -5,8 +5,8 @@ import {
 	NeedCache,
 	needCacheOf,
 	type Readied,
+	doneOf,
 	readiedOf,
-	resultsOf,
 	Stopped,
 	stoppedOf,
 	withLateUses
@@ -14,14 +14,18 @@ import {
 import { type Limits, runnerLimits } from "#runner/limits.ts"
 import { moduleClosureAt } from "#runner/module-closure.ts"
 import { Perception, perceptionOf } from "#runner/perceive.ts"
-import type {
-	Batch,
-	CaseOrder,
-	CaseResult,
-	Evaluator,
-	Printed,
-	Reach,
-	Verdict
+import {
+	type CaseOrder,
+	type CaseResult,
+	type Evaluator,
+	type Printed,
+	type Reach,
+	resultsOf,
+	type SketchesRan,
+	sketchesRanOf,
+	type Verdict,
+	type Work,
+	workOf
 } from "#runner/protocol.ts"
 import { ModuleClosure, WorkerIndex } from "#runner/services.ts"
 
@@ -55,17 +59,17 @@ export const inlineEvaluator = (
 		const lateUses = new Map<CaseOrder, Printed>()
 		const stopped = stoppedOf()
 		let readied = Option.none<Readied>()
-		const readiedFor = (batch: Batch): Effect.Effect<Readied, never, NeedCache> =>
+		const readiedFor = (work: Work): Effect.Effect<Readied, never, NeedCache> =>
 			Option.match(readied, {
 				onSome: Effect.succeed,
 				onNone: () =>
-					Effect.map(readiedOf(property.ready, Arr.headNonEmpty(batch).open), (made) => {
+					Effect.map(readiedOf(property.ready, workOf(work).open), (made) => {
 						readied = Option.some(made)
 						return made
 					})
 			})
-		const evaluateOne = (batch: Batch) =>
-			Effect.flatMap(readiedFor(batch), (made) => resultsOf(made, batch)).pipe(
+		const done = (work: Work) =>
+			Effect.flatMap(readiedFor(work), (made) => doneOf(made, work)).pipe(
 				Effect.provideService(NeedCache, cache),
 				Effect.provideService(Perception, perception),
 				Effect.provideService(Stopped, stopped),
@@ -91,14 +95,29 @@ export const inlineEvaluator = (
 							stop
 						)
 					for (const batch of batches) {
-						const evaluated = yield* evaluateOne(batch)
+						const answered = yield* done({ kind: "cases", batch })
 						yield* stopped.drained
+						const evaluated = resultsOf(answered)
 						results.push(evaluated)
 						if (Arr.some(evaluated, stop)) {
 							return judged()
 						}
 					}
 					return judged()
+				}).pipe(Effect.ensuring(stopped.drained)),
+			sketch: (runs) =>
+				Effect.gen(function* () {
+					const ran: Array<SketchesRan> = []
+					for (const sketches of runs) {
+						const answered = yield* done({ kind: "sketches", sketches })
+						yield* stopped.drained
+						const summary = sketchesRanOf(answered)
+						ran.push(summary)
+						if (summary.stopped.kind === "stopped") {
+							return ran
+						}
+					}
+					return ran
 				}).pipe(Effect.ensuring(stopped.drained)),
 			width: Effect.succeed(1)
 		}
