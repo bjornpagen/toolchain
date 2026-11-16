@@ -55,10 +55,8 @@ export const climbs = property.explore(magics, {
 	kills: [
 		{
 			file: "packages/testing/src/runner/search.ts",
-			original:
-				"\t\t\t\t\t\t\tbetween(counted.words, 0, FRESH_EVERY - 1) === 0 ? Option.none() : pick(counted.words)",
-			replacement:
-				"\t\t\t\t\t\t\tbetween(counted.words, 0, FRESH_EVERY - 1) >= 0 ? Option.none() : pick(counted.words)",
+			original: "between(counted.words, 0, FRESH_EVERY - 1) === 0",
+			replacement: "between(counted.words, 0, FRESH_EVERY - 1) >= 0",
 			why: "Every steered case is a fresh draw, never a mutant of a seed (steer-fresh-only, re-anchored from explore.ts to the new search's steered phase), so the steered search no longer climbs; the climb property fails, red by its own case deadline."
 		}
 	]

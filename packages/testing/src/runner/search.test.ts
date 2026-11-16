@@ -162,8 +162,8 @@ export const streams = property.explore(
 		kills: [
 			{
 				file: "packages/testing/src/runner/search.ts",
-				original: "\t\t\t\t\tfloor,\n\t\t\t\t\tfloorCases,\n",
-				replacement: "\t\t\t\t\tfloor,\n\t\t\t\t\tfloorCases - 1,\n",
+				original: "streamSeriesOf(run, floor, floorCases, window",
+				replacement: "streamSeriesOf(run, floor, floorCases - 1, window",
 				why: "The floor stream runs one case fewer than its limit (explore-floor-rounded-down, re-anchored from explore.ts's floor count to the floor of a property that requires no situation, sent as series); the streams property fails."
 			}
 		]
@@ -542,8 +542,8 @@ export const rotatingSeries = property.explore(streamedShapes, {
 		},
 		{
 			file: "packages/testing/src/runner/search.ts",
-			original: "(firsts[at] ?? 0) + summary.passed",
-			replacement: "(firsts[at] ?? 0)",
+			original: "where: place.where(firsts + summary.passed)",
+			replacement: "where: place.where(firsts)",
 			why: "A falsified rotating case is reported at its series' first case, not its own place in the stream; this property fails."
 		},
 		{

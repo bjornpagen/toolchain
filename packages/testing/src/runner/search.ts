@@ -1,4 +1,4 @@
-import { Array as Arr, Effect, Option, String as Str } from "effect"
+import { Array as Arr, Effect, Fiber, Option, String as Str } from "effect"
 import { countWithin } from "#enumerate.ts"
 import { residualOf, type SteeringPhase, type Tally, tallyOf, turnsOf } from "#features.ts"
 import type { Gen } from "#gen.ts"
@@ -28,6 +28,7 @@ import {
 	type SearchRun,
 	type Noted,
 	type SeriesOrder,
+	type SeriesRan,
 	type Verdict
 } from "#runner/protocol.ts"
 import { runOfLabel } from "#runner/stack.ts"
@@ -480,61 +481,83 @@ const randomOf = (stream: Stream, index: number): ChooserSpec => ({
 /** Where a stream sent as series is: its search phase, its steering, and how a case at a place in it is named. */
 type StreamPlace = Readonly<{ phase: CasePhase; drawn: Drawn; where: (place: number) => string }>
 
+/** A stream's series, each with the place of its first case in the stream. */
+type StreamSeries = ReadonlyArray<readonly [first: number, series: SeriesOrder]>
+
 /**
- * A stream's first `count` cases sent as series of `window` cases each (their case seeds), as many at once as the
- * evaluator has room for, each drawn, run and summed up by the process it is sent to (runner/series.ts), and read in
- * stream order into `noted` and `measures` through its first case that stopped: how many passed, and the finding of
- * the one that stopped, when it fails the search.
+ * A stream's first `count` cases as series of `window` cases each (their case seeds), each to be drawn, run and summed
+ * up by the process it is sent to (runner/series.ts) under the stream's steering.
  */
-const streamed = (
+const streamSeriesOf = (
 	run: SearchRun,
 	stream: Stream,
 	count: number,
 	window: number,
 	group: number,
+	drawn: Drawn
+): StreamSeries => {
+	const series: Array<readonly [number, SeriesOrder]> = []
+	for (let start = 0; start < count;) {
+		const indices = indicesOf(start, window, count)
+		series.push([
+			start,
+			{
+				property: run.id,
+				from: {
+					kind: "stream",
+					seeds: Float64Array.from(indices, (index) => caseSeed(stream, index)),
+					drawn
+				},
+				group,
+				deadline: run.limits.deadline,
+				open: run.limits.open
+			}
+		])
+		start += indices.length
+	}
+	return series
+}
+
+/** Sends every series of a stream at once; the evaluator gives back their summaries in order through the first that stopped. */
+const dispatched = (
+	run: SearchRun,
+	series: StreamSeries
+): Effect.Effect<ReadonlyArray<SeriesRan>> =>
+	run.evaluator.series(Arr.map(series, ([, order]) => order))
+
+/**
+ * A stream's summaries read in stream order into `noted` and `measures` through its first case that stopped: how many
+ * passed, and the finding of the one that stopped, when it fails the search.
+ */
+const judgedStream = (
+	run: SearchRun,
+	series: StreamSeries,
+	ran: ReadonlyArray<SeriesRan>,
 	place: StreamPlace,
 	noted: (cases: number, notes: ReadonlyArray<Noted>) => void,
 	measures: Readonly<{ addAll: (measured: ReadonlyArray<readonly [string, number]>) => void }>
 ): Effect.Effect<Readonly<{ passed: number; found: Option.Option<Finding> }>> =>
 	Effect.gen(function* () {
-		let start = 0
 		let passed = 0
-		while (start < count) {
-			const width = yield* run.evaluator.width
-			const series: Array<SeriesOrder> = []
-			const firsts: Array<number> = []
-			while (start < count && series.length < width) {
-				const indices = indicesOf(start, window, count)
-				firsts.push(start)
-				series.push({
-					property: run.id,
-					from: {
-						kind: "stream",
-						seeds: Float64Array.from(indices, (index) => caseSeed(stream, index)),
-						drawn: place.drawn
-					},
-					group,
-					deadline: run.limits.deadline,
-					open: run.limits.open
-				})
-				start += indices.length
+		for (const [at, summary] of ran.entries()) {
+			noted(summary.passed, summary.notes)
+			measures.addAll(summary.measures)
+			passed += summary.passed
+			if (summary.stopped.kind === "none") {
+				continue
 			}
-			const ran = yield* run.evaluator.series(series)
-			for (const [at, summary] of ran.entries()) {
-				noted(summary.passed, summary.notes)
-				measures.addAll(summary.measures)
-				passed += summary.passed
-				if (summary.stopped.kind === "stopped") {
-					const found = yield* findingOf(run, summary.stopped.result, {
-						phase: place.phase,
-						where: place.where((firsts[at] ?? 0) + summary.passed),
-						drawn: place.drawn,
-						shrink: shrinkOf(run, completeShrink)
-					})
-					if (Option.isSome(found)) {
-						return { passed, found }
-					}
-				}
+			const firsts = Option.match(Arr.get(series, at), {
+				onNone: () => 0,
+				onSome: ([first]) => first
+			})
+			const found = yield* findingOf(run, summary.stopped.result, {
+				phase: place.phase,
+				where: place.where(firsts + summary.passed),
+				drawn: place.drawn,
+				shrink: shrinkOf(run, completeShrink)
+			})
+			if (Option.isSome(found)) {
+				return { passed, found }
 			}
 		}
 		return { passed, found: Option.none() }
@@ -543,11 +566,13 @@ const streamed = (
 /**
  * An exploration's search, `group` cases to a batch: kept tokens first; then the witnesses, the floor stream and, while
  * a required situation is unreached, the steered phase grown from it, both fixed by the property's identity; then,
- * for a full run, the rotating stream, fresh each run seed. The witnesses run in windows of the runner's steering
- * window, each drawn under the snapshot of what was pending when its window began. The rotating stream, drawn unsteered,
- * is sent as series of a window's cases each (their case seeds), as many at once as the evaluator has room for, each
- * drawn, run and summed up by the process it is sent to (runner/series.ts), so its cases cross no process boundary one
- * by one. Results are judged in case order, so width changes how fast a search runs and never what it finds. A failing case is shrunk by editing its tape,
+ * for a full run, the rotating stream, fresh each run seed. A property that requires situations runs its witnesses in
+ * windows of the runner's steering window, each drawn under the snapshot of what was pending when its window began,
+ * since each window's aims read the tallies before it. Its rotating stream, and both streams of a property that
+ * requires none (whose floor is steered toward nothing), depend on no result: each is sent at once, every series of it
+ * (a window's case seeds, drawn, run and summed up by the process it is sent to, runner/series.ts), the second as soon
+ * as the property starts when no witness window precedes it, so a property's queued work is its whole sample and
+ * spreads where that pays, with no round trip between its windows. Results are judged in case order, so width changes how fast a search runs and never what it finds. A failing case is shrunk by editing its tape,
  * property draws included, under the steering it was drawn under. The coverage verdict is judged on the witnesses
  * alone, before the rotating stream runs, so it is the same on every run seed. The residual comes from the rotating
  * stream's independent cases alone. A batched property's window holds one batch at least, so a batch is never cut
@@ -576,170 +601,188 @@ export const exploreSearch =
 			const traced = tracerOf()
 			const measures = measuring()
 			let cases = 0
-
-			if (required) {
-				const floorTurns = turnsOf()
-				for (let start = 0; start < floorCases; start += window) {
-					const indices = indicesOf(start, window, floorCases)
-					const turnAt = floorTurns.window(
-						pendingOf(situations, [floorTally.tally()]),
-						indices.length
-					)
-					const draws = Arr.map(indices, (index, offset): Draw => ({
-						chooser: randomOf(floor, index),
-						drawn: { kind: "steered", pending: turnAt(offset) }
-					}))
-					const results = yield* windowOf(run, draws, { keep, sense: notesOnly, group })
-					for (const [offset, result] of results.entries()) {
-						const draw = Arr.getUnsafe(draws, offset)
-						const found = yield* findingOf(run, result, {
-							phase: "floor",
-							where: `the floor stream (seed ${hex(floor)}), case ${start + offset}`,
-							drawn: draw.drawn,
-							shrink: shrinkOf(run, completeShrink)
-						})
-						if (Option.isSome(found)) {
-							return failed(found.value)
-						}
-						cases += 1
-						floorTally.add(new Set(result.notes))
-						measures.add(result)
-						if (result.outcome.kind === "passed" && result.outcome.kept.kind === "tape") {
-							seeds.keep(result.outcome.kept.tape, new Set(result.notes), traced(result.trace))
+			const rotating = rotatingSeed(run.seed, floor)
+			const rotatingSeries = phases.rotating
+				? streamSeriesOf(run, rotating, limits.runs, window, group, { kind: "unsteered" })
+				: []
+			const floorSeries = required
+				? []
+				: streamSeriesOf(run, floor, floorCases, window, group, { kind: "steered", pending: [] })
+			const floorSent = yield* Effect.forkChild(dispatched(run, floorSeries))
+			const rotatingSent = yield* Effect.forkChild(
+				required ? Effect.succeedNone : Effect.asSome(dispatched(run, rotatingSeries))
+			)
+			const witnessedAndSampled: Effect.Effect<Verdict> = Effect.gen(function* () {
+				if (required) {
+					const floorTurns = turnsOf()
+					for (let start = 0; start < floorCases; start += window) {
+						const indices = indicesOf(start, window, floorCases)
+						const turnAt = floorTurns.window(
+							pendingOf(situations, [floorTally.tally()]),
+							indices.length
+						)
+						const draws = Arr.map(indices, (index, offset): Draw => ({
+							chooser: randomOf(floor, index),
+							drawn: { kind: "steered", pending: turnAt(offset) }
+						}))
+						const results = yield* windowOf(run, draws, { keep, sense: notesOnly, group })
+						for (const [offset, result] of results.entries()) {
+							const draw = Arr.getUnsafe(draws, offset)
+							const found = yield* findingOf(run, result, {
+								phase: "floor",
+								where: `the floor stream (seed ${hex(floor)}), case ${start + offset}`,
+								drawn: draw.drawn,
+								shrink: shrinkOf(run, completeShrink)
+							})
+							if (Option.isSome(found)) {
+								return failed(found.value)
+							}
+							cases += 1
+							floorTally.add(new Set(result.notes))
+							measures.add(result)
+							if (result.outcome.kind === "passed" && result.outcome.kept.kind === "tape") {
+								seeds.keep(result.outcome.kept.tape, new Set(result.notes), traced(result.trace))
+							}
 						}
 					}
+				} else {
+					const floorSummaries = yield* Fiber.join(floorSent)
+					const floorRan = yield* judgedStream(
+						run,
+						floorSeries,
+						floorSummaries,
+						{
+							phase: "floor",
+							drawn: { kind: "steered", pending: [] },
+							where: (place) => `the floor stream (seed ${hex(floor)}), case ${place}`
+						},
+						floorTally.addCases,
+						measures
+					)
+					cases += floorRan.passed
+					if (Option.isSome(floorRan.found)) {
+						return failed(floorRan.found.value)
+					}
 				}
-			} else {
-				const floorRan = yield* streamed(
-					run,
-					floor,
-					floorCases,
-					window,
-					group,
-					{
-						phase: "floor",
-						drawn: { kind: "steered", pending: [] },
-						where: (place) => `the floor stream (seed ${hex(floor)}), case ${place}`
-					},
-					floorTally.addCases,
-					measures
-				)
-				cases += floorRan.passed
-				if (Option.isSome(floorRan.found)) {
-					return failed(floorRan.found.value)
-				}
-			}
 
-			if (required && phases.witnesses) {
-				const stream = steeredSeed(floor)
-				const turns = turnsOf()
-				for (
-					let start = 0;
-					start < limits.steered &&
-					Arr.isReadonlyArrayNonEmpty(
-						unreachedOf(situations, [floorTally.tally(), steeredTally.tally()])
-					);
-					start += window
-				) {
-					const indices = indicesOf(start, window, limits.steered)
-					const tallies = [floorTally.tally(), steeredTally.tally()]
-					const turnAt = turns.window(pendingOf(situations, tallies), indices.length)
-					const pick = seeds.picker(tallies)
-					const draws = Arr.map(indices, (index, offset): Draw => {
-						const seed = caseSeed(stream, index)
-						const counted = countedWords(seed)
-						const picked =
-							between(counted.words, 0, FRESH_EVERY - 1) === 0 ? Option.none() : pick(counted.words)
-						const chooser = Option.match(picked, {
-							onNone: (): ChooserSpec => ({ kind: "random", seed, skip: counted.used() }),
-							onSome: ([mutated, donor]): ChooserSpec => {
-								const mutant = mutate(mutated, Option.some(donor), counted.words)
-								return {
-									kind: "prefix",
-									values: mutant.values.slice(0, mutant.length),
-									rest: { kind: "random", seed, skip: counted.used() }
+				if (required && phases.witnesses) {
+					const stream = steeredSeed(floor)
+					const turns = turnsOf()
+					for (
+						let start = 0;
+						start < limits.steered &&
+						Arr.isReadonlyArrayNonEmpty(
+							unreachedOf(situations, [floorTally.tally(), steeredTally.tally()])
+						);
+						start += window
+					) {
+						const indices = indicesOf(start, window, limits.steered)
+						const tallies = [floorTally.tally(), steeredTally.tally()]
+						const turnAt = turns.window(pendingOf(situations, tallies), indices.length)
+						const pick = seeds.picker(tallies)
+						const draws = Arr.map(indices, (index, offset): Draw => {
+							const seed = caseSeed(stream, index)
+							const counted = countedWords(seed)
+							const picked =
+								between(counted.words, 0, FRESH_EVERY - 1) === 0
+									? Option.none()
+									: pick(counted.words)
+							const chooser = Option.match(picked, {
+								onNone: (): ChooserSpec => ({ kind: "random", seed, skip: counted.used() }),
+								onSome: ([mutated, donor]): ChooserSpec => {
+									const mutant = mutate(mutated, Option.some(donor), counted.words)
+									return {
+										kind: "prefix",
+										values: mutant.values.slice(0, mutant.length),
+										rest: { kind: "random", seed, skip: counted.used() }
+									}
 								}
+							})
+							return { chooser, drawn: { kind: "steered", pending: turnAt(offset) } }
+						})
+						const results = yield* windowOf(run, draws, {
+							keep: "tape",
+							sense: searched.guide,
+							group
+						})
+						for (const [offset, result] of results.entries()) {
+							const draw = Arr.getUnsafe(draws, offset)
+							const found = yield* findingOf(run, result, {
+								phase: "steered",
+								where: `the steered phase (seed ${hex(stream)}), case ${start + offset}`,
+								drawn: draw.drawn,
+								shrink: shrinkOf(run, completeShrink)
+							})
+							if (Option.isSome(found)) {
+								return failed(found.value)
+							}
+							cases += 1
+							const notes = new Set(result.notes)
+							steeredTally.add(notes)
+							measures.add(result)
+							if (result.outcome.kind === "passed" && result.outcome.kept.kind === "tape") {
+								seeds.keep(result.outcome.kept.tape, notes, traced(result.trace))
+							}
+						}
+					}
+					const missing = unreachedOf(situations, [floorTally.tally(), steeredTally.tally()])
+					if (Arr.isReadonlyArrayNonEmpty(missing)) {
+						return failed({
+							kind: "unreached",
+							missing,
+							witnessed: {
+								kind: "streams",
+								floor: floorTally.tally().cases,
+								steered: steeredTally.tally().cases
 							}
 						})
-						return { chooser, drawn: { kind: "steered", pending: turnAt(offset) } }
-					})
-					const results = yield* windowOf(run, draws, {
-						keep: "tape",
-						sense: searched.guide,
-						group
-					})
-					for (const [offset, result] of results.entries()) {
-						const draw = Arr.getUnsafe(draws, offset)
-						const found = yield* findingOf(run, result, {
-							phase: "steered",
-							where: `the steered phase (seed ${hex(stream)}), case ${start + offset}`,
-							drawn: draw.drawn,
-							shrink: shrinkOf(run, completeShrink)
-						})
-						if (Option.isSome(found)) {
-							return failed(found.value)
-						}
-						cases += 1
-						const notes = new Set(result.notes)
-						steeredTally.add(notes)
-						measures.add(result)
-						if (result.outcome.kind === "passed" && result.outcome.kept.kind === "tape") {
-							seeds.keep(result.outcome.kept.tape, notes, traced(result.trace))
-						}
 					}
 				}
-				const missing = unreachedOf(situations, [floorTally.tally(), steeredTally.tally()])
-				if (Arr.isReadonlyArrayNonEmpty(missing)) {
-					return failed({
-						kind: "unreached",
-						missing,
-						witnessed: {
-							kind: "streams",
-							floor: floorTally.tally().cases,
-							steered: steeredTally.tally().cases
-						}
-					})
-				}
-			}
 
-			if (phases.rotating) {
-				const rotating = rotatingSeed(run.seed, floor)
-				const independent = yield* streamed(
-					run,
-					rotating,
-					limits.runs,
-					window,
-					group,
-					{
-						phase: "independent",
-						drawn: { kind: "unsteered" },
-						where: (place) => `the rotating stream (seed ${hex(rotating)}), case ${place}`
-					},
-					independentTally.addCases,
-					measures
-				)
-				cases += independent.passed
-				if (Option.isSome(independent.found)) {
-					return failed(independent.found.value)
+				if (phases.rotating) {
+					const sent = yield* Fiber.join(rotatingSent)
+					const rotatingSummaries = yield* Option.match(sent, {
+						onNone: () => dispatched(run, rotatingSeries),
+						onSome: Effect.succeed
+					})
+					const independent = yield* judgedStream(
+						run,
+						rotatingSeries,
+						rotatingSummaries,
+						{
+							phase: "independent",
+							drawn: { kind: "unsteered" },
+							where: (place) => `the rotating stream (seed ${hex(rotating)}), case ${place}`
+						},
+						independentTally.addCases,
+						measures
+					)
+					cases += independent.passed
+					if (Option.isSome(independent.found)) {
+						return failed(independent.found.value)
+					}
 				}
-			}
-			return {
-				kind: "explored",
-				cases,
-				floor: floorTally.tally().cases,
-				steered: steeredTally.tally().cases,
-				residual: residualOf(independentTally.tally()),
-				measures: measures.sums()
-			}
+				return {
+					kind: "explored",
+					cases,
+					floor: floorTally.tally().cases,
+					steered: steeredTally.tally().cases,
+					residual: residualOf(independentTally.tally()),
+					measures: measures.sums()
+				}
+			})
+			return yield* witnessedAndSampled.pipe(
+				Effect.ensuring(Effect.andThen(Fiber.interrupt(floorSent), Fiber.interrupt(rotatingSent)))
+			)
 		})
 
 /**
  * An exhaustion's search: kept tokens first; then its space counted before any case runs, within the case deadline of
  * CPU (enumerate.ts countWithin: the count's own CPU, which no load or other search stretches), since a space too large
  * to count is too large to exhaust; then every case in enumeration order. The space is run by
- * sketches, one case of the space alone with every case its property's draws enumerate from it, in windows of as many
- * series of sketches as the evaluator has room for, each series the steering window's count of sketches (a batch's
- * worth at least) sent to one process as one unit (runner/series.ts): the process enumerates them from the series'
+ * sketches, one case of the space alone with every case its property's draws enumerate from it, every series of them
+ * sent at once, each the steering window's count of sketches (a batch's worth at least) sent to one process as one unit
+ * (runner/series.ts), so the space's whole work is queued from the start and spreads where that pays: the process enumerates them from the series'
  * first branch, runs their cases `group` to an evaluation (one, or a batched exhaustion's batch size), and gives back
  * one summary, so no case crosses a process boundary alone. The series are judged in enumeration order, so the first failing case is the
  * same at any width, and it is shrunk alone for at most as many candidates as the space holds cases. Every case is a
@@ -763,40 +806,33 @@ export const exhaustSearch =
 			const tally = tallyOf("exhaustive")
 			const measures = measuring()
 			let cases = 0
-			let at = 0
-			while (at < starts.length) {
-				const width = yield* run.evaluator.width
-				const series: Array<SeriesOrder> = []
-				for (; at < starts.length && series.length < width; at += 1) {
-					const start = Arr.getUnsafe(starts, at)
-					series.push({
-						property: run.id,
-						from: {
-							kind: "sketches",
-							start: start.values,
-							length: start.length,
-							count: Math.min(perSeries, size - at * perSeries)
-						},
-						group,
-						deadline: run.limits.deadline,
-						open: run.limits.open
+			const ran = yield* run.evaluator.series(
+				Arr.map(starts, (start, at): SeriesOrder => ({
+					property: run.id,
+					from: {
+						kind: "sketches",
+						start: start.values,
+						length: start.length,
+						count: Math.min(perSeries, size - at * perSeries)
+					},
+					group,
+					deadline: run.limits.deadline,
+					open: run.limits.open
+				}))
+			)
+			for (const summary of ran) {
+				cases += summary.passed
+				tally.addCases(summary.passed, summary.notes)
+				measures.addAll(summary.measures)
+				if (summary.stopped.kind === "stopped") {
+					const found = yield* findingOf(run, summary.stopped.result, {
+						phase: "exhaustive",
+						where: `case ${cases} of the exhaustive space of ${size} cases`,
+						drawn: { kind: "unsteered" },
+						shrink: shrinkOf(run, boundedShrink(size))
 					})
-				}
-				const ran = yield* run.evaluator.series(series)
-				for (const summary of ran) {
-					cases += summary.passed
-					tally.addCases(summary.passed, summary.notes)
-					measures.addAll(summary.measures)
-					if (summary.stopped.kind === "stopped") {
-						const found = yield* findingOf(run, summary.stopped.result, {
-							phase: "exhaustive",
-							where: `case ${cases} of the exhaustive space of ${size} cases`,
-							drawn: { kind: "unsteered" },
-							shrink: shrinkOf(run, boundedShrink(size))
-						})
-						if (Option.isSome(found)) {
-							return failed(found.value)
-						}
+					if (Option.isSome(found)) {
+						return failed(found.value)
 					}
 				}
 			}

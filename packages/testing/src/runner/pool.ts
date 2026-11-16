@@ -713,7 +713,8 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 
 		/**
 		 * Queues units and gives back what each gave, in order, through the first that `stops`: the units after it that
-		 * have not started are taken out of the queue, and those that have run to their end are not read.
+		 * have not started are taken out of the queue, and those that have run to their end are not read. A search that
+		 * stops waiting (a witness that failed while its rotating stream was out) takes its unstarted units out too.
 		 */
 		const ranInOrder = <A>(
 			works: ReadonlyArray<Work>,
@@ -728,16 +729,24 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 				}
 				grow()
 				const given: Array<readonly [Unit, A]> = []
-				for (const [at, unit] of units.entries()) {
-					const answered = yield* Deferred.await(unit.done)
-					const done = read(answered)
-					given.push([unit, done])
-					if (stops(done)) {
-						scheduler.drop(new Set(Arr.map(Arr.drop(units, at + 1), (other) => other.id)))
-						return given
+				return yield* Effect.gen(function* () {
+					for (const [at, unit] of units.entries()) {
+						const answered = yield* Deferred.await(unit.done)
+						const done = read(answered)
+						given.push([unit, done])
+						if (stops(done)) {
+							scheduler.drop(new Set(Arr.map(Arr.drop(units, at + 1), (other) => other.id)))
+							return given
+						}
 					}
-				}
-				return given
+					return given
+				}).pipe(
+					Effect.onInterrupt(() =>
+						Effect.sync(() => {
+							scheduler.drop(new Set(Arr.map(Arr.drop(units, given.length), (other) => other.id)))
+						})
+					)
+				)
 			})
 
 		const evaluator: Evaluator = {

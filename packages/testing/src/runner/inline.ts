@@ -1,4 +1,4 @@
-import { Array as Arr, Context, Effect, Option, type Scope } from "effect"
+import { Array as Arr, Context, Effect, Option, Semaphore, type Scope } from "effect"
 import type { NeedContext, Property } from "#property.ts"
 import {
 	LateUses,
@@ -40,8 +40,10 @@ type InlineContext = Exclude<NeedContext, WorkerIndex | ModuleClosure>
  * worker readies it: its needs opened in the caller's scope and services within the open bound its first batch's
  * orders carry, before any case and outside every case's deadline, and a need that did not open giving every case that
  * one outcome. A meta-test of the library's own searches, and a search nested inside a case, run on it: a search finds
- * on it exactly what it finds on the pool. Every evaluation, however it ends (interrupted included), waits for the
- * cleanups of the cases it stopped as hung (Stopped) before it returns, so none outlives it.
+ * on it exactly what it finds on the pool. Evaluations take turns, in the order they were asked for (a search that sends
+ * two streams at once has them run one after the other, as one process runs them), and every one, however it ends
+ * (interrupted included), waits for the cleanups of the cases it stopped as hung (Stopped) before it returns, so none
+ * outlives it.
  */
 export const inlineEvaluator = (
 	property: Property
@@ -58,6 +60,7 @@ export const inlineEvaluator = (
 		const cache = needCacheOf(Effect.succeed(context))
 		const lateUses = new Map<CaseOrder, Printed>()
 		const stopped = stoppedOf()
+		const turn = yield* Semaphore.make(1)
 		let readied = Option.none<Readied>()
 		const readiedFor = (work: Work): Effect.Effect<Readied, never, NeedCache> =>
 			Option.match(readied, {
@@ -104,7 +107,7 @@ export const inlineEvaluator = (
 						}
 					}
 					return judged()
-				}).pipe(Effect.ensuring(stopped.drained)),
+				}).pipe(Effect.ensuring(stopped.drained), turn.withPermits(1)),
 			series: (orders) =>
 				Effect.gen(function* () {
 					const ran: Array<SeriesRan> = []
@@ -118,7 +121,7 @@ export const inlineEvaluator = (
 						}
 					}
 					return ran
-				}).pipe(Effect.ensuring(stopped.drained)),
+				}).pipe(Effect.ensuring(stopped.drained), turn.withPermits(1)),
 			width: Effect.succeed(1)
 		}
 		return evaluator
