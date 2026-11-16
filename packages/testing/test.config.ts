@@ -6,7 +6,13 @@ import { defineRunner } from "#runner/config.ts"
  * they are converted to properties; no export conditions; and no services beyond the runner's own.
  */
 export default defineRunner({
-	include: ["src/fact.test.ts", "src/oracle.test.ts", "src/seeds.test.ts"],
+	include: [
+		"src/fact.test.ts",
+		"src/oracle.test.ts",
+		"src/seeds.test.ts",
+		"src/interleave.test.ts",
+		"src/commands.test.ts"
+	],
 	conditions: [],
 	layer: Layer.empty
 })

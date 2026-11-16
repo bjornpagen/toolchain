@@ -10,6 +10,8 @@ export default defineTestConfig({
 		"!src/shrink.test.ts",
 		"!src/oracle.test.ts",
 		"!src/seeds.test.ts",
+		"!src/interleave.test.ts",
+		"!src/commands.test.ts",
 		"!src/runner/**"
 	],
 	guided: ["src/sense.test.ts"],

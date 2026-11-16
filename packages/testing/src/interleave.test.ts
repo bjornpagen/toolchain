@@ -1,826 +1,420 @@
 /**
- * The interleaving engine (interleave.ts) over a lock manager the suite plants, against what it promises:
- *
- * - Every order with sleep sets reaches every result every order without them reaches, running no more orders
- *   (a differential); sessions whose every move commutes with every other's run one order under sleep sets and every
- *   order, the multinomial of their lengths, without them (an exhaustion of three sessions on their own resources).
- * - Two sessions that lock in opposite orders reach the deadlock and its victim: a planted scenario, its verdict the
- *   lock manager's own.
- * - A run records every deadlock the lock manager breaks, whose detector runs while the engine settles its waits, as
- *   PostgreSQL's deadlock check does: the victims a run's deadlocks name are exactly the sessions the lock manager
- *   aborted, over sessions that each write two resources, two of them in the same order or the opposite one.
- * - Sessions whose afters form a cycle are refused before any runs, naming one of the afters' loops, and every other
- *   after relation runs: an exhaustion of every after of three sessions, self-loops among them.
- * - A script is followed, and stops at the first decision it cannot make, by its decision and choice, never its prose.
- * - A schedule drawn from a case's tape replays exactly, and every session a run starts is released, whatever its
- *   judge refuses.
- *
- * Oracles are stated per search. The replay draws a schedule through a recording whose every decision the case makes,
- * then runs it again from that recording's tape: the same decisions, every one as taped.
+ * The interleaving engine (interleave.ts) and property.interleave over a lock manager its fixtures plant
+ * (interleave.fixtures.ts), against what they promise. Oracles are stated per property.
  */
-import { describe, it } from "@effect/vitest"
-import { assertTrue, deepStrictEqual, strictEqual } from "@effect/vitest/utils"
+import { Array as Arr, Effect, Option, Order, String as Str, Struct } from "effect"
+import { assertTrue, deepStrictEqual, strictEqual } from "#assert.ts"
+import { aimed, finite } from "#gen.ts"
 import {
-	Array as Arr,
-	Deferred,
-	Duration,
-	Effect,
-	Formatter,
-	Option,
-	Order,
-	Schema,
-	String as Str,
-	Struct
-} from "effect"
-import { type Case, drawn, exhaust, explore, type Steered, steered } from "#explore.ts"
-import { awaitFact } from "#fact.ts"
-import { noCoverage, type Pending, required, requiredInSpace } from "#features.ts"
-import { array, element, type Gen, int } from "#gen.ts"
-import {
-	AfterCycle,
-	type Driver,
-	type Interleave,
-	type Interleaving,
-	interleave,
-	type Nature,
-	type Reduction,
-	type Sessions,
-	type Strategy
-} from "#interleave.ts"
-import { fnv1a32 } from "#random.ts"
-import { notesOnly } from "#sense.ts"
-import { completeShrink } from "#shrink.ts"
-import { type Chooser, forcedChooser, type Recording, recording } from "#source.ts"
-import { searched } from "#vitest/searched.ts"
+	aftersGen,
+	afterSessions,
+	caseChooser,
+	crossingSessions,
+	decidedBy,
+	drawnScheduling,
+	disjointSessions,
+	followedOf,
+	isAfterCycle,
+	lockingSessions,
+	lockManager,
+	loopsOf,
+	multinomialOf,
+	type Named,
+	natureOf,
+	onLocks,
+	oneDrawnRun,
+	releaseCases,
+	resultsOf,
+	sameMembers,
+	scriptedCases,
+	sessionSets,
+	walkScript
+} from "#interleave.fixtures.ts"
+import { interleave, type Strategy } from "#interleave.ts"
+import { property } from "#property.ts"
+import { forcedChooser, recording } from "#source.ts"
 
-const RESOURCES = ["x", "y", "z"] as const
-
-type Resource = (typeof RESOURCES)[number]
-
-type Move =
-	| Readonly<{ kind: "write"; resource: Resource; value: number }>
-	| Readonly<{ kind: "commit" }>
-
-type Outcome = "ok" | "deadlock"
-
-type Snapshot = ReadonlyArray<readonly [Resource, number]>
-
-/**
- * A lock manager, the system under test: a write takes its resource's lock, waiting while another session holds it,
- * and a commit releases every lock the session holds. Its deadlock detector runs when the engine asks it to quiesce,
- * and aborts the cycle's member that began waiting first, as PostgreSQL's does. Releasing a session drops its locks
- * and its wait; a reset that meets a lock still held or a wait still open dies, as PostgreSQL's reset would wait on it
- * forever, so every run of every test here checks that the engine released each session its run started.
- */
-const lockManager = <S extends string>(): Driver<
-	S,
-	Move,
-	Outcome,
-	"state",
-	Snapshot,
-	Resource,
-	never,
-	never
-> => {
-	const values = new Map<Resource, number>()
-	const holders = new Map<Resource, S>()
-	const waiting = new Map<
-		S,
-		Readonly<{ resource: Resource; since: number; wake: Deferred.Deferred<"granted" | "victim"> }>
-	>()
-	let waits = 0
-	const releaseLocks = (session: S) => {
-		for (const [resource, holder] of holders) {
-			if (holder === session) {
-				holders.delete(resource)
-			}
-		}
-		for (const [, wait] of waiting) {
-			if (!holders.has(wait.resource)) {
-				Deferred.doneUnsafe(wait.wake, Effect.succeed("granted"))
-			}
-		}
-	}
-	const holderOf = (session: S) =>
-		Option.flatMap(Option.fromNullishOr(waiting.get(session)), (wait) =>
-			Option.fromNullishOr(holders.get(wait.resource))
-		)
-	const write = (session: S, resource: Resource, value: number): Effect.Effect<Outcome> =>
+/** Every order with sleep sets reaches every result every order without them reaches, running no more orders. */
+export const sleepSetsSound = property.explore(sessionSets, {
+	needs: {},
+	situations: [],
+	check: () => (sessions) =>
 		Effect.gen(function* () {
-			const holder = holders.get(resource)
-			if (holder === undefined || holder === session) {
-				holders.set(resource, session)
-				values.set(resource, value)
-				return "ok"
-			}
-			const wake = yield* Deferred.make<"granted" | "victim">()
-			waits += 1
-			waiting.set(session, { resource, since: waits, wake })
-			const signal = yield* Deferred.await(wake)
-			waiting.delete(session)
-			if (signal === "victim") {
-				releaseLocks(session)
-				return "deadlock"
-			}
-			return yield* write(session, resource, value)
-		})
-	return {
-		reset: Effect.suspend(() =>
-			holders.size > 0 || waiting.size > 0
-				? Effect.die(
-						`a reset met ${Arr.join([...holders.values(), ...waiting.keys()], ", ")} still holding a lock or waiting`
-					)
-				: Effect.sync(() => {
-						values.clear()
-						waits = 0
-					})
-		),
-		run: (session, move) =>
-			move.kind === "write"
-				? write(session, move.resource, move.value)
-				: Effect.sync(() => {
-						releaseLocks(session)
-						return "ok"
-					}),
-		waitOf: (session) =>
-			Effect.sync(() =>
-				Option.flatMap(holderOf(session), (holder) =>
-					Option.map(Option.fromNullishOr(waiting.get(session)), (wait) => ({
-						on: [holder] as const,
-						detail: wait.resource
-					}))
-				)
-			),
-		quiesce: (inFlight) =>
-			Effect.gen(function* () {
-				const waitsFor = new Map(
-					Arr.flatMap(inFlight, (session) =>
-						Option.toArray(Option.map(holderOf(session), (holder) => [session, holder] as const))
-					)
-				)
-				for (const start of waitsFor.keys()) {
-					const cycle: Array<S> = []
-					let current: S | undefined = start
-					while (current !== undefined && !Arr.contains(cycle, current)) {
-						cycle.push(current)
-						current = waitsFor.get(current)
-					}
-					if (current === start) {
-						const victim = Arr.reduce(cycle, start, (first, session) =>
-							(waiting.get(session)?.since ?? 0) < (waiting.get(first)?.since ?? 0)
-								? session
-								: first
-						)
-						const wait = waiting.get(victim)
-						if (wait !== undefined) {
-							Deferred.doneUnsafe(wait.wake, Effect.succeed("victim"))
-							yield* awaitFact(
-								Effect.sync(() => (waiting.has(victim) ? Option.none() : Option.some(victim)))
-							)
-						}
-						return
-					}
-				}
-			}),
-		outcome: (_move, ended) =>
-			ended.kind === "cancelled"
-				? { key: "cancelled", session: "continues" }
-				: { key: ended.outcome, session: ended.outcome === "deadlock" ? "ends" : "continues" },
-		release: (session) =>
-			Effect.sync(() => {
-				waiting.delete(session)
-				releaseLocks(session)
-			}),
-		commute: (first, second) =>
-			first.kind === "write" && second.kind === "write" && first.resource !== second.resource,
-		onWait: () => "wait",
-		read: () =>
-			Effect.sync(() =>
-				Arr.sort(
-					[...values],
-					Order.mapInput(Order.String, ([resource]: readonly [Resource, number]) => resource)
-				)
+			const reduced = yield* resultsOf(sessions, "sleep-sets")
+			const full = yield* resultsOf(sessions, "none")
+			deepStrictEqual(Arr.sort(reduced.results, Order.String), Arr.sort(full.results, Order.String))
+			assertTrue(
+				reduced.report.interleavings <= full.report.interleavings,
+				`sleep sets ran ${reduced.report.interleavings} orders, no more than the ${full.report.interleavings} without them`
 			)
-	}
-}
-
-/** What a run decided, as the oracle compares runs: the final state and how each session ended. */
-const decidedBy = <S extends string>(
-	run: Interleaving<S, Move, Outcome, "state", Snapshot, Resource>
-) => Formatter.format({ state: run.state, sessions: [...run.sessions] })
-
-/** Every distinct result `every` reaches over `sessions`, with or without sleep sets. */
-const resultsOf = <S extends string>(sessions: Sessions<S, Move>, reduction: Reduction) =>
-	Effect.gen(function* () {
-		const results = new Set<string>()
-		const report = yield* interleave(
-			lockManager<S>(),
-			{ sessions, exclusive: [], state: Option.some("state") },
-			{ kind: "every", reduction },
-			(run) => Effect.sync(() => results.add(decidedBy(run)))
-		)
-		return { results, report }
-	})
-
-type Named = "a" | "b" | "c"
-
-/** A write of a resource, or a commit. */
-const writeOf: Gen<Move> = (source) => ({
-	kind: "write",
-	resource: source.draw(element(RESOURCES)),
-	value: source.draw(int(1, 2))
-})
-
-/** Two or three sessions, each one or two writes and a commit. */
-const sessionSets: Gen<Sessions<Named, Move>> = (source) => {
-	const movesOf = () => {
-		const writes = source.draw(array(writeOf, { min: 1, max: 2 }))
-		const [first = { kind: "commit" }, ...rest] = writes
-		return [first, ...rest, { kind: "commit" }] as const
-	}
-	const third = source.draw(int(0, 1)) === 1
-	return {
-		a: { moves: movesOf(), after: Option.none() },
-		b: { moves: movesOf(), after: Option.none() },
-		c: { moves: third ? movesOf() : [{ kind: "commit" }], after: Option.none() }
-	}
-}
-
-/** Every ordered pair of distinct resources. */
-const PAIRS = [
-	["x", "y"],
-	["x", "z"],
-	["y", "x"],
-	["y", "z"],
-	["z", "x"],
-	["z", "y"]
-] as const
-
-/**
- * Two sessions that each write the same two resources, the second in the first's order or the opposite one, beside a
- * third that writes one resource or only commits.
- */
-const lockingSessions: Gen<Sessions<Named, Move>> = (source) => {
-	const [p, q] = source.draw(element(PAIRS))
-	const write = (resource: Resource): Move => ({
-		kind: "write",
-		resource,
-		value: source.draw(int(1, 2))
-	})
-	const crossed = source.draw(int(0, 1)) === 1
-	const third = source.draw(int(0, 1)) === 1
-	return {
-		a: { moves: [write(p), write(q), { kind: "commit" }], after: Option.none() },
-		b: {
-			moves: crossed
-				? [write(q), write(p), { kind: "commit" }]
-				: [write(p), write(q), { kind: "commit" }],
-			after: Option.none()
-		},
-		c: {
-			moves: third
-				? [write(source.draw(element(RESOURCES))), { kind: "commit" }]
-				: [{ kind: "commit" }],
-			after: Option.none()
+		}),
+	oracle: { kind: "second-implementation", name: "the same search with no sleep-set reduction" },
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/interleave.ts",
+			original:
+				"\t\t\t\t\t\t\t\t\t\t\tstartable(session) &&\n\t\t\t\t\t\t\t\t\t\t\tdriver.commute(nextMoveOf(session), nextMoveOf(choice))",
+			replacement: "\t\t\t\t\t\t\t\t\t\t\tstartable(session)",
+			why: "Every session put to sleep, commuting or not: orders that reach other results are pruned."
 		}
-	}
-}
-
-const crossing: Sessions<"a" | "b", Move> = {
-	a: {
-		moves: [
-			{ kind: "write", resource: "x", value: 1 },
-			{ kind: "write", resource: "y", value: 1 },
-			{ kind: "commit" }
-		],
-		after: Option.none()
-	},
-	b: {
-		moves: [
-			{ kind: "write", resource: "y", value: 2 },
-			{ kind: "write", resource: "x", value: 2 },
-			{ kind: "commit" }
-		],
-		after: Option.none()
-	}
-}
-
-/**
- * Sessions that each write their own resource, once or twice: every move of one commutes with every other's, as the
- * lock manager's commute says of two writes of different resources. A commit commutes with nothing there, so none is
- * drawn; the engine releases each session's locks when its run ends.
- */
-const disjointSessions: Gen<Sessions<Named, Move>> = (source) => {
-	const own = (resource: Resource): Arr.NonEmptyReadonlyArray<Move> => {
-		const first: Move = { kind: "write", resource, value: source.draw(int(1, 2)) }
-		return source.draw(int(0, 1)) === 1 ? [first, { kind: "write", resource, value: 2 }] : [first]
-	}
-	return {
-		a: { moves: own("x"), after: Option.none() },
-		b: { moves: own("y"), after: Option.none() },
-		c: { moves: own("z"), after: Option.none() }
-	}
-}
-
-/** How many orders interleave sessions of these lengths, each keeping its own order: (Σ n)! / Π n!. */
-const multinomialOf = (lengths: ReadonlyArray<number>): number => {
-	const factorial = (n: number): number => (n <= 1 ? 1 : n * factorial(n - 1))
-	return Arr.reduce(
-		lengths,
-		factorial(Arr.reduce(lengths, 0, (sum, n) => sum + n)),
-		(orders, n) => orders / factorial(n)
-	)
-}
-
-/** A session's after: none, or one of the sessions, itself included. */
-const afterGen: Gen<Option.Option<Named>> = element([
-	Option.none(),
-	Option.some("a"),
-	Option.some("b"),
-	Option.some("c")
-])
-
-/** The loops the afters form, each its sessions: following each session's after until a session repeats. */
-const loopsOf = (
-	afters: Readonly<Record<Named, Option.Option<Named>>>
-): ReadonlyArray<ReadonlyArray<Named>> => {
-	const loops: Array<ReadonlyArray<Named>> = []
-	for (const start of Struct.keys(afters)) {
-		const path: Array<Named> = []
-		let at: Option.Option<Named> = Option.some(start)
-		while (Option.isSome(at) && !Arr.contains(path, at.value)) {
-			path.push(at.value)
-			at = afters[at.value]
-		}
-		if (Option.isSome(at)) {
-			const loop = Arr.dropWhile(path, (name) => name !== at.value)
-			if (!Arr.some(loops, (known) => sameMembers(known, loop))) {
-				loops.push(loop)
-			}
-		}
-	}
-	return loops
-}
-
-/** Whether a failure is the refusal of sessions whose afters form a cycle. */
-const isAfterCycle = Schema.is(AfterCycle)
-
-/** Whether two lists hold the same members, in any order. */
-const sameMembers = (a: ReadonlyArray<string>, b: ReadonlyArray<string>): boolean =>
-	a.length === b.length && Arr.every(a, (member) => Arr.contains(b, member))
-
-describe("interleaving", () => {
-	it.effect("reaches every result with sleep sets that it reaches without them", (ctx) =>
-		searched(
-			ctx,
-			explore(
-				{
-					suite: "sleep sets are sound",
-					oracle: {
-						kind: "second-implementation",
-						name: "the same search with no sleep-set reduction"
-					},
-					draw: drawn(sessionSets),
-					literal: Formatter.format,
-					coverage: noCoverage,
-					kept: [],
-					runs: 24,
-					shrink: completeShrink,
-					steerEvery: 16,
-					caseHang: Duration.minutes(1)
-				},
-				(sessions) =>
-					Effect.gen(function* () {
-						const reduced = yield* resultsOf(sessions, "sleep-sets")
-						const full = yield* resultsOf(sessions, "none")
-						deepStrictEqual(
-							Arr.sort(reduced.results, Order.String),
-							Arr.sort(full.results, Order.String)
-						)
-						assertTrue(
-							reduced.report.interleavings <= full.report.interleavings,
-							`sleep sets ran ${reduced.report.interleavings} orders, no more than the ${full.report.interleavings} without them`
-						)
-					})
-			)
-		)
-	)
-
-	it.effect(
-		"prunes to one order the sessions whose every move commutes with every other's, where every order runs without sleep sets",
-		(ctx) =>
-			searched(
-				ctx,
-				exhaust(
-					{
-						suite: "commuting sessions",
-						oracle: {
-							kind: "specification",
-							name: "sleep sets run one order of moves that all commute; without them every order, the multinomial of the sessions' moves"
-						},
-						box: "three sessions, each writing its own resource once, at either value, or twice",
-						generator: disjointSessions,
-						literal: Formatter.format,
-						coverage: noCoverage,
-						caseHang: Duration.minutes(1)
-					},
-					(sessions) =>
-						Effect.gen(function* () {
-							const reduced = yield* resultsOf(sessions, "sleep-sets")
-							const full = yield* resultsOf(sessions, "none")
-							const lengths = Arr.map(Struct.keys(sessions), (name) => sessions[name].moves.length)
-							deepStrictEqual(
-								{
-									reduced: reduced.report.interleavings,
-									full: full.report.interleavings,
-									pruned: full.report.pruned,
-									results: [reduced.results.size, full.results.size]
-								},
-								{ reduced: 1, full: multinomialOf(lengths), pruned: 0, results: [1, 1] }
-							)
-						})
-				)
-			)
-	)
-
-	it.effect(
-		"reaches the deadlock of two sessions that lock in opposite orders, and its victim",
-		() =>
-			Effect.gen(function* () {
-				const { results, report } = yield* resultsOf(crossing, "sleep-sets")
-				assertTrue(report.blocked > 0, "some order made a session wait")
-				assertTrue(
-					Arr.some([...results], Str.includes("deadlock")),
-					`some order ended a session as the deadlock's victim, among ${Arr.join(results, " | ")}`
-				)
-			})
-	)
-
-	it.effect(
-		"records every deadlock the lock manager breaks while the engine settles, its victim the session it aborted",
-		(ctx) =>
-			searched(
-				ctx,
-				explore(
-					{
-						suite: "deadlocks recorded",
-						oracle: {
-							kind: "specification",
-							name: "the lock manager's own verdict: the sessions a run ended as a deadlock's victim"
-						},
-						draw: drawn(lockingSessions),
-						literal: Formatter.format,
-						coverage: required<"a deadlock recorded">(["a deadlock recorded"], {
-							cases: 24,
-							sense: notesOnly
-						}),
-						kept: [],
-						runs: 24,
-						shrink: completeShrink,
-						steerEvery: 16,
-						caseHang: Duration.minutes(1)
-					},
-					(sessions, c) =>
-						Effect.asVoid(
-							interleave(
-								lockManager<Named>(),
-								{ sessions, exclusive: [], state: Option.some("state") },
-								{ kind: "every", reduction: "sleep-sets" },
-								(run) =>
-									Effect.sync(() => {
-										const aborted = Arr.flatMap([...run.sessions], ([session, end]) =>
-											end.kind === "ended" && end.key === "deadlock" ? [session] : []
-										)
-										const recorded = Arr.flatMap(run.deadlocks, (d) => Option.toArray(d.victim))
-										deepStrictEqual(
-											Arr.sort(recorded, Order.String),
-											Arr.sort(aborted, Order.String)
-										)
-										if (recorded.length > 0) {
-											c.note("a deadlock recorded")
-										}
-									})
-							)
-						)
-				)
-			)
-	)
-
-	it.effect(
-		"refuses sessions whose afters form a cycle before running any, naming one cycle, and runs every other",
-		(ctx) =>
-			searched(
-				ctx,
-				exhaust(
-					{
-						suite: "after cycles",
-						oracle: {
-							kind: "specification",
-							name: "sessions start after their afters: refused exactly when the afters form a cycle, which it names"
-						},
-						box: "every choice of an after, none or a session, for each of three sessions",
-						generator: (source) => ({
-							a: source.draw(afterGen),
-							b: source.draw(afterGen),
-							c: source.draw(afterGen)
-						}),
-						literal: Formatter.format,
-						coverage: requiredInSpace<"a cycle" | "a self-loop" | "no cycle" | "a chain">([
-							"a cycle",
-							"a self-loop",
-							"no cycle",
-							"a chain"
-						]),
-						caseHang: Duration.minutes(1)
-					},
-					(afters, c) =>
-						Effect.gen(function* () {
-							const loops = loopsOf(afters)
-							let ran = 0
-							const outcome = yield* Effect.result(
-								interleave(
-									lockManager<Named>(),
-									{
-										sessions: {
-											a: { moves: [{ kind: "commit" }], after: afters.a },
-											b: { moves: [{ kind: "commit" }], after: afters.b },
-											c: { moves: [{ kind: "commit" }], after: afters.c }
-										},
-										exclusive: [],
-										state: Option.none()
-									},
-									{ kind: "every", reduction: "sleep-sets" },
-									() =>
-										Effect.sync(() => {
-											ran += 1
-										})
-								)
-							)
-							if (Arr.some(loops, (loop) => loop.length === 1)) {
-								c.note("a self-loop")
-							}
-							if (Arr.isReadonlyArrayEmpty(loops)) {
-								c.note("no cycle")
-								if (Arr.some(Struct.keys(afters), (name) => Option.isSome(afters[name]))) {
-									c.note("a chain")
-								}
-								strictEqual(outcome._tag, "Success")
-								return
-							}
-							c.note("a cycle")
-							const refused = outcome._tag === "Failure" ? outcome.failure : undefined
-							assertTrue(isAfterCycle(refused), "the afters' cycle is refused")
-							deepStrictEqual(
-								{
-									ran,
-									named: Arr.some(loops, (loop) =>
-										sameMembers(loop, isAfterCycle(refused) ? refused.cycle : [])
-									)
-								},
-								{ ran: 0, named: true }
-							)
-						})
-				)
-			)
-	)
-
-	it.effect("follows a script, and stops at a decision it cannot make", () =>
-		Effect.gen(function* () {
-			const runs: Array<Interleaving<"a" | "b", Move, Outcome, "state", Snapshot, Resource>> = []
-			yield* interleave(
-				lockManager<"a" | "b">(),
-				{ sessions: crossing, exclusive: [], state: Option.some("state") },
-				{
-					kind: "script",
-					choices: [
-						{ kind: "move", session: "a" },
-						{ kind: "move", session: "b" },
-						{ kind: "read", query: "state" },
-						{ kind: "move", session: "a" },
-						{ kind: "move", session: "a" }
-					]
-				},
-				(run) => Effect.sync(() => runs.push(run))
-			)
-			const [run] = runs
-			const ending = run?.ending
-			deepStrictEqual(
-				[
-					run?.reads,
-					ending?.kind === "stopped"
-						? { kind: ending.kind, at: ending.at, choice: ending.choice }
-						: ending
-				],
-				[
-					[
-						{
-							query: "state",
-							value: [
-								["x", 1],
-								["y", 2]
-							],
-							at: 4
-						}
-					],
-					{
-						kind: "stopped",
-						at: 4,
-						choice: { kind: "move", session: "a" }
-					}
-				]
-			)
-		})
-	)
-
-	it.effect("draws a schedule from the case's tape, and replays it exactly", (ctx) =>
-		searched(
-			ctx,
-			explore(
-				{
-					suite: "drawn schedules",
-					oracle: {
-						kind: "universal",
-						name: "round trip: a schedule drawn from a case's tape replays exactly from it"
-					},
-					draw: drawn(sessionSets),
-					literal: Formatter.format,
-					coverage: noCoverage,
-					kept: [],
-					runs: 40,
-					shrink: completeShrink,
-					steerEvery: 16,
-					caseHang: Duration.minutes(1)
-				},
-				(sessions, c: Case<never>) =>
-					Effect.gen(function* () {
-						const drawnOn = recording(caseChooser(c))
-						const once = yield* oneDrawnRun(sessions, natureOf(drawnOn))
-						const taped = drawnOn.tape()
-						const again = yield* oneDrawnRun(
-							sessions,
-							natureOf(recording(forcedChooser(taped.values, taped.length)))
-						)
-						deepStrictEqual(
-							{
-								replay: again.replay.kind,
-								schedule: Arr.map(again.tape, (decision) => decision.choice)
-							},
-							{ replay: "as-taped", schedule: Arr.map(once.tape, (decision) => decision.choice) }
-						)
-						strictEqual(once.replay.kind, "as-taped")
-						strictEqual(
-							Struct.keys(sessions).length,
-							Arr.filter([...once.sessions.values()], (end) => end.kind !== "unfinished").length
-						)
-					})
-			)
-		)
-	)
-})
-
-/** How a run of the release test ends, as a case draws it: what each way aims at, when it is pending. */
-const ENDINGS = [
-	{ how: "every order", aims: "a run pruned" },
-	{ how: "every order, the second refused", aims: "a run refused" },
-	{ how: "a script", aims: "a judged run left a session part-way" },
-	{ how: "drawn decisions", aims: "nothing" }
-] as const
-
-type Ending = (typeof ENDINGS)[number]
-
-type Released = Exclude<Ending["aims"], "nothing">
-
-/** The ways a case may end its runs: those aimed at a pending requirement where it steers and one is, else every way. */
-const endingsFor = (
-	steering: Option.Option<Pending<Released>>
-): Arr.NonEmptyReadonlyArray<Ending> =>
-	Option.match(steering, {
-		onNone: () => ENDINGS,
-		onSome: (pending) =>
-			Arr.match(
-				Arr.filter(ENDINGS, (ending) => ending.aims !== "nothing" && pending.has(ending.aims)),
-				{ onEmpty: () => ENDINGS, onNonEmpty: (aimed) => aimed }
-			)
-	})
-
-/**
- * A session set, the script a scripted run follows (moves of any session, so it stops or runs out part-way), and how
- * the case ends its runs, drawn among the ways its steering aims at (endingsFor).
- */
-const releaseCases: Steered<
-	readonly [Sessions<Named, Move>, ReadonlyArray<Named>, Ending],
-	Released
-> = (steering) => {
-	const endings = endingsFor(steering)
-	return (source) => [
-		source.draw(sessionSets),
-		source.draw(array(element(["a", "b", "c"] as const), { min: 0, max: 6 })),
-		source.draw(element(endings))
 	]
-}
-
-describe("releasing sessions", () => {
-	it.effect(
-		"releases every session a run started, however the run ends, so no reset meets one left open",
-		(ctx) =>
-			searched(
-				ctx,
-				explore(
-					{
-						suite: "every started session released",
-						oracle: {
-							kind: "specification",
-							name: "every session a run started is released, however the run ends"
-						},
-						draw: steered(releaseCases, (sketch) => sketch),
-						literal: Formatter.format,
-						coverage: required<Released>(
-							["a run pruned", "a run refused", "a judged run left a session part-way"],
-							{ cases: 40, sense: notesOnly }
-						),
-						kept: [],
-						runs: 40,
-						shrink: completeShrink,
-						steerEvery: 1,
-						caseHang: Duration.minutes(1)
-					},
-					([sessions, script, ending], c: Case<Released>) =>
-						Effect.gen(function* () {
-							const driver = lockManager<Named>()
-							let judged = 0
-							const judge = (
-								run: Interleaving<Named, Move, Outcome, "state", Snapshot, Resource>
-							) =>
-								Effect.suspend(() => {
-									judged += 1
-									if (
-										Arr.some(
-											run.order,
-											(move) => run.sessions.get(move.session)?.kind === "unfinished"
-										)
-									) {
-										c.note("a judged run left a session part-way")
-									}
-									if (ending.how === "every order, the second refused" && judged === 2) {
-										c.note("a run refused")
-										return Effect.fail("refused" as const)
-									}
-									return Effect.void
-								})
-							const spec: Interleave<Named, Move, "state"> = {
-								sessions,
-								exclusive: [],
-								state: Option.some("state")
-							}
-							const strategy: Strategy<Named, "state"> =
-								ending.how === "a script"
-									? {
-											kind: "script",
-											choices: Arr.map(script, (session) => ({ kind: "move", session }))
-										}
-									: ending.how === "drawn decisions"
-										? { kind: "drawn", nature: c }
-										: { kind: "every", reduction: "sleep-sets" }
-							const report = yield* interleave(driver, spec, strategy, judge).pipe(
-								Effect.asSome,
-								Effect.catch(() => Effect.succeedNone)
-							)
-							if (Option.exists(report, (ran) => ran.pruned > 0)) {
-								c.note("a run pruned")
-							}
-							yield* driver.reset
-						})
-				)
-			)
-	)
 })
 
 /**
- * A chooser that makes each decision on the case's own tape, so a schedule drawn through it shrinks with the case.
+ * Sessions whose every move commutes with every other's run one order under sleep sets, and every order without
+ * them, the multinomial of their lengths.
  */
-const caseChooser = (c: Case<never>): Chooser => ({
-	exhausted: () => false,
-	draw: (lo, hi, _at, spread) =>
-		c.draw((source) => (spread === "leaning" ? source.choose(lo, hi) : source.pick(lo, hi)))
-})
-
-/** The nature of a recording: what a run draws and what the system decided go on the recording's tape. */
-const natureOf = (recorded: Recording): Nature => ({
-	draw: (generator) => recorded.source.draw(generator),
-	observe: (decided) => recorded.source.observe(fnv1a32(decided))
-})
-
-/** One run of `sessions` whose decisions `nature` draws. */
-const oneDrawnRun = <S extends string>(sessions: Sessions<S, Move>, nature: Nature) =>
-	Effect.gen(function* () {
-		const runs: Array<Interleaving<S, Move, Outcome, "state", Snapshot, Resource>> = []
-		const spec: Interleave<S, Move, "state"> = {
-			sessions,
-			exclusive: [],
-			state: Option.some("state")
+export const commutingSessions = property.exhaust(finite(disjointSessions), {
+	box: "three sessions, each writing its own resource once, at either value, or twice",
+	needs: {},
+	situations: [],
+	check: () => (sessions) =>
+		Effect.gen(function* () {
+			const reduced = yield* resultsOf(sessions, "sleep-sets")
+			const full = yield* resultsOf(sessions, "none")
+			deepStrictEqual(
+				{
+					reduced: reduced.report.interleavings,
+					full: full.report.interleavings,
+					pruned: full.report.pruned,
+					results: [reduced.results.size, full.results.size]
+				},
+				{
+					reduced: 1,
+					full: multinomialOf(
+						Arr.map(Struct.keys(sessions), (name) => sessions[name].moves.length)
+					),
+					pruned: 0,
+					results: [1, 1]
+				}
+			)
+		}),
+	oracle: {
+		kind: "specification",
+		name: "sleep sets run one order of moves that all commute; without them every order, the multinomial of the sessions' moves"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/interleave.ts",
+			original:
+				"\t\t\t\t\tconst asleep = new Set(Arr.filter([...resolved.sleep], (session) => !woken.has(session)))",
+			replacement: "\t\t\t\t\tconst asleep = new Set<S>()",
+			why: "Sleep sets off, no session ever asleep: commuting sessions run every order."
 		}
-		yield* interleave(lockManager<S>(), spec, { kind: "drawn", nature }, (run) =>
-			Effect.sync(() => runs.push(run))
-		)
-		return Option.getOrThrow(Arr.head(runs))
-	})
+	]
+})
+
+/**
+ * Two sessions that lock two resources in opposite orders reach their deadlock and its victim under every order with
+ * sleep sets, whichever resources and values they write.
+ */
+export const crossingDeadlock = property.exhaust(finite(crossingSessions), {
+	box: "two sessions writing two distinct resources in opposite orders, each at either value",
+	needs: {},
+	situations: [],
+	check: () => (sessions) =>
+		Effect.gen(function* () {
+			const { results, report } = yield* resultsOf(sessions, "sleep-sets")
+			assertTrue(report.blocked > 0, "some order made a session wait")
+			assertTrue(
+				Arr.some([...results], Str.includes("deadlock")),
+				`some order ended a session as the deadlock's victim, among ${Arr.join(results, " | ")}`
+			)
+		}),
+	oracle: {
+		kind: "specification",
+		name: "two transactions locking in opposite orders can deadlock, and the lock manager aborts one"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/interleave.ts",
+			original:
+				"\t\t\t\t\t\t\t\t\t\t\tstartable(session) &&\n\t\t\t\t\t\t\t\t\t\t\tdriver.commute(nextMoveOf(session), nextMoveOf(choice))",
+			replacement: "\t\t\t\t\t\t\t\t\t\t\tstartable(session)",
+			why: "Every session put to sleep, commuting or not: the order that deadlocks is pruned."
+		}
+	]
+})
+
+/**
+ * A run records every deadlock the lock manager breaks, whose detector runs while the engine settles its waits, as
+ * PostgreSQL's deadlock check does: the victims a run's deadlocks name are exactly the sessions the lock manager
+ * aborted, over sessions that each write two resources, two of them in the same order or the opposite one. A property
+ * of property.interleave: the engine notes the deadlocks its runs broke.
+ */
+export const deadlocksRecorded = property.interleave(lockingSessions, {
+	needs: {},
+	sessions: onLocks,
+	driver: () => () => Effect.sync(() => lockManager<Named>()),
+	strategy: () => ({ kind: "every", reduction: "sleep-sets" }),
+	judge: (_resources, c) => () => (run) =>
+		Effect.sync(() => {
+			const aborted = Arr.flatMap([...run.sessions], ([session, end]) =>
+				end.kind === "ended" && end.key === "deadlock" ? [session] : []
+			)
+			const recorded = Arr.flatMap(run.deadlocks, (deadlock) => Option.toArray(deadlock.victim))
+			deepStrictEqual(Arr.sort(recorded, Order.String), Arr.sort(aborted, Order.String))
+			if (Arr.isReadonlyArrayNonEmpty(recorded)) {
+				c.note("a victim recorded")
+			}
+		}),
+	situations: ["a deadlock broken", "a victim recorded", "a move waited", "an order pruned"],
+	oracle: {
+		kind: "specification",
+		name: "the lock manager's own verdict: the sessions a run ended as a deadlock's victim"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/interleave.ts",
+			original: "\t\t\t\t\t\t\t\tif (Arr.isReadonlyArrayNonEmpty(broken)) {",
+			replacement:
+				"\t\t\t\t\t\t\t\tif (Arr.isReadonlyArrayNonEmpty(broken) && broken.length < 0) {",
+			why: "A deadlock the lock manager breaks while the engine settles goes unrecorded."
+		},
+		{
+			file: "packages/testing/src/interleave.ts",
+			original:
+				"\tArr.flatMap(Struct.keys(INTERLEAVED), (count) => (report[count] > 0 ? [INTERLEAVED[count]] : []))",
+			replacement:
+				"\tArr.flatMap(Struct.keys(INTERLEAVED), (count) => (report[count] < 0 ? [INTERLEAVED[count]] : []))",
+			why: "property.interleave notes nothing its runs reached, so no case reaches a deadlock broken."
+		}
+	]
+})
+
+/**
+ * Sessions whose afters form a cycle are refused before any runs, naming one of the afters' loops, and every other
+ * after relation runs.
+ */
+export const afterCycles = property.exhaust(finite(aftersGen), {
+	box: "every choice of an after, none or a session, for each of three sessions",
+	needs: {},
+	situations: ["a cycle", "a self-loop", "no cycle", "a chain"],
+	check: (_resources, c) => (afters) =>
+		Effect.gen(function* () {
+			const loops = loopsOf(afters)
+			let ran = 0
+			const outcome = yield* Effect.result(
+				interleave(
+					lockManager<Named>(),
+					{ sessions: afterSessions(afters), exclusive: [], state: Option.none() },
+					{ kind: "every", reduction: "sleep-sets" },
+					() =>
+						Effect.sync(() => {
+							ran += 1
+						})
+				)
+			)
+			if (Arr.some(loops, (loop) => loop.length === 1)) {
+				c.note("a self-loop")
+			}
+			if (Arr.isReadonlyArrayEmpty(loops)) {
+				c.note("no cycle")
+				if (Arr.some(Struct.keys(afters), (name) => Option.isSome(afters[name]))) {
+					c.note("a chain")
+				}
+				strictEqual(outcome._tag, "Success")
+				return
+			}
+			c.note("a cycle")
+			const refused = outcome._tag === "Failure" ? outcome.failure : undefined
+			assertTrue(isAfterCycle(refused), "the afters' cycle is refused")
+			deepStrictEqual(
+				{
+					ran,
+					named: Arr.some(loops, (loop) =>
+						sameMembers(loop, isAfterCycle(refused) ? refused.cycle : [])
+					)
+				},
+				{ ran: 0, named: true }
+			)
+		}),
+	oracle: {
+		kind: "specification",
+		name: "sessions start after their afters: refused exactly when the afters form a cycle, which it names"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/interleave.ts",
+			original: "\t\t\t\t(name) => [name, Option.toArray(sessions[name].after)] as const",
+			replacement:
+				"\t\t\t\t(name) =>\n\t\t\t\t\t[name, Option.toArray(Option.filter(sessions[name].after, (after) => after !== name))] as const",
+			why: "A self-loop among the afters unseen, so a session that starts after itself is run rather than refused."
+		}
+	]
+})
+
+/**
+ * A script is followed, and stops at the first decision it cannot make: a move of a session that is done or whose
+ * move waits, or a join of a session whose move waits, by its decision and choice, never its prose. A property of
+ * property.interleave under a script.
+ */
+export const scriptFollowed = property.interleave(scriptedCases, {
+	needs: {},
+	sessions: (scripted) => onLocks(scripted.sessions),
+	driver: () => () => Effect.sync(() => lockManager<"a" | "b">()),
+	strategy: (scripted) => ({ kind: "script", choices: scripted.script }),
+	judge: (_resources, c) => (scripted) => (run) =>
+		Effect.sync(() => {
+			const walked = walkScript(scripted)
+			deepStrictEqual(followedOf(run), walked.followed)
+			c.note(walked.situation)
+		}),
+	situations: [
+		"the script ran out",
+		"stopped at a move of a done session",
+		"stopped at a move of a session in flight",
+		"stopped at a join of a move in flight"
+	],
+	oracle: {
+		kind: "second-implementation",
+		name: "the script walked by hand over one lock: a write waits on the other session's until it commits"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/interleave.ts",
+			original: `\t\t\t\t\t\t\t\t: pending.has(choice.session)\n\t\t\t\t\t\t\t\t\t? Option.some(\`\${choice.session} has a move in flight\`)\n\t\t\t\t\t\t\t\t\t: !startable(choice.session) || !laneFree(choice.session)`,
+			replacement: "\t\t\t\t\t\t\t\t: !startable(choice.session) || !laneFree(choice.session)",
+			why: "A script's move of a session with a move in flight made rather than refused."
+		}
+	]
+})
+
+/**
+ * A schedule drawn from a case's tape (a drawn or a PCT one, as property.interleave draws them) reaches only results
+ * every order reaches.
+ */
+export const drawnSchedulesSound = property.interleave(
+	(source) => ({
+		sessions: source.draw(lockingSessions),
+		scheduling: source.draw(drawnScheduling)
+	}),
+	{
+		needs: {},
+		sessions: (drawn) => onLocks(drawn.sessions),
+		driver: () => () => Effect.sync(() => lockManager<Named>()),
+		strategy: (drawn) => drawn.scheduling,
+		judge: () => (drawn) => (run) =>
+			Effect.gen(function* () {
+				const every = yield* resultsOf(drawn.sessions, "none")
+				assertTrue(
+					every.results.has(decidedBy(run)),
+					"a drawn schedule's result is one every order reaches"
+				)
+			}),
+		situations: ["a move waited", "a deadlock broken"],
+		oracle: { kind: "second-implementation", name: "every order, with no sleep-set reduction" },
+		kept: [],
+		kills: []
+	}
+)
+
+/** A schedule drawn from a case's tape replays exactly from that tape, and every session it starts ends. */
+export const drawnReplay = property.explore(sessionSets, {
+	needs: {},
+	situations: [],
+	check: (_resources, c) => (sessions) =>
+		Effect.gen(function* () {
+			const drawnOn = recording(caseChooser(c))
+			const once = yield* oneDrawnRun(sessions, natureOf(drawnOn))
+			const taped = drawnOn.tape()
+			const again = yield* oneDrawnRun(
+				sessions,
+				natureOf(recording(forcedChooser(taped.values, taped.length)))
+			)
+			deepStrictEqual(
+				{ replay: again.replay.kind, schedule: Arr.map(again.tape, (decision) => decision.choice) },
+				{ replay: "as-taped", schedule: Arr.map(once.tape, (decision) => decision.choice) }
+			)
+			strictEqual(once.replay.kind, "as-taped")
+			strictEqual(
+				Struct.keys(sessions).length,
+				Arr.filter([...once.sessions.values()], (end) => end.kind !== "unfinished").length
+			)
+		}),
+	oracle: {
+		kind: "universal",
+		name: "round trip: a schedule drawn from a case's tape replays exactly from it"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/interleave.ts",
+			original:
+				"\t\t\t\t\t\t\t\tArr.getUnsafe(runnable, searching.nature.draw(int(0, runnable.length - 1)))",
+			replacement:
+				"\t\t\t\t\t\t\t\tArr.getUnsafe(runnable, Math.floor(Math.random() * runnable.length))",
+			why: "A drawn decision left off the tape, so a replay of the tape makes other decisions."
+		}
+	]
+})
+
+/** Every session a run started is released, however the run ends, so no reset meets one left open. */
+export const everyStartedSessionReleased = property.explore(
+	aimed(releaseCases(Option.none()), [
+		["a run pruned", releaseCases(Option.some("every order"))],
+		["a run refused", releaseCases(Option.some("every order, the second refused"))],
+		["a judged run left a session part-way", releaseCases(Option.some("a script"))]
+	]),
+	{
+		needs: {},
+		situations: ["a run pruned", "a run refused", "a judged run left a session part-way"],
+		check: (_resources, c) => (released) =>
+			Effect.gen(function* () {
+				const driver = lockManager<Named>()
+				let judged = 0
+				const strategy: Strategy<Named, "state"> =
+					released.ending === "a script"
+						? {
+								kind: "script",
+								choices: Arr.map(released.script, (session) => ({ kind: "move", session }))
+							}
+						: released.ending === "drawn decisions"
+							? { kind: "drawn", nature: c }
+							: { kind: "every", reduction: "sleep-sets" }
+				const report = yield* interleave(driver, onLocks(released.sessions), strategy, (run) =>
+					Effect.suspend(() => {
+						judged += 1
+						if (
+							Arr.some(run.order, (move) => run.sessions.get(move.session)?.kind === "unfinished")
+						) {
+							c.note("a judged run left a session part-way")
+						}
+						if (released.ending === "every order, the second refused" && judged === 2) {
+							c.note("a run refused")
+							return Effect.fail("refused" as const)
+						}
+						return Effect.void
+					})
+				).pipe(
+					Effect.asSome,
+					Effect.catch(() => Effect.succeedNone)
+				)
+				if (Option.exists(report, (ran) => ran.pruned > 0)) {
+					c.note("a run pruned")
+				}
+				yield* driver.reset
+			}),
+		oracle: {
+			kind: "specification",
+			name: "every session a run started is released, however the run ends"
+		},
+		kept: [],
+		kills: [
+			{
+				file: "packages/testing/src/interleave.ts",
+				original:
+					"\t\t\t\t\t\tArr.filter([...live.started], (session) => !live.released.has(session)),",
+				replacement:
+					"\t\t\t\t\t\tArr.filter([...live.started], (session) => live.released.has(session)),",
+				why: "No session released when its run ends, so the next reset meets its locks."
+			}
+		]
+	}
+)

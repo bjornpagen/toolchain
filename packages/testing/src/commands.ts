@@ -1,7 +1,6 @@
 import { Array as Arr, Effect, Schema, Struct } from "effect"
-import type { Case } from "#explore.ts"
 import type { Gen, Size, Weight } from "#gen.ts"
-import type { CheckContext, ExploreSpec, Needs, Resources, Space } from "#property.ts"
+import type { Case, CheckContext, ExploreSpec, Needs, Resources, Space } from "#property.ts"
 import type { Source } from "#source.ts"
 import { type Swarm, weightOf } from "#swarm.ts"
 
@@ -58,14 +57,15 @@ export type Command<M, P, V extends string> = Readonly<{
 
 /**
  * A state machine: the model's initial state and its commands, each named, with the parameters each takes and the
- * vocabulary `V` its refusals are named from (`never` for a machine that refuses nothing). A command's verdicts sit
- * under its name in a record, where TypeScript reads no type argument, so a machine states its type
- * (`Machine<M, P, V>`), and its step features (StepFeature) are as closed as `V`.
+ * vocabulary `V` its refusals are named from (`never` for a machine that refuses nothing). It is an interface, so a
+ * machine's type keeps its arguments: a command's verdicts sit under its name in a mapped record, from which no
+ * argument can be read back, so property.stateful reads `V` from the machine's type, and its step features
+ * (StepFeature) are as closed as `V`.
  */
-export type Machine<M, P, V extends string> = Readonly<{
-	initial: M
-	commands: { readonly [K in keyof P]: Command<M, P[K], V> }
-}>
+export interface Machine<M, P, V extends string> {
+	readonly initial: M
+	readonly commands: { readonly [K in keyof P]: Command<M, P[K], V> }
+}
 
 /** A command's name. */
 export type CommandName<P> = keyof P & string
@@ -320,8 +320,9 @@ export const programs =
 		source.draw(program(machine, size, source.draw(mix)))
 
 /**
- * A stateful property: each case is a program of `machine`, of `size` steps, over a swarm drawn from `mix`
- * (`programs`), and its check runs the program (runProgram) on the real system `real` builds for the case, on the
+ * A stateful property, `property.stateful(machine, spec)`: each case is a program of the machine, the constructor's
+ * first argument, so the program's type is fixed before the spec is read; of `size` steps, over a swarm drawn from
+ * `mix` (`programs`); and its check runs the program (runProgram) on the real system `real` builds for the case, on the
  * case's resources and in its scope, noting every step's feature (StepFeature), so a property requires the verdicts it
  * must meet among its situations; `real` may note situations of its own and draw from the case. The case fails at the
  * first step the system answers otherwise than the model, or whose real run fails.
@@ -331,7 +332,6 @@ export type StatefulSpec<M, P, V extends string, N extends Needs, F extends stri
 	"check" | "space"
 > &
 	Readonly<{
-		machine: Machine<M, P, V>
 		size: Size
 		mix: Gen<Swarm<CommandName<NoInfer<P>>>>
 		real: (
@@ -346,9 +346,10 @@ export type StatefulSpec<M, P, V extends string, N extends Needs, F extends stri
  * feature.
  */
 export const statefulExplore = <M, P, V extends string, N extends Needs, F extends string, E>(
+	machine: Machine<M, P, V>,
 	spec: StatefulSpec<M, P, V, N, F, E>
 ): ExploreSpec<Program<P>, StepFeature<P, V> | F, N, E | StepInapplicable | VerdictDiverged> => {
-	const { machine, size, mix, real, ...stated } = spec
+	const { size, mix, real, ...stated } = spec
 	return {
 		...stated,
 		space: programs(machine, size, mix),

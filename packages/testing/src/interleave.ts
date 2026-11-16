@@ -1,7 +1,6 @@
 import { Array as Arr, Effect, Exit, Fiber, Formatter, Option, Order, Schema, Struct } from "effect"
-import type { Case } from "#explore.ts"
 import { array, type Gen, int, shuffled } from "#gen.ts"
-import type { CheckContext, ExploreSpec, Needs, Resources } from "#property.ts"
+import type { Aimed, Case, CheckContext, ExploreSpec, Needs, Resources, Space } from "#property.ts"
 import { searchStarted } from "#searches.ts"
 import type { Observed } from "#source.ts"
 
@@ -53,18 +52,21 @@ export type Classified = Readonly<{ key: string; session: "continues" | "ends" }
  * - `commute` says whether two moves issued in either order are the same execution;
  * - `onWait` says whether a move seen waiting is left to wait or cancelled;
  * - `read` answers a query from outside every session, for a script's reads and the final state.
+ *
+ * It is an interface, so a driver's type keeps its arguments: property.interleave reads the types of the runs its judge
+ * reads from the driver the property builds.
  */
-export type Driver<S extends string, M, O, Q, A, W, E, R> = Readonly<{
-	reset: Effect.Effect<void, E, R>
-	run: (session: S, move: M) => Effect.Effect<O, never, R>
-	waitOf: (session: S, move: M) => Effect.Effect<Option.Option<Wait<S, W>>, E, R>
-	quiesce: (waiting: ReadonlyArray<S>) => Effect.Effect<void, E, R>
-	outcome: (move: M, ended: Ended<O>) => Classified
-	release: (session: S) => Effect.Effect<void, never, R>
-	commute: (first: M, second: M) => boolean
-	onWait: (move: M) => "wait" | "interrupt"
-	read: (query: Q) => Effect.Effect<A, E, R>
-}>
+export interface Driver<S extends string, M, O, Q, A, W, E, R> {
+	readonly reset: Effect.Effect<void, E, R>
+	readonly run: (session: S, move: M) => Effect.Effect<O, never, R>
+	readonly waitOf: (session: S, move: M) => Effect.Effect<Option.Option<Wait<S, W>>, E, R>
+	readonly quiesce: (waiting: ReadonlyArray<S>) => Effect.Effect<void, E, R>
+	readonly outcome: (move: M, ended: Ended<O>) => Classified
+	readonly release: (session: S) => Effect.Effect<void, never, R>
+	readonly commute: (first: M, second: M) => boolean
+	readonly onWait: (move: M) => "wait" | "interrupt"
+	readonly read: (query: Q) => Effect.Effect<A, E, R>
+}
 
 /** One decision of a schedule: issue a session's next move, require its last move to have ended, or read. */
 export type Choice<S extends string, Q> =
@@ -1032,10 +1034,12 @@ const interleavedOf = (report: InterleavingReport): ReadonlyArray<Interleaved> =
 	Arr.flatMap(Struct.keys(INTERLEAVED), (count) => (report[count] > 0 ? [INTERLEAVED[count]] : []))
 
 /**
- * An interleaving property: each case draws its value from `space`, gets its resources from `needs` (its database, the
+ * An interleaving property, `property.interleave(space, spec)`: each case draws its value from the space, the
+ * constructor's first argument, so the case's type is fixed before the spec is read; gets its resources from `needs` (its database, the
  * connections its sessions hold: its own, for the case alone), and runs the engine (interleave) over the case's
  * sessions, on the driver built for it, as its strategy schedules them, judging every run; the case fails with the
- * judge's first refusal or the engine's own failure, and notes what its runs reached (Interleaved). The concurrency
+ * judge's first refusal or the engine's own failure, notes what its runs reached (Interleaved) and measures the
+ * schedules it judged, pruned and saw deadlock in, which the report sums per property. The concurrency
  * of a case's sessions is the system under test: it is the case's, and nothing in the property asks for more.
  * - `sessions` is the case's interleaving: its sessions and their moves as data, its lanes and the query of its final
  *   state;
@@ -1056,7 +1060,7 @@ export type InterleaveSpec<
 	F extends string,
 	E,
 	J
-> = Omit<ExploreSpec<C, F | Interleaved, N, never>, "check"> &
+> = Omit<ExploreSpec<C, F | Interleaved, N, never>, "check" | "space"> &
 	Readonly<{
 		sessions: (value: C) => Interleave<S, M, Q>
 		driver: (
@@ -1070,8 +1074,8 @@ export type InterleaveSpec<
 	}>
 
 /**
- * The exploration an interleaving property is: its space, needs, situations, oracle, kept cases and kills as stated,
- * and a check that runs the engine over the case and notes what its runs reached.
+ * The exploration an interleaving property is: its space, and its needs, situations, oracle, kept cases and kills as
+ * stated, and a check that runs the engine over the case and notes what its runs reached.
  */
 export const interleaveExplore = <
 	C,
@@ -1086,11 +1090,13 @@ export const interleaveExplore = <
 	E,
 	J
 >(
+	space: Space<C> | Aimed<C, F | Interleaved>,
 	spec: InterleaveSpec<C, S, M, O, Q, A, W, N, F, E, J>
 ): ExploreSpec<C, F | Interleaved, N, E | J | AfterCycle | InterleavingFailed> => {
 	const { sessions, driver, strategy, judge, ...stated } = spec
 	return {
 		...stated,
+		space,
 		check: (resources, c) => (value) =>
 			Effect.gen(function* () {
 				const interleaving = sessions(value)
@@ -1102,6 +1108,9 @@ export const interleaveExplore = <
 					judge(resources, c)(value)
 				)
 				c.noteAll(interleavedOf(report))
+				c.measure("schedules explored", report.interleavings)
+				c.measure("schedules pruned", report.pruned)
+				c.measure("schedules deadlocked", report.deadlocked)
 			})
 	}
 }
