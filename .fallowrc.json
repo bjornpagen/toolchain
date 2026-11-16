@@ -63,7 +63,7 @@
 			},
 			{
 				"from": "testing",
-				"allow": ["limits"]
+				"allow": ["limits", "limit"]
 			},
 			{
 				"from": "limit",

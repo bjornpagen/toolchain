@@ -1,3 +1,4 @@
+import type { Limit } from "@bjornpagen/limit"
 import type { NodeServices } from "@effect/platform-node/NodeServices"
 import { Array as Arr, Brand, Effect, Formatter, Option, type Scope } from "effect"
 import type { NoCommands, StatefulMachine, StatefulSpec } from "#commands.ts"
@@ -127,6 +128,11 @@ type Stated<S, F extends string, N extends Needs, E> = Readonly<{
 	kills: ReadonlyArray<Kill>
 	/** How a case prints, when its structural form (derived from the value) is not the clearest. */
 	show?: (value: S) => string
+	/**
+	 * How long one of its cases may run, in milliseconds, when the runner's case deadline (caseDeadlineMillis) is too
+	 * short for its honest work: a Limit, with the evidence that its cases take that long. Without one, the runner's.
+	 */
+	caseDeadline?: Limit
 }>
 
 /**
@@ -327,12 +333,32 @@ const exploredAs =
 			guide: searched.guide,
 			oracle: spec.oracle,
 			kills: spec.kills,
-			search: exploreSearch(searched, 1),
-			replay: replay(searched),
+			...boundedBy(spec.caseDeadline, exploreSearch(searched, 1), replay(searched)),
 			keep: keepingOf(drawing, aimPlacesOf(spec.space, spec.situations)),
 			evaluate: (batch) => Effect.forEach(batch, evaluate)
 		})
 	}
+
+/** A search run under a property's own case deadline when it cites one, under the runner's otherwise. */
+const deadlineOf =
+	(caseDeadline: Limit | undefined) =>
+	(run: SearchRun): SearchRun =>
+		caseDeadline === undefined
+			? run
+			: { ...run, limits: { ...run.limits, deadline: caseDeadline.value } }
+
+/** A property's search and replay, each run under its own case deadline when it cites one. */
+const boundedBy = (
+	caseDeadline: Limit | undefined,
+	search: Made["search"],
+	replaying: Made["replay"]
+): Pick<Made, "search" | "replay"> => {
+	const under = deadlineOf(caseDeadline)
+	return {
+		search: (run) => search(under(run)),
+		replay: (run, token) => replaying(under(run), token)
+	}
+}
 
 /** The constructors a test module builds its properties with, one per kind of search. */
 export const property = {
@@ -359,8 +385,11 @@ export const property = {
 			guide: searched.guide,
 			oracle: spec.oracle,
 			kills: spec.kills,
-			search: exhaustSearch(searched, space, spec.box),
-			replay: replay(searched),
+			...boundedBy(
+				spec.caseDeadline,
+				exhaustSearch(searched, space, spec.box, 1),
+				replay(searched)
+			),
 			keep: keepingOf(drawing, []),
 			evaluate: (batch) => Effect.forEach(batch, evaluate)
 		})
@@ -383,8 +412,38 @@ export const property = {
 			guide: searched.guide,
 			oracle: spec.oracle,
 			kills: spec.kills,
-			search: exploreSearch(searched, spec.size),
-			replay: replay(searched),
+			...boundedBy(spec.caseDeadline, exploreSearch(searched, spec.size), replay(searched)),
+			keep: keepingOf(drawing, []),
+			evaluate: evaluateBatch(drawing, spec.needs, checkAll)
+		})
+	},
+	/**
+	 * Every case of a finite space, checked a batch at a time in one evaluation (a box of type agreements checked in one
+	 * compiler run per batch): passing is a proof inside the box it names, as an exhaustion's; a failing case is shrunk
+	 * alone.
+	 */
+	exhaustBatched: <S, const F extends string, N extends Needs, E>(
+		space: FiniteSpace<S>,
+		spec: BatchedSpec<S, F, N, E> & Readonly<{ box: string }>
+	): Property => {
+		const searched = searchedOf(spec.situations, spec.kept, { kind: "notes" })
+		const checkAll: BatchCheck<S, F, N, E> = spec.checkAll
+		const drawing: Drawing<S, F> = {
+			situations: spec.situations,
+			spaceUnder: () => space,
+			print: printOf(spec.show)
+		}
+		return new Property({
+			kind: "exhaust",
+			needs: spec.needs,
+			guide: searched.guide,
+			oracle: spec.oracle,
+			kills: spec.kills,
+			...boundedBy(
+				spec.caseDeadline,
+				exhaustSearch(searched, space, spec.box, spec.size),
+				replay(searched)
+			),
 			keep: keepingOf(drawing, []),
 			evaluate: evaluateBatch(drawing, spec.needs, checkAll)
 		})

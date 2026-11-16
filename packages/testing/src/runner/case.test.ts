@@ -121,8 +121,8 @@ export const synchronousCases = property.explore(
 					)
 					deepStrictEqual(
 						{
-							timersPerCase: Math.floor((twice.timers - once.timers) / cases),
-							hopsPerCase: Math.floor((twice.hops - once.hops) / cases)
+							timersPerCase: Math.floor(Math.max(0, twice.timers - once.timers) / cases),
+							hopsPerCase: Math.floor(Math.max(0, twice.hops - once.hops) / cases)
 						},
 						{ timersPerCase: 0, hopsPerCase: 0 }
 					)

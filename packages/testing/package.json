@@ -60,6 +60,7 @@
 		"codemod": "node scripts/codemod/main.ts"
 	},
 	"dependencies": {
+		"@bjornpagen/limit": "workspace:*",
 		"@bjornpagen/limits": "workspace:*",
 		"@effect/platform-node": "catalog:",
 		"@effect/vitest": "catalog:",

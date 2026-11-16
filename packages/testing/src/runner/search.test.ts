@@ -519,11 +519,9 @@ export const exhaustsEverything = property.explore(
 			},
 			{
 				file: "packages/testing/src/runner/search.ts",
-				original:
-					"\t\t\t\t\t? Option.filter(nextBranch(outcome.kept.tape), (after) => after.length > sketch.decisions)",
-				replacement:
-					"\t\t\t\t\t? Option.filter(nextBranch(outcome.kept.tape), (after) => after.length >= sketch.decisions)",
-				why: "A sketch's run ends one decision late, so it runs on into the next sketch's first case, which runs twice (exhaust-sketch-ends-one-decision-late, re-anchored from explore.ts to the new search's sketch run); the exhaustive spaces property fails."
+				original: "Option.exists(decisions, (drawn) => branch.length > drawn)",
+				replacement: "Option.exists(decisions, (drawn) => branch.length >= drawn)",
+				why: "A sketch's run ends one decision late, so it runs on into the next sketch's first case, which runs twice (exhaust-sketch-ends-one-decision-late, re-anchored from explore.ts to the new search's rounds of sketches, windowRan); the exhaustive spaces property fails."
 			}
 		]
 	}
