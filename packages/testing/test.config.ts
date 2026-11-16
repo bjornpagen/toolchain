@@ -15,7 +15,15 @@ export default defineRunner({
 		"src/commands.test.ts",
 		"src/runner/closure.test.ts",
 		"src/runner/cache.test.ts",
-		"src/resources/scratch.test.ts"
+		"src/resources/scratch.test.ts",
+		"src/core.test.ts",
+		"src/idioms.test.ts",
+		"src/shrink.test.ts",
+		"src/features.test.ts",
+		"src/agree.test.ts",
+		"src/runner/search.test.ts",
+		"src/runner/case.test.ts",
+		"src/runner/steer.test.ts"
 	],
 	smallStack: [],
 	conditions: [],

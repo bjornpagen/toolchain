@@ -13,7 +13,9 @@ export default defineTestConfig({
 		"!src/interleave.test.ts",
 		"!src/commands.test.ts",
 		"!src/runner/**",
-		"!src/resources/**"
+		"!src/resources/**",
+		"!src/features.test.ts",
+		"!src/agree.test.ts"
 	],
 	guided: ["src/sense.test.ts"],
 	setup: [],
