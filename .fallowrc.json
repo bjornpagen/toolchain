@@ -4,6 +4,7 @@
 		"oxlint.ast.config.ts",
 		"packages/devtools/src/oxlint/fixtures.config.ts",
 		"packages/devtools/src/style/classes.config.ts",
+		"packages/testing/src/mutate/hook.ts",
 		"packages/testing/src/vitest/coverage.ts",
 		"packages/testing/src/vitest/mutated-setup.ts",
 		"packages/testing/src/vitest/searches-setup.ts",

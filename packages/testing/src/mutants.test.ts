@@ -1,8 +1,8 @@
 /**
  * Source mutation operators (mutants.ts): programs built from statements whose mutants are known yield exactly those,
  * each at its own text, place, id and function; a family's mutants appear at each of its sites, each edit once
- * however many rules propose it; and a kept mutant applies at the one place its original stands, stale wherever it
- * stands otherwise. Oracles are stated per search.
+ * however many rules propose it; and a kill applies at the one place its original stands, stale wherever it stands
+ * otherwise. Oracles are stated per search.
  */
 import * as NodeServices from "@effect/platform-node/NodeServices"
 import { layer } from "@effect/vitest"
@@ -24,12 +24,12 @@ import { array, element, type Gen, int, shuffled } from "#gen.ts"
 import {
 	applied,
 	type Family,
-	type KeptMutant,
-	keptApplied,
+	killApplied,
 	mutantsOf,
 	noFamilies,
 	type Operator
 } from "#mutants.ts"
+import type { Kill } from "#property.ts"
 import { notesOnly } from "#sense.ts"
 import { searched } from "#vitest/searched.ts"
 
@@ -400,13 +400,13 @@ layer(NodeServices.layer)("source mutation", (it) => {
 	)
 
 	it.effect(
-		"applies a kept mutant at the one place its original stands, and finds it stale wherever it stands otherwise",
+		"applies a kill at the one place its original stands, and finds it stale wherever it stands otherwise",
 		(ctx) =>
 			searched(
 				ctx,
 				explore(
 					{
-						suite: "kept mutants",
+						suite: "kills",
 						oracle: {
 							kind: "second-implementation",
 							name: "the text split at every place the original stands"
@@ -432,18 +432,17 @@ layer(NodeServices.layer)("source mutation", (it) => {
 					({ parts, original }, c) =>
 						Effect.sync(() => {
 							const text = Arr.join(parts, "")
-							const kept: KeptMutant = {
-								name: "the fix",
+							const kill: Kill = {
 								file: "a.ts",
 								original,
 								replacement: "<reverted>",
-								killers: ["a.test.ts"]
+								why: "the fix reverted"
 							}
 							const places = Arr.filter(
 								Array.from({ length: text.length + 1 }, (_, i) => i),
 								(at) => Str.slice(at, at + original.length)(text) === original
 							)
-							const result = keptApplied(kept, text)
+							const result = killApplied(kill, text)
 							if (places.length === 1) {
 								c.note("applied")
 								const [at = 0] = places

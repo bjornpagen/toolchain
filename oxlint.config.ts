@@ -35,7 +35,8 @@ export default defineConfig(
 			"brands-sole-mint": {
 				mints: [
 					{ doors: ["packages/testing/src/random.ts"], brands: ["LabelStream", "RunStream"] },
-					{ doors: ["packages/testing/src/vitest/mutated-file.ts"], brands: ["RealPath"] }
+					{ doors: ["packages/testing/src/mutate/mutated.ts"], brands: ["RealPath"] },
+					{ doors: ["packages/testing/src/mutate/checkout.ts"], brands: ["CheckoutDir"] }
 				]
 			},
 			"import-doors": { doors: [] },

@@ -3,15 +3,16 @@ import { Array as Arr, Effect, Option, Path, Result, Schema, String as Str } fro
 import * as ts from "typescript/ast"
 import { createFileSystem } from "typescript/fs"
 import { API } from "typescript/sync"
+import type { Kill } from "#property.ts"
 
 /**
  * Source mutation, for measuring whether a suite catches a wrong change: each operator rewrites one span of a source
  * file the way a real slip would (a comparison flipped, a conjunct dropped, a guard deleted, an early exit removed, two
  * arms swapped, a pipe stage dropped, a bound moved by one, a predicate made constant), so a mutant the suite still
  * passes on names behaviour no test pins. The operators read TypeScript 7's native syntax tree and never type
- * information, so a mutant may not typecheck; the tester sets those aside as invalid. A caller adds the operators of its
- * own domain as a family (`Family`), and a mutant it wrote by hand as a kept mutant (`KeptMutant`). scripts/mutate.ts
- * runs a package's suite against each.
+ * information, so a mutant may not typecheck; the mutator sets those aside as invalid. A caller adds the operators of
+ * its own domain as a family (`Family`), and a property states the mutants it must kill by hand as its kills
+ * (`killApplied`).
  */
 export const OPERATORS = [
 	"comparison",
@@ -56,7 +57,7 @@ export const applied = <O extends string>(mutant: Mutant<O>): string =>
 	`${Str.slice(0, mutant.start)(mutant.source)}${mutant.replacement}${Str.slice(mutant.end)(mutant.source)}`
 
 /** The native compiler did not admit a source it was asked to read. */
-class MutationSourceRefused extends Schema.TaggedError<
+export class MutationSourceRefused extends Schema.TaggedError<
 	MutationSourceRefused,
 	{ readonly brand: unique symbol }
 >()("MutationSourceRefused", { file: Schema.String }) {}
@@ -646,30 +647,11 @@ export const mutantsOf = Effect.fn("testing.mutants.of")(function* <O extends st
 	}))
 })
 
-/**
- * A mutant written by hand and kept by value: `original`, text that stands once in `file`, replaced by `replacement`,
- * and the test files that must kill it. "Revert the fix and see the test fail" is one: the fix's text is `original`
- * and the code before it `replacement`, so the measurement replays on every run and the reverted code is never
- * written to the tree.
- */
-export type KeptMutant = Readonly<{
-	name: string
-	file: string
-	original: string
-	replacement: string
-	killers: Arr.NonEmptyReadonlyArray<string>
-}>
-
-/** A kept mutant's `original` no longer stands once in its file: its code moved, changed or now repeats. */
-export class KeptMutantStale extends Schema.TaggedError<
-	KeptMutantStale,
-	{ readonly brand: unique symbol }
->()("KeptMutantStale", {
-	mutant: Schema.String,
-	file: Schema.String,
-	found: Schema.Finite,
-	message: Schema.String
-}) {}
+/** A kill's `original` no longer stands once in its file: its code moved, changed or now repeats. */
+export class KillStale extends Schema.TaggedError<KillStale, { readonly brand: unique symbol }>()(
+	"KillStale",
+	{ file: Schema.String, found: Schema.Finite, message: Schema.String }
+) {}
 
 /** Every place `original` stands in `text`, overlapping places included; an empty `original` stands nowhere. */
 const placesOf = (text: string, original: string): ReadonlyArray<number> => {
@@ -688,25 +670,23 @@ const placesOf = (text: string, original: string): ReadonlyArray<number> => {
 }
 
 /**
- * The text a kept mutant makes of its file's text: its one `original` replaced. An `original` that stands nowhere, or
- * in more than one place, is stale, so a kept mutant never lands on code other than the code it was written against.
+ * The text a kill makes of its file's text: its one `original` replaced by its `replacement`. An `original` that stands
+ * nowhere, or in more than one place, is stale, so a kill never lands on code other than the code it was written
+ * against. "Revert the fix and see the property fail" is a kill: the fix's text is `original` and the code before it
+ * `replacement`, so it replays on every run and the reverted code is never written to the checkout.
  */
-export const keptApplied = (
-	kept: KeptMutant,
-	text: string
-): Result.Result<string, KeptMutantStale> => {
-	const places = placesOf(text, kept.original)
+export const killApplied = (kill: Kill, text: string): Result.Result<string, KillStale> => {
+	const places = placesOf(text, kill.original)
 	const [at] = places
 	return places.length === 1 && at !== undefined
 		? Result.succeed(
-				`${Str.slice(0, at)(text)}${kept.replacement}${Str.slice(at + kept.original.length)(text)}`
+				`${Str.slice(0, at)(text)}${kill.replacement}${Str.slice(at + kill.original.length)(text)}`
 			)
 		: Result.fail(
-				KeptMutantStale.make({
-					mutant: kept.name,
-					file: kept.file,
+				KillStale.make({
+					file: kill.file,
 					found: places.length,
-					message: `the kept mutant "${kept.name}" finds its original ${places.length === 0 ? "nowhere" : `${places.length} times`} in ${kept.file}, and must find it once`
+					message: `the kill "${kill.why}" finds its original ${places.length === 0 ? "nowhere" : `${String(places.length)} times`} in ${kill.file}, and must find it once`
 				})
 			)
 }

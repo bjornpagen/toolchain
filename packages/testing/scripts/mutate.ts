@@ -16,8 +16,6 @@ import {
 	String as Str
 } from "effect"
 import { Command, Flag } from "effect/cli"
-import { createFileSystemLayer, type FileSystemCallbacks, serverFS } from "typescript/fs"
-import { API, DiagnosticCategory, type Diagnostic, type Snapshot } from "typescript/sync"
 import type { Plugin } from "vite"
 import {
 	createVitest,
@@ -30,14 +28,15 @@ import {
 } from "vitest/node"
 import {
 	applied,
-	type KeptMutant,
-	keptApplied,
+	killApplied,
 	type Mutant,
 	mutantsOf,
 	noFamilies,
 	OPERATORS,
 	type Operator
 } from "#mutants.ts"
+import { type MutatedFile, probeOf, type RealPath, realPathOf } from "#mutate/mutated.ts"
+import { typecheckerOf } from "#mutate/typecheck.ts"
 import { fnv1a32, mix } from "#random.ts"
 import {
 	type OpenSuite,
@@ -46,7 +45,6 @@ import {
 	timedRun,
 	verdictWithin
 } from "#vitest/mutant-verdict.ts"
-import { type MutatedFile, type RealPath, realPathOf } from "#vitest/mutated-file.ts"
 import { testWorkers } from "#workers.ts"
 
 /**
@@ -74,7 +72,7 @@ import { testWorkers } from "#workers.ts"
  * in its own Vitest, and as many as fit in the test processes one test run holds when it is not given (defaultWorkers).
  * `--sample N` judges N mutants drawn by `--seed`, which is also the suite's run seed; `--operator` and `--mutant`
  * choose some; `--list` prints them and runs nothing. `--kept <file.json>` runs instead the kept mutants the file
- * lists, each a hand-written `KeptMutant` (its name, its file, the original text it replaces once, its replacement and
+ * lists, each a hand-written kept mutant (its name, its file, the original text it replaces once, its replacement and
  * the test files that must kill it), against those test files alone, each after its file's probe against them: a kept
  * mutant whose original no longer stands once in its file is stale, and one its killers pass on survived, the
  * measurement "revert the fix and see the test fail" asks for, run on every call and never written to the tree. A test
@@ -97,9 +95,6 @@ class MutationProbeSurvived extends Schema.TaggedError<
 	verdict: Schema.Literals(["survived", "timeout"]),
 	message: Schema.String
 }) {}
-
-/** Diagnostics a mutant raises only by leaving code unused or unreachable: no type error. */
-const UNUSED: ReadonlySet<number> = new Set([6133, 6138, 6192, 6196, 6198, 6199, 6205, 7027])
 
 /**
  * How many mutants a run judges at once when `--workers` names no number: as many as fit, each in a Vitest of its own,
@@ -131,7 +126,10 @@ type Verdict = TimedVerdict | Readonly<{ kind: "invalid" }> | Readonly<{ kind: "
 /** A mutant, and the file it makes of its target. */
 type Candidate = Readonly<{ mutant: Mutant<Operator>; mutated: MutatedFile }>
 
-/** The file of kept mutants `--kept` names: JSON, a list of `KeptMutant`s. */
+/**
+ * The file of kept mutants `--kept` names: JSON, a list of kept mutants, each a kill (its file, the original text it
+ * replaces once, its replacement), its name, and the test files that must kill it.
+ */
 const KeptMutants = Schema.fromJsonString(
 	Schema.Array(
 		Schema.Struct({
@@ -164,102 +162,6 @@ const describe = (mutant: Mutant<Operator>) =>
 const refused = (message: string) => (cause: unknown) =>
 	MutationRunRefused.make({ message: `${message}: ${Inspectable.toStringUnknown(cause)}` })
 
-/** The compiler reads the package from disk and writes nothing. */
-const readOnlyHost: FileSystemCallbacks = {
-	directoryExists: serverFS.useOS,
-	fileExists: serverFS.useOS,
-	getAccessibleEntries: serverFS.useOS,
-	readFile: serverFS.useOS,
-	realpath: serverFS.useOS,
-	stat: serverFS.useOS,
-	writeFile: serverFS.noop,
-	removeFile: serverFS.noop
-}
-
-const diagnosticText = (diagnostic: Diagnostic) =>
-	`${diagnostic.fileName ?? "(program)"}:${String((diagnostic.startPosition?.line ?? 0) + 1)}: TS${String(diagnostic.code)} ${diagnostic.text}`
-
-/** A snapshot's errors in the package's program; a snapshot that holds no such program fails the run. */
-const errorsOf = (snapshot: Snapshot, config: string) =>
-	Effect.flatMap(
-		Effect.try({
-			try: () => snapshot.getConfiguredProject(config),
-			catch: refused("the native compiler failed")
-		}),
-		(project) =>
-			project === undefined
-				? Effect.fail(
-						MutationRunRefused.make({
-							message: `the native compiler opened no project for ${config}`
-						})
-					)
-				: Effect.try({
-						try: () =>
-							Arr.filter(
-								[
-									...project.program.getConfigFileParsingDiagnostics(),
-									...project.program.getProgramDiagnostics(),
-									...project.program.getGlobalDiagnostics(),
-									...project.program.getSyntacticDiagnostics(),
-									...project.program.getSemanticDiagnostics()
-								],
-								(diagnostic) => diagnostic.category === DiagnosticCategory.Error
-							),
-						catch: refused("the native compiler failed")
-					})
-	)
-
-/**
- * The package's program, opened once in one native compiler session, and whether a mutant's program has a type error
- * the unmutated program does not: the unmutated snapshot with the target's text overlaid, in a snapshot of its own.
- * The unmutated program must have no error at all.
- */
-const typecheckerOf = Effect.fnUntraced(function* (pkg: RealPath) {
-	const path = yield* Path.Path
-	const config = path.join(pkg, "tsconfig.json")
-	const api = yield* Effect.acquireRelease(
-		Effect.try({
-			try: () => new API({ cwd: pkg, fs: readOnlyHost }),
-			catch: refused("the native compiler did not start")
-		}),
-		(session) =>
-			Effect.sync(() => {
-				session.close()
-			})
-	)
-	const unmutated = yield* Effect.acquireDisposable(
-		Effect.try({
-			try: () => api.createSnapshot({ openProjects: [config] }),
-			catch: refused("the native compiler did not open the package")
-		})
-	)
-	const baseline = yield* errorsOf(unmutated, config)
-	if (Arr.isReadonlyArrayNonEmpty(baseline)) {
-		return yield* MutationRunRefused.make({
-			message: `the unmutated package does not typecheck:\n${Arr.join(Arr.map(baseline, diagnosticText), "\n")}`
-		})
-	}
-	return (mutated: MutatedFile) =>
-		Effect.scoped(
-			Effect.flatMap(
-				Effect.acquireDisposable(
-					Effect.try({
-						try: () =>
-							unmutated.update({
-								fileSystem: createFileSystemLayer([[mutated.target, mutated.text]]),
-								ensurePrograms: true
-							}),
-						catch: refused("the native compiler did not overlay the mutant")
-					})
-				),
-				(snapshot) =>
-					Effect.map(errorsOf(snapshot, config), (errors) =>
-						Arr.some(errors, (error) => !UNUSED.has(error.code))
-					)
-			)
-		)
-})
-
 /**
  * The Vite plugin that serves a mutant's text in place of its target's, for a suite whose test processes load their
  * modules through Vite's module runner: Vite reads every such module in the run's own process, through its plugins,
@@ -270,15 +172,6 @@ const mutantPlugin = (mutated: MutatedFile): Plugin => ({
 	name: "bjornpagen-testing-mutant",
 	enforce: "pre",
 	load: (id) => (Arr.headNonEmpty(Str.split(id, "?")) === mutated.target ? mutated.text : undefined)
-})
-
-/**
- * A target's probe: its text with a statement after it that throws as the module finishes loading, so any test that
- * loads the mutated text fails, and the suite kills it whatever the target does.
- */
-const probeOf = (target: RealPath, text: string): MutatedFile => ({
-	target,
-	text: `${text}\n;throw new Error("the mutation tester's probe: this module was loaded with the mutated text the tester gave it")\n`
 })
 
 /**
@@ -468,7 +361,7 @@ const keptRun = Effect.fn("testing.mutate.kept")(function* (
 	const fs = yield* FileSystem.FileSystem
 	const path = yield* Path.Path
 	const listed = yield* fs.readFileString(keptFile)
-	const kept: ReadonlyArray<KeptMutant> = yield* Schema.decodeEffect(KeptMutants)(listed).pipe(
+	const kept = yield* Schema.decodeEffect(KeptMutants)(listed).pipe(
 		Effect.mapError(refused(`${keptFile} is no list of kept mutants`))
 	)
 	const mistyped = yield* typecheckerOf(pkg)
@@ -486,7 +379,15 @@ const keptRun = Effect.fn("testing.mutate.kept")(function* (
 		Effect.gen(function* () {
 			const target = yield* realPathOf(path.join(pkg, mutant.file))
 			const original = yield* fs.readFileString(target)
-			const mutatedText = keptApplied(mutant, original)
+			const mutatedText = killApplied(
+				{
+					file: mutant.file,
+					original: mutant.original,
+					replacement: mutant.replacement,
+					why: mutant.name
+				},
+				original
+			)
 			if (Result.isFailure(mutatedText)) {
 				yield* Console.log(`STALE ${mutant.name}: ${mutatedText.failure.message}`)
 				const stale: Verdict = { kind: "stale" }
@@ -684,6 +585,7 @@ NodeRuntime.runMain(
 		Effect.catchTags({
 			MutationRunRefused: (runRefused) => refusedWith(runRefused._tag, runRefused.message),
 			MutationProbeSurvived: (probe) => refusedWith(probe._tag, probe.message),
+			TypecheckRefused: (typecheck) => refusedWith(typecheck._tag, typecheck.message),
 			MutationSourceRefused: (sourceRefused) =>
 				refusedWith(
 					sourceRefused._tag,

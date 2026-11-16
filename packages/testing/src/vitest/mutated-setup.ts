@@ -1,6 +1,13 @@
 import { registerHooks } from "node:module"
 import { pathToFileURL } from "node:url"
 import { inject } from "vitest"
+import type { MutatedFile } from "#mutate/mutated.ts"
+
+declare module "vitest" {
+	interface ProvidedContext {
+		"bjornpagen.testing.mutated": MutatedFile
+	}
+}
 
 /**
  * The setup file a mutation run adds to every test file: before the test file loads, Node's module loader is hooked so
