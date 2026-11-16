@@ -45,8 +45,10 @@ export class RunnerServicesFailed extends Schema.TaggedError<
 
 /**
  * A package's runner config, `test.config.ts`'s default export: which files are its test modules (globs from the
- * package root), which of them run a second time on workers with a small stack (SMALL_STACK, so a per-element use of the
- * stack fails at the widths generators reach), each property's second run reported and replayed as `<id>@small-stack`, the export conditions its code resolves with (on every process of the run), its services, built
+ * package root), which of them run on workers with a small stack instead of the default (SMALL_STACK, so a per-element
+ * use of the stack fails at the widths generators reach; a case runs alike on either stack but for that, so a run on
+ * both would be the same cases twice), each such property's run reported and replayed as `<id>@small-stack`, the export
+ * conditions its code resolves with (on every process of the run), its services, built
  * from its layer in a worker the first time a case there opens a need, so a run whose needs use no service (unit
  * properties) never builds them, and the operator families its mutation runs add to the library's operators (mutants.ts
  * Family: a domain's slips, such as the SQL a compiler prints). Its class is how the runner tells it from any other
@@ -79,7 +81,7 @@ export class RunnerConfig {
 }
 
 /**
- * What a package states in its test.config.ts: its test modules, those that also run on a small stack, its export
+ * What a package states in its test.config.ts: its test modules, those that run on a small stack instead, its export
  * conditions, its services' layer, and its
  * mutation runs' operator families (none for the library's operators alone).
  */

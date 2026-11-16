@@ -2,9 +2,9 @@ import { String as Str } from "effect"
 
 /**
  * The stack a property's run has: the runtime's default, or the small stack (config.ts SMALL_STACK) a package's
- * `smallStack` modules run on a second time. A run's label is its property's identity, and `@small-stack` after it for
- * the second run, so a token from a small-stack failure replays on a small-stack worker; a kept token names the
- * property and runs on both.
+ * `smallStack` modules run on instead. A run's label is its property's identity, and `@small-stack` after it on the
+ * small stack, so a token from a small-stack failure replays on a small-stack worker; a kept token names the property
+ * and runs on its stack.
  */
 export type Stack = "default" | "small"
 

@@ -115,12 +115,12 @@ const moduleOfArgument = (argument: string): string =>
 
 /**
  * A package as a command loads it: its runner config, the properties the arguments name, in discovery order, and the
- * stacks each runs on (the default, and the small stack for a module its config's smallStack names).
+ * one stack each runs on: the small stack for a module its config's smallStack names, the default for every other.
  */
 type Loaded = Readonly<{
 	config: RunnerConfig
 	discovered: ReadonlyArray<Discovered>
-	stacksOf: (found: Discovered) => ReadonlyArray<Stack>
+	stackOf: (found: Discovered) => Stack
 }>
 
 /**
@@ -147,7 +147,7 @@ export const loadPackage = (
 		const loaded = yield* discover(root, wanted)
 		return {
 			config,
-			stacksOf: (found) => (small.has(found.module) ? ["default", "small"] : ["default"]),
+			stackOf: (found) => (small.has(found.module) ? "small" : "default"),
 			discovered: Arr.filter(
 				loaded,
 				(found) =>
@@ -216,15 +216,13 @@ export const runPackage = (
 ): Effect.Effect<RunOutcome, LoadFailed | PoolFailed, Scope.Scope | NodeServices> =>
 	Effect.gen(function* () {
 		const began = yield* liveMillis
-		const { config, discovered, stacksOf } = yield* loadPackage(request.root, request.selected)
+		const { config, discovered, stackOf } = yield* loadPackage(request.root, request.selected)
 		yield* collected(
 			config,
 			request.root,
 			Arr.flatMap(discovered, (found) => templatesOf(found.property.needs))
 		)
-		const runs = Arr.flatMap(discovered, (found) =>
-			Arr.map(stacksOf(found), (stack) => ({ found, stack }))
-		)
+		const runs = Arr.map(discovered, (found) => ({ found, stack: stackOf(found) }))
 		const kinds = new Map(
 			Arr.map(runs, ({ found, stack }) => {
 				const kind = workersOf(stack, found)
