@@ -2,9 +2,10 @@ import { NodeRuntime, NodeServices } from "@effect/platform-node"
 import { Array as Arr, Context, Effect, Latch, Option, Queue, Schema, Scope } from "effect"
 import { LateUses, NeedCache, needCacheOf, Stopped, stoppedOf } from "#runner/case.ts"
 import { configOf, propertyAt } from "#runner/load.ts"
+import { moduleClosureAt } from "#runner/module-closure.ts"
 import { Perception, perceptionOf } from "#runner/perceive.ts"
 import { type Batch, FromWorker, lostResult, ToWorker } from "#runner/protocol.ts"
-import { WorkerIndex } from "#runner/services.ts"
+import { ModuleClosure, WorkerIndex } from "#runner/services.ts"
 import { runOfLabel } from "#runner/stack.ts"
 import { startProcessCoverage } from "#sense.ts"
 
@@ -48,8 +49,13 @@ const main = Effect.gen(function* () {
 	const config = yield* configOf(root)
 	const scope = yield* Scope.Scope
 	const platform = yield* Effect.context<NodeServices.NodeServices>()
+	const closures = yield* moduleClosureAt(root)
 	const runner = Context.add(
-		Context.merge(Context.make(WorkerIndex, { index, workers }), platform),
+		Context.add(
+			Context.merge(Context.make(WorkerIndex, { index, workers }), platform),
+			ModuleClosure,
+			closures
+		),
 		Scope.Scope,
 		scope
 	)

@@ -19,10 +19,10 @@ import {
 import { keptOf } from "#runner/keep.ts"
 import type { Batch, CaseResult, SearchRun, Sense, Verdict } from "#runner/protocol.ts"
 import { exhaustSearch, exploreSearch, replay, type Searched } from "#runner/search.ts"
-import type { NeedFailed, WorkerIndex } from "#runner/services.ts"
+import type { ModuleClosure, NeedFailed, WorkerIndex } from "#runner/services.ts"
 
 export type { Aimed, Case, FiniteSpace, Oracle, Space }
-export { NeedFailed, WorkerIndex } from "#runner/services.ts"
+export { ModuleClosure, NeedFailed, WorkerIndex } from "#runner/services.ts"
 export type { Dictionary } from "#dictionary.ts"
 export type { CaseList } from "#gen.ts"
 
@@ -59,6 +59,7 @@ export const ReplayToken = Brand.nominal<ReplayToken>()
 export interface RunnerServices {
 	readonly platform: NodeServices
 	readonly worker: WorkerIndex
+	readonly closures: ModuleClosure
 }
 
 /** What a need may require: the worker's scope and the runner's services. */

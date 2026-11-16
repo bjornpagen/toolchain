@@ -2,6 +2,7 @@ import { Array as Arr, Context, Effect, Option, type Scope } from "effect"
 import type { NeedContext, Property } from "#property.ts"
 import { LateUses, NeedCache, needCacheOf, Stopped, stoppedOf, withLateUses } from "#runner/case.ts"
 import { type Limits, runnerLimits } from "#runner/limits.ts"
+import { moduleClosureAt } from "#runner/module-closure.ts"
 import { Perception, perceptionOf } from "#runner/perceive.ts"
 import type {
 	Batch,
@@ -12,10 +13,13 @@ import type {
 	Reach,
 	Verdict
 } from "#runner/protocol.ts"
-import { WorkerIndex } from "#runner/services.ts"
+import { ModuleClosure, WorkerIndex } from "#runner/services.ts"
 
-/** What a search run in this process needs from its caller: every need's context but the worker index, which is 0. */
-type InlineContext = Exclude<NeedContext, WorkerIndex>
+/**
+ * What a search run in this process needs from its caller: every need's context but the worker index, which is 0, and
+ * the module closures, which this process hashes for the package it runs in.
+ */
+type InlineContext = Exclude<NeedContext, WorkerIndex | ModuleClosure>
 
 /**
  * The evaluator of one property in this process: each batch evaluated in turn, here, with the needs it takes opened in
@@ -27,7 +31,12 @@ export const inlineEvaluator = (
 ): Effect.Effect<Evaluator, never, Scope.Scope | InlineContext> =>
 	Effect.gen(function* () {
 		const caller = yield* Effect.context<InlineContext | Scope.Scope>()
-		const context = Context.add(caller, WorkerIndex, { index: 0, workers: 1 })
+		const closures = yield* moduleClosureAt(process.cwd())
+		const context = Context.add(
+			Context.add(caller, WorkerIndex, { index: 0, workers: 1 }),
+			ModuleClosure,
+			closures
+		)
 		const perception = yield* perceptionOf
 		const cache = needCacheOf(Effect.succeed(context))
 		const lateUses = new Map<CaseOrder, Printed>()

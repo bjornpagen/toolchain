@@ -7,7 +7,8 @@ import { deepStrictEqual, strictEqual } from "#assert.ts"
 import { array, int } from "#gen.ts"
 import { property } from "#property.ts"
 import { Scratch } from "#resources/scratch.ts"
-import { WorkerIndex } from "#runner/services.ts"
+import { moduleClosureAt } from "#runner/module-closure.ts"
+import { ModuleClosure, WorkerIndex } from "#runner/services.ts"
 
 export const scratchOwn = property.explore(array(int(0, 3), { min: 0, max: 4 }), {
 	needs: {},
@@ -16,10 +17,11 @@ export const scratchOwn = property.explore(array(int(0, 3), { min: 0, max: 4 }),
 		Effect.gen(function* () {
 			c.note(files.length === 0 ? "an empty scratch directory" : "a scratch directory with files")
 			const fs = yield* FileSystem.FileSystem
-			const take = yield* Effect.provideService(Scratch.dir.open, WorkerIndex, {
-				index: 0,
-				workers: 1
-			})
+			const closures = yield* moduleClosureAt(process.cwd())
+			const take = yield* Scratch.dir.open.pipe(
+				Effect.provideService(WorkerIndex, { index: 0, workers: 1 }),
+				Effect.provideService(ModuleClosure, closures)
+			)
 			const used = yield* Scope.make()
 			const dir = yield* Scope.provide(take, used)
 			const before = yield* fs.readDirectory(dir)

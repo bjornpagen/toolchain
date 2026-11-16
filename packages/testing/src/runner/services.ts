@@ -1,4 +1,5 @@
-import { Context, Schema } from "effect"
+import { Context, type Effect, Schema } from "effect"
+import type { ClosureHash } from "#runner/closure.ts"
 
 /** A need failed to open or to give a case its resource: the case fails with it, never the run silently. */
 export class NeedFailed extends Schema.TaggedError<NeedFailed, { readonly brand: unique symbol }>()(
@@ -15,3 +16,13 @@ export class WorkerIndex extends Context.Service<
 	WorkerIndex,
 	Readonly<{ index: number; workers: number }>
 >()("@bjornpagen/testing/runner/services/WorkerIndex") {}
+
+/**
+ * A module's import-closure hash, as the runner computes it for a verdict key (runner/closure.ts): what a need whose
+ * identity is a module reads, so a template declared in a module is a new template exactly when that module or anything
+ * it loads changed. `hashOf` takes the module's URL (`import.meta.url`); each process hashes a module once.
+ */
+export class ModuleClosure extends Context.Service<
+	ModuleClosure,
+	Readonly<{ hashOf: (module: string) => Effect.Effect<ClosureHash, NeedFailed> }>
+>()("@bjornpagen/testing/runner/services/ModuleClosure") {}

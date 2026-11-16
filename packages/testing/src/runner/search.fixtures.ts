@@ -22,7 +22,7 @@ import type {
 	Reach,
 	Verdict
 } from "#runner/protocol.ts"
-import type { WorkerIndex } from "#runner/services.ts"
+import type { ModuleClosure, WorkerIndex } from "#runner/services.ts"
 import { sample } from "#source.ts"
 
 /**
@@ -50,8 +50,11 @@ const throughStop = (
 		{ onNone: () => judged, onSome: (at) => Arr.take(judged, at + 1) }
 	)
 
-/** What a search run in this process needs from its caller: every need's context but the worker index, which is 0. */
-type InProcess = Exclude<NeedContext, WorkerIndex> | Scope.Scope
+/**
+ * What a search run in this process needs from its caller: every need's context but the worker index, which is 0, and
+ * the module closures, which the inline evaluator hashes for the package it runs in.
+ */
+type InProcess = Exclude<NeedContext, WorkerIndex | ModuleClosure> | Scope.Scope
 
 /**
  * An evaluator of one property in this process that judges `width` batches at once and gives back their results in

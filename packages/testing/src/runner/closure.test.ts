@@ -1,9 +1,14 @@
 import { Array as Arr, Effect, Option } from "effect"
+import { Digest } from "effect/crypto"
 import { agree, exact } from "#oracle.ts"
 import { property } from "#property.ts"
 import {
 	aimedWorkspaces,
 	closuresIn,
+	moduleSituationsOf,
+	moduleUrlOf,
+	workspaces,
+	writtenTo,
 	filesOf,
 	loadSituationsOf,
 	loadsOf,
@@ -16,6 +21,8 @@ import {
 	treeOf,
 	writtenTree
 } from "#runner/closure.fixtures.ts"
+import { closuresOf, ModuleSyntax, workingTree } from "#runner/closure.ts"
+import { moduleClosureAt } from "#runner/module-closure.ts"
 
 /**
  * A module's closure is what Node loads when it loads the module: its files, the external packages it loads directly
@@ -170,6 +177,64 @@ export const closureHashFollowsTheClosure = property.explore(touchedWorkspaces, 
 			original: "return reached === place",
 			replacement: "return true",
 			why: "a component hashed without the closures it reaches: an edit below it goes unseen"
+		}
+	]
+})
+
+/**
+ * The runner's ModuleClosure, which a need reads a module's identity from (a template, by the module that declares it),
+ * gives each module of a workspace written to disk the closure hash closure.ts computes for it there, under the
+ * process's conditions and Node's version, and the same hash when asked again. Oracle: closuresOf over the written
+ * workspace, the function a verdict key's closures come from.
+ */
+export const moduleClosureIsTheClosureHash = property.explore(workspaces, {
+	needs: { hashing, directory: scratch },
+	situations: ["a module of the library package", "a module in an import cycle"],
+	check:
+		({ hashing: services, directory }, c) =>
+		(workspace) =>
+			Effect.gen(function* () {
+				c.noteAll(moduleSituationsOf(workspace))
+				const written = yield* directory
+				yield* writtenTo(written, filesOf(workspace, { kind: "nothing" }))
+				const roots = yield* Effect.fromOption(rootsOf(workspace))
+				const parser = yield* services
+				const tree = yield* workingTree(written)
+				const expected = yield* closuresOf({
+					tree,
+					conditions: [],
+					runtime: process.version,
+					roots
+				}).pipe(
+					Effect.provideService(ModuleSyntax, parser.syntax),
+					Effect.provideService(Digest.Digest, parser.digest)
+				)
+				const closures = yield* moduleClosureAt(written)
+				for (const [index, root] of roots.entries()) {
+					const url = moduleUrlOf(written, workspace, index)
+					const first = yield* closures.hashOf(url)
+					const again = yield* closures.hashOf(url)
+					const want = yield* Effect.fromOption(Option.fromUndefinedOr(expected.get(root)))
+					yield* agree(
+						[
+							[`closuresOf's hash of ${root}`, [want.hash, want.hash]],
+							[`ModuleClosure's hash of ${root}, asked twice`, [first, again]]
+						],
+						exact
+					)
+				}
+			}),
+	oracle: {
+		kind: "second-implementation",
+		name: "closuresOf over the written workspace, under no conditions and this Node's version"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/runner/module-closure.ts",
+			original: "closuresOf({ tree, conditions, runtime: process.version, roots: [path] })",
+			replacement: 'closuresOf({ tree, conditions, runtime: "", roots: [path] })',
+			why: "a module closure hashed for no runtime: a template's identity no longer the hash a verdict key holds"
 		}
 	]
 })

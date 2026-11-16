@@ -1,4 +1,4 @@
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 import { layerDigest } from "@effect/platform-node/NodeCrypto"
 import {
 	Array as Arr,
@@ -276,7 +276,7 @@ const importsFor = (placed: Arr.NonEmptyReadonlyArray<boolean>, index: number): 
 }
 
 /** A workspace of one to six modules, each with up to four imports. */
-const workspaces: Gen<Workspace> = (source) => {
+export const workspaces: Gen<Workspace> = (source) => {
 	const placed: Arr.NonEmptyReadonlyArray<boolean> = [
 		source.draw(boolean),
 		...source.draw(array(boolean, { min: 0, max: 5 }))
@@ -689,6 +689,47 @@ process.on("exit", () => {
 })
 `
 
+/** Writes each file under `directory`, making the directories it lies in. */
+export const writtenTo = Effect.fn("writtenTo")(function* (
+	directory: string,
+	files: ReadonlyArray<readonly [path: string, text: string]>
+) {
+	const fs = yield* FileSystem.FileSystem
+	for (const [path, text] of files) {
+		const file = `${directory}/${path}`
+		yield* fs.makeDirectory(Arr.join(Arr.initNonEmpty(Str.split("/")(file)), "/"), {
+			recursive: true
+		})
+		yield* fs.writeFileString(file, text)
+	}
+})
+
+/** Module `index`'s file URL in a workspace written under `directory`. */
+export const moduleUrlOf = (directory: string, workspace: Workspace, index: number): string =>
+	pathToFileURL(`${directory}/${modulePathOf(workspace, index)}`).href
+
+/** What a workspace exercises of the module closures a need reads. */
+export type ModuleSituation = "a module of the library package" | "a module in an import cycle"
+
+/** The situations a workspace's modules reach, by the model. */
+export const moduleSituationsOf = (workspace: Workspace): ReadonlyArray<ModuleSituation> => [
+	...(Arr.some(workspace.modules, (module) => module.library)
+		? ["a module of the library package" as const]
+		: []),
+	...(Arr.some(workspace.modules, (module, index) =>
+		Arr.some(module.imports, (imported) => {
+			const target = targetOf(workspace, module, imported)
+			return (
+				isRuntime(imported) &&
+				target.kind === "module" &&
+				reachOf(workspace, target.module, isRuntime).modules.has(index)
+			)
+		})
+	)
+		? ["a module in an import cycle" as const]
+		: [])
+]
+
 /** What Node loaded from the repository's own files when it ran one entry: files, external packages, built-ins. */
 export type Loads = Readonly<{
 	files: ReadonlyArray<string>
@@ -733,13 +774,7 @@ export const nodeLoads = Effect.fn("nodeLoads")(function* (
 		],
 		["node_modules/ext-b/index.js", `export const e = "b"\n`]
 	]
-	for (const [path, text] of written) {
-		const file = `${directory}/${path}`
-		yield* fs.makeDirectory(Arr.join(Arr.initNonEmpty(Str.split("/")(file)), "/"), {
-			recursive: true
-		})
-		yield* fs.writeFileString(file, text)
-	}
+	yield* writtenTo(directory, written)
 	yield* fs.makeDirectory(`${directory}/node_modules/@ws`, { recursive: true })
 	yield* fs.symlink("../../packages/lib", `${directory}/node_modules/@ws/lib`)
 	const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
