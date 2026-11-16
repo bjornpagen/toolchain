@@ -43,6 +43,7 @@
 		"./pattern": "./src/pattern.ts",
 		"./property": "./src/property.ts",
 		"./runner": "./src/runner/config.ts",
+		"./resources": "./src/resources/resources.ts",
 		"./oxlint": "./src/oxlint/plugin.ts",
 		"./workers": "./src/workers.ts"
 	},
