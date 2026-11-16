@@ -185,11 +185,23 @@ whole section, and do every part: the parts are one migration, in the order a re
   pre-push:
     jobs:
       - name: gate
-        run: sh vendor/toolchain/packages/devtools/bin/gate.sh push
+        script: gate.sh
+        runner: sh
         use_stdin: true
   ```
 
-  The commit gate needs the root's `types` script and `oxlint.ast.config.ts`; the push gate runs the root's `check`.
+  with the push gate in `.lefthook/pre-push/gate.sh`:
+
+  ```sh
+  exec sh vendor/toolchain/packages/devtools/bin/gate.sh push
+  ```
+
+  The push gate is a script job because lefthook (2.2.2) skips a pre-push run job whenever `git diff HEAD @{push}`
+  names no file, which is a push of a submodule's gitlink alone (every toolchain move), of deletions alone, or of an
+  empty commit: each of those went out ungated, the hook printing `gate (skip) no matching push files`. A script job
+  runs whatever the push changes. The commit's run job is skipped only for a commit that stages nothing, whose tree is
+  its parent's. The commit gate needs the root's `types` script and `oxlint.ast.config.ts`; the push gate runs the
+  root's `check`.
 
 - A repository's own index-copy script (grizzle's `scripts/dev/check-commit.sh`, the old `scripts/check-staged.sh`)
   becomes `sh vendor/toolchain/packages/devtools/bin/gate.sh run index pnpm check`: it handles submodules, which `git checkout-index` left
