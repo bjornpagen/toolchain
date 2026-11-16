@@ -281,6 +281,31 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 				return Option.map(running, (ran) => ran.unit)
 			})
 
+		/**
+		 * A worker that cannot start (it failed before it was ready, or ended before it was): it is not forked again. Once
+		 * every worker is so, the pool cannot run a case: its start fails with the last worker's report, and every unit
+		 * queued or sent is given back lost with it, so no evaluator waits on a pool with no worker.
+		 */
+		const breaks = (worker: Worker, report: string) =>
+			Effect.gen(function* () {
+				broken.add(worker.index)
+				if (broken.size < spec.workers) {
+					return
+				}
+				yield* Deferred.fail(started, PoolFailed.make({ message: report }))
+				const stranded = [...queue, ...Arr.flatMap(workers, (other) => other.sent)]
+				queue.length = 0
+				for (const other of workers) {
+					other.sent = []
+				}
+				for (const unit of stranded) {
+					Deferred.doneUnsafe(
+						unit.done,
+						Effect.succeed(Arr.map(unit.batch, () => lostResult(report)))
+					)
+				}
+			})
+
 		const handle = (event: Event): Effect.Effect<void> =>
 			Effect.gen(function* () {
 				const worker = event.worker
@@ -291,6 +316,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 						}
 						return
 					case "exit": {
+						const wasReady = worker.ready
 						const lost = yield* settle(worker)
 						const requeued = Arr.filter(worker.sent, (unit) =>
 							Option.match(lost, {
@@ -310,6 +336,12 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 							)
 						})
 						requeue(requeued)
+						if (!wasReady) {
+							yield* breaks(
+								worker,
+								`a worker ended (${event.signal ?? `exit ${event.code}`}) before it was ready, so it is not forked again; what it last wrote:\n${worker.output}`
+							)
+						}
 						if (!closing && !broken.has(worker.index)) {
 							const replacement = spawn(worker.index)
 							workers[worker.index] = replacement
@@ -329,10 +361,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 								feed(worker)
 								return
 							case "failed":
-								broken.add(worker.index)
-								if (broken.size === spec.workers) {
-									yield* Deferred.fail(started, PoolFailed.make({ message: received.message }))
-								}
+								yield* breaks(worker, received.message)
 								return
 							case "started": {
 								const unit = Arr.findFirst(worker.sent, (sent) => sent.id === received.unit)
