@@ -70,6 +70,9 @@ const sendNow = (message: FromWorker): void => {
 /** Sends a message to the parent over the IPC channel the worker was forked with. */
 const send = (message: FromWorker): Effect.Effect<void> => Effect.sync(() => sendNow(message))
 
+/** Milliseconds in a second. */
+const millisPerSecond = 1000
+
 /** Milliseconds of a reading of CPU, user and system. */
 const millisOf = (spent: NodeJS.CpuUsage): number => (spent.user + spent.system) / 1000
 
@@ -248,7 +251,11 @@ const main = Effect.gen(function* () {
 		}
 	})
 
-	yield* send({ kind: "ready", cpu: millisOf(process.cpuUsage()) })
+	yield* send({
+		kind: "ready",
+		cpu: millisOf(process.cpuUsage()),
+		millis: process.uptime() * millisPerSecond
+	})
 	yield* Effect.raceFirst(receive, evaluating)
 })
 

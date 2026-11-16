@@ -4,6 +4,7 @@ import {
 	afterFinished,
 	type Apply,
 	feedAll,
+	forksOf,
 	type Scheduled,
 	schedulerOf,
 	type View
@@ -21,8 +22,12 @@ export type DrawnProperty = Readonly<{ caseMillis: number; windows: ReadonlyArra
 /** A module of a drawn workload: what a worker spends readying it, once, and its properties. */
 export type DrawnModule = Readonly<{ readying: number; properties: ReadonlyArray<DrawnProperty> }>
 
-/** A drawn workload: the pool's width and its modules. */
-export type Workload = Readonly<{ workers: number; modules: ReadonlyArray<DrawnModule> }>
+/** A drawn workload: the pool's width at most, how long a worker takes to start, and its modules. */
+export type Workload = Readonly<{
+	workers: number
+	starting: number
+	modules: ReadonlyArray<DrawnModule>
+}>
 
 const properties: Gen<DrawnProperty> = (source) => ({
 	caseMillis: source.draw(int(1, 20)),
@@ -37,6 +42,7 @@ const modules: Gen<DrawnModule> = (source) => ({
 /** Workloads of one to eight workers and one to five modules. */
 export const workloads: Gen<Workload> = (source) => ({
 	workers: source.draw(int(1, 8)),
+	starting: source.draw(int(1, 30)),
 	modules: source.draw(array(modules, { min: 1, max: 5 }))
 })
 
@@ -51,6 +57,7 @@ export const cheap: Gen<Workload> = (source) => {
 	const module = source.draw(modules)
 	return {
 		workers: source.draw(int(1, 8)),
+		starting: source.draw(int(1, 30)),
 		modules: [{ ...module, readying: workOfModule(module) + source.draw(int(0, 60)) }]
 	}
 }
@@ -63,6 +70,7 @@ export const outgrowing: Gen<Workload> = (source) => {
 	const workers = source.draw(int(2, 8))
 	const readying = source.draw(int(1, 20))
 	return {
+		starting: source.draw(int(1, 10)),
 		workers,
 		modules: [
 			{
@@ -84,6 +92,7 @@ type SimUnit = Scheduled & Readonly<{ caseMillis: number; readying: number }>
 /** A simulated worker: what it was sent, which modules it readied, and when its running unit ends. */
 type SimWorker = {
 	readonly index: number
+	ready: boolean
 	sent: Array<SimUnit>
 	readied: Set<string>
 	busyUntil: Option.Option<number>
@@ -94,25 +103,32 @@ export type Ran = Readonly<{
 	readiedBy: ReadonlyMap<string, ReadonlySet<number>>
 	runs: ReadonlyMap<number, number>
 	units: number
+	forked: number
 	finished: boolean
 	end: number
 }>
 
 /**
- * Runs a workload on a simulated pool in virtual time, as runner/pool.ts drives the scheduler: every property's search
- * queues its first window at once and each next window when the last's every case has finished; whenever a worker is
- * idle it is given what the scheduler chooses (a steal's tail handed to it at once); a worker runs its units in order,
- * readying a module the first time it runs a unit of it (the module's readying, reported to the scheduler), then the
- * case. The run ends when every window has run, or, with work left and no worker running, stalled.
+ * Runs a workload on a simulated pool in virtual time, as runner/pool.ts drives the scheduler: the pool starts with one
+ * worker and forks more as the queue wants them (forksOf), each starting for the workload's start time; every
+ * property's search queues its first window at once and each next window when the last's every case has finished; an
+ * idle worker is given what the scheduler chooses (a steal's tail handed to it at once), as the pool's events decide
+ * (feedAll, afterFinished); a worker runs its units in order, readying a module the first time it runs a unit of it
+ * (the module's readying, reported to the scheduler), then the case. The run ends when every window has run, or, with
+ * work left and no worker running, stalled.
  */
-export const simulate = (workload: Workload): Ran => {
+/**
+ * How a simulated pool gets its workers: lazily, as runner/pool.ts forks them (one to start, more as the queue wants
+ * them), or whole, every worker ready at the start, which isolates the scheduler's choices from the forking.
+ */
+export const FORKINGS = ["lazily", "whole"] as const
+
+export type Forking = (typeof FORKINGS)[number]
+
+export const simulate = (workload: Workload, forking: Forking): Ran => {
 	const scheduler = schedulerOf<SimUnit>(workload.workers)
-	const workers: Array<SimWorker> = Array.from({ length: workload.workers }, (_, index) => ({
-		index,
-		sent: [],
-		readied: new Set(),
-		busyUntil: Option.none()
-	}))
+	const workers: Array<SimWorker> = []
+	let started = false
 	const readiedBy = new Map<string, Set<number>>()
 	const runs = new Map<number, number>()
 	const searches = Arr.flatMap(workload.modules, (module, moduleAt) =>
@@ -150,12 +166,17 @@ export const simulate = (workload: Workload): Ran => {
 	}
 
 	const view: View<SimUnit> = {
-		workers: workload.workers,
+		get workers() {
+			return workers.length
+		},
 		sentOf: (index) => workers[index]?.sent ?? [],
 		unstartedOf: (index) => Arr.drop(workers[index]?.sent ?? [], 1),
 		stealable: () => true,
 		idle: (index) =>
-			Option.exists(Option.fromUndefinedOr(workers[index]), (worker) => worker.sent.length === 0)
+			Option.exists(
+				Option.fromUndefinedOr(workers[index]),
+				(worker) => worker.ready && worker.sent.length === 0
+			)
 	}
 
 	const start = (worker: SimWorker) => {
@@ -195,10 +216,46 @@ export const simulate = (workload: Workload): Ran => {
 		})
 	}
 
+	/** Forks the workers the queue wants, as the pool does: each starts, busy, for the workload's start time. */
+	const grow = () => {
+		const forks = forksOf(scheduler, view, {
+			idling: Arr.filter(workers, (worker) => worker.ready && worker.sent.length === 0).length,
+			starting: Arr.filter(workers, (worker) => !worker.ready).length,
+			most: workload.workers,
+			started: started ? Option.some(workload.starting) : Option.none()
+		})
+		for (let more = forks; more > 0; more -= 1) {
+			workers.push({
+				index: workers.length,
+				ready: false,
+				sent: [],
+				readied: new Set(),
+				busyUntil: Option.some(now + workload.starting)
+			})
+		}
+	}
+
+	/** Feeds every idle worker and forks what the queue still wants. */
+	const feedEvery = () => {
+		feedAll(scheduler, view, apply)
+		grow()
+	}
+
 	for (const search of searches) {
 		queueNext(search)
 	}
-	feedAll(scheduler, view, apply)
+	const first = forking === "lazily" ? 1 : workload.workers
+	for (let index = 0; index < first; index += 1) {
+		workers.push({
+			index,
+			ready: forking === "whole",
+			sent: [],
+			readied: new Set(),
+			busyUntil: forking === "whole" ? Option.none() : Option.some(workload.starting)
+		})
+	}
+	started = forking === "whole"
+	feedEvery()
 	for (;;) {
 		const next = Arr.reduce(workers, Option.none<SimWorker>(), (soonest, worker) =>
 			Option.isSome(worker.busyUntil) &&
@@ -216,6 +273,12 @@ export const simulate = (workload: Workload): Ran => {
 		const worker = next.value
 		now = Option.getOrElse(worker.busyUntil, () => now)
 		worker.busyUntil = Option.none()
+		if (!worker.ready) {
+			worker.ready = true
+			started = true
+			feedEvery()
+			continue
+		}
 		Option.map(Arr.head(worker.sent), (unit) => {
 			worker.sent = Arr.drop(worker.sent, 1)
 			runs.set(unit.id, (runs.get(unit.id) ?? 0) + 1)
@@ -227,17 +290,19 @@ export const simulate = (workload: Workload): Ran => {
 					search.outstanding -= 1
 					if (search.outstanding === 0) {
 						queueNext(search)
-						feedAll(scheduler, view, apply)
+						feedEvery()
 					}
 				}
 			)
 			afterFinished(scheduler, view, apply, worker.index, unit.module)
+			grow()
 		})
 	}
 	return {
 		readiedBy,
 		runs,
 		units,
+		forked: workers.length,
 		finished: Arr.every(
 			searches,
 			(search) => search.next === search.windows.length && search.outstanding === 0

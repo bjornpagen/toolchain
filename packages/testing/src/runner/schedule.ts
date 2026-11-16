@@ -98,6 +98,12 @@ export type Scheduler<U extends Scheduled> = Readonly<{
 	choose: (worker: number, view: View<U>) => Choice<U>
 	/** Whether a module's queued work outgrows what its holders drain within its measured readying, now. */
 	outgrows: (module: string, view: View<U>) => boolean
+	/**
+	 * How many workers that hold nothing the queue would give work to now: one for each queued module no worker holds,
+	 * and one for each whose queued work outgrows what its holders drain within a new worker's start (`starting`, its
+	 * measured milliseconds; none before one started) and the module's readying. A pool sized to its work forks no more.
+	 */
+	wanted: (view: View<U>, starting: Option.Option<number>) => number
 	/** One message of the module's oldest queued property for `worker`, out of the queue, its module held from now on. */
 	take: (worker: number, module: string) => Option.Option<Arr.NonEmptyReadonlyArray<U>>
 	/** Worker `worker` was handed these units (a steal's), and holds their module from now on. */
@@ -226,17 +232,18 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 	}
 
 	/**
-	 * Whether a module's queued work is more than its holders drain within the time a further worker spends readying it
-	 * (its measured readying): each holder drains what that time leaves after the work it was already sent. A module
-	 * not yet readied anywhere has no measured readying, and spreads to no further worker until it has.
+	 * Whether a module's queued work is more than its holders drain within the time a further worker spends before it
+	 * runs a case of it: readying it (its measured readying), and `before` that (a new worker's start, or nothing): each
+	 * holder drains what that time leaves after the work it was already sent. A module not yet readied anywhere has no
+	 * measured readying, and spreads to no further worker until it has.
 	 */
-	const outgrows = (module: string, view: View<U>): boolean => {
+	const outgrowsAfter = (module: string, view: View<U>, before: number): boolean => {
 		const readying = readyings.get(module)
 		const queued = queue.get(module)
 		if (readying === undefined || queued === undefined) {
 			return false
 		}
-		const within = readying.millis / readying.count
+		const within = before + readying.millis / readying.count
 		let drained = 0
 		for (const holder of holders.get(module) ?? []) {
 			drained += Math.max(0, within - workOf(view.sentOf(holder)))
@@ -419,7 +426,7 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 					oldestOf((candidate) => held?.has(candidate) ?? false),
 					() => oldestOf((candidate) => (holders.get(candidate)?.size ?? 0) === 0)
 				),
-				() => oldestOf((candidate) => outgrows(candidate, view))
+				() => oldestOf((candidate) => outgrowsAfter(candidate, view, 0))
 			)
 			return Option.match(
 				Option.flatMap(module, (chosen) => take(worker, chosen)),
@@ -429,7 +436,17 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 				}
 			)
 		},
-		outgrows,
+		outgrows: (module, view) => outgrowsAfter(module, view, 0),
+		wanted: (view, starting) => {
+			let wanted = 0
+			for (const module of queue.keys()) {
+				const held = (holders.get(module)?.size ?? 0) > 0
+				if (!held || Option.exists(starting, (millis) => outgrowsAfter(module, view, millis))) {
+					wanted += 1
+				}
+			}
+			return wanted
+		},
 		take,
 		hand: (worker, units) => {
 			for (const unit of units) {
@@ -462,6 +479,23 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 		held: () => Arr.map(holds, (modules) => modules.size)
 	}
 }
+
+/**
+ * How many workers to fork now, for a pool sized to its work: the workers the queue wants (Scheduler.wanted) that no
+ * worker idle or starting will take, never past `most` (one a core) in all.
+ */
+export const forksOf = <U extends Scheduled>(
+	scheduler: Scheduler<U>,
+	view: View<U>,
+	pool: Readonly<{ idling: number; starting: number; most: number; started: Option.Option<number> }>
+): number =>
+	Math.max(
+		0,
+		Math.min(
+			pool.most - view.workers,
+			scheduler.wanted(view, pool.started) - pool.idling - pool.starting
+		)
+	)
 
 /** Gives every idle worker, in index order, what the scheduling chooses for it: after units queued or put back, a
  * worker ready, or a revocation answered, any worker's choice may have changed. */

@@ -28,6 +28,7 @@ import {
 	afterFinished,
 	type Choice,
 	feedAll as feedIdle,
+	forksOf,
 	moduleOfLabel,
 	schedulerOf,
 	type View
@@ -35,8 +36,9 @@ import {
 import type { PoolUsage, PropertyUsage } from "#runner/usage.ts"
 
 /**
- * The pool: worker processes, one a core, that evaluate the cases of every property of a run, and the parent's side of
- * them. Every search's evaluator puts its batches (units) on one queue, and the pool's scheduling (runner/schedule.ts)
+ * The pool: worker processes, at most one a core and forked as the queue wants them (one for each module no worker
+ * holds, more as a module outgrows its holders within a new worker's start), that evaluate the cases of every property
+ * of a run, and the parent's side of them. Every search's evaluator puts its batches (units) on one queue, and the pool's scheduling (runner/schedule.ts)
  * gives each idle worker what it should run next: queued units of one property of a module it holds (it readied a
  * property there), else of a module no worker holds, else of a module whose queued work outgrows what its holders drain
  * within the module's measured readying, each message as many units as fill messageWorkMillis (runner/schedule.ts) at
@@ -189,9 +191,10 @@ const compilingOf = (spec: PoolSpec) =>
 	})
 
 /**
- * Forks the pool's workers, in the run's scope: closing it disconnects each worker and waits for it to exit on its own
- * (its finalizers run, a coverage dump is written), and kills one still alive past SILENCE_GRACE_MILLIS, a finalizer
- * that hangs.
+ * A pool in the run's scope, which forks its workers as its queue wants them, none before a unit is queued (a run with
+ * nothing to run boots no worker): closing it disconnects each worker and waits for it to exit on its own (its
+ * finalizers run, a coverage dump is written), and kills one still alive past SILENCE_GRACE_MILLIS, a finalizer that
+ * hangs.
  */
 export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Scope> =>
 	Effect.gen(function* () {
@@ -219,7 +222,6 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 			})
 		}
 		const broken = new Set<number>()
-		const started = yield* Deferred.make<void, PoolFailed>()
 		let unitIds = 0
 		let closing = false
 
@@ -246,9 +248,11 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 				})
 			)
 
-		/** The workers as the scheduling reads them, on demand, by index. */
+		/** The workers as the scheduling reads them, on demand, by index: as many as are forked so far. */
 		const view: View<Unit> = {
-			workers: spec.workers,
+			get workers() {
+				return workers.length
+			},
 			sentOf: (index) => workers[index]?.sent ?? [],
 			unstartedOf: (index) =>
 				Option.match(Option.fromUndefinedOr(workers[index]), {
@@ -294,8 +298,35 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 				}
 			})
 
-		/** Re-decides every idle worker. */
-		const feedAll = () => feedIdle(scheduler, view, apply)
+		/** How long a worker took to start, as the workers measured it, by count and milliseconds. */
+		const starts = { count: 0, millis: 0 }
+
+		/**
+		 * Forks the workers the queue wants and no worker idle or starting will take: one for each queued module no worker
+		 * holds, and one for each module outgrowing its holders within a new worker's measured start and its readying, so a
+		 * pool is as wide as its work (a module's cases on one worker, a run of one small module on one process) and never
+		 * wider than one worker a core. A worker that could not start stops the forking.
+		 */
+		const grow = () => {
+			if (closing || broken.size > 0) {
+				return
+			}
+			const forks = forksOf(scheduler, view, {
+				idling: Arr.filter(workers, idle).length,
+				starting: Arr.filter(workers, (worker) => !worker.ready).length,
+				most: spec.workers,
+				started: starts.count === 0 ? Option.none() : Option.some(starts.millis / starts.count)
+			})
+			for (let more = forks; more > 0; more -= 1) {
+				workers.push(spawn(workers.length))
+			}
+		}
+
+		/** Re-decides every idle worker, then forks the workers the queue still wants. */
+		const feedAll = () => {
+			feedIdle(scheduler, view, apply)
+			grow()
+		}
 
 		/**
 		 * Units a revocation gave back: handed to the worker they were revoked for when it still waits for them, and put
@@ -409,17 +440,16 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 			})
 
 		/**
-		 * A worker that cannot start (it failed before it was ready, or ended before it was): it is not forked again. Once
-		 * every worker is so, the pool cannot run a case: its start fails with the last worker's report, and every unit
-		 * queued or sent is given back lost with it, so no evaluator waits on a pool with no worker.
+		 * A worker that cannot start (it failed before it was ready, or ended before it was): it is not forked again, and
+		 * the pool forks no further worker. Once every worker forked is so, the pool cannot run a case: every unit queued
+		 * or sent is given back lost with the last worker's report, so no evaluator waits on a pool with no worker.
 		 */
 		const breaks = (worker: Worker, report: string) =>
-			Effect.gen(function* () {
+			Effect.sync(() => {
 				broken.add(worker.index)
-				if (broken.size < spec.workers) {
+				if (broken.size < workers.length) {
 					return
 				}
-				yield* Deferred.fail(started, PoolFailed.make({ message: report }))
 				const stranded = [...scheduler.drain(), ...Arr.flatMap(workers, (other) => other.sent)]
 				for (const other of workers) {
 					other.sent = []
@@ -492,8 +522,9 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 							case "ready":
 								worker.usage.started = received.cpu
 								worker.usage.reported = received.cpu
+								starts.count += 1
+								starts.millis += received.millis
 								worker.ready = true
-								yield* Deferred.succeed(started, undefined)
 								feedAll()
 								return
 							case "failed":
@@ -509,6 +540,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 										scheduler.readied(worker.index, unit.module, received.millis)
 										spent(unit.property, 0, 0, received.cpu)
 										afterFinished(scheduler, view, apply, worker.index, unit.module)
+										grow()
 									}
 								)
 								return
@@ -522,6 +554,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 									yield* settle(worker)
 									finish(worker, unit.value, received.results)
 									afterFinished(scheduler, view, apply, worker.index, unit.value.module)
+									grow()
 								}
 								return
 							}
@@ -563,9 +596,6 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 				}
 			})
 
-		for (let index = 0; index < spec.workers; index += 1) {
-			workers.push(spawn(index))
-		}
 		yield* Effect.forkIn(Effect.forever(Effect.flatMap(Queue.take(events), handle)), scope)
 		yield* Effect.addFinalizer(() =>
 			Effect.andThen(
@@ -597,7 +627,6 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 				)
 			).pipe(Effect.uninterruptible)
 		)
-		yield* Deferred.await(started)
 
 		const enqueue = (batch: Batch): Unit => {
 			unitIds += 1
@@ -657,8 +686,8 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 						}
 					}
 				}),
-			cases: Effect.sync(() => Arr.copy(counts)),
-			held: Effect.sync(() => scheduler.held()),
+			cases: Effect.sync(() => Arr.take(counts, workers.length)),
+			held: Effect.sync(() => Arr.take(scheduler.held(), workers.length)),
 			usage: Effect.sync((): PoolUsage => ({
 				properties: Arr.fromIterable(properties.values()),
 				workers: Arr.map(processes, (usage) => ({ ...usage }))

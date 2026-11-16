@@ -337,7 +337,7 @@ export const ToWorker = Schema.Union([
 export type ToWorker = typeof ToWorker.Type
 
 /**
- * A message from a worker to the parent: it is ready, and how many milliseconds of CPU it took to start; it is readying
+ * A message from a worker to the parent: it is ready, and how many milliseconds it took to start, and of CPU; it is readying
  * a unit's property, the first unit of it the worker took (importing its module and opening its needs, within the open
  * bound); it readied it, in how many milliseconds (what scheduling measures a module's readying by) and how many of
  * CPU; it started a unit's cases; it finished one, with each order's result and the worker's CPU so far; it gave back
@@ -346,7 +346,7 @@ export type ToWorker = typeof ToWorker.Type
  * computes once for the whole pool.
  */
 export const FromWorker = Schema.Union([
-	Schema.Struct({ kind: Schema.Literal("ready"), cpu: Schema.Finite }),
+	Schema.Struct({ kind: Schema.Literal("ready"), cpu: Schema.Finite, millis: Schema.Finite }),
 	Schema.Struct({ kind: Schema.Literal("readying"), unit: Schema.Finite }),
 	Schema.Struct({
 		kind: Schema.Literal("readied"),
