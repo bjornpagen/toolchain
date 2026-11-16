@@ -1418,29 +1418,38 @@ const workerNeedOf = (
 	names: ReadonlyArray<string>,
 	name: string
 ): Readonly<{ name: string; take: string; text: string; wanted: ReadonlyArray<Wanted> }> => {
-	const bound = `{ ${Arr.join(names, ", ")} }`
+	const single = names.length === 1 ? Arr.head(names) : Option.none()
+	const bound = Option.getOrElse(single, () => `{ ${Arr.join(names, ", ")} }`)
 	const lines = Arr.join(
 		Arr.map(statements, (statement) => withCommentsOf(module.parsed, statement)),
 		"\n"
 	)
 	const effectful = Arr.some(statements, (st) => holds(st, ts.SyntaxKind.YieldExpression))
-	const key = `${module.parsed.file}#${name}`
+	const key = `${Str.replace(TEST_MODULE, ".fixtures.ts")(module.parsed.file)} ${name}`
 	const built = effectful
 		? `Effect.gen(function* () {\n${lines}\nreturn ${bound}\n}).pipe(\nEffect.mapBoth({\nonFailure: (error) => NeedFailed.make({ need: ${quoted(key)}, message: Cause.pretty(Cause.fail(error)) }),\nonSuccess: (made) => Effect.succeed(made)\n})\n)`
-		: `Effect.sync(() => {\n${lines}\nreturn Effect.succeed(${bound})\n})`
+		: Arr.isReadonlyArrayNonEmpty(names)
+			? `Effect.sync(() => {\n${lines}\nreturn Effect.succeed(${bound})\n})`
+			: `Effect.sync(() => {\n${lines}\nreturn Effect.void\n})`
 	return {
 		name,
 		take: Arr.isReadonlyArrayNonEmpty(names) ? `const ${bound} = yield* ${name}` : `yield* ${name}`,
-		text: `/** What the search built once before its cases${Arr.isReadonlyArrayNonEmpty(names) ? ` (${Arr.join(names, ", ")})` : ""}, now once per worker: every case on it reads them. */\nconst ${name} = {\nkey: ${quoted(key)},\nopen: ${built}\n} as const`,
-		wanted: effectful
-			? [
-					{ module: module.api.property, name: "NeedFailed", local: "NeedFailed", type: false },
-					{ module: "effect", name: "Cause", local: "Cause", type: false },
-					{ module: "effect", name: "Effect", local: "Effect", type: false }
-				]
-			: [{ module: "effect", name: "Effect", local: "Effect", type: false }]
+		text: `/** What the search built once before its cases${Arr.isReadonlyArrayNonEmpty(names) ? ` (${Arr.join(names, ", ")})` : ""}, now once per worker: every case on it reads ${Option.isSome(single) ? "it" : "them"}. */\nconst ${name} = {\nkey: ${quoted(key)},\nopen: ${built}\n} as const satisfies Need<unknown>`,
+		wanted: [
+			{ module: module.api.property, name: "Need", local: "Need", type: true },
+			{ module: "effect", name: "Effect", local: "Effect", type: false },
+			...(effectful
+				? [
+						{ module: module.api.property, name: "NeedFailed", local: "NeedFailed", type: false },
+						{ module: "effect", name: "Cause", local: "Cause", type: false }
+					]
+				: [])
+		]
 	}
 }
+
+/** A test module's name, which its fixtures module's replaces. */
+const TEST_MODULE = regex("\\.test\\.ts$")
 
 /** A string literal of `text`, in double quotes, its backslashes and quotes escaped. */
 const quoted = (text: string): string =>
