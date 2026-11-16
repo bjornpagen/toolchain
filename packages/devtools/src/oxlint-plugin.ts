@@ -21,6 +21,7 @@ import { noNullUndefinedUnion } from "#oxlint/rules/no-null-undefined-union.ts"
 import { noOptionBridge } from "#oxlint/rules/no-option-bridge.ts"
 import { noOptionalParameter } from "#oxlint/rules/no-optional-parameter.ts"
 import { noOverload } from "#oxlint/rules/no-overload.ts"
+import { noPlant } from "#oxlint/rules/no-plant.ts"
 import { noPointlessTypeAlias } from "#oxlint/rules/no-pointless-type-alias.ts"
 import { noRawRegexp } from "#oxlint/rules/no-raw-regexp.ts"
 import { noRawSql } from "#oxlint/rules/no-raw-sql.ts"
@@ -34,6 +35,7 @@ import { noUnoptimizedNextImage } from "#oxlint/rules/no-unoptimized-next-image.
 import { noUselessContinue } from "#oxlint/rules/no-useless-continue.ts"
 import { preferEarlyReturn } from "#oxlint/rules/prefer-early-return.ts"
 import { sideEffectFree } from "#oxlint/rules/side-effect-free.ts"
+import { singlePermitOwners } from "#oxlint/rules/single-permit-owners.ts"
 import { sqlAliasedTableReference } from "#oxlint/rules/sql-aliased-table-reference.ts"
 import { sqlDistinctWindow } from "#oxlint/rules/sql-distinct-window.ts"
 import { sqlDynamicSchema } from "#oxlint/rules/sql-dynamic-schema.ts"
@@ -71,6 +73,7 @@ const PLUGIN_RULES = {
 	"no-option-bridge": noOptionBridge,
 	"no-optional-parameter": noOptionalParameter,
 	"no-overload": noOverload,
+	"no-plant": noPlant,
 	"no-pointless-type-alias": noPointlessTypeAlias,
 	"no-raw-regexp": noRawRegexp,
 	"no-raw-sql": noRawSql,
@@ -84,6 +87,7 @@ const PLUGIN_RULES = {
 	"no-useless-continue": noUselessContinue,
 	"prefer-early-return": preferEarlyReturn,
 	"side-effect-free": sideEffectFree,
+	"single-permit-owners": singlePermitOwners,
 	"sql-aliased-table-reference": sqlAliasedTableReference,
 	"sql-distinct-window": sqlDistinctWindow,
 	"sql-dynamic-schema": sqlDynamicSchema,

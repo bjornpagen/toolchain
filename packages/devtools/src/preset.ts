@@ -8,7 +8,7 @@ import {
 	ENVIRONMENT_PROPERTIES
 } from "#oxlint/environment.ts"
 import type { OptionsOf, Plugin } from "#oxlint/rule.ts"
-import { TEST_SUFFIXES } from "#shared/tests.ts"
+import { TEST_SCOPE, TEST_SUFFIXES } from "#shared/tests.ts"
 import {
 	CLASS_RULE_IDS,
 	type ClassRuleId,
@@ -185,6 +185,7 @@ export const GENERIC_RULES = {
 	drizzle: {},
 	grizzle: {},
 	limits: {},
+	properties: {},
 	web: {
 		"jsx-a11y/anchor-ambiguous-text": "error",
 		"react/button-has-type": "error",
@@ -335,9 +336,10 @@ type ListedRule =
 type PluginRule = keyof typeof plugin.rules
 
 /** Where a plugin rule runs: on every file, only on the Effect-free code (where Effect's diagnostics, which own the
- * ban elsewhere, do not run), only on test files, or only on the files of the web pack's Tailwind apps, with the app's
- * own options. */
-type Scope = "every file" | "effect-free code" | "test files" | "tailwind apps"
+ * ban elsewhere, do not run), only on test modules, on test scope (test modules, fixtures modules, and every module
+ * under a test, integration or support directory), or only on the files of the web pack's Tailwind apps, with the
+ * app's own options. */
+type Scope = "every file" | "effect-free code" | "test files" | "test scope" | "tailwind apps"
 
 /** Each plugin rule's part, which a repository runs or not, and the files it runs on there. */
 const PLACES = {
@@ -349,7 +351,7 @@ const PLACES = {
 	markup: { part: "web", scope: "tailwind apps" },
 	"no-bare-limit": { part: "limits", scope: "every file" },
 	"no-bare-materialized-view-joins": { part: "drizzle", scope: "every file" },
-	"no-case-list": { part: "grizzle", scope: "every file" },
+	"no-case-list": { part: "core", scope: "every file" },
 	"no-collation": { part: "drizzle", scope: "every file" },
 	"no-comment": { part: "core", scope: "every file" },
 	"no-default-parameter": { part: "core", scope: "every file" },
@@ -363,6 +365,7 @@ const PLACES = {
 	"no-option-bridge": { part: "core", scope: "every file" },
 	"no-optional-parameter": { part: "core", scope: "every file" },
 	"no-overload": { part: "core", scope: "every file" },
+	"no-plant": { part: "core", scope: "every file" },
 	"no-pointless-type-alias": { part: "core", scope: "every file" },
 	"no-raw-regexp": { part: "core", scope: "every file" },
 	"no-raw-sql": { part: "core", scope: "every file" },
@@ -376,6 +379,7 @@ const PLACES = {
 	"no-useless-continue": { part: "core", scope: "every file" },
 	"prefer-early-return": { part: "core", scope: "every file" },
 	"side-effect-free": { part: "grizzle", scope: "every file" },
+	"single-permit-owners": { part: "core", scope: "test scope" },
 	"sql-aliased-table-reference": { part: "drizzle", scope: "every file" },
 	"sql-distinct-window": { part: "drizzle", scope: "every file" },
 	"sql-dynamic-schema": { part: "drizzle", scope: "every file" },
@@ -535,17 +539,24 @@ export const LIMIT_TESTS = {
 	directories: ["test", "tests", "fixtures"]
 } as const
 
-/** Test files, by their suffix. */
+/** Test modules, by their suffix. */
 const TEST_FILES: ReadonlyArray<string> = Arr.map(TEST_SUFFIXES, (suffix) => `**/*${suffix}`)
 
-/** The testing library's oxlint plugin, by the specifier oxlint loads it with, the rules it holds test files to and the
- * rules it holds every file to; or none, for a repository with no testing library. */
+/** The globs the preset scopes its own blocks by, test modules and test scope: definitions of the standard's, which a
+ * repository's files need not all match. Every other glob of a configuration is a repository's own. */
+export const STANDARD_GLOBS: ReadonlyArray<string> = Arr.dedupe([...TEST_FILES, ...TEST_SCOPE])
+
+/** The testing library's oxlint plugin, by the specifier oxlint loads it with, the rules it holds test scope to, the
+ * rules it holds a test module to once the repository runs the properties pack, and the rules it holds every file to;
+ * or none, for a repository with no testing library. */
 export type Tests =
 	| Readonly<{ library: "none" }>
 	| Readonly<{
 			library: "installed"
 			jsPlugin: string
 			rules: DummyRuleMap
+			/** A test module's own shape, which holds only a repository whose tests are properties (the properties pack). */
+			modules: DummyRuleMap
 			everyFile: DummyRuleMap
 			/** Clock-free code beyond the test files, and the plugin's clock rules it is held to: the testing library and the
 			 * tests' support, so no verdict rests on a hidden clock. A module whose job is the clock is an override's
@@ -553,11 +564,12 @@ export type Tests =
 			clock: Readonly<{ files: ReadonlyArray<string>; rules: DummyRuleMap }>
 	  }>
 
-/** What the testing library adds to a configuration: its plugin, the rules it holds test files and every file to, and
- * its clock rules over the clock-free files. A repository with none adds nothing. */
+/** What the testing library adds to a configuration: its plugin, the rules it holds test scope, test modules and every
+ * file to, and its clock rules over the clock-free files. A repository with none adds nothing. */
 type TestingAdds = Readonly<{
 	jsPlugins: ReadonlyArray<string>
 	rules: DummyRuleMap
+	modules: DummyRuleMap
 	everyFile: DummyRuleMap
 	clock: Readonly<{ files: ReadonlyArray<string>; rules: DummyRuleMap }>
 }>
@@ -565,11 +577,18 @@ type TestingAdds = Readonly<{
 const testingAdds = (tests: Tests): TestingAdds => {
 	switch (tests.library) {
 		case "none":
-			return { jsPlugins: [], rules: {}, everyFile: {}, clock: { files: [], rules: {} } }
+			return {
+				jsPlugins: [],
+				rules: {},
+				modules: {},
+				everyFile: {},
+				clock: { files: [], rules: {} }
+			}
 		case "installed":
 			return {
 				jsPlugins: [tests.jsPlugin],
 				rules: tests.rules,
+				modules: tests.modules,
 				everyFile: tests.everyFile,
 				clock: tests.clock
 			}
@@ -794,9 +813,17 @@ export const standard = <const T extends Toolchain>(
 					...environment,
 					...Arr.flatMap(apps, appBlocks),
 					{
-						files: [...TEST_FILES],
+						files: [...TEST_SCOPE],
 						plugins: [...plugins, "vitest"],
-						rules: { ...pluginRules(names, "test files"), ...testing.rules, ...off }
+						rules: { ...pluginRules(names, "test scope"), ...testing.rules, ...off }
+					},
+					{
+						files: [...TEST_FILES],
+						rules: {
+							...pluginRules(names, "test files"),
+							...(runs("properties") ? testing.modules : {}),
+							...off
+						}
 					},
 					...block(testing.clock.files, testing.clock.rules),
 					...block(project.ceremony, { "eslint/no-shadow": "off" }),

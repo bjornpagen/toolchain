@@ -6,9 +6,13 @@ import type { FixtureRules } from "#oxlint/prove.ts"
  * Every plugin rule the marked fixtures prove, with the options it runs under there. Paths point into the rule's own
  * fixture directory, so `<rule>/clean.tsx` is the file an exemption names, and `<rule>/grizzle/clean.tsx` the one of
  * the second set beneath it. no-comment is proven by its fixer cases (fixer-cases.ts) instead: a marker comment is a
- * comment it would strip.
+ * comment it would strip. no-plant and single-permit-owners are proven by their searches (their rules' *.test.ts), a
+ * marker comment being no-plant's own subject.
  */
-export const FIXTURE_RULES: FixtureRules<typeof plugin, "no-comment"> = {
+export const FIXTURE_RULES: FixtureRules<
+	typeof plugin,
+	"no-comment" | "no-plant" | "single-permit-owners"
+> = {
 	"bearer-owners": { owners: ["bearer-owners/clean.tsx"] },
 	"brands-sole-mint": {
 		mints: [
@@ -93,7 +97,9 @@ export const FIXTURE_RULES: FixtureRules<typeof plugin, "no-comment"> = {
 			},
 			{ module: "#fixture/testing.ts", names: ["oneOf", "weighted"], draws: "union" }
 		],
-		cases: ["no-case-list/violating.tsx", "no-case-list/clean.tsx"]
+		mints: [],
+		cases: ["no-case-list/violating.tsx", "no-case-list/clean.tsx"],
+		dictionaries: []
 	},
 	"no-collation": null,
 	"no-default-parameter": null,

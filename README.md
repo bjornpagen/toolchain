@@ -71,6 +71,47 @@ its first section decides whether a cap should exist at all, and a cap that guar
 7. **testWorkers.** Unchanged: `@bjornpagen/testing/workers`'s `testWorkers` is what the machine reports, never a
    Limit; a repository that minted its worker count reads `availableParallelism()` or `testWorkers` instead.
 
+## Consumer migration: the test system's lints and gates (2026-11-16)
+
+The lints and workspace gates of the test system (TESTSYS): a test module is data, a case's parallelism is the
+runner's, and plants are gone. What holds today is on for every repository; what holds only once a repository's tests
+are properties is the properties pack, which that repository's conversion turns on.
+
+- Test scope: the testing plugin's rules (`TEST_RULES`) hold every module of test scope, not test modules alone:
+  `*.test.ts(x)`, `*.fixtures.ts`, and every module beneath a `test/`, `integration/` or `support/` directory
+  (`TEST_SCOPE` in `@bjornpagen/devtools`'s `shared/tests.ts`, the one definition the preset reads). A support module
+  whose job is the clock or a wait is an override's exception, with its reason.
+- `TEST_RULES` gains `testing/no-verdict-table` (a list literal of rows writing a verdict under `expected`, `verdict`,
+  `outcome` or `answer`, or of tuples whose declared type labels one; a dictionary door's lists pass) and
+  `testing/no-restated-concurrency` (`concurrency: 1` in any options object; `oxlint --fix` deletes it with its comma).
+- `tests` (the installed library) takes `modules: MODULE_RULES`, the test module's own shape
+  (`testing/test-module-shape`: imports, type declarations and `export const x = <call>` alone, no Vitest import),
+  which the preset applies to test modules only under the properties pack.
+- `devtools/no-case-list` is the core's: every repository states `"no-case-list": { searches, generators, mints,
+  cases, dictionaries }`. Spread `CASE_LISTS` (`@bjornpagen/testing/oxlint`: `property.explore`/`exhaust`/`batched`'s
+  `space`, the old `explore`/`exhaust`, `element`, `constant`, `int` (`"range"`), `map`, `span`, `aimed`, `finite`,
+  the choices, and the `dictionary` mint) and add the repository's own search helpers and generators; `cases` names
+  source paths whose lists are cases (test scope needs no entry); `dictionaries` names the dictionary door modules
+  of test scope a list may be imported from. It now follows a list imported from a module of test scope, a range of
+  one value (`int(n, n)`) and a range over a list's index (`int(0, xs.length - 1)`).
+- `devtools/single-permit-owners` (core, test scope): `{ owners: [{ file, reason }] }`, the files whose work must take
+  turns (one session's wire); `Semaphore.make(1)`, `Effect.makeSemaphore(1)` and `withPermits(1)` elsewhere in test
+  scope are refused.
+- `devtools/no-plant` (core, every file): a comment holding the plant tag or a line opening with `Plants` or `Plant:`.
+- The workspace gate, for every repository: `no-plants` (a patch under a `plants/` directory, any file under
+  `test/plants/`, a `plants` or `plants:*` script; pnpm's `patches/` are no plants), `no-worker-flags`
+  (`--maxWorkers`, `--minWorkers`, `--pool*`, `--no-file-parallelism`, `--runInBand`, `--threads` and their kin in a
+  package script, lefthook's configuration or a shell script), and `dead-paths` (an oxlint override's glob, or a
+  `toolchain.config.ts` exception's path, that names no tracked file; the preset's own test globs excepted).
+- The properties pack, `packs: [..., properties()]` (`@bjornpagen/devtools/config`), which a repository's conversion
+  adds once its test modules are properties: `testing/test-module-shape` on test modules, and the workspace gate's
+  `no-vitest-config` (any `vitest.config.*`, `vitest.workspace.*`, or Vite configuration with a test block) and
+  `no-test-shards` (`<name>-<digits>.test.ts`). Until the Vitest adapter goes, a package may keep its unconverted
+  modules in one `quarantine.vitest.config.ts` at its root, its `include` naming each file as a string literal; the
+  gate refuses an entry that is a glob, names no tracked file, or was no entry of the parent commit's list (no legacy
+  module of the parent's package, where the parent kept no list), and an override turning `testing/test-module-shape`
+  off that names a file no quarantine holds.
+
 ## Consumer migration: steering belongs to the generator (2026-11-15)
 
 A property that read `Case.steering` and swapped its case (`c.draw(aimedGen)` while its turn aimed at a pending

@@ -8,10 +8,13 @@ import { noExampleTable } from "#oxlint/rules/no-example-table.ts"
 import { noFixedSeed } from "#oxlint/rules/no-fixed-seed.ts"
 import { noImplicitWeight } from "#oxlint/rules/no-implicit-weight.ts"
 import { noOrderedUnordered } from "#oxlint/rules/no-ordered-unordered.ts"
+import { noRestatedConcurrency } from "#oxlint/rules/no-restated-concurrency.ts"
 import { noRetryOrConcurrency } from "#oxlint/rules/no-retry-or-concurrency.ts"
 import { noSerializedComparison } from "#oxlint/rules/no-serialized-comparison.ts"
 import { noSleepWait } from "#oxlint/rules/no-sleep-wait.ts"
+import { noVerdictTable } from "#oxlint/rules/no-verdict-table.ts"
 import { noWallClockVerdict } from "#oxlint/rules/no-wall-clock-verdict.ts"
+import { testModuleShape } from "#oxlint/rules/test-module-shape.ts"
 
 /** Every rule of the plugin, by its name. */
 const RULES = {
@@ -22,16 +25,20 @@ const RULES = {
 	"no-fixed-seed": noFixedSeed,
 	"no-implicit-weight": noImplicitWeight,
 	"no-ordered-unordered": noOrderedUnordered,
+	"no-restated-concurrency": noRestatedConcurrency,
 	"no-retry-or-concurrency": noRetryOrConcurrency,
 	"no-serialized-comparison": noSerializedComparison,
 	"no-sleep-wait": noSleepWait,
-	"no-wall-clock-verdict": noWallClockVerdict
+	"no-verdict-table": noVerdictTable,
+	"no-wall-clock-verdict": noWallClockVerdict,
+	"test-module-shape": testModuleShape
 } as const satisfies Readonly<Record<string, Rule>>
 
 /**
  * The testing library's oxlint plugin: each rule refuses a brittle test shape and names the expressive API that
- * replaces it. A consuming configuration loads it through `jsPlugins` and scopes its rules to test files; the rules
- * read syntax alone and know nothing of file names.
+ * replaces it. A consuming configuration loads it through `jsPlugins` and scopes its rules to test scope (the dev tools'
+ * preset: test modules, fixtures modules, and every module under a test, integration or support directory), and the
+ * test module's own shape to test modules; the rules read syntax alone and know nothing of file names.
  */
 const plugin: Readonly<{ meta: Readonly<{ name: string }>; rules: typeof RULES }> = {
 	meta: { name: "testing" },
@@ -91,19 +98,57 @@ export const VITEST_RULES = {
 	]
 } as const satisfies DummyRuleMap
 
+/** The plugin's rules of a test module's own shape, which hold a test module and no other module of test scope. */
+const MODULE: ReadonlyArray<keyof typeof RULES> = ["test-module-shape"]
+
+/** Rules at error, under the name the plugin loads as. */
+const atError = (rules: ReadonlyArray<keyof typeof RULES>): DummyRuleMap =>
+	Record.fromEntries(
+		Arr.map(rules, (rule): readonly [string, "error"] => [`${plugin.meta.name}/${rule}`, "error"])
+	)
+
 /**
- * What a repository holds its test files to: every rule of the plugin at error, under the name the plugin loads as,
- * and oxlint's own Vitest rules as the library recommends them.
+ * What a repository holds its test scope to: every rule of the plugin at error but a test module's own shape, under
+ * the name the plugin loads as, and oxlint's own Vitest rules as the library recommends them.
  */
 export const TEST_RULES: DummyRuleMap = {
-	...Record.fromEntries(
-		Arr.map(Record.keys(RULES), (rule): readonly [string, "error"] => [
-			`${plugin.meta.name}/${rule}`,
-			"error"
-		])
-	),
+	...atError(Arr.filter(Record.keys(RULES), (rule) => !Arr.contains(MODULE, rule))),
 	...VITEST_RULES
 }
+
+/**
+ * What a repository whose tests are properties holds its test modules to: a test module's own shape, imports, types
+ * and exported properties alone. The preset applies it to test modules once the repository runs the properties pack.
+ */
+export const MODULE_RULES: DummyRuleMap = atError(MODULE)
+
+/**
+ * The library's searches, generators and dictionary mint as no-case-list reads them (the dev tools' rule), by the
+ * specifiers a consumer imports them with: each search with the field of its spec that holds its space, each generator
+ * with what it draws. A repository's configuration gives the rule these beside its own search helpers and generators.
+ */
+export const CASE_LISTS = {
+	searches: [
+		{ module: "@bjornpagen/testing/property", name: "property.explore", space: "space" },
+		{ module: "@bjornpagen/testing/property", name: "property.exhaust", space: "space" },
+		{ module: "@bjornpagen/testing/property", name: "property.batched", space: "space" },
+		{ module: "@bjornpagen/testing/explore", name: "explore", space: "draw" },
+		{ module: "@bjornpagen/testing/explore", name: "exhaust", space: "generator" }
+	],
+	generators: [
+		{ module: "@bjornpagen/testing/gen", names: ["element"], draws: "list" },
+		{ module: "@bjornpagen/testing/gen", names: ["constant"], draws: "value" },
+		{ module: "@bjornpagen/testing/gen", names: ["int"], draws: "range" },
+		{ module: "@bjornpagen/testing/gen", names: ["map", "span", "aimed", "finite"], draws: "each" },
+		{
+			module: "@bjornpagen/testing/gen",
+			names: ["oneOf", "weighted", "proportional"],
+			draws: "union"
+		},
+		{ module: "@bjornpagen/testing/explore", names: ["drawn", "sketched", "aimed"], draws: "each" }
+	],
+	mints: [{ module: "@bjornpagen/testing/dictionary", names: ["dictionary"] }]
+} as const
 
 /**
  * The plugin's rules whose shape is wrong wherever it is written, so every file of a repository is held to them, not
@@ -113,12 +158,7 @@ export const TEST_RULES: DummyRuleMap = {
 const EVERY_FILE: ReadonlyArray<keyof typeof RULES> = ["no-clamped-count", "no-implicit-weight"]
 
 /** What a repository holds every file to: the plugin's every-file rules at error, under the name the plugin loads as. */
-export const EVERY_FILE_RULES: DummyRuleMap = Record.fromEntries(
-	Arr.map(EVERY_FILE, (rule): readonly [string, "error"] => [
-		`${plugin.meta.name}/${rule}`,
-		"error"
-	])
-)
+export const EVERY_FILE_RULES: DummyRuleMap = atError(EVERY_FILE)
 
 /** The plugin's rule that refuses a read of the current time. */
 const CLOCK_RULE: keyof typeof RULES = "no-wall-clock-verdict"

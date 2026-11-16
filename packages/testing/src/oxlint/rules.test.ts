@@ -49,49 +49,82 @@ import {
 	LISTINGS,
 	PROJECTIONS
 } from "#oxlint/rules/no-ordered-unordered.ts"
+import { CONCURRENCY, DEFAULT_WIDTH } from "#oxlint/rules/no-restated-concurrency.ts"
 import { CONCURRENT, FLAKY, LAYERS, RETRY } from "#oxlint/rules/no-retry-or-concurrency.ts"
 import { EQUALITY_OPERATORS, SERIALIZATIONS } from "#oxlint/rules/no-serialized-comparison.ts"
 import { SLEEPS } from "#oxlint/rules/no-sleep-wait.ts"
+import {
+	DICTIONARY_MINT,
+	DICTIONARY_MODULES,
+	VERDICT_KEYS
+} from "#oxlint/rules/no-verdict-table.ts"
 import { CLOCK_READS, DATE_READS } from "#oxlint/rules/no-wall-clock-verdict.ts"
+import { VITEST_MODULES } from "#oxlint/rules/test-module-shape.ts"
 import { EQUALITIES, ORDERED_EQUALITIES, TEST_ROOTS } from "#oxlint/syntax.ts"
 import { notesOnly } from "#sense.ts"
 import { completeShrink } from "#shrink.ts"
 import { searched } from "#vitest/searched.ts"
 
-/** The imports every program starts from, so each name resolves as it does in a real test file. */
-const HEADER = `import { Array as Arr, Cause, Chunk, Clock, DateTime, Duration, Effect, Equal, Exit, Formatter, HashMap, HashSet, Inspectable, Iterable, Option, Order, pipe, Predicate, Random, Record, Result, Schedule } from "effect"
+/** The assertion functions every program names, as @effect/vitest's utilities and the testing library's assert door
+ * both export them. */
+const ASSERTIONS =
+	"assertEquals, assertExitSuccess, assertFalse, assertInclude, assertMatch, assertNone, assertSome, assertTrue, deepStrictEqual, strictEqual"
+
+/** What every program's header imports beside its assertions. */
+const IMPORTS = `import { Array as Arr, Cause, Chunk, Clock, DateTime, Duration, Effect, Equal, Exit, Formatter, HashMap, HashSet, Inspectable, Iterable, Option, Order, pipe, Predicate, Random, Record, Result, Schedule } from "effect"
 import { TestClock } from "effect/testing"
 import { describe, flakyTest, it, layer } from "@effect/vitest"
-import { assertEquals, assertExitSuccess, assertFalse, assertInclude, assertMatch, assertNone, assertSome, assertTrue, deepStrictEqual, strictEqual } from "@effect/vitest/utils"
 import { expect, test } from "vitest"
-import assert from "node:assert"
 import { boolean, constant, element, int, oneOf, proportional, subset, weighted } from "@bjornpagen/testing/gen"
 `
+
+/**
+ * The imports a program starts from, so each name resolves as it does in a real test file: its assertions from
+ * @effect/vitest's utilities and node's `assert`, or from the testing library's assert door, which exports both.
+ */
+const HEADERS: Gen<string> = element([
+	`${IMPORTS}import { ${ASSERTIONS} } from "@effect/vitest/utils"\nimport assert from "node:assert"\n`,
+	`${IMPORTS}import { assert, ${ASSERTIONS} } from "@bjornpagen/testing/assert"\n`
+])
 
 /** The placeholder of a site's own suffix, so the locals of two sites of one program never share a name. */
 const OWN = "§"
 
 /**
  * One statement of a drawn program, or a few that belong together, with the number of times its rule's contract says
- * the rule reports it. `code` names its own locals with OWN.
+ * the rule reports it, and its text once the rule's fixes are applied (its own text for a rule that fixes nothing).
+ * `code` and `fixed` name their own locals with OWN.
  */
-type Site = Readonly<{ code: string; reports: number }>
+type Site = Readonly<{ code: string; reports: number; fixed: string }>
 
-const site = (code: string, reports: number): Site => ({ code, reports })
+const site = (code: string, reports: number): Site => ({ code, reports, fixed: code })
 
-/** A drawn program: its sites, its text and the reports the contract gives it in all. */
-type Program = Readonly<{ code: string; reports: number; sites: ReadonlyArray<Site> }>
+/** A site the rule fixes: its text, its reports, and its text once fixed. */
+const fixedSite = (code: string, reports: number, fixed: string): Site => ({ code, reports, fixed })
 
-/** Programs of one to three sites, each site's locals suffixed by its place. */
+/** A drawn program: its sites, its text, its text once fixed and the reports the contract gives it in all. */
+type Program = Readonly<{
+	code: string
+	fixed: string
+	reports: number
+	sites: ReadonlyArray<Site>
+}>
+
+/** The text of a program's sites, each site's locals suffixed by its place. */
+const sitesText = (sites: ReadonlyArray<Site>, text: (s: Site) => string): string =>
+	Arr.join(
+		Arr.map(sites, (s, at) => Str.replaceAll(OWN, String(at))(text(s))),
+		"\n"
+	)
+
+/** Programs of one to three sites. */
 const programOf =
 	(sites: Gen<Site>): Gen<Program> =>
 	(source) => {
 		const drawnSites = source.draw(array(sites, { min: 1, max: 3 }))
 		return {
-			code: Arr.join(
-				Arr.map(drawnSites, (s, at) => Str.replaceAll(OWN, String(at))(s.code)),
-				"\n"
-			),
+			code: sitesText(drawnSites, (s) => s.code),
+			fixed: sitesText(drawnSites, (s) => s.fixed),
 			reports: Arr.reduce(drawnSites, 0, (sum, s) => sum + s.reports),
 			sites: drawnSites
 		}
@@ -153,11 +186,13 @@ const messageIdOf = (name: RuleName): string =>
 	Option.getOrThrow(Arr.head(Record.keys(plugin.rules[name].meta?.messages ?? {})))
 
 /**
- * What oxlint's RuleTester makes of a program under one rule: none when the rule reports it exactly as many times as
- * its contract says, each under its message, else what the tester threw.
+ * What oxlint's RuleTester makes of a program after a header under one rule: none when the rule reports it exactly as
+ * many times as its contract says, each under its message, and its fixes turn it into its fixed text, else what the
+ * tester threw.
  */
-const judged = (name: RuleName, program: Program): Option.Option<string> => {
-	const code = `${HEADER}${program.code}\n`
+const judged = (name: RuleName, header: string, program: Program): Option.Option<string> => {
+	const code = `${header}${program.code}\n`
+	const fixed = `${header}${program.fixed}\n`
 	const ran = Result.try(() =>
 		new RuleTester({ languageOptions: LANGUAGE }).run(
 			name,
@@ -169,6 +204,7 @@ const judged = (name: RuleName, program: Program): Option.Option<string> => {
 						invalid: [
 							{
 								code,
+								output: fixed === code ? null : fixed,
 								errors: Array.from({ length: program.reports }, () => ({
 									messageId: messageIdOf(name)
 								}))
@@ -185,8 +221,11 @@ const judged = (name: RuleName, program: Program): Option.Option<string> => {
 
 type Side = "a site reported" | "a site left alone" | "a program of several sites"
 
-/** A rule's search: programs of its grammar, each judged by RuleTester against the reports its contract gives. */
-const ruleSearch = (name: RuleName, sites: Gen<Site>) =>
+/**
+ * A rule's search: programs of its grammar after a header, each judged by RuleTester against the reports and the fixes
+ * its contract gives.
+ */
+const ruleSearch = (name: RuleName, headers: Gen<string>, programs: Gen<Program>) =>
 	explore(
 		{
 			suite: `oxlint/${name}`,
@@ -194,7 +233,7 @@ const ruleSearch = (name: RuleName, sites: Gen<Site>) =>
 				kind: "specification",
 				name: `${name}'s stated contract over the names and shapes its module exports`
 			},
-			draw: drawn(programOf(sites)),
+			draw: drawn((source) => ({ header: source.draw(headers), program: source.draw(programs) })),
 			literal: Formatter.format,
 			coverage: required<Side>(
 				["a site reported", "a site left alone", "a program of several sites"],
@@ -209,7 +248,7 @@ const ruleSearch = (name: RuleName, sites: Gen<Site>) =>
 			steerEvery: 16,
 			caseHang: Duration.minutes(1)
 		},
-		(program, c) =>
+		({ header, program }, c) =>
 			Effect.sync(() => {
 				for (const s of program.sites) {
 					c.note(s.reports > 0 ? "a site reported" : "a site left alone")
@@ -217,7 +256,7 @@ const ruleSearch = (name: RuleName, sites: Gen<Site>) =>
 				if (program.sites.length > 1) {
 					c.note("a program of several sites")
 				}
-				deepStrictEqual(judged(name, program), Option.none())
+				deepStrictEqual(judged(name, header, program), Option.none())
 			})
 	)
 
@@ -1233,44 +1272,352 @@ const retrySites: Gen<Site> = weighted([
 	[1, (s) => site(`const fibers${OWN} = Effect.forEach(tasks, run, ${s.draw(optionsGen)[0]})`, 0)]
 ])
 
+/** The header of a test module's programs: the property constructors and a harness's, and no runner of Vitest's. */
+const MODULE_HEADER = `import { family, property } from "@bjornpagen/testing/property"
+import { deepStrictEqual } from "@bjornpagen/testing/assert"
+import { Database } from "@bjornpagen/testing/resources"
+import { aimedHarness } from "#test/support/harness.ts"
+`
+
+/** A property's spec as a test module writes it, its fields abridged to what the rule reads: none. */
+const SPEC =
+	"{ space: drawn, needs: {}, situations: [], check: () => () => Effect.void, kept: [], kills: [] }"
+
+/** A module of the tests' own, or a vocabulary's, that an import names. */
+const OWN_MODULES = ["#test/support/cases.ts", "@bjornpagen/testing/gen", "effect"] as const
+
+/**
+ * The top-level statements of a test module: an import (of a module of the tests, or of a runner of Vitest's), a type
+ * declaration exported or not, an exported property (a constructor of `property`, a family, a harness's constructor,
+ * several declarators) beside what a test module may not hold: an exported value that is no call, a suite or a test
+ * of Vitest's called or exported, a const of its own, an exported let, a destructuring, a function, a re-export.
+ */
+const moduleSites: Gen<Site> = weighted([
+	[2, (s) => site(`import { item${OWN} } from "${s.draw(element(OWN_MODULES))}"`, 0)],
+	[
+		2,
+		(s) => {
+			const module = s.draw(oneOf(VITEST_MODULES))
+			return site(
+				`import { it as it${OWN} } from "${s.draw(element([module, `${module}/utils`] as const))}"`,
+				1
+			)
+		}
+	],
+	[
+		2,
+		(s) =>
+			site(
+				s.draw(
+					element([
+						`type Row${OWN} = readonly [number, string]`,
+						`export type Row${OWN} = number`,
+						`interface Shape${OWN} { readonly n: number }`,
+						`export interface Shape${OWN} { readonly n: number }`
+					] as const)
+				),
+				0
+			)
+	],
+	[
+		4,
+		(s) =>
+			site(
+				s.draw(
+					element([
+						`export const p${OWN} = property.${s.draw(element(["explore", "exhaust", "batched", "interleave", "stateful"] as const))}(${SPEC})`,
+						`export const f${OWN} = family({ one: property.explore(${SPEC}) })`,
+						`export const h${OWN} = aimedHarness({ db: Database.fresh(template) })`,
+						`export const a${OWN} = property.explore(${SPEC}), b${OWN} = aimedHarness({})`
+					] as const)
+				),
+				0
+			)
+	],
+	[
+		3,
+		(s) =>
+			site(
+				s.draw(
+					element([
+						`export const v${OWN} = 3`,
+						`export const v${OWN} = [property.explore(${SPEC})]`,
+						`export const t${OWN} = ${s.draw(oneOf(TEST_ROOTS))}("case ${OWN}", () => {})`,
+						`export const t${OWN} = it.effect("case ${OWN}", () => Effect.void)`,
+						`${s.draw(oneOf(TEST_ROOTS))}("case ${OWN}", () => {})`,
+						`const p${OWN} = property.explore(${SPEC})`,
+						`export let p${OWN} = property.explore(${SPEC})`,
+						`export const { p${OWN} } = aimedHarness({})`,
+						`export function make${OWN}() {\n\treturn property.explore(${SPEC})\n}`,
+						`export { p as q${OWN} } from "#test/support/properties.ts"`,
+						`export * from "#test/support/properties${OWN}.ts"`
+					] as const)
+				),
+				1
+			)
+	]
+])
+
+/** Programs of a test module's statements, with a default export or without, which a module holds once at most. */
+const modulePrograms: Gen<Program> = (source) => {
+	const program = source.draw(programOf(moduleSites))
+	if (!source.draw(boolean)) {
+		return program
+	}
+	const exported = site(`export default property.explore(${SPEC})`, 1)
+	return {
+		code: `${program.code}\n${exported.code}`,
+		fixed: `${program.fixed}\n${exported.fixed}`,
+		reports: program.reports + exported.reports,
+		sites: Arr.append(program.sites, exported)
+	}
+}
+
+/** A row's input, written. */
+const INPUTS = ["1", '"a"', "-2", "[1, 2]"] as const
+
+/** A verdict written into the test, and one computed. */
+const WRITTEN = [
+	"2",
+	'"refused"',
+	"true",
+	"null",
+	"undefined",
+	"-1",
+	"`done`",
+	"[1]",
+	"{ ok: true }"
+] as const
+const COMPUTED = ["model(input)", "String(input)", "reference.and", "[input]"] as const
+
+/** Keys that are no verdict's, near the verdict keys. */
+const NEAR_KEYS = ["output", "expectation", "result", "answers"] as const
+
+/** Two rows or three of an object table, each `{ input, <key>: <verdict> }`, and whether every verdict is written. */
+const objectRowsGen =
+	(key: string): Gen<readonly [rows: string, written: boolean]> =>
+	(source) => {
+		const rows = source.draw(
+			array(
+				(row) => {
+					const written = row.draw(boolean)
+					return [
+						`{ input: ${row.draw(element(INPUTS))}, ${key}: ${row.draw(element(written ? WRITTEN : COMPUTED))} }`,
+						written
+					] as const
+				},
+				{ min: 2, max: 3 }
+			)
+		)
+		return [
+			`[${Arr.join(
+				Arr.map(rows, ([row]) => row),
+				", "
+			)}]`,
+			Arr.every(rows, ([, written]) => written)
+		]
+	}
+
+/** Two rows or three of a tuple table, the verdict last, and whether every verdict is written. */
+const tupleRowsGen: Gen<readonly [rows: string, written: boolean]> = (source) => {
+	const rows = source.draw(
+		array(
+			(row) => {
+				const written = row.draw(boolean)
+				return [
+					`[${row.draw(element(INPUTS))}, ${row.draw(element(written ? WRITTEN : COMPUTED))}]`,
+					written
+				] as const
+			},
+			{ min: 2, max: 3 }
+		)
+	)
+	return [
+		`[${Arr.join(
+			Arr.map(rows, ([row]) => row),
+			", "
+		)}]`,
+		Arr.every(rows, ([, written]) => written)
+	]
+}
+
+/**
+ * Tables of a test: object rows under a verdict key or a near one, tuple rows declared under a type that labels the
+ * last member with a verdict key (directly, through an alias, or by `satisfies`) or with another label or none, a list
+ * of one row, and a table one of whose rows is no verdict row. A table is reported when every row writes its verdict.
+ */
+const verdictSites: Gen<Site> = weighted([
+	[
+		3,
+		(s) => {
+			const [rows, written] = s.draw(objectRowsGen(s.draw(oneOf(VERDICT_KEYS))))
+			return site(`const rows${OWN} = ${rows}`, written ? 1 : 0)
+		}
+	],
+	[1, (s) => site(`const rows${OWN} = ${s.draw(objectRowsGen(s.draw(element(NEAR_KEYS))))[0]}`, 0)],
+	[
+		3,
+		(s) => {
+			const [rows, written] = s.draw(tupleRowsGen)
+			const verdict = s.draw(boolean)
+			const label = verdict ? s.draw(oneOf(VERDICT_KEYS)) : s.draw(element(NEAR_KEYS))
+			const tuple = `readonly [input: unknown, ${label}: unknown]`
+			const declared = s.draw(
+				element([
+					`const rows${OWN}: ReadonlyArray<${tuple}> = ${rows}`,
+					`type Row${OWN} = ${tuple}\nconst rows${OWN}: ReadonlyArray<Row${OWN}> = ${rows}`,
+					`const rows${OWN} = ${rows} as const satisfies ReadonlyArray<${tuple}>`
+				] as const)
+			)
+			return site(declared, verdict && written ? 1 : 0)
+		}
+	],
+	[1, (s) => site(`const rows${OWN} = ${s.draw(tupleRowsGen)[0]}`, 0)],
+	[
+		1,
+		(s) =>
+			site(
+				`const rows${OWN} = [{ input: 1, ${s.draw(oneOf(VERDICT_KEYS))}: ${s.draw(element(WRITTEN))} }]`,
+				0
+			)
+	],
+	[
+		1,
+		(s) =>
+			site(
+				`const rows${OWN} = [{ input: 1, ${s.draw(oneOf(VERDICT_KEYS))}: 2 }, { input: 2, total: 3 }]`,
+				0
+			)
+	]
+])
+
+/**
+ * Programs of verdict tables, in a module that is no dictionary door or in one: a door imports the dictionary's mint
+ * (by name or the whole module), and its lists are vocabularies, so none of its sites is reported. A module that
+ * imports another name of the dictionary's module is no door.
+ */
+const verdictPrograms: Gen<Program> = (source) => {
+	const program = source.draw(programOf(verdictSites))
+	const module = source.draw(oneOf(DICTIONARY_MODULES))
+	const door = source.draw(
+		element([
+			{ line: "", door: false },
+			{ line: `import { ${DICTIONARY_MINT} } from "${module}"\n`, door: true },
+			{ line: `import * as vocabulary from "${module}"\n`, door: true },
+			{ line: `import { word } from "${module}"\n`, door: false }
+		] as const)
+	)
+	const sites = door.door ? Arr.map(program.sites, (s) => ({ ...s, reports: 0 })) : program.sites
+	return {
+		code: `${door.line}${program.code}`,
+		fixed: `${door.line}${program.fixed}`,
+		reports: Arr.reduce(sites, 0, (sum, s) => sum + s.reports),
+		sites
+	}
+}
+
+/** An options object's other properties, before or after the width. */
+const OTHER_OPTIONS = ["discard: true", 'suite: "s"', "runs: 3"] as const
+
+/**
+ * Widths stated in an options object: the default width written out (by name or by string key, alone, first, last or
+ * between others, on one line or on several, the object handed last or alone), which the fix deletes with its comma,
+ * beside a width that is not the default (a larger number, "unbounded", a name, an expression).
+ */
+const concurrencySites: Gen<Site> = weighted([
+	[
+		3,
+		(s) => {
+			const key = s.draw(element([CONCURRENCY, `"${CONCURRENCY}"`] as const))
+			const width = `${key}: ${String(DEFAULT_WIDTH)}`
+			const before = s.draw(subset(OTHER_OPTIONS, { min: 0, max: 2 }))
+			const after = s.draw(subset(OTHER_OPTIONS, { min: 0, max: 2 }))
+			const others = [...before, ...after]
+			const multiline = s.draw(boolean)
+			const separator = multiline ? ",\n\t" : ", "
+			const [open, close] = multiline ? ["{\n\t", "\n}"] : ["{ ", " }"]
+			const options = `${open}${Arr.join([...before, width, ...after], separator)}${close}`
+			if (!Arr.isReadonlyArrayNonEmpty(others)) {
+				return s.draw(boolean)
+					? fixedSite(
+							`const r${OWN} = Effect.forEach(items, run, ${options})`,
+							1,
+							`const r${OWN} = Effect.forEach(items, run)`
+						)
+					: fixedSite(
+							`const r${OWN} = configure(${options})`,
+							1,
+							`const r${OWN} = configure(${open}${close})`
+						)
+			}
+			return fixedSite(
+				`const r${OWN} = Effect.forEach(items, run, ${options})`,
+				1,
+				`const r${OWN} = Effect.forEach(items, run, ${open}${Arr.join(others, separator)}${close})`
+			)
+		}
+	],
+	[
+		2,
+		(s) =>
+			site(
+				`const r${OWN} = Effect.forEach(items, run, { ${CONCURRENCY}: ${s.draw(element(["4", '"unbounded"', "width", `${String(DEFAULT_WIDTH)} + 1`, `"${String(DEFAULT_WIDTH)}"`] as const))} })`,
+				0
+			)
+	]
+])
+
 describe("the testing plugin's rules", () => {
 	it.effect("no-wall-clock-verdict reports exactly the reads of the clock", (ctx) =>
-		searched(ctx, ruleSearch("no-wall-clock-verdict", clockSites))
+		searched(ctx, ruleSearch("no-wall-clock-verdict", HEADERS, programOf(clockSites)))
 	)
 	it.effect("no-sleep-wait reports exactly the calls that wait for time to pass", (ctx) =>
-		searched(ctx, ruleSearch("no-sleep-wait", sleepSites))
+		searched(ctx, ruleSearch("no-sleep-wait", HEADERS, programOf(sleepSites)))
 	)
 	it.effect(
 		"no-clamped-count reports exactly the clamping calls no count they never normalize states",
-		(ctx) => searched(ctx, ruleSearch("no-clamped-count", clampedSites))
+		(ctx) => searched(ctx, ruleSearch("no-clamped-count", HEADERS, programOf(clampedSites)))
 	)
 	it.effect(
 		"no-implicit-weight reports exactly the choices that write an option more than once",
-		(ctx) => searched(ctx, ruleSearch("no-implicit-weight", weightSites))
+		(ctx) => searched(ctx, ruleSearch("no-implicit-weight", HEADERS, programOf(weightSites)))
 	)
 	it.effect(
 		"no-fixed-seed reports exactly the seeds written where a run or a stream takes one",
-		(ctx) => searched(ctx, ruleSearch("no-fixed-seed", seedSites))
+		(ctx) => searched(ctx, ruleSearch("no-fixed-seed", HEADERS, programOf(seedSites)))
 	)
 	it.effect(
 		"no-boolean-assert reports exactly the boolean assertions a narrower one states, with no message",
-		(ctx) => searched(ctx, ruleSearch("no-boolean-assert", booleanSites))
+		(ctx) => searched(ctx, ruleSearch("no-boolean-assert", HEADERS, programOf(booleanSites)))
 	)
 	it.effect("no-error-prose reports exactly the assertions of an error's text", (ctx) =>
-		searched(ctx, ruleSearch("no-error-prose", proseSites))
+		searched(ctx, ruleSearch("no-error-prose", HEADERS, programOf(proseSites)))
 	)
 	it.effect("no-serialized-comparison reports exactly the comparisons through text", (ctx) =>
-		searched(ctx, ruleSearch("no-serialized-comparison", serializedSites))
+		searched(ctx, ruleSearch("no-serialized-comparison", HEADERS, programOf(serializedSites)))
 	)
 	it.effect(
 		"no-ordered-unordered reports exactly the ordered equalities over an unordered collection's order",
-		(ctx) => searched(ctx, ruleSearch("no-ordered-unordered", orderedSites))
+		(ctx) => searched(ctx, ruleSearch("no-ordered-unordered", HEADERS, programOf(orderedSites)))
 	)
 	it.effect("no-example-table reports exactly the tables of written-out rows", (ctx) =>
-		searched(ctx, ruleSearch("no-example-table", tableSites))
+		searched(ctx, ruleSearch("no-example-table", HEADERS, programOf(tableSites)))
 	)
 	it.effect(
 		"no-retry-or-concurrency reports exactly each retry and each concurrency of a test",
-		(ctx) => searched(ctx, ruleSearch("no-retry-or-concurrency", retrySites))
+		(ctx) => searched(ctx, ruleSearch("no-retry-or-concurrency", HEADERS, programOf(retrySites)))
+	)
+	it.effect(
+		"test-module-shape reports exactly each top-level statement that is no import, type or exported property",
+		(ctx) => searched(ctx, ruleSearch("test-module-shape", constant(MODULE_HEADER), modulePrograms))
+	)
+	it.effect(
+		"no-verdict-table reports exactly the tables of written verdicts outside a dictionary door",
+		(ctx) => searched(ctx, ruleSearch("no-verdict-table", HEADERS, verdictPrograms))
+	)
+	it.effect(
+		"no-restated-concurrency reports and deletes exactly each default width written out",
+		(ctx) =>
+			searched(ctx, ruleSearch("no-restated-concurrency", HEADERS, programOf(concurrencySites)))
 	)
 })

@@ -6,7 +6,10 @@ import { WebOptions } from "#style/options.ts"
 import { EffectFree, Exceptions } from "#workspace/rules.ts"
 
 /** The file every repository holds its toolchain in, at its root. */
-const CONFIG_FILE = "toolchain.config.ts"
+export const CONFIG_FILE = "toolchain.config.ts"
+
+/** The file every repository holds its oxlint configuration in, at its root. */
+export const LINT_CONFIG_FILE = "oxlint.config.ts"
 
 /** Reasons by name: a rejected rule or diagnostic, and why it is off. */
 const Reasons = Schema.Record(Schema.String, Schema.NonEmptyString)
@@ -22,6 +25,7 @@ const ToolchainSchema = Schema.Struct({
 			Schema.Struct({ pack: Schema.Literal("drizzle") }),
 			Schema.Struct({ pack: Schema.Literal("grizzle") }),
 			Schema.Struct({ pack: Schema.Literal("limits") }),
+			Schema.Struct({ pack: Schema.Literal("properties") }),
 			Schema.Struct({ pack: Schema.Literal("web"), options: WebOptions })
 		])
 	)
@@ -75,4 +79,51 @@ export const repositoryToolchain: Effect.Effect<
 		})
 	}
 	return config
+})
+
+/** An oxlint override block, as far as the workspace gate reads it: the globs it names and the rules it sets. */
+const Override = Schema.Struct({
+	files: Schema.Array(Schema.String),
+	excludeFiles: Schema.optionalKey(Schema.Array(Schema.String)),
+	rules: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown))
+})
+
+export type Override = typeof Override.Type
+
+/** An oxlint configuration, as far as the workspace gate reads it: its override blocks. */
+const LintConfigModule = Schema.Struct({
+	default: Schema.Struct({ overrides: Schema.optionalKey(Schema.Array(Override)) })
+})
+
+const decodeLintConfigModule = Schema.decodeUnknownEffect(LintConfigModule)
+
+/**
+ * The override blocks of the repository's oxlint configuration: its root oxlint.config.ts, loaded and decoded. A file
+ * that is missing, that fails to load or whose export does not decode fails the run.
+ */
+export const repositoryOverrides: Effect.Effect<
+	ReadonlyArray<Override>,
+	DevtoolFailure,
+	FileSystem.FileSystem | Path.Path | Repository
+> = Effect.gen(function* () {
+	const fs = yield* FileSystem.FileSystem
+	const path = yield* Path.Path
+	const { root } = yield* Repository
+	const file = path.join(root, LINT_CONFIG_FILE)
+	if (!(yield* fs.exists(file).pipe(Effect.mapError(failureFrom(`${file} could not be read`))))) {
+		return yield* DevtoolFailure.make({
+			detail: `${file} is missing: every repository holds its oxlint configuration there`
+		})
+	}
+	const url = yield* path
+		.toFileUrl(file)
+		.pipe(Effect.mapError(failureFrom(`${file} has no file URL`)))
+	const loaded = yield* Effect.tryPromise({
+		try: (): Promise<unknown> => import(url.href),
+		catch: failureFrom(`${file} failed to load`)
+	})
+	const { default: config } = yield* decodeLintConfigModule(loaded).pipe(
+		Effect.mapError(failureFrom(`${file} does not export an oxlint configuration`))
+	)
+	return config.overrides ?? []
 })

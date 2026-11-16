@@ -1,18 +1,33 @@
 import { Schema } from "effect"
 
 /**
+ * The test system's gates (workspace/test-system.ts): another runner's configuration, a plant, a numbered shard of a
+ * test module, a worker flag in a script.
+ */
+export const TEST_SYSTEM_RULES = [
+	"no-vitest-config",
+	"no-plants",
+	"no-test-shards",
+	"no-worker-flags"
+] as const
+
+export type TestSystemRule = (typeof TEST_SYSTEM_RULES)[number]
+
+/**
  * The rules the workspace gate runs over the repository as a whole: the tsconfig gate's (the Effect diagnostics every
- * tsconfig sets, the shared base's roster, the one plugin block, the Effect-free packages' tsconfigs and manifests) and
- * the TypeScript-only extensions. They are the only rules toolchain.config.ts's exceptions name: a lint rule's exception
- * is an override block in oxlint.config.ts, a style rule's is the web pack app's, and a test file that runs no search is
- * exempt in its Vitest config's `examples`.
+ * tsconfig sets, the shared base's roster, the one plugin block, the Effect-free packages' tsconfigs and manifests),
+ * the TypeScript-only extensions, the test system's gates, and the dead paths (an oxlint override's glob or an
+ * exception's path that names no file). They are the only rules toolchain.config.ts's exceptions name: a lint rule's
+ * exception is an override block in oxlint.config.ts, and a style rule's is the web pack app's.
  */
 const WORKSPACE_RULES = [
 	"rejected-diagnostics",
 	"diagnostic-roster",
 	"effect-plugin-block",
 	"effect-free-packages",
-	"ts-only-extensions"
+	"ts-only-extensions",
+	"dead-paths",
+	...TEST_SYSTEM_RULES
 ] as const
 
 /** Repository-relative paths: one ending in "/" names a directory and every file beneath it, any other one file. */

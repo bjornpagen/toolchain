@@ -1,21 +1,29 @@
 import { Array as Arr, Option, Schema, String as Str } from "effect"
 import { type AnyNode, configured, type Context, isFileAt, type NodeOf } from "#oxlint/rule.ts"
-import { isTestFile } from "#shared/tests.ts"
+import { isTestScope } from "#shared/tests.ts"
 
 /**
  * What a generator draws: the members of the list it is handed (`element`), the one value it is handed (`constant`),
- * one value for each value of the generator it is handed (`map`, `span`, `drawn`, `sketched`), or a value of one of the
- * generators it is handed (`oneOf`, `weighted`, `proportional`).
+ * an integer between the two bounds it is handed (`int`), one value for each value of the generator it is handed
+ * (`map`, `span`, `drawn`, `sketched`, `aimed`), or a value of one of the generators it is handed (`oneOf`,
+ * `weighted`, `proportional`).
  */
-const Draws = Schema.Literals(["list", "value", "each", "union"])
+const Draws = Schema.Literals(["list", "value", "range", "each", "union"])
+
+/** An export, by the module it is imported from and its names there. */
+const Exported = Schema.Struct({ module: Schema.String, names: Schema.Array(Schema.String) })
 
 type Draws = typeof Draws.Type
 
 /**
- * The searches and generators by the module they are imported from, as the code imports it (`@bjornpagen/testing/explore`),
- * each search with the property of its spec that holds its space (`exhaust`'s `generator`, `explore`'s `draw`) and
- * each generator with what it draws; and the files whose own lists are lists of cases, beside the test files, whose
- * lists always are: a directory (`test/`), or one file, from the repository root.
+ * The searches and generators by the module they are imported from, as the code imports it
+ * (`@bjornpagen/testing/property`), each search by the name it is called by (`exhaust`, or `property.explore` for a
+ * member of a named import) with the property of its spec that holds its space (`space`, `exhaust`'s `generator`,
+ * `explore`'s `draw`), each generator with what it draws, and the mints of a dictionary (`dictionary(items)`), whose
+ * list is a vocabulary of the domain: the testing library's own (its oxlint module's CASE_LISTS) beside a repository's
+ * own search helpers and generators. Then the files whose own lists are lists of cases beyond test scope, whose lists
+ * always are: a directory (`src/planted/`), or one file, from the repository root; and the dictionary doors in test
+ * scope, as the code imports them, whose exports are dictionaries.
  */
 const Options = Schema.Struct({
 	searches: Schema.Array(
@@ -24,15 +32,28 @@ const Options = Schema.Struct({
 	generators: Schema.Array(
 		Schema.Struct({ module: Schema.String, names: Schema.Array(Schema.String), draws: Draws })
 	),
-	cases: Schema.Array(Schema.String)
+	mints: Schema.Array(Exported),
+	cases: Schema.Array(Schema.String),
+	dictionaries: Schema.Array(Schema.String)
 })
 
 type Scope = ReturnType<Context["sourceCode"]["getScope"]>
 
 type Variable = Scope["variables"][number]
 
-/** What makes a space a list of cases: a list written in the tests it draws from, or the one value it holds. */
-type CaseList = Readonly<{ kind: "written"; list: AnyNode }> | Readonly<{ kind: "single" }>
+/** Where a list of cases is written: in this file at a node, or in a module of the tests this file imports it from. */
+type Origin =
+	| Readonly<{ kind: "written"; list: AnyNode }>
+	| Readonly<{ kind: "imported"; module: string }>
+
+/**
+ * What makes a space a list of cases: the members of a list of cases, the indices of one (`int(0, xs.length - 1)`),
+ * or one value (`constant(x)`, `int(n, n)`).
+ */
+type CaseList =
+	| Readonly<{ kind: "members"; origin: Origin }>
+	| Readonly<{ kind: "indices"; origin: Origin }>
+	| Readonly<{ kind: "single" }>
 
 /** An expression as written, through type assertions, `satisfies` and non-null assertions. */
 const bare = (node: AnyNode): AnyNode =>
@@ -62,6 +83,41 @@ const isAtAny = (filename: string, paths: ReadonlyArray<string>): boolean =>
 			Str.includes(`/${directory}/`)(filename)
 		)
 	})
+
+/**
+ * A linted file's path from the directory oxlint runs in (the repository's root or a package's), where test scope's
+ * directories are read; a file outside it keeps its absolute path, and is read whole.
+ */
+const relativePathOf = (filename: string, cwd: string): string =>
+	Str.startsWith(`${cwd}/`)(filename) ? Str.slice(cwd.length + 1)(filename) : filename
+
+/** A path's segments with `.` and `..` resolved; a `..` above the start is kept. */
+const normalized = (segments: ReadonlyArray<string>): ReadonlyArray<string> =>
+	Arr.reduce(segments, [], (kept: ReadonlyArray<string>, segment): ReadonlyArray<string> => {
+		if (segment === "." || segment === "") {
+			return kept
+		}
+		return segment === ".." && Option.exists(Arr.last(kept), (last) => last !== "..")
+			? Arr.dropRight(kept, 1)
+			: Arr.append(kept, segment)
+	})
+
+/**
+ * The path a module specifier names, as far as its text tells: a relative specifier resolved against the importing
+ * file's directory; a subpath import (`#test/support/cases.ts`) as the path it spells past its `#`, which is the
+ * directory the repositories' import maps name; a package's specifier as its subpath past the package's name
+ * (`@scope/package/test/cases.ts` as `test/cases.ts`).
+ */
+const pathOfSpecifier = (importer: string, specifier: string): string => {
+	if (Str.startsWith("#")(specifier)) {
+		return Str.slice(1)(specifier)
+	}
+	const segments = Str.split("/")(specifier)
+	if (Str.startsWith("./")(specifier) || Str.startsWith("../")(specifier)) {
+		return Arr.join(normalized([...Arr.dropRight(Str.split("/")(importer), 1), ...segments]), "/")
+	}
+	return Arr.join(Arr.drop(segments, Str.startsWith("@")(specifier) ? 2 : 1), "/")
+}
 
 /** A property's name as written, when it is an identifier or a string. */
 const propertyNameOf = (property: NodeOf<"Property">): Option.Option<string> => {
@@ -118,7 +174,10 @@ const importedOf = (variable: Variable): Option.Option<Imported> =>
 		})
 	})
 
-/** The export a callee names, by its module and name: an imported name, or a member of a namespace import. */
+/**
+ * The export a callee names, by its module and name: an imported name, a member of a namespace import, or a member of
+ * a named import under its dotted name (`property.explore`).
+ */
 const exportOf = (
 	context: Context,
 	callee: AnyNode
@@ -136,34 +195,40 @@ const exportOf = (
 		return Option.none()
 	}
 	const method = callee.property.name
-	return Option.flatMap(Option.flatMap(resolve(context, callee.object), importedOf), (imported) =>
-		Option.isNone(imported.name)
-			? Option.some({ module: imported.module, name: method })
-			: Option.none()
-	)
+	return Option.map(Option.flatMap(resolve(context, callee.object), importedOf), (imported) => ({
+		module: imported.module,
+		name: Option.match(imported.name, {
+			onNone: () => method,
+			onSome: (name) => `${name}.${method}`
+		})
+	}))
 }
 
 /**
  * no-case-list: a search's space is never a list of cases. A test is an example when a person chose its inputs and
- * wrote its verdict, and a list of cases run through `exhaust` or `explore` is one: the search only replays what the
- * list holds. For every call of a search the options name, the space its spec holds is refused when it is a case list:
+ * wrote its verdict, and a list of cases run through a search is one: the search only replays what the list holds. For
+ * every call of a search the options name, the space its spec holds is refused when it is a case list:
  *
- * - `element` over a list written in the tests: an array literal of a test file, or of a file the options name as
- *   cases; held by a constant, or computed from one by a call (`nonEmpty(cases)`, `Arr.filter(cases, …)`); an array
- *   literal of spreads alone writes nothing of its own;
- * - `constant`, one value, which is one case;
+ * - `element` over a list of cases: an array literal of a test scope module, or of a file the options name as cases;
+ *   held by a constant, or computed from one by a call (`nonEmpty(cases)`, `Arr.filter(cases, …)`); an array literal
+ *   of spreads alone writes nothing of its own; or a list imported, by name or through a namespace import, from a
+ *   module whose specifier names test scope (`#test/support/cases.ts`, `#chance.fixtures.ts`) and no dictionary;
+ * - `constant`, one value, which is one case, and a range of one value, `int(n, n)`;
+ * - a range whose bound is a list of cases' length (`int(0, xs.length - 1)`), which exhausts the list by its index;
  * - a generator that draws one value for each of another's (`map`, `span`, `drawn`, `sketched`) over a case list;
  * - a choice among generators (`oneOf`, `weighted`, `proportional`) whose every option is a case list.
  *
  * A space built from bounds (`int(0, 3)`, `array(g, { min, max })`), from a dictionary, or from a roster the source
- * declares is a generator and passes, as does a product of generators (`record`, `array`). It reads syntax alone: a
- * search or a generator is the export the options name, imported by name or reached through a namespace import of its
- * module, and a name is followed to the constant, or the property of a constant's object literal, that holds it, in
- * this file. A list another module exports is that module's roster or dictionary, which this file cannot read, so it
- * passes.
+ * declares is a generator and passes, as does a product of generators (`record`, `array`); a list handed to a
+ * dictionary's mint is a vocabulary, and a dictionary door's exports are dictionaries. It reads syntax alone: a
+ * search or a generator is the export the options name, imported by name or reached through an import's member, and
+ * a name is followed to the constant, or the property of a constant's object literal, that holds it, in this file, or
+ * to the specifier of the module it is imported from. A list a package or a source module exports is its roster or
+ * dictionary, which passes.
  */
 export const noCaseList = configured(Options, (context, options) => {
-	const ownListsAreCases = isTestFile(context.filename) || isAtAny(context.filename, options.cases)
+	const path = relativePathOf(context.filename, context.cwd)
+	const ownListsAreCases = isTestScope(path) || isAtAny(context.filename, options.cases)
 	const drawsOf = (callee: AnyNode): Option.Option<Draws> =>
 		Option.flatMap(exportOf(context, callee), ({ module, name }) =>
 			Option.map(
@@ -174,6 +239,11 @@ export const noCaseList = configured(Options, (context, options) => {
 				(generator) => generator.draws
 			)
 		)
+	/** A call of a dictionary's mint, whose list is a vocabulary. */
+	const isMint = (callee: AnyNode): boolean =>
+		Option.exists(exportOf(context, callee), ({ module, name }) =>
+			Arr.some(options.mints, (mint) => mint.module === module && Arr.contains(mint.names, name))
+		)
 	const spaceNameOf = (callee: AnyNode): Option.Option<string> =>
 		Option.flatMap(exportOf(context, callee), ({ module, name }) =>
 			Option.map(
@@ -183,6 +253,16 @@ export const noCaseList = configured(Options, (context, options) => {
 				),
 				(search) => search.space
 			)
+		)
+	/** The module of the tests a binding is imported from: a specifier naming test scope and no dictionary. */
+	const caseModuleOf = (identifier: AnyNode): Option.Option<string> =>
+		Option.filter(
+			Option.map(
+				Option.flatMap(resolve(context, identifier), importedOf),
+				(imported) => imported.module
+			),
+			(module) =>
+				!Arr.contains(options.dictionaries, module) && isTestScope(pathOfSpecifier(path, module))
 		)
 	/** The value a constant of this file holds, through a property of its object literal for `object.property`. */
 	const heldBy = (node: AnyNode): Option.Option<AnyNode> => {
@@ -216,8 +296,11 @@ export const noCaseList = configured(Options, (context, options) => {
 			})
 		)
 	}
-	/** The list written in the tests that an expression is, holds or is computed from. */
-	const writtenListOf = (expression: AnyNode, seen: Set<AnyNode>): Option.Option<AnyNode> => {
+	/** The root binding of a member chain, or the identifier itself. */
+	const rootOf = (node: AnyNode): AnyNode =>
+		node.type === "MemberExpression" ? rootOf(node.object) : node
+	/** Where the list of cases that an expression is, holds or is computed from is written. */
+	const originOf = (expression: AnyNode, seen: Set<AnyNode>): Option.Option<Origin> => {
 		const node = bare(expression)
 		if (seen.has(node)) {
 			return Option.none()
@@ -229,21 +312,41 @@ export const noCaseList = configured(Options, (context, options) => {
 				(element) => element !== null && element.type !== "SpreadElement"
 			)
 			if (written) {
-				return ownListsAreCases ? Option.some(node) : Option.none()
+				return ownListsAreCases ? Option.some({ kind: "written", list: node }) : Option.none()
 			}
 			return Arr.findFirst(node.elements, (element) =>
-				element?.type === "SpreadElement" ? writtenListOf(element.argument, seen) : Option.none()
+				element?.type === "SpreadElement" ? originOf(element.argument, seen) : Option.none()
 			)
 		}
 		if (node.type === "Identifier" || node.type === "MemberExpression") {
-			return Option.flatMap(heldBy(node), (held) => writtenListOf(held, seen))
+			return Option.orElse(
+				Option.flatMap(heldBy(node), (held) => originOf(held, seen)),
+				() =>
+					Option.map(caseModuleOf(rootOf(node)), (module): Origin => ({ kind: "imported", module }))
+			)
 		}
-		return node.type === "CallExpression"
+		return node.type === "CallExpression" && !isMint(node.callee)
 			? Arr.findFirst(node.arguments, (argument) =>
-					isFunctionLiteral(bare(argument)) ? Option.none() : writtenListOf(argument, seen)
+					isFunctionLiteral(bare(argument)) ? Option.none() : originOf(argument, seen)
 				)
 			: Option.none()
 	}
+	/** The list of cases whose length a range's bound reads: `xs.length`, or `xs.length - k`. */
+	const lengthOriginOf = (bound: AnyNode): Option.Option<Origin> => {
+		const node = bare(bound)
+		if (node.type === "BinaryExpression" && node.operator === "-") {
+			return lengthOriginOf(node.left)
+		}
+		return node.type === "MemberExpression" &&
+			!node.computed &&
+			node.property.type === "Identifier" &&
+			node.property.name === "length"
+			? originOf(node.object, new Set())
+			: Option.none()
+	}
+	/** Whether a range's two bounds are one value: the same text, through type assertions. */
+	const isDegenerate = (lo: AnyNode, hi: AnyNode): boolean =>
+		context.sourceCode.getText(bare(lo)) === context.sourceCode.getText(bare(hi))
 	/** The generators a choice offers: its arguments, through the lists that hold them, without the weights beside them;
 	 * a function written in place is a generator of its own, and so an option that is no case list. */
 	const optionsOf = (
@@ -287,17 +390,27 @@ export const noCaseList = configured(Options, (context, options) => {
 		if (Option.isNone(draws)) {
 			return Option.none()
 		}
-		const [first] = node.arguments
+		const [first, second] = node.arguments
 		switch (draws.value) {
 			case "list":
 				return first === undefined
 					? Option.none()
-					: Option.map(writtenListOf(first, new Set()), (list): CaseList => ({
-							kind: "written",
-							list
+					: Option.map(originOf(first, new Set()), (origin): CaseList => ({
+							kind: "members",
+							origin
 						}))
 			case "value":
 				return Option.some({ kind: "single" })
+			case "range":
+				if (first === undefined || second === undefined) {
+					return Option.none()
+				}
+				return isDegenerate(first, second)
+					? Option.some({ kind: "single" })
+					: Option.map(
+							Option.orElse(lengthOriginOf(second), () => lengthOriginOf(first)),
+							(origin): CaseList => ({ kind: "indices", origin })
+						)
 			case "each":
 				return Arr.findFirst(node.arguments, (argument) =>
 					isFunctionLiteral(bare(argument)) || isPrimitiveLiteral(bare(argument))
@@ -332,13 +445,25 @@ export const noCaseList = configured(Options, (context, options) => {
 				? Option.some({ property, space: property.value })
 				: Option.none()
 		)
+	const whereOf = (origin: Origin): string => {
+		switch (origin.kind) {
+			case "written":
+				return `a list of cases written in the tests (line ${String(origin.list.loc.start.line)})`
+			case "imported":
+				return `a list of cases that ${origin.module}, a module of the tests, exports`
+		}
+	}
 	const messageOf = (list: CaseList): string => {
 		const suggestion =
 			"Draw the space from a generator its bounds define, from a dictionary of the values the code branches on, or from a roster the source declares; a case list belongs nowhere."
-		if (list.kind === "single") {
-			return `This search's space is one value: its one case is an example, which a person chose and whose verdict a person wrote. ${suggestion}`
+		switch (list.kind) {
+			case "single":
+				return `This search's space is one value: its one case is an example, which a person chose and whose verdict a person wrote. ${suggestion}`
+			case "members":
+				return `This search's space is ${whereOf(list.origin)}: a person chose every input, so the search replays examples. ${suggestion}`
+			case "indices":
+				return `This search's space is the index of ${whereOf(list.origin)}: it exhausts a list a person chose, so the search replays examples. ${suggestion}`
 		}
-		return `This search's space is a list of cases written in the tests (line ${String(list.list.loc.start.line)}): a person chose every input, so the search replays examples. ${suggestion}`
 	}
 	return {
 		CallExpression: (node) => {

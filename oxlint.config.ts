@@ -1,5 +1,11 @@
 import { LIMIT_TESTS, standard } from "@bjornpagen/devtools/preset"
-import { CLOCK_RULES, EVERY_FILE_RULES, TEST_RULES } from "@bjornpagen/testing/oxlint"
+import {
+	CASE_LISTS,
+	CLOCK_RULES,
+	EVERY_FILE_RULES,
+	MODULE_RULES,
+	TEST_RULES
+} from "@bjornpagen/testing/oxlint"
 import { defineConfig } from "oxlint"
 import toolchain from "#toolchain.config.ts"
 
@@ -37,32 +43,22 @@ export default defineConfig(
 			"no-bare-limit": LIMITS,
 			"no-case-list": {
 				searches: [
-					{ module: "@bjornpagen/testing/explore", name: "exhaust", space: "generator" },
-					{ module: "@bjornpagen/testing/explore", name: "explore", space: "draw" },
+					...CASE_LISTS.searches,
 					{ module: "#explore.ts", name: "exhaust", space: "generator" },
 					{ module: "#explore.ts", name: "explore", space: "draw" }
 				],
 				generators: [
-					{ module: "@bjornpagen/testing/gen", names: ["element"], draws: "list" },
-					{ module: "@bjornpagen/testing/gen", names: ["constant"], draws: "value" },
-					{ module: "@bjornpagen/testing/gen", names: ["map", "span"], draws: "each" },
-					{
-						module: "@bjornpagen/testing/gen",
-						names: ["oneOf", "weighted", "proportional"],
-						draws: "union"
-					},
-					{
-						module: "@bjornpagen/testing/explore",
-						names: ["drawn", "sketched", "aimed"],
-						draws: "each"
-					},
+					...CASE_LISTS.generators,
 					{ module: "#gen.ts", names: ["element"], draws: "list" },
 					{ module: "#gen.ts", names: ["constant"], draws: "value" },
-					{ module: "#gen.ts", names: ["map", "span"], draws: "each" },
+					{ module: "#gen.ts", names: ["int"], draws: "range" },
+					{ module: "#gen.ts", names: ["map", "span", "aimed", "finite"], draws: "each" },
 					{ module: "#gen.ts", names: ["oneOf", "weighted", "proportional"], draws: "union" },
 					{ module: "#explore.ts", names: ["drawn", "sketched", "aimed"], draws: "each" }
 				],
-				cases: []
+				mints: [...CASE_LISTS.mints, { module: "#dictionary.ts", names: ["dictionary"] }],
+				cases: [],
+				dictionaries: []
 			},
 			"no-dynamic-imports": { allowed: [] },
 			"no-raw-sql": { sources: ["packages/testing/src"], writers: [] },
@@ -86,6 +82,7 @@ export default defineConfig(
 					}
 				]
 			},
+			"single-permit-owners": { owners: [] },
 			"test-no-prose-search": {
 				fields: ["capability", "what"],
 				textHelpers: ["containsText", "lacksText", "contains", "lacks"],
@@ -98,6 +95,7 @@ export default defineConfig(
 			library: "installed",
 			jsPlugin: "@bjornpagen/testing/oxlint",
 			rules: TEST_RULES,
+			modules: MODULE_RULES,
 			everyFile: EVERY_FILE_RULES,
 			clock: { files: ["packages/testing/src/**"], rules: CLOCK_RULES }
 		},
@@ -121,6 +119,8 @@ export default defineConfig(
 			{
 				files: ["packages/testing/src/witness.fixtures.ts"],
 				rules: active({
+					/** The type tier's refusals: a literal handed where a stream goes is the type error each entry proves. */
+					"testing/no-fixed-seed": "off",
 					/** A type test's refusal is a `@ts-expect-error` that names what it refuses. */
 					"typescript/ban-ts-comment": [
 						"error",
@@ -140,6 +140,13 @@ export default defineConfig(
 					 * every list of up to three digits, 1,111 cases, a shrink from ten items): data that defines what it measures,
 					 * no bound, which syntax cannot tell from one. Its cases have no hang limit, since none could hang. */
 					"devtools/no-bare-limit": "off"
+				})
+			},
+			{
+				files: ["packages/testing/src/blocking.fixtures.ts"],
+				rules: active({
+					/** A planted property that sleeps past its hang limit: the hang guard's case is the wait itself. */
+					"testing/no-sleep-wait": "off"
 				})
 			},
 			{
