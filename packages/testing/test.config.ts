@@ -21,6 +21,8 @@ export default defineRunner({
 		"src/shrink.test.ts",
 		"src/features.test.ts",
 		"src/agree.test.ts",
+		"src/fuzz.test.ts",
+		"src/sense.test.ts",
 		"src/runner/search.test.ts",
 		"src/runner/case.test.ts",
 		"src/runner/steer.test.ts",

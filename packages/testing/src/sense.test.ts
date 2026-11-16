@@ -1,95 +1,63 @@
 /**
- * Block coverage as a sense (sense.ts v8Coverage): a fresh sense perceives exactly what its own case did, whatever
- * senses read the file before it, every case running one block and skipping another. Oracle: universal, stated in the
- * search.
+ * Block coverage as the runner perceives it (runner/perceive.ts, what a guided search's steered phase reads): each
+ * case's trace is what its own case ran, whatever cases the process perceived before it, so two cases that take a
+ * branch alike perceive alike and a take and a skip perceive differently. Oracle: universal, stated in the property.
+ * Its guide names the file it perceives, so the worker that runs it counts that file's blocks from before it loads, as
+ * a guided search needs.
  */
-import { describe, it } from "@effect/vitest"
-import { deepStrictEqual } from "@effect/vitest/utils"
-import { Array as Arr, Duration, Effect, Formatter, Option, Order, String as Str } from "effect"
-import { drawn, explore } from "#explore.ts"
-import { required } from "#features.ts"
+import { Array as Arr, Effect, Equal, Option } from "effect"
+import { deepStrictEqual } from "#assert.ts"
 import { array, boolean } from "#gen.ts"
-import { notesOnly, v8Coverage } from "#sense.ts"
-import { boundedShrink } from "#shrink.ts"
-import { searched } from "#vitest/searched.ts"
+import { property } from "#property.ts"
+import { BRANCH_FILE, perceivedEach } from "#sense.fixtures.ts"
 
-/** Takes its branch only when told to. */
-const branch = (taken: boolean): number => {
-	if (taken) {
-		return 1
-	}
-	return 0
-}
-
-/** What a fresh sense, opened and closed around one case, perceives of this file while the case takes the branch or not. */
-const perceivedOnce = (taken: boolean) =>
-	Effect.scoped(
+export const senseIndependence = property.explore(array(boolean, { min: 2, max: 5 }), {
+	needs: {},
+	situations: ["a skip after a take", "a take after a skip", "two skips in a row"],
+	guide: { blocks: [BRANCH_FILE] },
+	check: (_resources, c) => (takes) =>
 		Effect.gen(function* () {
-			const sense = yield* v8Coverage(Str.endsWith("/sense.test.ts"))
-			const [, trace] = yield* sense.perceive(Effect.sync(() => branch(taken)))
-			return Arr.fromIterable(trace)
-		})
-	)
-
-/** The distinct classes a trace holds, beside the zero of ranges it did not report. */
-const classesOf = (trace: ReadonlyArray<number>) =>
-	Arr.sort(Arr.dedupe(Arr.filter(trace, (traced) => traced !== 0)), Order.Number)
-
-describe("a guided file's block coverage", () => {
-	it.effect(
-		"perceives in each fresh sense exactly what its own case did, whatever senses read the file before it",
-		(ctx) =>
-			searched(
-				ctx,
-				explore(
-					{
-						suite: "sense independence",
-						oracle: {
-							kind: "universal",
-							name: "a trace is a function of its case alone, and every case runs one block and skips another"
-						},
-						draw: drawn(array(boolean, { min: 2, max: 5 })),
-						literal: Formatter.format,
-						coverage: required<
-							"a skip after a take" | "a take after a skip" | "two skips in a row"
-						>(["a skip after a take", "a take after a skip", "two skips in a row"], {
-							cases: 40,
-							sense: notesOnly
-						}),
-						kept: [],
-						runs: 20,
-						shrink: boundedShrink(20),
-						steerEvery: 10,
-						caseHang: Duration.seconds(30)
-					},
-					(takes, c) =>
-						Effect.gen(function* () {
-							Arr.forEach(Arr.zip(takes, Arr.drop(takes, 1)), ([before, after]) => {
-								if (before && !after) {
-									c.note("a skip after a take")
-								}
-								if (!before && after) {
-									c.note("a take after a skip")
-								}
-								if (!before && !after) {
-									c.note("two skips in a row")
-								}
-							})
-							const traces = yield* Effect.forEach(takes, perceivedOnce)
-							const firstOf = (taken: boolean) =>
-								Arr.findFirst(traces, (_trace, at) => Arr.getUnsafe(takes, at) === taken)
-							deepStrictEqual(
-								{
-									classes: Arr.map(traces, classesOf),
-									traces: Arr.map(traces, (trace) => Option.some(trace))
-								},
-								{
-									classes: Arr.map(traces, () => [1, 2]),
-									traces: Arr.map(takes, (taken) => firstOf(taken))
-								}
-							)
-						})
-				)
+			Arr.forEach(Arr.zip(takes, Arr.drop(takes, 1)), ([before, after]) => {
+				if (before && !after) {
+					c.note("a skip after a take")
+				}
+				if (!before && after) {
+					c.note("a take after a skip")
+				}
+				if (!before && !after) {
+					c.note("two skips in a row")
+				}
+			})
+			const traces = yield* perceivedEach(takes)
+			const firstOf = (taken: boolean) =>
+				Arr.findFirst(traces, (_trace, at) => Arr.getUnsafe(takes, at) === taken)
+			const taken = firstOf(true)
+			const skipped = firstOf(false)
+			deepStrictEqual(
+				{
+					traces: Arr.map(traces, (trace) => Option.some(trace)),
+					apart:
+						Option.isSome(taken) && Option.isSome(skipped)
+							? Option.some(!Equal.equals(taken.value, skipped.value))
+							: Option.none()
+				},
+				{
+					traces: Arr.map(takes, (take) => firstOf(take)),
+					apart: Option.isSome(taken) && Option.isSome(skipped) ? Option.some(true) : Option.none()
+				}
 			)
-	)
+		}),
+	oracle: {
+		kind: "universal",
+		name: "a trace is a function of its case alone, and a take and a skip of one branch perceive differently"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/runner/perceive.ts",
+			original: "\t\t\t\t\t\treturn [value, traceOf(after, sense.files)] as const",
+			replacement: "\t\t\t\t\t\treturn [value, []] as const",
+			why: "A case perceived by blocks gives back an empty trace, so a guided search perceives nothing of the code it runs (sense-v8-blind, re-anchored from sense.ts's v8Coverage to runner/perceive.ts, the sense a guided search reads); the sense independence property fails."
+		}
+	]
 })

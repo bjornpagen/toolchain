@@ -16,9 +16,11 @@ export default defineTestConfig({
 		"!src/resources/**",
 		"!src/features.test.ts",
 		"!src/agree.test.ts",
-		"!src/mutate/**"
+		"!src/mutate/**",
+		"!src/fuzz.test.ts",
+		"!src/sense.test.ts"
 	],
-	guided: ["src/sense.test.ts"],
+	guided: [],
 	setup: [],
 	conditions: [],
 	timeouts: {
