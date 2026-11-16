@@ -40,11 +40,15 @@ export type PropertyRun = Readonly<{
 	millis: number
 }>
 
-/** A whole run: each property's run in discovery order, the run's wall time, and how many cases each worker ran. */
+/**
+ * A whole run: each property's run in discovery order, the run's wall time, how many cases each worker ran, and how many
+ * test modules each worker held (readied a property of).
+ */
 export type RunOutcome = Readonly<{
 	properties: ReadonlyArray<PropertyRun>
 	millis: number
 	workers: ReadonlyArray<number>
+	held: ReadonlyArray<number>
 }>
 
 /**
@@ -214,9 +218,14 @@ export const runPackage = (
 			{ concurrency: "unbounded" }
 		)
 		const counted = yield* Effect.forEach(Arr.fromIterable(pools.values()), (pool) => pool.cases)
-		const workers = Arr.flatten(counted)
+		const held = yield* Effect.forEach(Arr.fromIterable(pools.values()), (pool) => pool.held)
 		const ended = yield* liveMillis
-		return { properties, millis: ended - began, workers }
+		return {
+			properties,
+			millis: ended - began,
+			workers: Arr.flatten(counted),
+			held: Arr.flatten(held)
+		}
 	})
 
 /** Replays one token on a pool of one worker: the case it names, as it ran, under the run's flags and services. */

@@ -331,7 +331,8 @@ export type ToWorker = typeof ToWorker.Type
 
 /**
  * A message from a worker to the parent: it is ready; it is readying a unit's property, the first unit of it the
- * worker took (importing its module and opening its needs, within the open bound); it started a unit's cases; it
+ * worker took (importing its module and opening its needs, within the open bound); it readied it, in how many
+ * milliseconds (what scheduling measures a module's readying by); it started a unit's cases; it
  * finished one, with each order's result; it gave back these units, of those the parent revoked, none of which it had
  * started; a case (a unit's `at`-th order) was used after it ended, printed as it ran; it cannot start, and why; or it
  * asks for a module's closure hash, which the parent computes once for the whole pool.
@@ -339,6 +340,7 @@ export type ToWorker = typeof ToWorker.Type
 export const FromWorker = Schema.Union([
 	Schema.Struct({ kind: Schema.Literal("ready") }),
 	Schema.Struct({ kind: Schema.Literal("readying"), unit: Schema.Finite }),
+	Schema.Struct({ kind: Schema.Literal("readied"), unit: Schema.Finite, millis: Schema.Finite }),
 	Schema.Struct({ kind: Schema.Literal("started"), unit: Schema.Finite }),
 	Schema.Struct({
 		kind: Schema.Literal("done"),

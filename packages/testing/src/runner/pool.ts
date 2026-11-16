@@ -23,39 +23,25 @@ import {
 	type Printed,
 	type ToWorker
 } from "#runner/protocol.ts"
-
-/**
- * How much work the runner's pool puts in one message to a worker: it fills each message with cases until their
- * expected run time reaches this, so the round trip that carries them stays a small part of the work they do. Below it,
- * the pool spends its time messaging; far above it, one slow message leaves the other workers idle at a run's end.
- *
- * @limitKind measured
- * @owner the choice-stream testing library's runner (its worker pool, the work per message)
- * @unit milliseconds of expected case run time
- * @scope one message the runner's pool sends one worker
- * @evidence packages/testing/out/message-target/rtt-20261116.txt in grizzle's TESTSYS lane CORE's toolchain clone, the
- *   uncommitted record of its round-trip probe: a one-case message from the pool to a worker and the worker's answer,
- *   timed on the pool's side
- * @observed 2026-11-16 07:32 UTC
- * @environment cassowary, Ubuntu 26.04.1 (Linux 7.0.0-1016-aws) on an AWS Graviton3 (Neoverse-V1, arm64) instance with
- *   64 logical CPUs and 247 GiB, Node 26.13.1; load average 22 to 49 from other sessions
- * @workload one-case messages round-tripped between the runner's pool and one worker, the runner at toolchain 995e385
- * @result every round trip took 0.41 to 0.55 ms
- * @decision the round trip stays under 5% of a message's work when the work is at least 20 times the slowest round
- *   trip: 0.55 ms / 0.05 is 11 ms, and 12 ms, the next whole millisecond, leaves 4.6%. Until this limit existed the
- *   pool sent each property a fair share of the queue per message, with no number
- * @revalidate a Node upgrade; a different machine; a change to the message's format or the worker transport; a run
- *   whose workers sit idle at its end while one message's cases finish
- */
-const messageWorkMillis = 12
+import {
+	afterFinished,
+	type Choice,
+	feedAll as feedIdle,
+	moduleOfLabel,
+	schedulerOf,
+	type View
+} from "#runner/schedule.ts"
 
 /**
  * The pool: worker processes, one a core, that evaluate the cases of every property of a run, and the parent's side of
- * them. Every search's evaluator puts its batches (units) on one queue; an idle worker is sent a message of units of
- * one property, as many as fill messageWorkMillis at the property's measured mean case time (one
- * while the property has none), never more than its fair share of what is queued (what is queued over the workers);
- * a worker that goes idle with nothing queued
- * takes the unstarted tail of the busiest worker's units, which the parent revokes from it. A worker runs a unit in
+ * them. Every search's evaluator puts its batches (units) on one queue, and the pool's scheduling (runner/schedule.ts)
+ * gives each idle worker what it should run next: queued units of one property of a module it holds (it readied a
+ * property there), else of a module no worker holds, else of a module whose queued work outgrows what its holders drain
+ * within the module's measured readying, each message as many units as fill messageWorkMillis (runner/schedule.ts) at
+ * the property's measured mean case time, never more than its fair share of what is queued; or, when it may take
+ * nothing queued, a busy worker's unstarted tail, revoked from it and handed to this worker, by the same preference. A
+ * worker reports how long it spent readying each property, which is what the scheduling measures a module's readying
+ * by. Which worker runs a case never reaches its result. A worker runs a unit in
  * phases it tells the parent of: readying the unit's property, the first unit of it the worker took (its module
  * imported, its needs opened), then evaluating its cases; a worker silent past its phase's bound (the needs' open bound,
  * or the cases' deadlines added up) and the silence grace is killed, its unit reported lost with the phase it was in,
@@ -63,11 +49,16 @@ const messageWorkMillis = 12
  * any width.
  */
 
-/** One unit of work: a batch of one property's orders, and where its results go. */
+/**
+ * One unit of work: a batch of one property's orders, the module the property is declared in, how many cases the batch
+ * holds, and where its results go.
+ */
 type Unit = Readonly<{
 	id: number
 	batch: Batch
 	property: string
+	module: string
+	cases: number
 	done: Deferred.Deferred<ReadonlyArray<CaseResult>>
 }>
 
@@ -78,15 +69,19 @@ type Unit = Readonly<{
  */
 type Phase = "readying" | "evaluating"
 
-/** A worker process and what the parent knows of it: the units it was sent and has not finished, the one it runs and
- * in what phase, how many cases it finished, and the last of what it wrote. */
+/**
+ * A worker process and what the parent knows of it: the units it was sent and has not finished, the one it runs and in
+ * what phase, the idle worker its unstarted tail is being revoked for, the busy worker whose tail it waits for, and the
+ * last of what it wrote.
+ */
 type Worker = {
 	readonly index: number
 	child: ChildProcess
 	ready: boolean
 	sent: Array<Unit>
 	running: Option.Option<Readonly<{ unit: Unit; phase: Phase; silence: Fiber.Fiber<void> }>>
-	revoking: boolean
+	revokingFor: Option.Option<Worker>
+	awaiting: Option.Option<Worker>
 	output: string
 }
 
@@ -109,8 +104,15 @@ export type PoolSpec = Readonly<{
 	guide: "notes" | "blocks"
 }>
 
-/** The pool as a run uses it: the evaluator every search shares, and how many cases each worker finished. */
-export type Pool = Readonly<{ evaluator: Evaluator; cases: Effect.Effect<ReadonlyArray<number>> }>
+/**
+ * The pool as a run uses it: the evaluator every search shares, how many cases each worker finished, and how many
+ * modules each holds (readied a property of).
+ */
+export type Pool = Readonly<{
+	evaluator: Evaluator
+	cases: Effect.Effect<ReadonlyArray<number>>
+	held: Effect.Effect<ReadonlyArray<number>>
+}>
 
 /** The pool failed to start: a worker could not load the package's runner config, and why. */
 export class PoolFailed extends Schema.TaggedError<PoolFailed, { readonly brand: unique symbol }>()(
@@ -176,7 +178,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 		const scope = yield* Scope.Scope
 		const closures = yield* moduleClosureAt(spec.root)
 		const events = yield* Queue.unbounded<Event>()
-		const queue: Array<Unit> = []
+		const scheduler = schedulerOf<Unit>(spec.workers)
 		const workers: Array<Worker> = []
 		const counts: Array<number> = Array.from({ length: spec.workers }, () => 0)
 		const lateUses = new Map<number, Map<number, Printed>>()
@@ -196,109 +198,104 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 			}
 		}
 
-		/** A property's measured case time so far: cases finished and their milliseconds. */
-		const measured = new Map<string, Readonly<{ cases: number; millis: number }>>()
+		const idle = (worker: Worker) =>
+			worker.ready && worker.sent.length === 0 && Option.isNone(worker.awaiting)
+
+		/** The units a worker was sent that it has not started: all but the one it runs. */
+		const unstartedOf = (worker: Worker) =>
+			Arr.filter(worker.sent, (unit) =>
+				Option.match(worker.running, {
+					onNone: () => true,
+					onSome: (running) => running.unit.id !== unit.id
+				})
+			)
+
+		/** The workers as the scheduling reads them, on demand, by index. */
+		const view: View<Unit> = {
+			workers: spec.workers,
+			sentOf: (index) => workers[index]?.sent ?? [],
+			unstartedOf: (index) =>
+				Option.match(Option.fromUndefinedOr(workers[index]), {
+					onNone: () => [],
+					onSome: unstartedOf
+				}),
+			stealable: (index) =>
+				Option.exists(
+					Option.fromUndefinedOr(workers[index]),
+					(worker) => worker.ready && Option.isNone(worker.revokingFor)
+				),
+			idle: (index) => !closing && Option.exists(Option.fromUndefinedOr(workers[index]), idle)
+		}
+
+		/** Sends a worker units to evaluate. */
+		const give = (worker: Worker, units: ReadonlyArray<Unit>) => {
+			worker.sent = [...units]
+			const sent = Arr.map(units, (unit) => ({ unit: unit.id, batch: unit.batch }))
+			if (Arr.isReadonlyArrayNonEmpty(sent)) {
+				send(worker, { kind: "evaluate", units: sent })
+			}
+		}
 
 		/**
-		 * How many units of `property` one message carries: as many as fill the work a message aims for at the property's
-		 * mean case time, one while it has none, and never more than its fair share of what is queued.
+		 * Does what the scheduling chose for an idle worker: queued units, sent at once; a busy worker's unstarted tail,
+		 * revoked from it for this worker, which waits for it.
 		 */
-		const perMessage = (property: string): number => {
-			const fair = Math.max(1, Math.ceil(queue.length / workers.length))
-			return Option.match(Option.fromUndefinedOr(measured.get(property)), {
-				onNone: () => 1,
-				onSome: (stats) =>
-					Math.max(
-						1,
-						Math.min(
-							fair,
-							Math.floor(
-								(messageWorkMillis * stats.cases) / Math.max(stats.millis, Number.MIN_VALUE)
-							)
-						)
-					)
+		const apply = (index: number, choice: Choice<Unit>) =>
+			Option.map(Option.fromUndefinedOr(workers[index]), (worker) => {
+				switch (choice.kind) {
+					case "wait":
+						return
+					case "take":
+						give(worker, choice.units)
+						return
+					case "steal":
+						Option.map(Option.fromUndefinedOr(workers[choice.victim]), (victim) => {
+							victim.revokingFor = Option.some(worker)
+							worker.awaiting = Option.some(victim)
+							send(victim, { kind: "revoke", units: Arr.map(choice.units, (unit) => unit.id) })
+						})
+						return
+				}
 			})
-		}
 
-		const idle = (worker: Worker) => worker.ready && worker.sent.length === 0
+		/** Re-decides every idle worker. */
+		const feedAll = () => feedIdle(scheduler, view, apply)
 
-		/** Sends an idle worker the next units of the queue's first property, or steals for it when nothing is queued. */
-		const feed = (worker: Worker) => {
-			if (!idle(worker) || closing) {
-				return
-			}
-			const first = Arr.head(queue)
-			if (Option.isNone(first)) {
-				steal()
-				return
-			}
-			const property = first.value.property
-			const count = perMessage(property)
-			const taken: Array<Unit> = []
-			for (let at = 0; at < queue.length && taken.length < count;) {
-				const unit = Arr.getUnsafe(queue, at)
-				if (unit.property === property) {
-					taken.push(unit)
-					queue.splice(at, 1)
-				} else {
-					at += 1
+		/**
+		 * Units a revocation gave back: handed to the worker they were revoked for when it still waits for them, and put
+		 * back in the queue otherwise.
+		 */
+		const handBack = (victim: Worker, given: ReadonlyArray<Unit>) => {
+			const thief = Option.filter(
+				victim.revokingFor,
+				(waiting) =>
+					workers[waiting.index] === waiting &&
+					Option.exists(waiting.awaiting, (awaited) => awaited === victim)
+			)
+			victim.revokingFor = Option.none()
+			Option.match(thief, {
+				onNone: () => scheduler.requeue(given),
+				onSome: (waiting) => {
+					waiting.awaiting = Option.none()
+					scheduler.hand(waiting.index, given)
+					give(waiting, given)
+				}
+			})
+			for (const waiting of workers) {
+				if (Option.exists(waiting.awaiting, (awaited) => awaited === victim)) {
+					waiting.awaiting = Option.none()
 				}
 			}
-			worker.sent = taken
-			const units = Arr.map(taken, (unit) => ({ unit: unit.id, batch: unit.batch }))
-			if (Arr.isReadonlyArrayNonEmpty(units)) {
-				send(worker, { kind: "evaluate", units })
-			}
-		}
-
-		/** Puts units back at the head of the queue, in their order: they were queued before anything there. */
-		const requeue = (units: ReadonlyArray<Unit>) => {
-			for (const unit of Arr.reverse(units)) {
-				queue.unshift(unit)
-			}
-		}
-
-		const feedAll = () => {
-			for (const worker of workers) {
-				feed(worker)
-			}
-		}
-
-		/** Revokes the unstarted tail of the busiest worker's units, for the idle ones. */
-		const steal = () => {
-			const unstartedOf = (worker: Worker) =>
-				Arr.filter(worker.sent, (unit) =>
-					Option.match(worker.running, {
-						onNone: () => true,
-						onSome: (running) => running.unit.id !== unit.id
-					})
-				)
-			const busiest = Arr.reduce(workers, Option.none<Worker>(), (best, worker) =>
-				!worker.revoking &&
-				unstartedOf(worker).length >= 2 &&
-				Option.match(best, {
-					onNone: () => true,
-					onSome: (other) => unstartedOf(worker).length > unstartedOf(other).length
-				})
-					? Option.some(worker)
-					: best
-			)
-			Option.map(busiest, (worker) => {
-				const unstarted = unstartedOf(worker)
-				const tail = Arr.drop(unstarted, Math.ceil(unstarted.length / 2))
-				worker.revoking = true
-				send(worker, { kind: "revoke", units: Arr.map(tail, (unit) => unit.id) })
-			})
 		}
 
 		const finish = (worker: Worker, unit: Unit, results: ReadonlyArray<CaseResult>) => {
 			worker.sent = Arr.filter(worker.sent, (sent) => sent.id !== unit.id)
 			counts[worker.index] = (counts[worker.index] ?? 0) + results.length
-			const before = measured.get(unit.property) ?? { cases: 0, millis: 0 }
-			measured.set(unit.property, {
-				cases: before.cases + results.length,
-				millis: Arr.reduce(results, before.millis, (total, result) => total + result.millis)
-			})
+			scheduler.finished(
+				unit.property,
+				results.length,
+				Arr.reduce(results, 0, (total, result) => total + result.millis)
+			)
 			Deferred.doneUnsafe(unit.done, Effect.succeed(results))
 		}
 
@@ -320,7 +317,8 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 				ready: false,
 				sent: [],
 				running: Option.none(),
-				revoking: false,
+				revokingFor: Option.none(),
+				awaiting: Option.none(),
 				output: ""
 			}
 			const keep = (chunk: unknown) => {
@@ -378,8 +376,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 					return
 				}
 				yield* Deferred.fail(started, PoolFailed.make({ message: report }))
-				const stranded = [...queue, ...Arr.flatMap(workers, (other) => other.sent)]
-				queue.length = 0
+				const stranded = [...scheduler.drain(), ...Arr.flatMap(workers, (other) => other.sent)]
 				for (const other of workers) {
 					other.sent = []
 				}
@@ -425,7 +422,9 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 								Arr.map(unit.batch, () => lostResult(report))
 							)
 						})
-						requeue(requeued)
+						handBack(worker, [])
+						scheduler.requeue(requeued)
+						scheduler.forget(worker.index)
 						if (!wasReady) {
 							yield* breaks(
 								worker,
@@ -436,6 +435,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 							const replacement = spawn(worker.index)
 							workers[worker.index] = replacement
 						}
+						feedAll()
 						return
 					}
 					case "message": {
@@ -448,13 +448,22 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 							case "ready":
 								worker.ready = true
 								yield* Deferred.succeed(started, undefined)
-								feed(worker)
+								feedAll()
 								return
 							case "failed":
 								yield* breaks(worker, received.message)
 								return
 							case "readying":
 								yield* watch(worker, received.unit, "readying")
+								return
+							case "readied":
+								Option.map(
+									Arr.findFirst(worker.sent, (sent) => sent.id === received.unit),
+									(unit) => {
+										scheduler.readied(worker.index, unit.module, received.millis)
+										afterFinished(scheduler, view, apply, worker.index, unit.module)
+									}
+								)
 								return
 							case "started":
 								yield* watch(worker, received.unit, "evaluating")
@@ -464,8 +473,8 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 								if (Option.isSome(unit)) {
 									yield* settle(worker)
 									finish(worker, unit.value, received.results)
+									afterFinished(scheduler, view, apply, worker.index, unit.value.module)
 								}
-								feed(worker)
 								return
 							}
 							case "misused": {
@@ -497,8 +506,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 								const revoked = new Set(received.units)
 								const given = Arr.filter(worker.sent, (unit) => revoked.has(unit.id))
 								worker.sent = Arr.filter(worker.sent, (unit) => !revoked.has(unit.id))
-								worker.revoking = false
-								requeue(given)
+								handBack(worker, given)
 								feedAll()
 								return
 							}
@@ -545,13 +553,16 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 
 		const enqueue = (batch: Batch): Unit => {
 			unitIds += 1
+			const property = Arr.headNonEmpty(batch).property
 			const unit: Unit = {
 				id: unitIds,
 				batch,
-				property: Arr.headNonEmpty(batch).property,
+				property,
+				module: moduleOfLabel(property),
+				cases: batch.length,
 				done: Deferred.makeUnsafe<ReadonlyArray<CaseResult>>()
 			}
-			queue.push(unit)
+			scheduler.enqueue(unit)
 			return unit
 		}
 
@@ -581,17 +592,16 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 						if (!Arr.some(done, stop)) {
 							continue
 						}
-						const later = new Set(Arr.map(Arr.drop(units, at + 1), (other) => other.id))
-						const kept = Arr.filter(queue, (queued) => !later.has(queued.id))
-						queue.length = 0
-						for (const queued of kept) {
-							queue.push(queued)
-						}
+						scheduler.drop(new Set(Arr.map(Arr.drop(units, at + 1), (other) => other.id)))
 						return judged()
 					}
 					return judged()
 				}),
-			width: Effect.sync(() => Math.max(1, Arr.filter(workers, idle).length - queue.length))
+			width: Effect.sync(() => Math.max(1, Arr.filter(workers, idle).length - scheduler.queued()))
 		}
-		return { evaluator, cases: Effect.sync(() => Arr.copy(counts)) }
+		return {
+			evaluator,
+			cases: Effect.sync(() => Arr.copy(counts)),
+			held: Effect.sync(() => scheduler.held())
+		}
 	})

@@ -1,5 +1,15 @@
 import { NodeRuntime, NodeServices } from "@effect/platform-node"
-import { Array as Arr, Context, Effect, Latch, Option, Queue, Schema, Scope } from "effect"
+import {
+	Array as Arr,
+	Context,
+	Duration,
+	Effect,
+	Latch,
+	Option,
+	Queue,
+	Schema,
+	Scope
+} from "effect"
 import {
 	LateUses,
 	NeedCache,
@@ -134,7 +144,10 @@ const main = Effect.gen(function* () {
 				readiedOf(property.ready, bound).pipe(Effect.provideService(NeedCache, cache))
 		}).pipe(Effect.provideContext(platform))
 
-	/** The unit's property as this worker readied it, readying it first, and telling the parent so, when it is new here. */
+	/**
+	 * The unit's property as this worker readied it, readying it first when it is new here: the parent is told when
+	 * the readying starts, and how long it took.
+	 */
 	const readiedFor = (unit: Unit): Effect.Effect<Readied> => {
 		const first = Arr.headNonEmpty(unit.batch)
 		return Option.match(Option.fromUndefinedOr(readied.get(first.property)), {
@@ -142,8 +155,9 @@ const main = Effect.gen(function* () {
 			onNone: () =>
 				Effect.gen(function* () {
 					yield* send({ kind: "readying", unit: unit.unit })
-					const made = yield* ready(first.property, first.open)
+					const [took, made] = yield* Effect.timed(ready(first.property, first.open))
 					readied.set(first.property, made)
+					yield* send({ kind: "readied", unit: unit.unit, millis: Duration.toMillis(took) })
 					return made
 				})
 		})
