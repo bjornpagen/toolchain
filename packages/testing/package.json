@@ -45,7 +45,8 @@
 		"./workers": "./src/workers.ts"
 	},
 	"bin": {
-		"bjornpagen-mutate": "./scripts/mutate.sh"
+		"bjornpagen-mutate": "./scripts/mutate.sh",
+		"toolchain-test": "./scripts/toolchain-test.sh"
 	},
 	"scripts": {
 		"typecheck": "toolchain-typecheck",

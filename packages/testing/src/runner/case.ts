@@ -18,24 +18,29 @@ import { failureText } from "#failure.ts"
 import { keyOf, type Pending, pendingAt, type Reached } from "#features.ts"
 import type { Gen } from "#gen.ts"
 import { abandon, awaitWithinGrace, liveNanos, liveSleep, watchedCase } from "#live.ts"
-import type { Need, NeedContext, NeedFailed, Needs, NeedValue, Resources } from "#property.ts"
+import type { Need, NeedContext, Needs, NeedValue, Resources } from "#property.ts"
 import { fnv1a32 } from "#random.ts"
 import { type Drawn, replayTokenOf } from "#replay.ts"
+import type { RunnerServicesFailed } from "#runner/config.ts"
+import { Perception } from "#runner/perceive.ts"
 import {
 	type CaseOrder,
 	type CaseOutcome,
 	type CaseResult,
 	chooserOf,
-	type Printed
+	type Printed,
+	type Trace
 } from "#runner/protocol.ts"
+import { NeedFailed } from "#runner/services.ts"
 import { type Observed, type Recording, recording, simplestChooser } from "#source.ts"
-import type { Tape } from "#tape.ts"
 
 /**
  * What a property sees of the case it runs: it notes the situations it reached; draws more from the case's own tape;
  * and records on the tape what the system under test decided (and learns whether a replay decided the same). A case
  * never gives itself up: a precondition is a property of the space, which constructs only cases that meet it. A note,
- * a draw or an observation made after the case ended is a misuse, reported as one.
+ * a draw, an observation or a measure made after the case ended is a misuse, reported as one. `measure` adds an amount
+ * to a named count of its property (schedules explored), summed over every case its search ran and printed on its
+ * report line.
  */
 export type Case<F extends string> = Readonly<{
 	note: (feature: F) => void
@@ -43,6 +48,7 @@ export type Case<F extends string> = Readonly<{
 	pair: (first: F, second: F) => void
 	draw: <A>(generator: Gen<A>) => A
 	observe: (decided: string) => Observed
+	measure: (name: string, amount: number) => void
 }>
 
 /** A need's resource as one case takes it, in the case's scope. */
@@ -65,9 +71,13 @@ export class NeedCache extends Context.Service<
 	Readonly<{ take: <A>(need: Need<A>) => Taker<A> }>
 >()("@bjornpagen/testing/runner/case/NeedCache") {}
 
-/** The need cache of a process whose needs open in `context`: its scope and the runner's services. */
+/**
+ * The need cache of a process whose needs open in the context `services` gives: its scope, the platform, its worker
+ * index and the repository's services, which the process builds the first time a need opens, so a process whose cases
+ * take no need never builds them. Services that fail to build fail every need that opens with their failure.
+ */
 export const needCacheOf = (
-	context: Context.Context<NeedContext>
+	services: Effect.Effect<Context.Context<NeedContext>, RunnerServicesFailed>
 ): Context.Service.Shape<typeof NeedCache> => {
 	let opened: Context.Context<never> = Context.empty()
 	return {
@@ -78,18 +88,21 @@ export const needCacheOf = (
 					onNone: () => {
 						const taker = Deferred.makeUnsafe<Taker<A>, NeedFailed>()
 						opened = Context.add(opened, needSlotOf(need), taker)
-						return Effect.andThen(
-							Deferred.into(Effect.provideContext(need.open, context), taker),
-							Effect.flatten(Deferred.await(taker))
+						const open = Effect.flatMap(
+							Effect.mapError(services, (failed) =>
+								NeedFailed.make({ need: need.key, message: failed.message })
+							),
+							(context) => Effect.provideContext(need.open, context)
 						)
+						return Effect.andThen(Deferred.into(open, taker), Effect.flatten(Deferred.await(taker)))
 					}
 				})
 			)
 	}
 }
 
-/** What an evaluating process provides every case: its opened needs and the platform. */
-export type CaseEnv = NeedCache | NodeServices
+/** What an evaluating process provides every case: its opened needs, its perception and the platform. */
+export type CaseEnv = NeedCache | Perception | NodeServices
 
 /** One case's taker of a need, as `Struct.map` maps a property's needs. */
 interface Taking extends Struct.Lambda {
@@ -149,29 +162,33 @@ const steeringOf = <F extends string>(
 	}
 }
 
-/** A case's handle and what closing it leaves: its notes, what its property drew, and whether it was used after. */
-type Handle<F extends string> = Readonly<{
-	c: Case<F>
-	close: () => Readonly<{
-		notes: ReadonlyArray<string>
-		drew: ReadonlyArray<unknown>
-		misused: boolean
-	}>
+/** What closing a case's handle leaves: its notes, its measures, what its property drew, and whether it was used
+ * after it ended. */
+type Closed = Readonly<{
+	notes: ReadonlyArray<string>
+	measures: ReadonlyArray<readonly [string, number]>
+	drew: ReadonlyArray<unknown>
+	misused: boolean
 }>
+
+/** A case's handle, and its closing. */
+type Handle<F extends string> = Readonly<{ c: Case<F>; close: () => Closed }>
 
 /** The handle of a case drawing on `recorded`: open until closed, a misuse after. */
 const handleOf = <F extends string>(recorded: Recording): Handle<F> => {
 	const notes = new Set<string>()
+	const measures = new Map<string, number>()
 	const drew: Array<unknown> = []
 	let open = true
 	let misused = false
-	const record = (key: string) => {
+	const whileOpen = (use: () => void) => {
 		if (open) {
-			notes.add(key)
+			use()
 			return
 		}
 		misused = true
 	}
+	const record = (key: string) => whileOpen(() => notes.add(key))
 	return {
 		c: {
 			note: record,
@@ -196,26 +213,39 @@ const handleOf = <F extends string>(recorded: Recording): Handle<F> => {
 					return "as-recorded"
 				}
 				return recorded.source.observe(fnv1a32(decided))
-			}
+			},
+			measure: (name, amount) =>
+				whileOpen(() => {
+					measures.set(name, (measures.get(name) ?? 0) + amount)
+				})
 		},
 		close: () => {
 			open = false
-			return { notes: Arr.fromIterable(notes), drew, misused }
+			return {
+				notes: Arr.fromIterable(notes),
+				measures: Arr.fromIterable(measures.entries()),
+				drew,
+				misused
+			}
 		}
 	}
 }
 
 /** A value as the report prints it; a show or a value whose printing throws is stated as unprintable. */
+const shownOf = <S>(print: (value: S) => string, value: S): string =>
+	Result.getOrElse(
+		Result.try(() => print(value)),
+		() => "unprintable: printing the case throws"
+	)
+
+/** A case as the report prints it: its value and what its property drew. */
 const printedOf = <S>(
 	print: (value: S) => string,
 	value: S,
 	drew: ReadonlyArray<unknown>
 ): Printed => ({
 	kind: "drawn",
-	value: Result.getOrElse(
-		Result.try(() => print(value)),
-		() => "unprintable: printing the case throws"
-	),
+	value: shownOf(print, value),
 	draws: Arr.map(drew, (draw) => Formatter.format(draw))
 })
 
@@ -268,24 +298,6 @@ const guarded = <E, R>(
 /** Milliseconds since a moment of liveNanos. */
 const millisSince = (began: bigint) => Effect.map(liveNanos, (now) => Number(now - began) / 1e6)
 
-/** The report a case leaves when it blocks its process's event loop, which the watchdog prints as it ends the process. */
-const blockedReport = (
-	order: CaseOrder,
-	recorded: Recording,
-	printed: () => Option.Option<string>
-): string =>
-	Arr.join(
-		[
-			`${order.property}: a case held its worker's event loop past its deadline of ${Duration.format(Duration.millis(order.deadline))} and the watchdog's grace, so its guard could not stop it: a hang`,
-			`case: ${Option.getOrElse(printed(), () => "none yet: it hung while its space drew it")}`,
-			`replay: toolchain-test replay '${replayTokenOf(order.property, { drawn: order.drawn, values: Arr.fromIterable(tapeValues(recorded.tape())) })}'`
-		],
-		"\n"
-	)
-
-/** A tape's values. */
-const tapeValues = (tape: Tape): Float64Array => tape.values.subarray(0, tape.length)
-
 /** The outcome of a case that drew its value and settled. */
 const outcomeOf = (
 	settled: Settled,
@@ -311,20 +323,14 @@ const outcomeOf = (
 	}
 }
 
-/** What a case's run settles to before its result is measured: its value's decisions, its notes, its outcome. */
-type Ran = Readonly<{ sketchDecisions: number; notes: ReadonlyArray<string>; outcome: CaseOutcome }>
-
-/** The run of a case whose space threw while drawing its value: failed, undrawn. */
-const undrawn = (recorded: Recording, error: unknown): Ran => ({
-	sketchDecisions: recorded.decided(),
-	notes: [],
-	outcome: {
-		kind: "failed",
-		failure: failureText(Cause.die(error)),
-		tape: recorded.tape(),
-		printed: { kind: "undrawn", why: "its space threw while drawing it" }
-	}
-})
+/** What a case's run settles to before its result is measured. */
+type Ran = Readonly<{
+	sketchDecisions: number
+	notes: ReadonlyArray<string>
+	measures: ReadonlyArray<readonly [string, number]>
+	trace: Trace
+	outcome: CaseOutcome
+}>
 
 /** A property's check of one case. */
 export type CaseCheck<S, F extends string, N extends Needs, E> = (
@@ -339,78 +345,8 @@ export type BatchCheck<S, F extends string, N extends Needs, E> = (
 	cases: Arr.NonEmptyReadonlyArray<readonly [S, Case<F>]>
 ) => Effect.Effect<ReadonlyArray<Effect.Effect<void, E>>, E, Scope.Scope | NodeServices>
 
-/**
- * Evaluates one case of a property: rebuilds its chooser, draws its value from the space its steering selects, takes
- * its needs' resources in the case's own scope, and runs its check under the case deadline, the process's watchdog
- * watching it from before its value is drawn. A space that throws while drawing fails the case, undrawn. The tape is
- * copied out only for a case that did not pass and for one whose order keeps it.
- */
-export const evaluateCase =
-	<S, F extends string, N extends Needs, E>(
-		drawing: Drawing<S, F>,
-		needs: N,
-		check: CaseCheck<S, F, N, E>
-	) =>
-	(order: CaseOrder): Effect.Effect<CaseResult, never, CaseEnv> =>
-		Effect.gen(function* () {
-			const began = yield* liveNanos
-			const recorded = recording(chooserOf(order.chooser))
-			let shown: Option.Option<string> = Option.none()
-			const ran = yield* watchedCase(
-				{ caseHang: Duration.millis(order.deadline), cut: Option.none() },
-				() => blockedReport(order, recorded, () => shown),
-				Effect.suspend(() => {
-					const drawn = Result.try(() =>
-						drawing.spaceUnder(steeringOf(drawing.situations, order.drawn))(recorded.source)
-					)
-					if (Result.isFailure(drawn)) {
-						return Effect.succeed(undrawn(recorded, drawn.failure))
-					}
-					const value = drawn.success
-					shown = Option.some(
-						Result.getOrElse(
-							Result.try(() => drawing.print(value)),
-							() => "unprintable: printing the case throws"
-						)
-					)
-					const sketchDecisions = recorded.decided()
-					const handle = handleOf<F>(recorded)
-					return Effect.map(
-						guarded(
-							Effect.scoped(
-								NeedCache.use((cache) => check(resourcesOf(needs, cache), handle.c)(value))
-							),
-							order.deadline
-						),
-						(settled): Ran => {
-							const closed = handle.close()
-							return {
-								sketchDecisions,
-								notes: closed.notes,
-								outcome: outcomeOf(
-									settled,
-									order,
-									recorded,
-									printedOf(drawing.print, value, closed.drew),
-									closed.misused
-								)
-							}
-						}
-					)
-				})
-			)
-			return {
-				decisions: recorded.decided(),
-				sketchDecisions: ran.sketchDecisions,
-				overrun: recorded.status() === "overrun",
-				notes: ran.notes,
-				outcome: ran.outcome,
-				millis: yield* millisSince(began)
-			}
-		})
-
-/** One case of a batch once drawn: its order, recording, value and handle, its sketch's decisions, and its place
- * among the batch's drawn cases, where its verdict is. */
+/** One case once drawn: its order, recording, value and handle, its sketch's decisions, and its place among its
+ * batch's drawn cases, where a batched check's verdict for it is. */
 type DrawnCase<S, F extends string> = Readonly<{
 	order: CaseOrder
 	recorded: Recording
@@ -420,12 +356,12 @@ type DrawnCase<S, F extends string> = Readonly<{
 	at: number
 }>
 
-/** A case of a batch, drawn or undrawn. */
+/** A case of an evaluation, drawn, or undrawn because its space threw while drawing it. */
 type Slot<S, F extends string> =
 	| Readonly<{ kind: "drawn"; drawn: DrawnCase<S, F> }>
 	| Readonly<{ kind: "undrawn"; recorded: Recording; ran: Ran }>
 
-/** Draws one case of a batch from its order, the `at`-th of its drawn cases should it draw. */
+/** Draws one case from its order, the `at`-th of its evaluation's drawn cases should it draw. */
 const slotOf = <S, F extends string>(
 	drawing: Drawing<S, F>,
 	order: CaseOrder,
@@ -436,7 +372,22 @@ const slotOf = <S, F extends string>(
 		drawing.spaceUnder(steeringOf(drawing.situations, order.drawn))(recorded.source)
 	)
 	if (Result.isFailure(drawn)) {
-		return { kind: "undrawn", recorded, ran: undrawn(recorded, drawn.failure) }
+		return {
+			kind: "undrawn",
+			recorded,
+			ran: {
+				sketchDecisions: recorded.decided(),
+				notes: [],
+				measures: [],
+				trace: [],
+				outcome: {
+					kind: "failed",
+					failure: failureText(Cause.die(drawn.failure)),
+					tape: recorded.tape(),
+					printed: { kind: "undrawn", why: "its space threw while drawing it" }
+				}
+			}
+		}
 	}
 	return {
 		kind: "drawn",
@@ -451,16 +402,19 @@ const slotOf = <S, F extends string>(
 	}
 }
 
-/** A drawn case's run once its verdict settled. */
+/** A drawn case's run once its verdict settled, with what it perceived. */
 const ranOf = <S, F extends string>(
 	drawing: Drawing<S, F>,
 	drawn: DrawnCase<S, F>,
-	settled: Settled
+	settled: Settled,
+	trace: Trace
 ): Ran => {
 	const closed = drawn.handle.close()
 	return {
 		sketchDecisions: drawn.sketchDecisions,
 		notes: closed.notes,
+		measures: closed.measures,
+		trace,
 		outcome: outcomeOf(
 			settled,
 			drawn.order,
@@ -477,16 +431,103 @@ const resultOf = (recorded: Recording, ran: Ran, millis: number): CaseResult => 
 	sketchDecisions: ran.sketchDecisions,
 	overrun: recorded.status() === "overrun",
 	notes: ran.notes,
+	measures: ran.measures,
+	trace: ran.trace,
 	outcome: ran.outcome,
 	millis
 })
 
+/** The report a case leaves should it block its process's event loop, which the watchdog prints as it ends it. */
+const blockedReport =
+	<S, F extends string>(slots: ReadonlyArray<Slot<S, F>>, print: (value: S) => string) =>
+	() =>
+		Arr.join(
+			Arr.map(slots, (slot) => {
+				switch (slot.kind) {
+					case "undrawn":
+						return ""
+					case "drawn": {
+						const { order, recorded, value } = slot.drawn
+						const tape = recorded.tape()
+						return Arr.join(
+							[
+								`${order.property}: a case held its worker's event loop past its deadline of ${Duration.format(Duration.millis(order.deadline))} and the watchdog's grace, so its guard could not stop it: a hang`,
+								`case: ${shownOf(print, value)}`,
+								`replay: toolchain-test replay '${replayTokenOf(order.property, { drawn: order.drawn, values: Arr.fromIterable(tape.values.subarray(0, tape.length)) })}'`
+							],
+							"\n"
+						)
+					}
+				}
+			}),
+			"\n"
+		)
+
+/** The deadline an evaluation of these orders runs under: each case's, added up. */
+const deadlineOf = (orders: ReadonlyArray<CaseOrder>) =>
+	Arr.reduce(orders, 0, (total, order) => total + order.deadline)
+
+/**
+ * Evaluates one case of a property: rebuilds its chooser, draws its value from the space its steering selects, and
+ * runs its check under the case deadline in the case's own scope, where its needs' resources are taken, perceived as
+ * its order's sense asks; the process's watchdog watches it from before its value is drawn. A space that throws while
+ * drawing fails the case, undrawn. The tape is copied out only for a case that did not pass and one whose order keeps
+ * it.
+ */
+export const evaluateCase =
+	<S, F extends string, N extends Needs, E>(
+		drawing: Drawing<S, F>,
+		needs: N,
+		check: CaseCheck<S, F, N, E>
+	) =>
+	(order: CaseOrder): Effect.Effect<CaseResult, never, CaseEnv> =>
+		Effect.gen(function* () {
+			const began = yield* liveNanos
+			const slot = slotOf(drawing, order, 0)
+			const ran = yield* watchedCase(
+				{ caseHang: Duration.millis(order.deadline), cut: Option.none() },
+				blockedReport([slot], drawing.print),
+				Effect.gen(function* () {
+					switch (slot.kind) {
+						case "undrawn":
+							return slot.ran
+						case "drawn": {
+							const drawn = slot.drawn
+							let trace: Trace = []
+							const settled = yield* guarded(
+								Perception.use((perception) =>
+									Effect.map(
+										perception.perceive(
+											order.sense,
+											Effect.scoped(
+												NeedCache.use((cache) =>
+													check(resourcesOf(needs, cache), drawn.handle.c)(drawn.value)
+												)
+											)
+										),
+										([, perceived]) => {
+											trace = perceived
+										}
+									)
+								),
+								order.deadline
+							)
+							return ranOf(drawing, drawn, settled, trace)
+						}
+					}
+				})
+			)
+			const recorded = slot.kind === "drawn" ? slot.drawn.recorded : slot.recorded
+			const millis = yield* millisSince(began)
+			return resultOf(recorded, ran, millis)
+		})
+
 /**
  * Evaluates a batch of a batched property's cases in one check: draws each case (one its space throws on fails alone,
- * undrawn), takes the needs' resources once in the batch's scope, runs `checkAll` on the drawn cases under the case
- * deadline times their count, then each case's own effect under the case deadline as its verdict. A check that fails or
- * hangs as a whole fails or hangs every case it held; a case it gave no verdict fails. Each case's measured time is
- * the batch's, shared evenly.
+ * undrawn), runs `checkAll` on the drawn cases under the case deadline times their count in the batch's scope, where
+ * its needs' resources are taken, then each case's own effect under the case deadline as its verdict. A check that
+ * fails or hangs as a whole fails or hangs every case it held; a case it gave no verdict fails. Each case's measured
+ * time is the batch's, shared evenly.
  */
 export const evaluateBatch =
 	<S, F extends string, N extends Needs, E>(
@@ -503,12 +544,10 @@ export const evaluateBatch =
 				const slot = slotOf(drawing, order, drawnSoFar)
 				return [slot.kind === "drawn" ? drawnSoFar + 1 : drawnSoFar, slot] as const
 			})
-			const deadline = Arr.reduce(batch, 0, (total, order) => total + order.deadline)
 			const runs = yield* watchedCase(
-				{ caseHang: Duration.millis(deadline), cut: Option.none() },
-				() =>
-					`${Arr.headNonEmpty(batch).property}: a batch of ${batch.length} cases held its worker's event loop past its deadline and the watchdog's grace: a hang`,
-				runsOf(drawing, needs, checkAll, slots, deadline)
+				{ caseHang: Duration.millis(deadlineOf(batch)), cut: Option.none() },
+				blockedReport(slots, drawing.print),
+				runsOf(drawing, needs, checkAll, slots, deadlineOf(batch))
 			)
 			const millis = (yield* millisSince(began)) / batch.length
 			return Arr.zipWith(slots, runs, (slot, ran) =>
@@ -547,7 +586,7 @@ const runsOf = <S, F extends string, N extends Needs, E>(
 					case "drawn": {
 						const drawn = slot.drawn
 						if (whole.kind !== "passed") {
-							return Effect.succeed(ranOf(drawing, drawn, whole))
+							return Effect.succeed(ranOf(drawing, drawn, whole, []))
 						}
 						return Effect.map(
 							Option.match(Arr.get(verdicts, drawn.at), {
@@ -560,7 +599,7 @@ const runsOf = <S, F extends string, N extends Needs, E>(
 									}),
 								onSome: (verdict) => guarded(verdict, drawn.order.deadline)
 							}),
-							(settled) => ranOf(drawing, drawn, settled)
+							(settled) => ranOf(drawing, drawn, settled, [])
 						)
 					}
 				}

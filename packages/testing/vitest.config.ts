@@ -8,6 +8,8 @@ export default defineTestConfig({
 		"!src/idioms.test.ts",
 		"!src/core.test.ts",
 		"!src/shrink.test.ts",
+		"!src/oracle.test.ts",
+		"!src/seeds.test.ts",
 		"!src/runner/**"
 	],
 	guided: ["src/sense.test.ts"],

@@ -1,25 +1,10 @@
 import { Array as Arr, Config, Effect, Option } from "effect"
 import { defineConfig } from "vitest/config"
+import { HARDENED_FLAGS } from "#runner/config.ts"
 import { type Examples, residualReporter } from "#vitest/reporter.ts"
 import { testWorkers } from "#workers.ts"
 
-export { testWorkers }
-
-/**
- * The flags every test process runs under: no `__proto__` accessor and no inspector opened on SIGUSR1; a deprecated
- * Node API, a pending deprecation included, throws instead of warning; only context-aware native addons load; no
- * module resolves from the global folders; and an unhandled rejection is an uncaught exception. V8's JIT and code
- * generation from strings stay on.
- */
-export const HARDENED_FLAGS: ReadonlyArray<string> = [
-	"--disable-proto=delete",
-	"--disable-sigusr1",
-	"--throw-deprecation",
-	"--pending-deprecation",
-	"--force-context-aware",
-	"--no-global-search-paths",
-	"--unhandled-rejections=strict"
-]
+export { HARDENED_FLAGS, testWorkers }
 
 /**
  * How long a test or a hook may take: without bound, or a number of milliseconds. A long search that keeps making

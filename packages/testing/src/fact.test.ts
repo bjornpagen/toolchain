@@ -14,56 +14,58 @@ import { property } from "#property.ts"
  */
 type Counting = Readonly<{ fibers: number; steps: number; threshold: number }>
 
-export const awaitedFact = property.explore({
-	space: (source): Counting => {
+export const awaitedFact = property.explore(
+	(source): Counting => {
 		const fibers = source.draw(int(1, 3))
 		const steps = source.draw(int(0, 100))
 		return { fibers, steps, threshold: source.draw(int(0, fibers * steps)) }
 	},
-	needs: {},
-	situations: ["true from the start", "true only at the end", "several fibers"],
-	check:
-		(_resources, c) =>
-		({ fibers, steps, threshold }) =>
-			Effect.gen(function* () {
-				const total = fibers * steps
-				if (threshold === 0) {
-					c.note("true from the start")
-				}
-				if (threshold === total && total > 0) {
-					c.note("true only at the end")
-				}
-				if (fibers > 1) {
-					c.note("several fibers")
-				}
-				const count = yield* Ref.make(0)
-				const countUp = Effect.gen(function* () {
-					for (let step = 0; step < steps; step += 1) {
-						yield* Ref.update(count, (n) => n + 1)
+	{
+		needs: {},
+		situations: ["true from the start", "true only at the end", "several fibers"],
+		check:
+			(_resources, c) =>
+			({ fibers, steps, threshold }) =>
+				Effect.gen(function* () {
+					const total = fibers * steps
+					if (threshold === 0) {
+						c.note("true from the start")
 					}
-				})
-				for (let fiber = 0; fiber < fibers; fiber += 1) {
-					yield* Effect.forkChild(countUp)
-				}
-				const reached = yield* awaitFact(
-					Effect.map(Ref.get(count), (n) => (n >= threshold ? Option.some(n) : Option.none()))
-				)
-				deepStrictEqual(
-					{ holds: reached >= threshold, within: reached <= total },
-					{ holds: true, within: true }
-				)
-			}),
-	oracle: {
-		kind: "specification",
-		name: "the value returned holds the fact and lies within what the fibers counted, the clock unmoved"
-	},
-	kept: [],
-	kills: [
-		{
-			file: "packages/testing/src/fact.ts",
-			original: "\t\twhile (Option.isNone(seen)) {\n\t\t\tyield* Effect.yieldNow",
-			replacement: "\t\tif (Option.isNone(seen)) {",
-			why: "The fact is read twice at most, back to back with no yield to the fibers that make it true, and its value returned though it does not hold; the property fails."
-		}
-	]
-})
+					if (threshold === total && total > 0) {
+						c.note("true only at the end")
+					}
+					if (fibers > 1) {
+						c.note("several fibers")
+					}
+					const count = yield* Ref.make(0)
+					const countUp = Effect.gen(function* () {
+						for (let step = 0; step < steps; step += 1) {
+							yield* Ref.update(count, (n) => n + 1)
+						}
+					})
+					for (let fiber = 0; fiber < fibers; fiber += 1) {
+						yield* Effect.forkChild(countUp)
+					}
+					const reached = yield* awaitFact(
+						Effect.map(Ref.get(count), (n) => (n >= threshold ? Option.some(n) : Option.none()))
+					)
+					deepStrictEqual(
+						{ holds: reached >= threshold, within: reached <= total },
+						{ holds: true, within: true }
+					)
+				}),
+		oracle: {
+			kind: "specification",
+			name: "the value returned holds the fact and lies within what the fibers counted, the clock unmoved"
+		},
+		kept: [],
+		kills: [
+			{
+				file: "packages/testing/src/fact.ts",
+				original: "\t\twhile (Option.isNone(seen)) {\n\t\t\tyield* Effect.yieldNow",
+				replacement: "\t\tif (Option.isNone(seen)) {",
+				why: "The fact is read twice at most, back to back with no yield to the fibers that make it true, and its value returned though it does not hold; the property fails."
+			}
+		]
+	}
+)

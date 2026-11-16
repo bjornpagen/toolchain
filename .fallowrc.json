@@ -5,10 +5,13 @@
 		"packages/devtools/src/oxlint/fixtures.config.ts",
 		"packages/devtools/src/style/classes.config.ts",
 		"packages/testing/src/mutate/hook.ts",
+		"packages/testing/src/runner/cli.ts",
+		"packages/testing/src/runner/worker.ts",
 		"packages/testing/src/vitest/coverage.ts",
 		"packages/testing/src/vitest/mutated-setup.ts",
 		"packages/testing/src/vitest/searches-setup.ts",
-		"packages/testing/src/witness.fixtures.ts"
+		"packages/testing/src/witness.fixtures.ts",
+		"packages/testing/test.config.ts"
 	],
 	// out/ is where a proof run builds a consumer, with a pnpm workspace of its own: not this repository's code.
 	"ignorePatterns": ["packages/devtools/src/*/fixtures/**", "out/**"],

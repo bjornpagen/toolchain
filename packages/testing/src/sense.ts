@@ -31,7 +31,7 @@ export const notesOnly: Sense = {
  * The class of a block's execution count: its bucket, as AFL buckets edge counts, plus one. A loop that runs once more
  * is not new, and a block counted zero, a branch never taken, is a class of its own.
  */
-const classOf = (count: number): number =>
+export const classOf = (count: number): number =>
 	count <= 3
 		? count + 1
 		: count <= 7
@@ -46,7 +46,7 @@ const classOf = (count: number): number =>
 
 type Range = Readonly<{ startOffset: number; endOffset: number; count: number }>
 
-type ScriptCoverage = Readonly<{
+export type ScriptCoverage = Readonly<{
 	url: string
 	functions: ReadonlyArray<Readonly<{ ranges: ReadonlyArray<Range> }>>
 }>
@@ -84,7 +84,7 @@ export const startProcessCoverage: Effect.Effect<void> = Effect.suspend(() =>
  * running, since stopping or ending any session that enabled the profiler stops precise coverage for the whole process;
  * otherwise its own, started with the scope and stopped when it closes.
  */
-const coverageSession: Effect.Effect<Session, never, Scope.Scope> = Effect.suspend(() =>
+export const coverageSession: Effect.Effect<Session, never, Scope.Scope> = Effect.suspend(() =>
 	Option.match(Option.fromNullishOr(globalThis.bjornpagenTestingCoverage), {
 		onSome: (session) => Effect.succeed(session),
 		onNone: () =>

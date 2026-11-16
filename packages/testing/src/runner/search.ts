@@ -20,14 +20,19 @@ import {
 	steeredSeed
 } from "#random.ts"
 import { type Drawn, type ReplayCase, replayOf, replayTokenOf } from "#replay.ts"
-import type {
-	Batch,
-	CasePhase,
-	CaseResult,
-	ChooserSpec,
-	Finding,
-	SearchRun,
-	Verdict
+import {
+	type Batch,
+	type CaseOrder,
+	type CasePhase,
+	type CaseResult,
+	type Measures,
+	type Sense,
+	stops,
+	type Trace,
+	type ChooserSpec,
+	type Finding,
+	type SearchRun,
+	type Verdict
 } from "#runner/protocol.ts"
 import { seedsOf } from "#seeds.ts"
 import {
@@ -51,10 +56,14 @@ import type { Tape } from "#tape.ts"
 /** A kept regression as a search reads it: its replay token, and why it is kept. */
 export type KeptToken = Readonly<{ token: string; reason: string }>
 
-/** What every kind of search reads of its property: its required situations (by key, in declared order) and kept tokens. */
+/**
+ * What every kind of search reads of its property: its required situations (by key, in declared order), its kept
+ * tokens, and what its steered phase perceives (its guide).
+ */
 export type Searched = Readonly<{
 	situations: ReadonlyArray<string>
 	kept: ReadonlyArray<KeptToken>
+	guide: Sense
 }>
 
 /** One steered case in this many is a fresh draw rather than a mutant of a seed. */
@@ -66,42 +75,82 @@ const hex = (seed: number) => `0x${Str.padStart(8, "0")((seed >>> 0).toString(16
 const tokenOf = (id: string, drawn: Drawn, tape: Tape): string =>
 	replayTokenOf(id, { drawn, values: Arr.fromIterable(tape.values.subarray(0, tape.length)) })
 
-/** Whether a result ends its window: a case that did not pass. */
-const stops = (result: CaseResult): boolean => result.outcome.kind !== "passed"
-
 /** One case of a search, as it is drawn: its chooser and its steering. */
 type Draw = Readonly<{ chooser: ChooserSpec; drawn: Drawn }>
 
+/** How a window's cases are ordered: whether their tapes come back, what they perceive, and how many to a batch. */
+type Ordering = Readonly<{ keep: "nothing" | "tape"; sense: Sense; group: number }>
+
+/** Cases ordered one to a batch, perceiving their notes alone, keeping `keep`. */
+const plainly = (keep: "nothing" | "tape"): Ordering => ({ keep, sense: notesOnly, group: 1 })
+
+/** The sense that perceives notes alone. */
+const notesOnly: Sense = { kind: "notes" }
+
 /** The order of one drawn case of a search's property. */
-const orderOf = (run: SearchRun, draw: Draw, keep: "nothing" | "tape") => ({
+const orderOf = (run: SearchRun, draw: Draw, ordering: Ordering): CaseOrder => ({
 	property: run.id,
 	chooser: draw.chooser,
 	drawn: draw.drawn,
-	keep,
+	keep: ordering.keep,
+	sense: ordering.sense,
 	deadline: run.limits.deadline,
-	print: "failing" as const
+	print: "failing"
 })
 
 /**
- * A window's results, in case order, its orders evaluated `group` to a batch (a batched property's size, one
+ * A window's results, in case order, its orders evaluated `ordering.group` to a batch (a batched property's size, one
  * otherwise): one result per order up to the first that did not pass, which ends it.
  */
 const windowOf = (
 	run: SearchRun,
 	draws: ReadonlyArray<Draw>,
-	keep: "nothing" | "tape",
-	group: number
+	ordering: Ordering
 ): Effect.Effect<ReadonlyArray<CaseResult>> =>
 	Effect.map(
 		run.evaluator.evaluate(
 			Arr.chunksOf(
-				Arr.map(draws, (draw) => orderOf(run, draw, keep)),
-				group
+				Arr.map(draws, (draw) => orderOf(run, draw, ordering)),
+				ordering.group
 			),
 			stops
 		),
 		Arr.flatten
 	)
+
+/**
+ * A search's numbering of the ranges its cases' traces name, in the order it first meets them, so a trace from any
+ * process becomes the dense trace its seeds are kept by (seeds.ts).
+ */
+const tracerOf = (): ((trace: Trace) => Uint8Array) => {
+	const numbers = new Map<string, number>()
+	return (trace) => {
+		for (const [range] of trace) {
+			if (!numbers.has(range)) {
+				numbers.set(range, numbers.size)
+			}
+		}
+		const dense = new Uint8Array(numbers.size)
+		for (const [range, traced] of trace) {
+			const at = numbers.get(range) ?? 0
+			dense[at] = Math.max(dense[at] ?? 0, traced)
+		}
+		return dense
+	}
+}
+
+/** A search's measures being summed: `add` takes a passing case's, `sums` gives them by first use. */
+const measuring = () => {
+	const sums = new Map<string, number>()
+	return {
+		add: (result: CaseResult) => {
+			for (const [name, amount] of result.measures) {
+				sums.set(name, (sums.get(name) ?? 0) + amount)
+			}
+		},
+		sums: (): Measures => Arr.fromIterable(sums.entries())
+	}
+}
 
 /** A shrink candidate's verdict: a smaller case of the failure only when its check failed. */
 const judgedOf = (result: CaseResult): Judged<CaseResult> => {
@@ -127,8 +176,7 @@ const candidatesOf =
 			windowOf(
 				run,
 				Arr.map(candidates, (values): Draw => ({ chooser: { kind: "forced", values }, drawn })),
-				"nothing",
-				1
+				plainly("nothing")
 			),
 			Arr.map(judgedOf)
 		)
@@ -236,6 +284,7 @@ const tokenOrderOf = (run: SearchRun, replayed: ReplayCase): Batch => [
 		chooser: { kind: "forced", values: Float64Array.from(replayed.values) },
 		drawn: replayed.drawn,
 		keep: "nothing",
+		sense: notesOnly,
 		deadline: run.limits.deadline,
 		print: "always"
 	}
@@ -414,6 +463,8 @@ export const exploreSearch =
 			const steeredTally = tallyOf("steered")
 			const independentTally = tallyOf("independent")
 			const seeds = seedsOf()
+			const traced = tracerOf()
+			const measures = measuring()
 			let cases = 0
 
 			const floorTurns = turnsOf()
@@ -427,7 +478,7 @@ export const exploreSearch =
 					chooser: randomOf(floor, index),
 					drawn: { kind: "steered", pending: turnAt(offset) }
 				}))
-				const results = yield* windowOf(run, draws, keep, group)
+				const results = yield* windowOf(run, draws, { keep, sense: notesOnly, group })
 				for (const [offset, result] of results.entries()) {
 					const draw = Arr.getUnsafe(draws, offset)
 					const found = yield* findingOf(run, result, {
@@ -441,8 +492,9 @@ export const exploreSearch =
 					}
 					cases += 1
 					floorTally.add(new Set(result.notes))
+					measures.add(result)
 					if (result.outcome.kind === "passed" && result.outcome.kept.kind === "tape") {
-						seeds.keep(result.outcome.kept.tape, new Set(result.notes), new Uint8Array(0))
+						seeds.keep(result.outcome.kept.tape, new Set(result.notes), traced(result.trace))
 					}
 				}
 			}
@@ -480,7 +532,11 @@ export const exploreSearch =
 						})
 						return { chooser, drawn: { kind: "steered", pending: turnAt(offset) } }
 					})
-					const results = yield* windowOf(run, draws, "tape", group)
+					const results = yield* windowOf(run, draws, {
+						keep: "tape",
+						sense: searched.guide,
+						group
+					})
 					for (const [offset, result] of results.entries()) {
 						const draw = Arr.getUnsafe(draws, offset)
 						const found = yield* findingOf(run, result, {
@@ -495,8 +551,9 @@ export const exploreSearch =
 						cases += 1
 						const notes = new Set(result.notes)
 						steeredTally.add(notes)
+						measures.add(result)
 						if (result.outcome.kind === "passed" && result.outcome.kept.kind === "tape") {
-							seeds.keep(result.outcome.kept.tape, notes, new Uint8Array(0))
+							seeds.keep(result.outcome.kept.tape, notes, traced(result.trace))
 						}
 					}
 				}
@@ -521,7 +578,7 @@ export const exploreSearch =
 						chooser: randomOf(rotating, index),
 						drawn: { kind: "unsteered" }
 					}))
-					const results = yield* windowOf(run, draws, "nothing", group)
+					const results = yield* windowOf(run, draws, { keep: "nothing", sense: notesOnly, group })
 					for (const [offset, result] of results.entries()) {
 						const found = yield* findingOf(run, result, {
 							phase: "independent",
@@ -534,6 +591,7 @@ export const exploreSearch =
 						}
 						cases += 1
 						independentTally.add(new Set(result.notes))
+						measures.add(result)
 					}
 				}
 			}
@@ -542,16 +600,17 @@ export const exploreSearch =
 				cases,
 				floor: floorTally.tally().cases,
 				steered: steeredTally.tally().cases,
-				residual: residualOf(independentTally.tally())
+				residual: residualOf(independentTally.tally()),
+				measures: measures.sums()
 			}
 		})
 
 /** One sketch of an exhaustion's space: the branch its cases start at, and how many decisions its space draws there. */
 type Sketch = Readonly<{ start: Branch; decisions: number }>
 
-/** What one sketch's run found: each case that passed, its notes in order, and the first case that did not. */
+/** What one sketch's run found: each case that passed, in order, and the first case that did not. */
 type SketchRan = Readonly<{
-	passed: ReadonlyArray<ReadonlyArray<string>>
+	passed: ReadonlyArray<CaseResult>
 	stopped: Option.Option<CaseResult>
 }>
 
@@ -565,20 +624,19 @@ const branchChooser = (branch: Branch): ChooserSpec => ({
 /** A sketch's cases from its start, one after another, through its first case that did not pass or its last. */
 const sketchRun = (run: SearchRun, sketch: Sketch): Effect.Effect<SketchRan> =>
 	Effect.gen(function* () {
-		const passed: Array<ReadonlyArray<string>> = []
+		const passed: Array<CaseResult> = []
 		let branch: Option.Option<Branch> = Option.some(sketch.start)
 		while (Option.isSome(branch)) {
 			const results = yield* windowOf(
 				run,
 				[{ chooser: branchChooser(branch.value), drawn: { kind: "unsteered" } }],
-				"tape",
-				1
+				plainly("tape")
 			)
 			const result = Arr.head(results)
 			if (Option.isNone(result) || result.value.outcome.kind !== "passed") {
 				return { passed, stopped: result }
 			}
-			passed.push(result.value.notes)
+			passed.push(result.value)
 			const outcome = result.value.outcome
 			branch =
 				outcome.kept.kind === "tape"
@@ -613,6 +671,7 @@ export const exhaustSearch =
 			}
 			const size = counted.value
 			const tally = tallyOf("exhaustive")
+			const measures = measuring()
 			const sketches = recorder()
 			let next: Option.Option<Branch> = Option.some(firstBranch)
 			let cases = 0
@@ -628,9 +687,10 @@ export const exhaustSearch =
 					concurrency: "unbounded"
 				})
 				for (const sketchRan of ran) {
-					for (const notes of sketchRan.passed) {
+					for (const passed of sketchRan.passed) {
 						cases += 1
-						tally.add(new Set(notes))
+						tally.add(new Set(passed.notes))
+						measures.add(passed)
 					}
 					if (Option.isSome(sketchRan.stopped)) {
 						const found = yield* findingOf(run, sketchRan.stopped.value, {
@@ -649,5 +709,5 @@ export const exhaustSearch =
 			if (Arr.isReadonlyArrayNonEmpty(missing)) {
 				return failed({ kind: "unreached", missing, witnessed: { kind: "space", cases } })
 			}
-			return { kind: "exhausted", cases, box }
+			return { kind: "exhausted", cases, box, measures: measures.sums() }
 		})

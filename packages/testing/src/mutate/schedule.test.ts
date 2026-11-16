@@ -51,6 +51,8 @@ const passed: CaseResult = {
 	sketchDecisions: 0,
 	overrun: false,
 	notes: [],
+	measures: [],
+	trace: [],
 	outcome: { kind: "passed", kept: { kind: "nothing" }, shown: { kind: "unshown" } },
 	millis: 0
 }
@@ -64,6 +66,7 @@ const failed: CaseResult = { ...passed, outcome: { kind: "lost", report: "red on
 const fakeProperty = (seen: Ref.Ref<Seen>): Property =>
 	new Property({
 		kind: "explore",
+		guide: { kind: "notes" },
 		oracle: { kind: "unstated" },
 		kills: [],
 		search: (run) =>
@@ -77,6 +80,7 @@ const fakeProperty = (seen: Ref.Ref<Seen>): Property =>
 								chooser: { kind: "simplest" },
 								drawn: { kind: "unsteered" },
 								keep: "nothing",
+								sense: { kind: "notes" },
 								deadline: run.limits.deadline,
 								print: "failing"
 							}
@@ -98,9 +102,10 @@ const fakeProperty = (seen: Ref.Ref<Seen>): Property =>
 								token: run.id
 							}
 						}
-					: { kind: "exhausted", cases: 1, box: "one fake case" }
+					: { kind: "exhausted", cases: 1, box: "one fake case", measures: [] }
 			}),
-		replay: () => Effect.succeed({ kind: "exhausted", cases: 1, box: "one fake case" }),
+		replay: () =>
+			Effect.succeed({ kind: "exhausted", cases: 1, box: "one fake case", measures: [] }),
 		evaluate: () => Effect.succeed([])
 	})
 

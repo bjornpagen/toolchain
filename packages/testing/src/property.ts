@@ -1,5 +1,5 @@
 import type { NodeServices } from "@effect/platform-node/NodeServices"
-import { Array as Arr, Brand, Effect, Formatter, Option, Schema, type Scope } from "effect"
+import { Array as Arr, Brand, Effect, Formatter, Option, type Scope } from "effect"
 import type { StatefulSpec } from "#commands.ts"
 import { statefulExplore } from "#commands.ts"
 import type { Oracle } from "#explore.ts"
@@ -15,10 +15,12 @@ import {
 	evaluateBatch,
 	evaluateCase
 } from "#runner/case.ts"
-import type { Batch, CaseResult, SearchRun, Verdict } from "#runner/protocol.ts"
+import type { Batch, CaseResult, SearchRun, Sense, Verdict } from "#runner/protocol.ts"
 import { exhaustSearch, exploreSearch, replay, type Searched } from "#runner/search.ts"
+import type { NeedFailed, WorkerIndex } from "#runner/services.ts"
 
 export type { Aimed, Case, FiniteSpace, Oracle, Space }
+export { NeedFailed, WorkerIndex } from "#runner/services.ts"
 export type { Dictionary } from "#dictionary.ts"
 export type { CaseList } from "#gen.ts"
 
@@ -46,12 +48,6 @@ export type ReplayToken = string & Brand.Brand<"ReplayToken">
 
 export const ReplayToken = Brand.nominal<ReplayToken>()
 
-/** A need failed to open or to give a case its resource: the case fails with it, never the run silently. */
-export class NeedFailed extends Schema.TaggedError<NeedFailed, { readonly brand: unique symbol }>()(
-	"NeedFailed",
-	{ need: Schema.String, message: Schema.String }
-) {}
-
 /**
  * The services every need may require, by name: the platform, and the services a repository's runner config provides
  * through its `layer` (a database cluster, a repository root), which the repository declares with a module augmentation
@@ -60,6 +56,7 @@ export class NeedFailed extends Schema.TaggedError<NeedFailed, { readonly brand:
  */
 export interface RunnerServices {
 	readonly platform: NodeServices
+	readonly worker: WorkerIndex
 }
 
 /** What a need may require: the worker's scope and the runner's services. */
@@ -129,25 +126,39 @@ type Stated<S, F extends string, N extends Needs, E> = Readonly<{
 	show?: (value: S) => string
 }>
 
-/** A sampled search, steered toward its required situations: `property.explore(spec)`. */
-export type ExploreSpec<S, F extends string, N extends Needs, E> = Stated<S, F, N, E> &
-	Readonly<{ space: Space<S> | Aimed<S, F> }>
-
-/** Every case of a finite space; passing is a proof inside the box it names: `property.exhaust(spec)`. */
-export type ExhaustSpec<S, F extends string, N extends Needs, E> = Stated<S, F, N, E> &
-	Readonly<{ space: FiniteSpace<S>; box: string }>
+/**
+ * What a sampled search's steered phase perceives beyond its notes: V8's block coverage of the files whose path ends
+ * with one of `blocks` (the code under test), so a case that runs a block or a count class no earlier case did is kept
+ * as a seed. A guide only steers; it never decides a verdict.
+ */
+export type Guide = Readonly<{ blocks: Arr.NonEmptyReadonlyArray<string> }>
 
 /**
- * Cases checked a batch at a time in one evaluation (a type-tier batch checked in one compiler run): still drawn,
- * shrunk alone and parallel across batches: `property.batched(spec)`. `size` is how many cases one batch holds; each
- * case's own effect, from `checkAll`, is its verdict.
+ * What a sampled search states beside its space: `property.explore(space, spec)`. `guide` steers its steered phase by
+ * block coverage too; without one it steers by notes alone. The space is the constructor's first argument, so the
+ * value type a check takes is inferred from it before the check is read.
+ */
+export type ExploreStated<S, F extends string, N extends Needs, E> = Stated<S, F, N, E> &
+	Readonly<{ guide?: Guide }>
+
+/** A sampled search with its space, as a harness that builds one states it (interleave.ts, commands.ts). */
+export type ExploreSpec<S, F extends string, N extends Needs, E> = ExploreStated<S, F, N, E> &
+	Readonly<{ space: Space<S> | Aimed<S, F> }>
+
+/** What an exhaustion states beside its finite space: the box it proves the property inside, in words. */
+export type ExhaustSpec<S, F extends string, N extends Needs, E> = Stated<S, F, N, E> &
+	Readonly<{ box: string }>
+
+/**
+ * What a batched property states beside its space: cases checked a batch at a time in one evaluation (a type-tier
+ * batch checked in one compiler run), still drawn, shrunk alone and parallel across batches. `size` is how many cases
+ * one batch holds; each case's own effect, from `checkAll`, is its verdict.
  */
 export type BatchedSpec<S, F extends string, N extends Needs, E> = Omit<
 	Stated<S, F, N, E>,
 	"check"
 > &
 	Readonly<{
-		space: Space<S>
 		size: number
 		checkAll: (
 			resources: Resources<N>
@@ -162,6 +173,7 @@ export type PropertyKind = "explore" | "exhaust" | "batched" | "interleave" | "s
 /** The search a property runs and the cases it evaluates, every type it was stated with erased into closures. */
 type Made = Readonly<{
 	kind: PropertyKind
+	guide: Sense
 	oracle: Oracle
 	kills: ReadonlyArray<Kill>
 	search: (run: SearchRun) => Effect.Effect<Verdict>
@@ -177,6 +189,7 @@ type Made = Readonly<{
  */
 export class Property {
 	readonly kind: PropertyKind
+	readonly guide: Sense
 	readonly oracle: Oracle
 	readonly kills: ReadonlyArray<Kill>
 	readonly search: Made["search"]
@@ -185,6 +198,7 @@ export class Property {
 
 	constructor(made: Made) {
 		this.kind = made.kind
+		this.guide = made.guide
 		this.oracle = made.oracle
 		this.kills = made.kills
 		this.search = made.search
@@ -205,11 +219,17 @@ export class Family {
 /** The search's view of a property's stated situations and kept tokens. */
 const searchedOf = <F extends string>(
 	situations: ReadonlyArray<Reached<F>>,
-	kept: ReadonlyArray<Kept>
+	kept: ReadonlyArray<Kept>,
+	guide: Sense
 ): Searched => ({
 	situations: Arr.map(situations, keyOf),
-	kept: Arr.map(kept, (token) => ({ token: token.token, reason: token.reason }))
+	kept: Arr.map(kept, (token) => ({ token: token.token, reason: token.reason })),
+	guide
 })
+
+/** What a property's steered phase perceives: its guide's blocks, or its notes alone when it states none. */
+const senseOf = (guide: Guide | undefined): Sense =>
+	guide === undefined ? { kind: "notes" } : { kind: "blocks", files: guide.blocks }
 
 /** How a case prints: the property's show, or the value's structural form. */
 const printOf = <S>(show: Stated<S, string, Needs, unknown>["show"]): ((value: S) => string) =>
@@ -234,7 +254,7 @@ const spaceUnderOf =
 const exploredAs =
 	(kind: "explore" | "interleave" | "stateful") =>
 	<S, F extends string, N extends Needs, E>(spec: ExploreSpec<S, F, N, E>): Property => {
-		const searched = searchedOf(spec.situations, spec.kept)
+		const searched = searchedOf(spec.situations, spec.kept, senseOf(spec.guide))
 		const drawing: Drawing<S, F> = {
 			situations: spec.situations,
 			spaceUnder: spaceUnderOf(spec.space),
@@ -243,6 +263,7 @@ const exploredAs =
 		const evaluate = evaluateCase(drawing, spec.needs, spec.check)
 		return new Property({
 			kind,
+			guide: searched.guide,
 			oracle: spec.oracle,
 			kills: spec.kills,
 			search: exploreSearch(searched, 1),
@@ -253,43 +274,48 @@ const exploredAs =
 
 /** The constructors a test module builds its properties with, one per kind of search. */
 export const property = {
-	/** A sampled search, steered toward its required situations. */
+	/** A sampled search of `space`, steered toward its required situations. */
 	explore: <S, const F extends string, N extends Needs, E>(
-		spec: ExploreSpec<S, F, N, E>
-	): Property => exploredAs("explore")(spec),
+		space: Space<S> | Aimed<S, F>,
+		spec: ExploreStated<S, F, N, E>
+	): Property => exploredAs("explore")({ ...spec, space }),
 	/** Every case of a finite space: passing is a proof inside the box it names. */
 	exhaust: <S, const F extends string, N extends Needs, E>(
+		space: FiniteSpace<S>,
 		spec: ExhaustSpec<S, F, N, E>
 	): Property => {
-		const searched = searchedOf(spec.situations, spec.kept)
+		const searched = searchedOf(spec.situations, spec.kept, { kind: "notes" })
 		const evaluate = evaluateCase(
-			{ situations: spec.situations, spaceUnder: () => spec.space, print: printOf(spec.show) },
+			{ situations: spec.situations, spaceUnder: () => space, print: printOf(spec.show) },
 			spec.needs,
 			spec.check
 		)
 		return new Property({
 			kind: "exhaust",
+			guide: searched.guide,
 			oracle: spec.oracle,
 			kills: spec.kills,
-			search: exhaustSearch(searched, spec.space, spec.box),
+			search: exhaustSearch(searched, space, spec.box),
 			replay: replay(searched),
 			evaluate: (batch) => Effect.forEach(batch, evaluate)
 		})
 	},
 	/** Cases checked a batch at a time in one evaluation, still drawn and shrunk one by one. */
 	batched: <S, const F extends string, N extends Needs, E>(
+		space: Space<S>,
 		spec: BatchedSpec<S, F, N, E>
 	): Property => {
-		const searched = searchedOf(spec.situations, spec.kept)
+		const searched = searchedOf(spec.situations, spec.kept, { kind: "notes" })
 		const checkAll: BatchCheck<S, F, N, E> = spec.checkAll
 		return new Property({
 			kind: "batched",
+			guide: searched.guide,
 			oracle: spec.oracle,
 			kills: spec.kills,
 			search: exploreSearch(searched, spec.size),
 			replay: replay(searched),
 			evaluate: evaluateBatch(
-				{ situations: spec.situations, spaceUnder: () => spec.space, print: printOf(spec.show) },
+				{ situations: spec.situations, spaceUnder: () => space, print: printOf(spec.show) },
 				spec.needs,
 				checkAll
 			)

@@ -151,6 +151,14 @@ export default defineConfig(
 				})
 			},
 			{
+				files: ["packages/testing/src/runner/load.ts"],
+				rules: active({
+					/** The runner's one load of a package's test.config.ts and test modules, whose paths it learns only at run
+					 * time (TESTSYS lane CORE, 2026-11-16). */
+					"devtools/no-dynamic-imports": "off"
+				})
+			},
+			{
 				files: ["packages/testing/src/live.ts"],
 				rules: active({
 					/** The live clock a case's hang guard and a fuzz run's time budget read: its job is the clock. */

@@ -101,6 +101,8 @@ const passed: CaseResult = {
 	sketchDecisions: 0,
 	overrun: false,
 	notes: [],
+	measures: [],
+	trace: [],
 	outcome: { kind: "passed", kept: { kind: "nothing" }, shown: { kind: "unshown" } },
 	millis: 0
 }
@@ -151,6 +153,7 @@ const processPool = Effect.map(
 const checkProperty = (kills: ReadonlyArray<Kill>): Property =>
 	new Property({
 		kind: "explore",
+		guide: { kind: "notes" },
 		oracle: { kind: "unstated" },
 		kills,
 		search: (run) =>
@@ -163,6 +166,7 @@ const checkProperty = (kills: ReadonlyArray<Kill>): Property =>
 								chooser: { kind: "simplest" },
 								drawn: { kind: "unsteered" },
 								keep: "nothing",
+								sense: { kind: "notes" },
 								deadline: run.limits.deadline,
 								print: "failing"
 							}
@@ -172,13 +176,13 @@ const checkProperty = (kills: ReadonlyArray<Kill>): Property =>
 				),
 				(results) =>
 					Arr.every(Arr.flatten(results), (result) => result.outcome.kind === "passed")
-						? { kind: "exhausted", cases: 1, box: "the check" }
+						? { kind: "exhausted", cases: 1, box: "the check", measures: [] }
 						: {
 								kind: "failed",
 								finding: { kind: "lost", phase: "floor", where: run.id, report: "red" }
 							}
 			),
-		replay: () => Effect.succeed({ kind: "exhausted", cases: 1, box: "the check" }),
+		replay: () => Effect.succeed({ kind: "exhausted", cases: 1, box: "the check", measures: [] }),
 		evaluate: () => Effect.succeed([])
 	})
 
