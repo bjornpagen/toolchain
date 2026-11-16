@@ -1,5 +1,6 @@
 import { Array as Arr, Option, Schema } from "effect"
 import { enumerated, firstBranch, nextBranch } from "#enumerate.ts"
+import type { Reached } from "#features.ts"
 import { forcedChooser, type Generated, generate, recorder, type Source } from "#source.ts"
 import type { Tape } from "#tape.ts"
 
@@ -73,11 +74,50 @@ export const constant =
 	() =>
 		value
 
-/** One of `values`, shrinking toward the first: list the simplest first. */
-export const element =
-	<const A>(values: ReadonlyArray<A> & Readonly<{ 0: A }>): Gen<A> =>
-	(source) =>
-		Arr.getUnsafe(values, source.pick(0, values.length - 1))
+const caseList: unique symbol = Symbol("@bjornpagen/testing/gen/CaseList")
+
+const finiteSpace: unique symbol = Symbol("@bjornpagen/testing/gen/FiniteSpace")
+
+/**
+ * A pick from a literal list: a generator, so a generator may draw one inside a case it builds (an alphabet, a tag), but
+ * never a Space by itself, since a space that is a list of cases is an example table. `element` returns one.
+ */
+export type CaseList<A> = Gen<A> & Readonly<{ [caseList]: true }>
+
+/** What a property draws its cases from: a generator built from generators, never a CaseList. */
+export type Space<A> = Gen<A> & Readonly<{ [caseList]?: never }>
+
+/**
+ * A space an exhaustion runs every case of, declared with `finite`: the runner counts it before any case runs, and a
+ * space too large to count within the case deadline fails, naming it.
+ */
+export type FiniteSpace<A> = Space<A> & Readonly<{ [finiteSpace]: true }>
+
+/** One of `values`, shrinking toward the first: list the simplest first. A pick from a literal list is a CaseList. */
+export const element = <const A>(values: ReadonlyArray<A> & Readonly<{ 0: A }>): CaseList<A> =>
+	Object.assign((source: Source): A => Arr.getUnsafe(values, source.pick(0, values.length - 1)), {
+		[caseList]: true
+	} as const)
+
+/**
+ * A space whose cases aim at the required situations still pending: a case whose turn aims at a situation `aims` names
+ * is drawn from the space beside it, a case constructed to reach it, and every other case from `space`. The cases of one
+ * steering window aim at distinct pending requirements (features.ts Turns).
+ */
+export type Aimed<A, F extends string> = Readonly<{
+	space: Space<A>
+	aims: ReadonlyArray<readonly [Reached<F>, Space<A>]>
+}>
+
+/** A space aimed at pending situations: `space`, and for each situation of `aims` the space that reaches it. */
+export const aimed = <A, const F extends string>(
+	space: Space<A>,
+	aims: ReadonlyArray<readonly [Reached<F>, Space<A>]>
+): Aimed<A, F> => ({ space, aims })
+
+/** A space declared finite, for an exhaustion: the runner counts it before any case runs. */
+export const finite = <A>(space: Space<A>): FiniteSpace<A> =>
+	Object.assign((source: Source): A => space(source), { [finiteSpace]: true } as const)
 
 /** A generator's values, transformed. */
 export const map =

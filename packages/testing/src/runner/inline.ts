@@ -1,0 +1,67 @@
+import { Array as Arr, Effect, type Scope } from "effect"
+import type { NeedContext, Property } from "#property.ts"
+import { NeedCache, needCacheOf } from "#runner/case.ts"
+import { type Limits, runnerLimits } from "#runner/limits.ts"
+import type { Batch, CaseResult, Evaluator, Reach, Verdict } from "#runner/protocol.ts"
+
+/**
+ * The evaluator of one property in this process: each batch evaluated in turn, here, with the needs it takes opened in
+ * the caller's scope and services. A meta-test of the library's own searches, and a search nested inside a case, run
+ * on it: a search finds on it exactly what it finds on the pool.
+ */
+export const inlineEvaluator = (
+	property: Property
+): Effect.Effect<Evaluator, never, Scope.Scope | NeedContext> =>
+	Effect.map(Effect.context<NeedContext>(), (context): Evaluator => {
+		const cache = needCacheOf(context)
+		const evaluateOne = (batch: Batch) =>
+			property
+				.evaluate(batch)
+				.pipe(Effect.provideService(NeedCache, cache), Effect.provideContext(context))
+		return {
+			evaluate: (batches, stop) =>
+				Effect.gen(function* () {
+					const results: Array<ReadonlyArray<CaseResult>> = []
+					for (const batch of batches) {
+						const evaluated = yield* evaluateOne(batch)
+						results.push(evaluated)
+						if (Arr.some(evaluated, stop)) {
+							return results
+						}
+					}
+					return results
+				}),
+			width: Effect.succeed(1)
+		}
+	})
+
+/** How a search run in this process is identified and bounded: its identity, run seed, reach and limits. */
+export type InlineRun = Readonly<{ id: string; seed: number; reach: Reach; limits: Limits }>
+
+/** The runner's own limits for a search run inline, with this identity and run seed, every phase run. */
+export const inlineRun = (id: string, seed: number): InlineRun => ({
+	id,
+	seed,
+	reach: "full",
+	limits: runnerLimits
+})
+
+/**
+ * Runs one property's search in this process (inlineEvaluator) and gives its verdict: a meta-test states the property
+ * it searches as a value, runs it here, and judges the verdict, a finding included, as data.
+ */
+export const searchInline = (
+	property: Property,
+	run: InlineRun
+): Effect.Effect<Verdict, never, Scope.Scope | NeedContext> =>
+	Effect.flatMap(inlineEvaluator(property), (evaluator) => property.search({ ...run, evaluator }))
+
+/** Replays one token of a property in this process, as `toolchain-test replay` does on the pool. */
+export const replayInline = (
+	property: Property,
+	run: InlineRun,
+	token: string
+): Effect.Effect<Verdict, never, Scope.Scope | NeedContext> =>
+	Effect.flatMap(inlineEvaluator(property), (evaluator) =>
+		property.replay({ ...run, evaluator }, token)
+	)

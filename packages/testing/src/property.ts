@@ -1,8 +1,26 @@
 import type { NodeServices } from "@effect/platform-node/NodeServices"
-import { type Array as Arr, Brand, type Effect, type Scope, Schema } from "effect"
-import type { Case, Oracle } from "#explore.ts"
-import type { Reached } from "#features.ts"
-import type { Gen } from "#gen.ts"
+import { Array as Arr, Brand, Effect, Formatter, Option, Schema, type Scope } from "effect"
+import type { StatefulSpec } from "#commands.ts"
+import { statefulExplore } from "#commands.ts"
+import type { Oracle } from "#explore.ts"
+import { keyOf, type Pending, type Reached } from "#features.ts"
+import type { Aimed, FiniteSpace, Gen, Space } from "#gen.ts"
+import type { InterleaveSpec } from "#interleave.ts"
+import { interleaveExplore } from "#interleave.ts"
+import {
+	type BatchCheck,
+	type Case,
+	type CaseEnv,
+	type Drawing,
+	evaluateBatch,
+	evaluateCase
+} from "#runner/case.ts"
+import type { Batch, CaseResult, SearchRun, Verdict } from "#runner/protocol.ts"
+import { exhaustSearch, exploreSearch, replay, type Searched } from "#runner/search.ts"
+
+export type { Aimed, Case, FiniteSpace, Oracle, Space }
+export type { Dictionary } from "#dictionary.ts"
+export type { CaseList } from "#gen.ts"
 
 /**
  * A test is a value, not a callback. A test module exports properties and nothing else
@@ -27,40 +45,6 @@ export const PropertyId = Brand.nominal<PropertyId>()
 export type ReplayToken = string & Brand.Brand<"ReplayToken">
 
 export const ReplayToken = Brand.nominal<ReplayToken>()
-
-declare const caseListBrand: unique symbol
-
-declare const finiteBrand: unique symbol
-
-declare const dictionaryBrand: unique symbol
-
-/**
- * A pick from a literal list: a generator, so a generator may draw one inside a case it builds (an alphabet, a tag), but
- * never a Space by itself, since a space that is a list of cases is an example table. `element` over a literal array
- * returns one.
- */
-export type CaseList<A> = Gen<A> & Readonly<{ [caseListBrand]: true }>
-
-/** What a property draws its cases from: a generator built from generators, never a CaseList. */
-export type Space<A> = Gen<A> & Readonly<{ [caseListBrand]?: never }>
-
-/**
- * A space an exhaustion runs every case of. It is declared (`finite`) and checked: the runner counts it before any case
- * runs, and a count the case deadline cuts fails, naming the space.
- */
-export type FiniteSpace<A> = Space<A> & Readonly<{ [finiteBrand]: true }>
-
-/**
- * A closed vocabulary minted only through a dictionary door (a module the import-doors rule lets mint one, such as a
- * language's keywords): `element` over a Dictionary is a Space, since its items are the domain, not chosen cases.
- */
-export type Dictionary<A> = Arr.NonEmptyReadonlyArray<A> & Readonly<{ [dictionaryBrand]: true }>
-
-/** A space whose generator draws a case aimed at a pending required situation when its turn aims there. */
-export type Aimed<A, F extends string> = Readonly<{
-	space: Space<A>
-	aims: ReadonlyArray<readonly [Reached<F>, Space<A>]>
-}>
 
 /** A need failed to open or to give a case its resource: the case fails with it, never the run silently. */
 export class NeedFailed extends Schema.TaggedError<NeedFailed, { readonly brand: unique symbol }>()(
@@ -95,10 +79,17 @@ export type Need<A> = Readonly<{
 /** A property's needs, by the name its check reads each resource under. */
 export type Needs = Readonly<Record<string, Need<unknown>>>
 
-/** The resources a case receives for its needs. */
+/**
+ * The resources a case receives for its needs, by the name its check reads each under: each an effect that takes the
+ * need's resource in the case's scope the first time the check yields it (`const db = yield* resources.db`), and gives
+ * the same resource every later time, so a check takes only what it uses.
+ */
 export type Resources<N extends Needs> = {
-	readonly [K in keyof N]: N[K] extends Need<infer A> ? A : never
+	readonly [K in keyof N]: Effect.Effect<NeedValue<N[K]>, NeedFailed, Scope.Scope>
 }
+
+/** The resource a need gives. */
+export type NeedValue<X> = X extends Need<infer A> ? A : never
 
 /** What a check may require beyond its resources: the case's scope and the platform. */
 export type CheckContext = Scope.Scope | NodeServices
@@ -165,16 +156,154 @@ export type BatchedSpec<S, F extends string, N extends Needs, E> = Omit<
 		) => Effect.Effect<ReadonlyArray<Effect.Effect<void, E>>, E, CheckContext>
 	}>
 
-/**
- * What the runner runs: a property with its case type, needs and failures erased into closures at construction (no
- * casts), so one runner holds properties of every type. Its representation is the runner's own (CORE); a test module
- * only ever builds one with a constructor: `property.explore`, `property.exhaust`, `property.batched`,
- * `property.interleave` (interleave.ts) or `property.stateful` (commands.ts), or a harness constructor that returns one
- * or a Family.
- */
-export type Property = Readonly<{
-	kind: "explore" | "exhaust" | "batched" | "interleave" | "stateful"
+/** What kind of search a property is, as the report names it. */
+export type PropertyKind = "explore" | "exhaust" | "batched" | "interleave" | "stateful"
+
+/** The search a property runs and the cases it evaluates, every type it was stated with erased into closures. */
+type Made = Readonly<{
+	kind: PropertyKind
+	oracle: Oracle
+	kills: ReadonlyArray<Kill>
+	search: (run: SearchRun) => Effect.Effect<Verdict>
+	replay: (run: SearchRun, token: string) => Effect.Effect<Verdict>
+	evaluate: (batch: Batch) => Effect.Effect<ReadonlyArray<CaseResult>, never, CaseEnv>
 }>
 
+/**
+ * What the runner runs: a property, its case type, needs and failures erased at construction into closures (its
+ * search, its replay of one token, and the evaluation of a batch of its cases), so one runner holds properties of
+ * every type with no cast. A test module only ever builds one with a constructor of `property` or a harness
+ * constructor that returns one or a Family.
+ */
+export class Property {
+	readonly kind: PropertyKind
+	readonly oracle: Oracle
+	readonly kills: ReadonlyArray<Kill>
+	readonly search: Made["search"]
+	readonly replay: Made["replay"]
+	readonly evaluate: Made["evaluate"]
+
+	constructor(made: Made) {
+		this.kind = made.kind
+		this.oracle = made.oracle
+		this.kills = made.kills
+		this.search = made.search
+		this.replay = made.replay
+		this.evaluate = made.evaluate
+	}
+}
+
 /** A harness's properties under keys: the runner expands a family into its members, each `<export>/<key>`. */
-export type Family = Readonly<{ kind: "family"; members: Readonly<Record<string, Property>> }>
+export class Family {
+	readonly members: Readonly<Record<string, Property>>
+
+	constructor(members: Readonly<Record<string, Property>>) {
+		this.members = members
+	}
+}
+
+/** The search's view of a property's stated situations and kept tokens. */
+const searchedOf = <F extends string>(
+	situations: ReadonlyArray<Reached<F>>,
+	kept: ReadonlyArray<Kept>
+): Searched => ({
+	situations: Arr.map(situations, keyOf),
+	kept: Arr.map(kept, (token) => ({ token: token.token, reason: token.reason }))
+})
+
+/** How a case prints: the property's show, or the value's structural form. */
+const printOf = <S>(show: Stated<S, string, Needs, unknown>["show"]): ((value: S) => string) =>
+	show ?? ((value) => Formatter.format(value))
+
+/** The space a case's steering selects: an aimed space's aim at the pending situation its turn aims at, or the space. */
+const spaceUnderOf =
+	<S, F extends string>(space: Space<S> | Aimed<S, F>) =>
+	(steering: Option.Option<Pending<F>>): Gen<S> => {
+		if (typeof space === "function") {
+			return space
+		}
+		return Option.match(
+			Option.flatMap(steering, (pending) =>
+				Arr.findFirst(space.aims, ([situation]) => pending.aimed(situation))
+			),
+			{ onNone: () => space.space, onSome: ([, aim]) => aim }
+		)
+	}
+
+/** An explored property of `kind`: its cases one an evaluation, its search an exploration. */
+const exploredAs =
+	(kind: "explore" | "interleave" | "stateful") =>
+	<S, F extends string, N extends Needs, E>(spec: ExploreSpec<S, F, N, E>): Property => {
+		const searched = searchedOf(spec.situations, spec.kept)
+		const drawing: Drawing<S, F> = {
+			situations: spec.situations,
+			spaceUnder: spaceUnderOf(spec.space),
+			print: printOf(spec.show)
+		}
+		const evaluate = evaluateCase(drawing, spec.needs, spec.check)
+		return new Property({
+			kind,
+			oracle: spec.oracle,
+			kills: spec.kills,
+			search: exploreSearch(searched, 1),
+			replay: replay(searched),
+			evaluate: (batch) => Effect.forEach(batch, evaluate)
+		})
+	}
+
+/** The constructors a test module builds its properties with, one per kind of search. */
+export const property = {
+	/** A sampled search, steered toward its required situations. */
+	explore: <S, const F extends string, N extends Needs, E>(
+		spec: ExploreSpec<S, F, N, E>
+	): Property => exploredAs("explore")(spec),
+	/** Every case of a finite space: passing is a proof inside the box it names. */
+	exhaust: <S, const F extends string, N extends Needs, E>(
+		spec: ExhaustSpec<S, F, N, E>
+	): Property => {
+		const searched = searchedOf(spec.situations, spec.kept)
+		const evaluate = evaluateCase(
+			{ situations: spec.situations, spaceUnder: () => spec.space, print: printOf(spec.show) },
+			spec.needs,
+			spec.check
+		)
+		return new Property({
+			kind: "exhaust",
+			oracle: spec.oracle,
+			kills: spec.kills,
+			search: exhaustSearch(searched, spec.space, spec.box),
+			replay: replay(searched),
+			evaluate: (batch) => Effect.forEach(batch, evaluate)
+		})
+	},
+	/** Cases checked a batch at a time in one evaluation, still drawn and shrunk one by one. */
+	batched: <S, const F extends string, N extends Needs, E>(
+		spec: BatchedSpec<S, F, N, E>
+	): Property => {
+		const searched = searchedOf(spec.situations, spec.kept)
+		const checkAll: BatchCheck<S, F, N, E> = spec.checkAll
+		return new Property({
+			kind: "batched",
+			oracle: spec.oracle,
+			kills: spec.kills,
+			search: exploreSearch(searched, spec.size),
+			replay: replay(searched),
+			evaluate: evaluateBatch(
+				{ situations: spec.situations, spaceUnder: () => spec.space, print: printOf(spec.show) },
+				spec.needs,
+				checkAll
+			)
+		})
+	},
+	/** Concurrent sessions run under every order or a drawn schedule (interleave.ts). */
+	interleave: <C, S extends string, M, O, Q, A, W, N extends Needs, const F extends string, E, J>(
+		spec: InterleaveSpec<C, S, M, O, Q, A, W, N, F, E, J>
+	): Property => exploredAs("interleave")(interleaveExplore(spec)),
+	/** Programs of a machine's commands run against the real system and its model (commands.ts). */
+	stateful: <M, P, V extends string, N extends Needs, const F extends string, E>(
+		spec: StatefulSpec<M, P, V, N, F, E>
+	): Property => exploredAs("stateful")(statefulExplore(spec))
+} as const
+
+/** A harness's properties under keys, which the runner runs as `<export>/<key>`. */
+export const family = (members: Readonly<Record<string, Property>>): Family => new Family(members)

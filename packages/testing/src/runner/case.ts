@@ -1,0 +1,569 @@
+import type { NodeServices } from "@effect/platform-node/NodeServices"
+import {
+	Array as Arr,
+	Cause,
+	Context,
+	Deferred,
+	Duration,
+	Effect,
+	Exit,
+	Fiber,
+	Formatter,
+	Option,
+	Result,
+	type Scope,
+	Struct
+} from "effect"
+import { failureText } from "#failure.ts"
+import { keyOf, type Pending, pendingAt, type Reached } from "#features.ts"
+import type { Gen } from "#gen.ts"
+import { abandon, awaitWithinGrace, liveNanos, liveSleep, watchedCase } from "#live.ts"
+import type { Need, NeedContext, NeedFailed, Needs, NeedValue, Resources } from "#property.ts"
+import { fnv1a32 } from "#random.ts"
+import { type Drawn, replayTokenOf } from "#replay.ts"
+import {
+	type CaseOrder,
+	type CaseOutcome,
+	type CaseResult,
+	chooserOf,
+	type Printed
+} from "#runner/protocol.ts"
+import { type Observed, type Recording, recording, simplestChooser } from "#source.ts"
+import type { Tape } from "#tape.ts"
+
+/**
+ * What a property sees of the case it runs: it notes the situations it reached; draws more from the case's own tape;
+ * and records on the tape what the system under test decided (and learns whether a replay decided the same). A case
+ * never gives itself up: a precondition is a property of the space, which constructs only cases that meet it. A note,
+ * a draw or an observation made after the case ended is a misuse, reported as one.
+ */
+export type Case<F extends string> = Readonly<{
+	note: (feature: F) => void
+	noteAll: (features: Iterable<F>) => void
+	pair: (first: F, second: F) => void
+	draw: <A>(generator: Gen<A>) => A
+	observe: (decided: string) => Observed
+}>
+
+/** A need's resource as one case takes it, in the case's scope. */
+type Taker<A> = Effect.Effect<A, NeedFailed, Scope.Scope>
+
+/** The cache a process keeps its opened needs in: what a need's `open` gave, by the need's key. */
+type NeedSlot<A> = Deferred.Deferred<Taker<A>, NeedFailed>
+
+/** The slot a need's opening is kept under in a process's cache: one per key, so needs of one key share it. */
+const needSlotOf = <A>(need: Need<A>) =>
+	Context.Service<NeedSlot<A>>(`@bjornpagen/testing/runner/case/need/${need.key}`)
+
+/**
+ * The needs an evaluating process has opened: `take` gives a case a need's resource in the case's scope, opening the
+ * need the first time any case of the process takes it (needs of one key share it), in the process's own scope and
+ * services, so what a need keeps warm stays warm across cases and properties.
+ */
+export class NeedCache extends Context.Service<
+	NeedCache,
+	Readonly<{ take: <A>(need: Need<A>) => Taker<A> }>
+>()("@bjornpagen/testing/runner/case/NeedCache") {}
+
+/** The need cache of a process whose needs open in `context`: its scope and the runner's services. */
+export const needCacheOf = (
+	context: Context.Context<NeedContext>
+): Context.Service.Shape<typeof NeedCache> => {
+	let opened: Context.Context<never> = Context.empty()
+	return {
+		take: <A>(need: Need<A>) =>
+			Effect.suspend(() =>
+				Option.match(Context.getOption(opened, needSlotOf(need)), {
+					onSome: (taker) => Effect.flatten(Deferred.await(taker)),
+					onNone: () => {
+						const taker = Deferred.makeUnsafe<Taker<A>, NeedFailed>()
+						opened = Context.add(opened, needSlotOf(need), taker)
+						return Effect.andThen(
+							Deferred.into(Effect.provideContext(need.open, context), taker),
+							Effect.flatten(Deferred.await(taker))
+						)
+					}
+				})
+			)
+	}
+}
+
+/** What an evaluating process provides every case: its opened needs and the platform. */
+export type CaseEnv = NeedCache | NodeServices
+
+/** One case's taker of a need, as `Struct.map` maps a property's needs. */
+interface Taking extends Struct.Lambda {
+	<A>(need: Need<A>): Taker<A>
+	readonly "~lambda.out": Taker<NeedValue<this["~lambda.in"]>>
+}
+
+/**
+ * An effect that runs `effect` the first time it is run and gives every later run the same exit: a case takes each
+ * resource once, however often its check yields it.
+ */
+const once = <A, E>(effect: Effect.Effect<A, E, Scope.Scope>): Effect.Effect<A, E, Scope.Scope> => {
+	const settled = Deferred.makeUnsafe<A, E>()
+	let started = false
+	return Effect.suspend(() => {
+		if (started) {
+			return Deferred.await(settled)
+		}
+		started = true
+		return Effect.andThen(Deferred.into(effect, settled), Deferred.await(settled))
+	})
+}
+
+/**
+ * A case's resources, by the name its check reads each under: each an effect that takes the need's resource in the
+ * case's scope the first time the check yields it, and gives the same resource every later time.
+ */
+const resourcesOf = <N extends Needs>(
+	needs: N,
+	cache: Context.Service.Shape<typeof NeedCache>
+): Resources<N> =>
+	Struct.map(
+		needs,
+		Struct.lambda<Taking>((need) => once(cache.take(need)))
+	)
+
+/**
+ * How a property's cases are drawn and printed, its value type erased into closures: the generator a case's steering
+ * selects, the situations its steering names by place, and how a value prints (its show, or its structural form).
+ */
+export type Drawing<S, F extends string> = Readonly<{
+	situations: ReadonlyArray<Reached<F>>
+	spaceUnder: (steering: Option.Option<Pending<F>>) => Gen<S>
+	print: (value: S) => string
+}>
+
+/** The steering a case's generator reads, as its order records it. */
+const steeringOf = <F extends string>(
+	situations: ReadonlyArray<Reached<F>>,
+	drawn: Drawn
+): Option.Option<Pending<F>> => {
+	switch (drawn.kind) {
+		case "unsteered":
+			return Option.none()
+		case "steered":
+			return Option.some(pendingAt(situations, drawn.pending))
+	}
+}
+
+/** A case's handle and what closing it leaves: its notes, what its property drew, and whether it was used after. */
+type Handle<F extends string> = Readonly<{
+	c: Case<F>
+	close: () => Readonly<{
+		notes: ReadonlyArray<string>
+		drew: ReadonlyArray<unknown>
+		misused: boolean
+	}>
+}>
+
+/** The handle of a case drawing on `recorded`: open until closed, a misuse after. */
+const handleOf = <F extends string>(recorded: Recording): Handle<F> => {
+	const notes = new Set<string>()
+	const drew: Array<unknown> = []
+	let open = true
+	let misused = false
+	const record = (key: string) => {
+		if (open) {
+			notes.add(key)
+			return
+		}
+		misused = true
+	}
+	return {
+		c: {
+			note: record,
+			noteAll: (features) => {
+				for (const feature of features) {
+					record(feature)
+				}
+			},
+			pair: (first, second) => record(keyOf<F>([first, second])),
+			draw: (inner) => {
+				if (!open) {
+					misused = true
+					return inner(recording(simplestChooser).source)
+				}
+				const value = inner(recorded.source)
+				drew.push(value)
+				return value
+			},
+			observe: (decided) => {
+				if (!open) {
+					misused = true
+					return "as-recorded"
+				}
+				return recorded.source.observe(fnv1a32(decided))
+			}
+		},
+		close: () => {
+			open = false
+			return { notes: Arr.fromIterable(notes), drew, misused }
+		}
+	}
+}
+
+/** A value as the report prints it; a show or a value whose printing throws is stated as unprintable. */
+const printedOf = <S>(
+	print: (value: S) => string,
+	value: S,
+	drew: ReadonlyArray<unknown>
+): Printed => ({
+	kind: "drawn",
+	value: Result.getOrElse(
+		Result.try(() => print(value)),
+		() => "unprintable: printing the case throws"
+	),
+	draws: Arr.map(drew, (draw) => Formatter.format(draw))
+})
+
+/** How a guarded effect ended: it passed, failed with its cause, or ran past its deadline. */
+type Settled =
+	| Readonly<{ kind: "passed" }>
+	| Readonly<{ kind: "failed"; cause: Cause.Cause<unknown> }>
+	| Readonly<{ kind: "hung" }>
+
+const settledOf = <E>(exit: Exit.Exit<Exit.Exit<void, E>>): Settled => {
+	if (Exit.isFailure(exit)) {
+		return { kind: "failed", cause: exit.cause }
+	}
+	return Exit.isSuccess(exit.value)
+		? { kind: "passed" }
+		: { kind: "failed", cause: exit.value.cause }
+}
+
+/**
+ * Runs `effect` in a fiber of its own, raced against `deadline` milliseconds on the live clock: an effect that runs to
+ * its end synchronously arms no timer. A hung effect is interrupted, and its cleanup awaited for HUNG_CLEANUP_GRACE
+ * (live.ts) before the case is reported. From the fork until the race, the evaluation is uninterruptible, so an
+ * interruption that arrives in between reaches the race and stops the fiber rather than leaving it running detached.
+ */
+const guarded = <E, R>(
+	effect: Effect.Effect<void, E, R>,
+	deadline: number
+): Effect.Effect<Settled, never, R> =>
+	Effect.uninterruptibleMask((restore) =>
+		Effect.gen(function* () {
+			const running = yield* Effect.forkDetach(Effect.exit(effect), { startImmediately: true })
+			const ranThrough = running.pollUnsafe()
+			if (ranThrough !== undefined) {
+				return settledOf(ranThrough)
+			}
+			const ended = yield* restore(
+				Effect.raceFirst(
+					Effect.map(Fiber.await(running), settledOf),
+					Effect.as(liveSleep(Duration.millis(deadline)), { kind: "hung" } satisfies Settled)
+				)
+			).pipe(Effect.onInterrupt(() => abandon(running)))
+			if (ended.kind === "hung") {
+				yield* abandon(running)
+				yield* awaitWithinGrace(running)
+			}
+			return ended
+		})
+	)
+
+/** Milliseconds since a moment of liveNanos. */
+const millisSince = (began: bigint) => Effect.map(liveNanos, (now) => Number(now - began) / 1e6)
+
+/** The report a case leaves when it blocks its process's event loop, which the watchdog prints as it ends the process. */
+const blockedReport = (
+	order: CaseOrder,
+	recorded: Recording,
+	printed: () => Option.Option<string>
+): string =>
+	Arr.join(
+		[
+			`${order.property}: a case held its worker's event loop past its deadline of ${Duration.format(Duration.millis(order.deadline))} and the watchdog's grace, so its guard could not stop it: a hang`,
+			`case: ${Option.getOrElse(printed(), () => "none yet: it hung while its space drew it")}`,
+			`replay: toolchain-test replay '${replayTokenOf(order.property, { drawn: order.drawn, values: Arr.fromIterable(tapeValues(recorded.tape())) })}'`
+		],
+		"\n"
+	)
+
+/** A tape's values. */
+const tapeValues = (tape: Tape): Float64Array => tape.values.subarray(0, tape.length)
+
+/** The outcome of a case that drew its value and settled. */
+const outcomeOf = (
+	settled: Settled,
+	order: CaseOrder,
+	recorded: Recording,
+	printed: Printed,
+	misused: boolean
+): CaseOutcome => {
+	switch (settled.kind) {
+		case "passed":
+			return misused
+				? { kind: "misused", printed }
+				: {
+						kind: "passed",
+						kept:
+							order.keep === "tape" ? { kind: "tape", tape: recorded.tape() } : { kind: "nothing" },
+						shown: order.print === "always" ? { kind: "shown", printed } : { kind: "unshown" }
+					}
+		case "failed":
+			return { kind: "failed", failure: failureText(settled.cause), tape: recorded.tape(), printed }
+		case "hung":
+			return { kind: "hung", tape: recorded.tape(), printed }
+	}
+}
+
+/** What a case's run settles to before its result is measured: its value's decisions, its notes, its outcome. */
+type Ran = Readonly<{ sketchDecisions: number; notes: ReadonlyArray<string>; outcome: CaseOutcome }>
+
+/** The run of a case whose space threw while drawing its value: failed, undrawn. */
+const undrawn = (recorded: Recording, error: unknown): Ran => ({
+	sketchDecisions: recorded.decided(),
+	notes: [],
+	outcome: {
+		kind: "failed",
+		failure: failureText(Cause.die(error)),
+		tape: recorded.tape(),
+		printed: { kind: "undrawn", why: "its space threw while drawing it" }
+	}
+})
+
+/** A property's check of one case. */
+export type CaseCheck<S, F extends string, N extends Needs, E> = (
+	resources: Resources<N>,
+	c: Case<F>
+) => (value: S) => Effect.Effect<void, E, Scope.Scope | NodeServices>
+
+/** A batched property's check of a batch: each case's own effect is its verdict. */
+export type BatchCheck<S, F extends string, N extends Needs, E> = (
+	resources: Resources<N>
+) => (
+	cases: Arr.NonEmptyReadonlyArray<readonly [S, Case<F>]>
+) => Effect.Effect<ReadonlyArray<Effect.Effect<void, E>>, E, Scope.Scope | NodeServices>
+
+/**
+ * Evaluates one case of a property: rebuilds its chooser, draws its value from the space its steering selects, takes
+ * its needs' resources in the case's own scope, and runs its check under the case deadline, the process's watchdog
+ * watching it from before its value is drawn. A space that throws while drawing fails the case, undrawn. The tape is
+ * copied out only for a case that did not pass and for one whose order keeps it.
+ */
+export const evaluateCase =
+	<S, F extends string, N extends Needs, E>(
+		drawing: Drawing<S, F>,
+		needs: N,
+		check: CaseCheck<S, F, N, E>
+	) =>
+	(order: CaseOrder): Effect.Effect<CaseResult, never, CaseEnv> =>
+		Effect.gen(function* () {
+			const began = yield* liveNanos
+			const recorded = recording(chooserOf(order.chooser))
+			let shown: Option.Option<string> = Option.none()
+			const ran = yield* watchedCase(
+				{ caseHang: Duration.millis(order.deadline), cut: Option.none() },
+				() => blockedReport(order, recorded, () => shown),
+				Effect.suspend(() => {
+					const drawn = Result.try(() =>
+						drawing.spaceUnder(steeringOf(drawing.situations, order.drawn))(recorded.source)
+					)
+					if (Result.isFailure(drawn)) {
+						return Effect.succeed(undrawn(recorded, drawn.failure))
+					}
+					const value = drawn.success
+					shown = Option.some(
+						Result.getOrElse(
+							Result.try(() => drawing.print(value)),
+							() => "unprintable: printing the case throws"
+						)
+					)
+					const sketchDecisions = recorded.decided()
+					const handle = handleOf<F>(recorded)
+					return Effect.map(
+						guarded(
+							Effect.scoped(
+								NeedCache.use((cache) => check(resourcesOf(needs, cache), handle.c)(value))
+							),
+							order.deadline
+						),
+						(settled): Ran => {
+							const closed = handle.close()
+							return {
+								sketchDecisions,
+								notes: closed.notes,
+								outcome: outcomeOf(
+									settled,
+									order,
+									recorded,
+									printedOf(drawing.print, value, closed.drew),
+									closed.misused
+								)
+							}
+						}
+					)
+				})
+			)
+			return {
+				decisions: recorded.decided(),
+				sketchDecisions: ran.sketchDecisions,
+				overrun: recorded.status() === "overrun",
+				notes: ran.notes,
+				outcome: ran.outcome,
+				millis: yield* millisSince(began)
+			}
+		})
+
+/** One case of a batch once drawn: its order, recording, value and handle, its sketch's decisions, and its place
+ * among the batch's drawn cases, where its verdict is. */
+type DrawnCase<S, F extends string> = Readonly<{
+	order: CaseOrder
+	recorded: Recording
+	value: S
+	handle: Handle<F>
+	sketchDecisions: number
+	at: number
+}>
+
+/** A case of a batch, drawn or undrawn. */
+type Slot<S, F extends string> =
+	| Readonly<{ kind: "drawn"; drawn: DrawnCase<S, F> }>
+	| Readonly<{ kind: "undrawn"; recorded: Recording; ran: Ran }>
+
+/** Draws one case of a batch from its order, the `at`-th of its drawn cases should it draw. */
+const slotOf = <S, F extends string>(
+	drawing: Drawing<S, F>,
+	order: CaseOrder,
+	at: number
+): Slot<S, F> => {
+	const recorded = recording(chooserOf(order.chooser))
+	const drawn = Result.try(() =>
+		drawing.spaceUnder(steeringOf(drawing.situations, order.drawn))(recorded.source)
+	)
+	if (Result.isFailure(drawn)) {
+		return { kind: "undrawn", recorded, ran: undrawn(recorded, drawn.failure) }
+	}
+	return {
+		kind: "drawn",
+		drawn: {
+			order,
+			recorded,
+			value: drawn.success,
+			handle: handleOf<F>(recorded),
+			sketchDecisions: recorded.decided(),
+			at
+		}
+	}
+}
+
+/** A drawn case's run once its verdict settled. */
+const ranOf = <S, F extends string>(
+	drawing: Drawing<S, F>,
+	drawn: DrawnCase<S, F>,
+	settled: Settled
+): Ran => {
+	const closed = drawn.handle.close()
+	return {
+		sketchDecisions: drawn.sketchDecisions,
+		notes: closed.notes,
+		outcome: outcomeOf(
+			settled,
+			drawn.order,
+			drawn.recorded,
+			printedOf(drawing.print, drawn.value, closed.drew),
+			closed.misused
+		)
+	}
+}
+
+/** A case's result from its run and its measured time. */
+const resultOf = (recorded: Recording, ran: Ran, millis: number): CaseResult => ({
+	decisions: recorded.decided(),
+	sketchDecisions: ran.sketchDecisions,
+	overrun: recorded.status() === "overrun",
+	notes: ran.notes,
+	outcome: ran.outcome,
+	millis
+})
+
+/**
+ * Evaluates a batch of a batched property's cases in one check: draws each case (one its space throws on fails alone,
+ * undrawn), takes the needs' resources once in the batch's scope, runs `checkAll` on the drawn cases under the case
+ * deadline times their count, then each case's own effect under the case deadline as its verdict. A check that fails or
+ * hangs as a whole fails or hangs every case it held; a case it gave no verdict fails. Each case's measured time is
+ * the batch's, shared evenly.
+ */
+export const evaluateBatch =
+	<S, F extends string, N extends Needs, E>(
+		drawing: Drawing<S, F>,
+		needs: N,
+		checkAll: BatchCheck<S, F, N, E>
+	) =>
+	(
+		batch: Arr.NonEmptyReadonlyArray<CaseOrder>
+	): Effect.Effect<ReadonlyArray<CaseResult>, never, CaseEnv> =>
+		Effect.gen(function* () {
+			const began = yield* liveNanos
+			const [, slots] = Arr.mapAccum(batch, 0, (drawnSoFar, order) => {
+				const slot = slotOf(drawing, order, drawnSoFar)
+				return [slot.kind === "drawn" ? drawnSoFar + 1 : drawnSoFar, slot] as const
+			})
+			const deadline = Arr.reduce(batch, 0, (total, order) => total + order.deadline)
+			const runs = yield* watchedCase(
+				{ caseHang: Duration.millis(deadline), cut: Option.none() },
+				() =>
+					`${Arr.headNonEmpty(batch).property}: a batch of ${batch.length} cases held its worker's event loop past its deadline and the watchdog's grace: a hang`,
+				runsOf(drawing, needs, checkAll, slots, deadline)
+			)
+			const millis = (yield* millisSince(began)) / batch.length
+			return Arr.zipWith(slots, runs, (slot, ran) =>
+				resultOf(slot.kind === "drawn" ? slot.drawn.recorded : slot.recorded, ran, millis)
+			)
+		})
+
+/** Each case's run, in the batch's order: the batch's check over its drawn cases, then each case's verdict. */
+const runsOf = <S, F extends string, N extends Needs, E>(
+	drawing: Drawing<S, F>,
+	needs: N,
+	checkAll: BatchCheck<S, F, N, E>,
+	slots: ReadonlyArray<Slot<S, F>>,
+	deadline: number
+): Effect.Effect<ReadonlyArray<Ran>, never, CaseEnv> =>
+	Effect.scoped(
+		Effect.gen(function* () {
+			const drawnCases = Arr.flatMap(slots, (slot) =>
+				slot.kind === "drawn" ? [[slot.drawn.value, slot.drawn.handle.c] as const] : []
+			)
+			let verdicts: ReadonlyArray<Effect.Effect<void, E>> = []
+			const whole: Settled = Arr.isReadonlyArrayNonEmpty(drawnCases)
+				? yield* guarded(
+						NeedCache.use((cache) =>
+							Effect.map(checkAll(resourcesOf(needs, cache))(drawnCases), (given) => {
+								verdicts = given
+							})
+						),
+						deadline
+					)
+				: { kind: "passed" }
+			return yield* Effect.forEach(slots, (slot) => {
+				switch (slot.kind) {
+					case "undrawn":
+						return Effect.succeed(slot.ran)
+					case "drawn": {
+						const drawn = slot.drawn
+						if (whole.kind !== "passed") {
+							return Effect.succeed(ranOf(drawing, drawn, whole))
+						}
+						return Effect.map(
+							Option.match(Arr.get(verdicts, drawn.at), {
+								onNone: () =>
+									Effect.succeed<Settled>({
+										kind: "failed",
+										cause: Cause.die(
+											`checkAll gave ${verdicts.length} verdicts for ${drawnCases.length} cases`
+										)
+									}),
+								onSome: (verdict) => guarded(verdict, drawn.order.deadline)
+							}),
+							(settled) => ranOf(drawing, drawn, settled)
+						)
+					}
+				}
+			})
+		})
+	)

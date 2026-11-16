@@ -141,3 +141,22 @@ export const biased = (words: Words, lo: number, hi: number): number => {
 	const distance = between(words, 0, 2 ** between(words, 0, Math.floor(Math.log2(range))) - 1)
 	return fromHigh ? hi - distance : lo + distance
 }
+
+/**
+ * A word source and how many words have been drawn from it: a search that draws a mutation's edits from a case's
+ * words before handing the rest to the case's chooser orders that chooser as the seed and the words it skips, so
+ * another process rebuilds the same stream from where the search left it.
+ */
+export const countedWords = (seed: number): Readonly<{ words: Words; used: () => number }> => {
+	const inner = wordsOf(seed)
+	let used = 0
+	return {
+		words: {
+			next: () => {
+				used += 1
+				return inner.next()
+			}
+		},
+		used: () => used
+	}
+}

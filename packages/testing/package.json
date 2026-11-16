@@ -10,6 +10,7 @@
 	},
 	"exports": {
 		"./commands": "./src/commands.ts",
+		"./dictionary": "./src/dictionary.ts",
 		"./enumerate": "./src/enumerate.ts",
 		"./explore": "./src/explore.ts",
 		"./failure": "./src/failure.ts",
@@ -17,6 +18,7 @@
 		"./fact": "./src/fact.ts",
 		"./features": "./src/features.ts",
 		"./gen": "./src/gen.ts",
+		"./inline": "./src/runner/inline.ts",
 		"./interleave": "./src/interleave.ts",
 		"./live": "./src/live.ts",
 		"./mutate": "./src/mutate.ts",

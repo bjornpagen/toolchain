@@ -326,3 +326,8 @@ export const watchedCase = <A, E, R>(
 		(release) => Effect.sync(release)
 	)
 }
+
+/** The live clock's time in nanoseconds, whatever clock the caller runs under: a case's measured time reads it. */
+export const liveNanos = Clock.currentTimeNanos.pipe(
+	Effect.provideService(Clock.Clock, Clock.Clock.defaultValue())
+)

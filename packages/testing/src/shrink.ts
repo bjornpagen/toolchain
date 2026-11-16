@@ -380,3 +380,322 @@ export const shrink = <A, R>(
 			budget
 		)
 	})
+
+/** A candidate's verdict as a shrink in candidate order reads it: it still fails, with the tape it drew, or it holds. */
+export type Judged<X> =
+	| Readonly<{ kind: "fails"; tape: Tape; failure: X }>
+	| Readonly<{ kind: "holds" }>
+
+/** Why a shrink in candidate order ended: no pass made progress, or its budget of candidates ran out. */
+export type OrderedEnd = "minimal" | "budget"
+
+/** The smallest failing case a shrink in candidate order reached, the candidates it judged, and why it ended. */
+export type Ordered<X> = Readonly<{ best: Failing<X>; candidates: number; ended: OrderedEnd }>
+
+/**
+ * Where a shrink is among its passes (shrinkAttempt's, in its order): deleting the item at `cursor`, deleting or
+ * simplifying the span at `span`, exchanging the item at `cursor` with the one `later` after it, or lowering the
+ * decision at `at` to its simplest (`lowest`) or by bisection between `low` and `high`.
+ */
+type Cursor =
+	| Readonly<{ pass: "delete-items"; cursor: number }>
+	| Readonly<{ pass: "delete-spans"; span: number }>
+	| Readonly<{ pass: "simplify-spans"; span: number }>
+	| Readonly<{ pass: "reorder-items"; cursor: number; later: number }>
+	| Readonly<{ pass: "lower-choices"; at: number; search: Lowering }>
+
+/** How a decision is being lowered: straight to its simplest, then by bisection. */
+type Lowering =
+	| Readonly<{ kind: "lowest" }>
+	| Readonly<{ kind: "bisect"; low: number; high: number }>
+
+/** Where a shrink is, and whether its round has accepted a candidate yet. */
+type Walk = Readonly<{ cursor: Cursor; progressed: boolean }>
+
+/**
+ * The next thing a walk does from where it is, against the best case so far: propose a candidate, whose verdict
+ * (`after`, given whether it was accepted and the best case then) says where the walk goes next; move on without one
+ * (a span with no decisions, a decision already at its simplest); or end its round.
+ */
+type Step =
+	| Readonly<{
+			kind: "propose"
+			values: Float64Array
+			after: (accepted: boolean, best: Parsed<unknown>) => Walk
+	  }>
+	| Readonly<{ kind: "move"; walk: Walk }>
+	| Readonly<{ kind: "round-end"; progressed: boolean }>
+
+/** A round's first walk: deleting the best case's last item. */
+const roundOf = (best: Parsed<unknown>): Walk => ({
+	cursor: { pass: "delete-items", cursor: best.items.length - 1 },
+	progressed: false
+})
+
+/** A walk at `cursor` that keeps its round's progress, and adds an accepted candidate's. */
+const walkTo = (walk: Walk, cursor: Cursor, accepted: boolean): Walk => ({
+	cursor,
+	progressed: walk.progressed || accepted
+})
+
+/** What a walk does next from where it is (Step), exactly as shrinkAttempt's passes would. */
+const stepOf = (walk: Walk, best: Parsed<unknown>): Step => {
+	const cursor = walk.cursor
+	const move = (next: Cursor): Step => ({ kind: "move", walk: walkTo(walk, next, false) })
+	const spanBounds = (span: number) =>
+		[best.tape.spanStart[span] ?? 0, best.tape.spanEnd[span] ?? 0] as const
+	switch (cursor.pass) {
+		case "delete-items": {
+			if (cursor.cursor < 0) {
+				return move({ pass: "delete-spans", span: best.tape.spanLabel.length - 1 })
+			}
+			return {
+				kind: "propose",
+				values: withoutItem(Arr.getUnsafe(best.items, cursor.cursor)),
+				after: (accepted, now) =>
+					walkTo(
+						walk,
+						{ pass: "delete-items", cursor: Math.min(cursor.cursor, now.items.length) - 1 },
+						accepted
+					)
+			}
+		}
+		case "delete-spans":
+		case "simplify-spans": {
+			if (cursor.span < 0) {
+				return move(
+					cursor.pass === "delete-spans"
+						? { pass: "simplify-spans", span: best.tape.spanLabel.length - 1 }
+						: { pass: "reorder-items", cursor: 0, later: 1 }
+				)
+			}
+			const [start, end] = spanBounds(cursor.span)
+			const next: Cursor = { pass: cursor.pass, span: cursor.span - 1 }
+			if (end <= start) {
+				return move(next)
+			}
+			return {
+				kind: "propose",
+				values:
+					cursor.pass === "delete-spans"
+						? without(best.tape.values, start, end)
+						: simplified(best.tape, start, end),
+				after: (accepted) => walkTo(walk, next, accepted)
+			}
+		}
+		case "reorder-items": {
+			if (cursor.cursor >= best.items.length) {
+				return move({ pass: "lower-choices", at: 0, search: { kind: "lowest" } })
+			}
+			return Option.match(
+				Option.flatMap(Arr.get(best.items, cursor.cursor), (item) => exchanged(item, cursor.later)),
+				{
+					onNone: () => move({ pass: "reorder-items", cursor: cursor.cursor + 1, later: 1 }),
+					onSome: (values): Step => ({
+						kind: "propose",
+						values,
+						after: (accepted) =>
+							walkTo(
+								walk,
+								{ pass: "reorder-items", cursor: cursor.cursor, later: cursor.later + 1 },
+								accepted
+							)
+					})
+				}
+			)
+		}
+		case "lower-choices": {
+			const at = cursor.at
+			const nextDecision: Cursor = { pass: "lower-choices", at: at + 1, search: { kind: "lowest" } }
+			if (at >= best.tape.length) {
+				return { kind: "round-end", progressed: walk.progressed }
+			}
+			const search = cursor.search
+			switch (search.kind) {
+				case "lowest": {
+					const lo = best.tape.lo[at] ?? 0
+					const value = best.tape.values[at] ?? 0
+					if (value === lo) {
+						return move(nextDecision)
+					}
+					return {
+						kind: "propose",
+						values: replaced(best.tape.values, at, lo),
+						after: (accepted) =>
+							walkTo(
+								walk,
+								accepted
+									? nextDecision
+									: { pass: "lower-choices", at, search: { kind: "bisect", low: lo, high: value } },
+								accepted
+							)
+					}
+				}
+				case "bisect": {
+					if (search.low + 1 >= search.high) {
+						return move(nextDecision)
+					}
+					const middle = search.low + Math.floor((search.high - search.low) / 2)
+					return {
+						kind: "propose",
+						values: replaced(best.tape.values, at, middle),
+						after: (accepted) =>
+							walkTo(
+								walk,
+								{
+									pass: "lower-choices",
+									at,
+									search: accepted
+										? { kind: "bisect", low: search.low, high: middle }
+										: { kind: "bisect", low: middle, high: search.high }
+								},
+								accepted
+							)
+					}
+				}
+			}
+		}
+	}
+}
+
+/** A candidate a walk proposed, and where the walk goes once it is judged. */
+type Proposed = Readonly<{
+	values: Float64Array
+	after: (accepted: boolean, best: Parsed<unknown>) => Walk
+}>
+
+/** What a walk proposes ahead of its verdicts: the candidates it would propose were none accepted, or its round's end. */
+type Ahead =
+	| Readonly<{ kind: "proposed"; proposed: Arr.NonEmptyReadonlyArray<Proposed> }>
+	| Readonly<{ kind: "round-end"; progressed: boolean }>
+
+/**
+ * The next `wide` candidates a walk proposes from where it is, were none of them accepted, passing over what `skipped`
+ * holds of (a candidate already judged, or not smaller than the best) and over a repeat among them; or its round's end,
+ * when it reaches it before proposing any.
+ */
+const speculated = (
+	walk: Walk,
+	best: Parsed<unknown>,
+	wide: number,
+	skipped: (values: Float64Array) => boolean
+): Ahead => {
+	const proposed: Array<Proposed> = []
+	const seen = new Map<number, Array<Float64Array>>()
+	let ahead = walk
+	for (;;) {
+		const step = stepOf(ahead, best)
+		switch (step.kind) {
+			case "round-end":
+				return Arr.isReadonlyArrayNonEmpty(proposed)
+					? { kind: "proposed", proposed }
+					: { kind: "round-end", progressed: step.progressed }
+			case "move":
+				ahead = step.walk
+				break
+			case "propose": {
+				const digest = digestOf(step.values, step.values.length)
+				const repeated = Arr.some(
+					seen.get(digest) ?? [],
+					(known) => shortlex(known, known.length, step.values, step.values.length) === 0
+				)
+				if (!repeated && !skipped(step.values)) {
+					seen.set(digest, [...(seen.get(digest) ?? []), step.values])
+					proposed.push({ values: step.values, after: step.after })
+				}
+				if (Arr.isReadonlyArrayNonEmpty(proposed) && proposed.length >= wide) {
+					return { kind: "proposed", proposed }
+				}
+				ahead = step.after(false, best)
+				break
+			}
+		}
+	}
+}
+
+/**
+ * Shrinks a failing case by editing its tape, proposing exactly the candidates shrinkAttempt's passes propose, in their
+ * order, and accepting exactly the ones it accepts, while judging many at once: from where it is, it proposes the
+ * candidates its walk would propose were none of them accepted, up to `width` of them (read before each round of
+ * judging), and `judge` judges them together, in parallel, giving back their verdicts in candidate order up to one
+ * that fails (it may stop there). The first candidate in candidate order that fails with a tape smaller than the best
+ * is accepted once every candidate before it has been judged, and the walk goes on from it; the candidates judged after
+ * it are let go. So the case it reaches, and how many candidates it counts, depend on the failing case alone, never on
+ * the width. A candidate already judged in this shrink, or not smaller than the best, is passed over unjudged and
+ * uncounted. It ends when a round of every pass accepts nothing (`minimal`) or `budget` candidates have been judged.
+ */
+export const shrinkInOrder = <X, R>(
+	failing: Failing<X>,
+	judge: (
+		candidates: Arr.NonEmptyReadonlyArray<Float64Array>
+	) => Effect.Effect<ReadonlyArray<Judged<X>>, never, R>,
+	width: Effect.Effect<number, never, R>,
+	budget: ShrinkBudget
+): Effect.Effect<Ordered<X>, never, R> =>
+	Effect.gen(function* () {
+		let best: Parsed<X> = parsedOf(failing)
+		let walk = roundOf(best)
+		let candidates = 0
+		const tried = new Map<number, Array<Float64Array>>()
+		const seenIn = (seen: ReadonlyMap<number, ReadonlyArray<Float64Array>>, values: Float64Array) =>
+			Arr.some(
+				seen.get(digestOf(values, values.length)) ?? [],
+				(known) => shortlex(known, known.length, values, values.length) === 0
+			)
+		const remember = (seen: Map<number, Array<Float64Array>>, values: Float64Array) => {
+			const digest = digestOf(values, values.length)
+			seen.set(digest, [...(seen.get(digest) ?? []), values])
+		}
+		const belowBest = (values: Float64Array) =>
+			shortlex(values, values.length, best.tape.values, best.tape.length) === -1
+		const room = () =>
+			budget.kind === "bounded" ? budget.candidates - candidates : Number.POSITIVE_INFINITY
+		for (;;) {
+			if (room() <= 0) {
+				return { best: { tape: best.tape, failure: best.failure }, candidates, ended: "budget" }
+			}
+			const free = yield* width
+			const ahead = speculated(
+				walk,
+				best,
+				Math.max(1, Math.min(free, room())),
+				(values) => seenIn(tried, values) || !belowBest(values)
+			)
+			if (ahead.kind === "round-end") {
+				if (ahead.progressed) {
+					walk = roundOf(best)
+					continue
+				}
+				return { best: { tape: best.tape, failure: best.failure }, candidates, ended: "minimal" }
+			}
+			const proposed = ahead.proposed
+			const verdicts = yield* judge(Arr.map(proposed, (candidate) => candidate.values))
+			for (const [at, candidate] of proposed.entries()) {
+				const verdict = Arr.get(verdicts, at)
+				if (Option.isNone(verdict)) {
+					break
+				}
+				candidates += 1
+				remember(tried, candidate.values)
+				const judged = verdict.value
+				const accepted =
+					judged.kind === "fails" &&
+					shortlex(judged.tape.values, judged.tape.length, best.tape.values, best.tape.length) ===
+						-1
+				if (accepted) {
+					best = parsedOf({ tape: judged.tape, failure: judged.failure })
+					for (const [digest, seen] of tried) {
+						const below = Arr.filter(seen, belowBest)
+						if (Arr.isReadonlyArrayNonEmpty(below)) {
+							tried.set(digest, below)
+						} else {
+							tried.delete(digest)
+						}
+					}
+					walk = candidate.after(true, best)
+					break
+				}
+				walk = candidate.after(false, best)
+			}
+		}
+	})
