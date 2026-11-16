@@ -10,7 +10,8 @@
 		"packages/testing/src/vitest/coverage.ts",
 		"packages/testing/src/vitest/searches-setup.ts",
 		"packages/testing/src/witness.fixtures.ts",
-		"packages/testing/test.config.ts"
+		"packages/testing/test.config.ts",
+		"packages/devtools/test.config.ts"
 	],
 	// out/ is where a proof run builds a consumer, with a pnpm workspace of its own: not this repository's code.
 	"ignorePatterns": ["packages/devtools/src/*/fixtures/**", "out/**"],
@@ -36,7 +37,8 @@
 				"patterns": [
 					"packages/devtools/src/**/*.test.ts",
 					"packages/devtools/src/**/*.fixtures.ts",
-					"packages/devtools/vitest.config.ts"
+					"packages/devtools/vitest.config.ts",
+					"packages/devtools/test.config.ts"
 				]
 			},
 			{
