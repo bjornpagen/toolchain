@@ -48,7 +48,7 @@ import { runOfLabel } from "#runner/stack.ts"
  * @revalidate a Node upgrade; a different machine; a change to the message's format or the worker transport; a run
  *   whose workers sit idle at its end while one message's cases finish
  */
-const messageWorkMillis = 12
+export const messageWorkMillis = 12
 
 /**
  * A unit as scheduling sees it: its id, which orders the queue (a unit queued earlier has a smaller id, a unit put back
@@ -114,10 +114,14 @@ export type Scheduler<U extends Scheduled> = Readonly<{
 	wanted: (view: View<U>, starting: Option.Option<number>) => number
 	/** One message of the module's oldest queued property for `worker`, out of the queue, its module held from now on. */
 	take: (worker: number, module: string) => Option.Option<Arr.NonEmptyReadonlyArray<U>>
+	/** The steal of idle worker `thief` from `victim` alone: its unstarted tail, as far as the thief may take it. */
+	stealFrom: (thief: number, victim: number, view: View<U>) => Choice<U>
 	/** Worker `worker` was handed these units (a steal's), and holds their module from now on. */
 	hand: (worker: number, units: ReadonlyArray<U>) => void
 	/** Whether worker `worker` holds `module`. */
 	holds: (worker: number, module: string) => boolean
+	/** Whether some worker holds `module`. */
+	holdsAny: (module: string) => boolean
 	/** A property's cases finished: how many, and their milliseconds. */
 	finished: (property: string, cases: number, millis: number) => void
 	/**
@@ -309,9 +313,10 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 		properties: Iterable<string>,
 		on: Option.Option<number>
 	): Option.Option<number> => {
-		const imported = Option.exists(on, (worker) => importedOn[worker]?.has(module) ?? false)
+		const imported = Option.isSome(on) ? importedOn[on.value] : undefined
+		const opened = Option.isSome(on) ? openedOn[on.value] : undefined
 		let readying = 0
-		if (!imported) {
+		if (!(imported?.has(module) ?? false)) {
 			const importing = imports.get(module)
 			if (importing === undefined) {
 				return Option.none()
@@ -319,7 +324,7 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 			readying += importing
 		}
 		for (const property of properties) {
-			if (Option.exists(on, (worker) => openedOn[worker]?.has(property) ?? false)) {
+			if (opened?.has(property) ?? false) {
 				continue
 			}
 			const opening = openings.get(property)
@@ -348,20 +353,28 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 	}
 
 	/**
-	 * How many units of `property` one message carries: as many as fill the work a message aims for at the property's
-	 * mean case time, one while it has none, and never more than its fair share of what is queued.
+	 * How many of a property's queued `units`, from the oldest, one message carries: as many as fill the work a message
+	 * aims for, each unit's cases at the property's mean case time (a series' or a batch's every case, not one); one
+	 * while the property has no mean, and never more than its fair share of what is queued.
 	 */
-	const perMessage = (property: string): number => {
+	const perMessage = (property: string, units: ReadonlyArray<U>): number => {
 		const sum = cases.get(property)
 		if (sum === undefined) {
 			return 1
 		}
 		const mean = sum.millis / sum.count
 		const fair = Math.max(1, Math.ceil(total / workers))
-		return Math.max(
-			1,
-			Math.min(fair, Math.floor(messageWorkMillis / Math.max(mean, Number.MIN_VALUE)))
-		)
+		let count = 0
+		let work = 0
+		for (const unit of units) {
+			const next = work + unit.cases * mean
+			if (count >= fair || (count > 0 && next > messageWorkMillis)) {
+				break
+			}
+			work = next
+			count += 1
+		}
+		return Math.max(1, count)
 	}
 
 	const take = (worker: number, module: string): Option.Option<Arr.NonEmptyReadonlyArray<U>> => {
@@ -371,7 +384,7 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 		}
 		return Option.flatMap(headOf(queued), (head) => {
 			const units = queued.byProperty.get(head.property) ?? []
-			const taken = units.splice(0, perMessage(head.property))
+			const taken = units.splice(0, perMessage(head.property, units))
 			for (const unit of taken) {
 				queued.cases.set(unit.property, (queued.cases.get(unit.property) ?? 0) - unit.cases)
 				queued.units -= 1
@@ -431,7 +444,7 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 		let best: Option.Option<Readonly<{ victim: number; count: number; held: boolean }>> =
 			Option.none()
 		for (let victim = 0; victim < view.workers; victim += 1) {
-			if (victim === thief || !view.stealable(victim)) {
+			if (victim === thief || view.sentOf(victim).length === 0 || !view.stealable(victim)) {
 				continue
 			}
 			const unstarted = view.unstartedOf(victim)
@@ -544,12 +557,23 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 			return wanted
 		},
 		take,
+		stealFrom: (thief, victim, view) => {
+			if (thief === victim || view.sentOf(victim).length === 0 || !view.stealable(victim)) {
+				return { kind: "wait" }
+			}
+			const unstarted = view.unstartedOf(victim)
+			const units = unstarted.slice(unstarted.length - tailOf(thief, unstarted))
+			return Arr.isReadonlyArrayNonEmpty(units)
+				? { kind: "steal", victim, units }
+				: { kind: "wait" }
+		},
 		hand: (worker, units) => {
 			for (const unit of units) {
 				hold(worker, unit.module)
 			}
 		},
 		holds: (worker, module) => holds[worker]?.has(module) ?? false,
+		holdsAny: (module) => (holders.get(module)?.size ?? 0) > 0,
 		finished: (property, count, millis) => {
 			const sum = cases.get(property) ?? { count: 0, millis: 0 }
 			sum.count += count
@@ -633,22 +657,102 @@ export const afterFinished = <U extends Scheduled>(
 	worker: number,
 	module: string
 ) => {
+	const fed = fedBy(apply)
 	if (view.idle(worker)) {
 		const choice = scheduler.choose(worker, view)
 		if (choice.kind !== "wait") {
-			apply(worker, choice)
+			fed.give(worker, choice)
 		}
 	}
-	for (let other = 0; other < view.workers && scheduler.outgrows(module, view); other += 1) {
-		if (view.idle(other)) {
-			Option.map(scheduler.take(other, module), (units) => apply(other, { kind: "take", units }))
+	for (let other = 0; other < view.workers; other += 1) {
+		if (!view.idle(other)) {
+			continue
 		}
+		if (!scheduler.outgrows(module, view)) {
+			break
+		}
+		Option.map(scheduler.take(other, module), (units) => fed.give(other, { kind: "take", units }))
 	}
 	for (let other = 0; other < view.workers; other += 1) {
 		if (other !== worker && view.idle(other) && scheduler.holds(other, module)) {
 			const choice = scheduler.choose(other, view)
 			if (choice.kind !== "wait") {
-				apply(other, choice)
+				fed.give(other, choice)
+			}
+		}
+	}
+	offerSteals(scheduler, view, apply, fed.taken)
+}
+
+/**
+ * What units newly queued for `module` change, and only that: the module's idle holders are given work, their own
+ * modules first; a module no worker holds goes to an idle worker; and idle workers take it while its work outgrows its
+ * holders. A queue changes no steal (a steal takes units already sent), so no other idle worker is re-decided: every
+ * idle worker was given what it could take when it last became idle or work was last queued.
+ */
+export const afterQueued = <U extends Scheduled>(
+	scheduler: Scheduler<U>,
+	view: View<U>,
+	apply: Apply<U>,
+	module: string
+) => {
+	const fed = fedBy(apply)
+	for (let worker = 0; worker < view.workers; worker += 1) {
+		if (view.idle(worker) && scheduler.holds(worker, module)) {
+			const choice = scheduler.choose(worker, view)
+			if (choice.kind !== "wait") {
+				fed.give(worker, choice)
+			}
+		}
+	}
+	for (let worker = 0; worker < view.workers; worker += 1) {
+		if (!view.idle(worker)) {
+			continue
+		}
+		if (scheduler.holdsAny(module) && !scheduler.outgrows(module, view)) {
+			break
+		}
+		const taken = scheduler.take(worker, module)
+		if (Option.isNone(taken)) {
+			break
+		}
+		fed.give(worker, { kind: "take", units: taken.value })
+	}
+	offerSteals(scheduler, view, apply, fed.taken)
+}
+
+/** `apply`, keeping the workers it gave queued units to: the workers whose tails a steal may now take from. */
+const fedBy = <U extends Scheduled>(apply: Apply<U>) => {
+	const taken = new Set<number>()
+	return {
+		taken,
+		give: (worker: number, choice: Choice<U>) => {
+			if (choice.kind === "take") {
+				taken.add(worker)
+			}
+			apply(worker, choice)
+		}
+	}
+}
+
+/**
+ * Offers the tails of workers just given queued units to idle workers, as a steal each may take of them: a take is
+ * the one event that gives a worker a tail to steal from, so no other idle worker's steal changed.
+ */
+const offerSteals = <U extends Scheduled>(
+	scheduler: Scheduler<U>,
+	view: View<U>,
+	apply: Apply<U>,
+	victims: ReadonlySet<number>
+) => {
+	for (const victim of victims) {
+		for (let thief = 0; thief < view.workers; thief += 1) {
+			if (!view.idle(thief)) {
+				continue
+			}
+			const choice = scheduler.stealFrom(thief, victim, view)
+			if (choice.kind !== "wait") {
+				apply(thief, choice)
 			}
 		}
 	}

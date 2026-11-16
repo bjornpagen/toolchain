@@ -202,8 +202,8 @@ export type CaseResult = typeof CaseResult.Type
  * Where a series' cases come from, which its process draws itself: an exhaustion's sketches, `count` of them enumerated
  * over the property's space from the branch of the first (the first `length` of `start`), a sketch being one case of the
  * space and every case its property's own draws enumerate from it, fewer when the space ends first; or a stream of an
- * exploration's cases, one a seed, each drawn unsteered from its case seed (random.ts caseSeed), as the rotating stream
- * draws its cases.
+ * exploration's cases, one a seed, each drawn from its case seed (random.ts caseSeed) under the stream's steering: the
+ * rotating stream's unsteered, the floor's of a property that requires no situation, steered toward none.
  */
 const SeriesFrom = Schema.Union([
 	Schema.Struct({
@@ -212,7 +212,7 @@ const SeriesFrom = Schema.Union([
 		length: Schema.Finite,
 		count: Schema.Finite
 	}),
-	Schema.Struct({ kind: Schema.Literal("stream"), seeds: Float64s })
+	Schema.Struct({ kind: Schema.Literal("stream"), seeds: Float64s, drawn: Drawn })
 ])
 
 export type SeriesFrom = typeof SeriesFrom.Type

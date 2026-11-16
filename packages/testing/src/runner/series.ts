@@ -34,17 +34,18 @@ const branchChooser = (branch: Branch): ChooserSpec => ({
 })
 
 /**
- * The order of a series' case drawn by `chooser`: unsteered, its tape kept as `keep` says, its notes perceived, under the
- * series' deadline and open bound.
+ * The order of a series' case drawn by `chooser` under `drawn`'s steering, its tape kept as `keep` says, its notes
+ * perceived, under the series' deadline and open bound.
  */
 const orderOf = (
 	series: SeriesOrder,
 	chooser: ChooserSpec,
+	drawn: CaseOrder["drawn"],
 	keep: CaseOrder["keep"]
 ): CaseOrder => ({
 	property: series.property,
 	chooser,
-	drawn: { kind: "unsteered" },
+	drawn,
 	keep,
 	sense: { kind: "notes" },
 	deadline: series.deadline,
@@ -167,7 +168,7 @@ const sketchesRun = <R>(
 		)
 		while (Arr.isReadonlyArrayNonEmpty(frontier)) {
 			const orders = Arr.map(frontier, ([, branch]) =>
-				orderOf(series, branchChooser(branch), "tape")
+				orderOf(series, branchChooser(branch), { kind: "unsteered" }, "tape")
 			)
 			const evaluatedRound = yield* roundOf(orders, series.group, evaluate)
 			const results = Arr.map(evaluatedRound, (result, at): CaseResult =>
@@ -220,8 +221,8 @@ const sketchesRun = <R>(
 	})
 
 /**
- * Runs a stream's cases here, one a seed in order, each drawn unsteered from its case seed with its tape kept only when
- * it fails: in rounds of `group` to an evaluation, through the first evaluation that holds a case that did not pass.
+ * Runs a stream's cases here, one a seed in order, each drawn from its case seed under the stream's steering, with its
+ * tape kept only when it fails: in rounds of `group` to an evaluation, through the first evaluation that holds a case that did not pass.
  */
 const streamRun = <R>(
 	evaluate: (
@@ -233,7 +234,7 @@ const streamRun = <R>(
 ): Effect.Effect<SeriesRan, never, R> =>
 	Effect.gen(function* () {
 		const orders = Arr.map(Arr.fromIterable(from.seeds), (seed) =>
-			orderOf(series, { kind: "random", seed, skip: 0 }, "nothing")
+			orderOf(series, { kind: "random", seed, skip: 0 }, from.drawn, "nothing")
 		)
 		const evaluated = yield* roundOf(orders, series.group, evaluate)
 		const results = Arr.map(evaluated, (result, at): CaseResult =>

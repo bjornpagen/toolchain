@@ -33,6 +33,7 @@ import {
 } from "#runner/protocol.ts"
 import {
 	afterFinished,
+	afterQueued,
 	type Choice,
 	feedAll as feedIdle,
 	forksOf,
@@ -309,17 +310,18 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 				return workers.length
 			},
 			sentOf: (index) => workers[index]?.sent ?? [],
-			unstartedOf: (index) =>
-				Option.match(Option.fromUndefinedOr(workers[index]), {
-					onNone: () => [],
-					onSome: unstartedOf
-				}),
-			stealable: (index) =>
-				Option.exists(
-					Option.fromUndefinedOr(workers[index]),
-					(worker) => worker.ready && Option.isNone(worker.revokingFor)
-				),
-			idle: (index) => !closing && Option.exists(Option.fromUndefinedOr(workers[index]), idle)
+			unstartedOf: (index) => {
+				const worker = workers[index]
+				return worker === undefined ? [] : unstartedOf(worker)
+			},
+			stealable: (index) => {
+				const worker = workers[index]
+				return worker !== undefined && worker.ready && Option.isNone(worker.revokingFor)
+			},
+			idle: (index) => {
+				const worker = workers[index]
+				return !closing && worker !== undefined && idle(worker)
+			}
 		}
 
 		/** Sends a worker units to evaluate. */
@@ -721,7 +723,10 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 			Effect.gen(function* () {
 				now = yield* liveMillis
 				const units = Arr.map(works, enqueue)
-				feedAll()
+				for (const module of new Set(Arr.map(units, (unit) => unit.module))) {
+					afterQueued(scheduler, view, apply, module)
+				}
+				grow()
 				const given: Array<readonly [Unit, A]> = []
 				for (const [at, unit] of units.entries()) {
 					const answered = yield* Deferred.await(unit.done)

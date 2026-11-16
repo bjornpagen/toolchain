@@ -2,6 +2,7 @@ import { Array as Arr, Option } from "effect"
 import { array, type Gen, int } from "#gen.ts"
 import {
 	afterFinished,
+	afterQueued,
 	type Apply,
 	feedAll,
 	forksOf,
@@ -162,7 +163,7 @@ export type Ran = Readonly<{
  * worker and forks more as the queue wants them (forksOf), each starting for the workload's start time; every
  * property's search queues its first window at once and each next window when the last's every case has finished; an
  * idle worker is given what the scheduler chooses (a steal's tail handed to it at once), as the pool's events decide
- * (feedAll, afterFinished); a worker runs its units in order, readying a module the first time it runs a unit of it
+ * (feedAll, afterQueued, afterFinished); a worker runs its units in order, readying a module the first time it runs a unit of it
  * (the module's readying, reported to the scheduler), then the case. The run ends when every window has run, or, with
  * work left and no worker running, stalled.
  */
@@ -351,10 +352,12 @@ export const simulate = (workload: Workload, forking: Forking): Ran => {
 				Arr.findFirst(searches, (search) => search.property === unit.property),
 				(search) => {
 					search.outstanding -= 1
-					if (search.outstanding === 0) {
-						queueNext(search)
-						feedEvery()
+					if (search.outstanding > 0) {
+						return
 					}
+					queueNext(search)
+					afterQueued(scheduler, view, apply, search.module)
+					grow()
 				}
 			)
 			afterFinished(scheduler, view, apply, worker.index, unit.module)
@@ -449,4 +452,31 @@ export const spreadIn = (
 		outgrows: scheduler.outgrows("m", view),
 		wanted: scheduler.wanted(view, Option.some(starting))
 	}
+}
+
+/**
+ * A queue as one message reads it: a property's measured mean case time, the pool's width, and the cases of each of
+ * its queued units, oldest first (one, a case alone; more, a series' or a batch's).
+ */
+export type MessageState = Readonly<{
+	meanMillis: number
+	workers: number
+	units: ReadonlyArray<number>
+}>
+
+/** Means of 0.05 to 20 ms a case, one to eight workers, and one to forty units of one to thirty-two cases each. */
+export const messageStates: Gen<MessageState> = (source) => ({
+	meanMillis: source.draw(int(1, 400)) / 20,
+	workers: source.draw(int(1, 8)),
+	units: source.draw(array(int(1, 32), { min: 1, max: 40 }))
+})
+
+/** How many of `state`'s queued units the scheduler gives one idle worker in one message. */
+export const messageTaken = (state: MessageState): number => {
+	const scheduler = schedulerOf<Scheduled>(state.workers)
+	scheduler.finished("m#p", 20, 20 * state.meanMillis)
+	for (const [at, cases] of state.units.entries()) {
+		scheduler.enqueue({ id: at + 1, property: "m#p", module: "m", cases })
+	}
+	return Option.match(scheduler.take(0, "m"), { onNone: () => 0, onSome: (units) => units.length })
 }

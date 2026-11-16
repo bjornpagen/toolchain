@@ -25,6 +25,8 @@ import { property } from "#property.ts"
 import {
 	cheap,
 	FORKINGS,
+	messageStates,
+	messageTaken,
 	outgrowing,
 	spreadIn,
 	simulate,
@@ -33,6 +35,7 @@ import {
 	tripBound,
 	workloads
 } from "#runner/schedule.fixtures.ts"
+import { messageWorkMillis } from "#runner/schedule.ts"
 
 export const everyCaseOnce = property.explore(
 	(source) => ({ workload: source.draw(workloads), forking: source.draw(element(FORKINGS)) }),
@@ -185,6 +188,45 @@ export const spreadPaysForItself = property.explore(
 		]
 	}
 )
+
+export const messageFillsItsWork = property.explore(messageStates, {
+	needs: {},
+	situations: ["single cases", "units of several cases", "capped by the fair share"],
+	check: (_resources, c) => (state) =>
+		Effect.sync(() => {
+			c.note(
+				Arr.every(state.units, (cases) => cases === 1) ? "single cases" : "units of several cases"
+			)
+			const fair = Math.max(1, Math.ceil(state.units.length / state.workers))
+			let expected = 0
+			let work = 0
+			for (const cases of state.units) {
+				const next = work + cases * state.meanMillis
+				if (expected >= fair || (expected > 0 && next > messageWorkMillis)) {
+					break
+				}
+				work = next
+				expected += 1
+			}
+			if (expected === fair && fair < state.units.length) {
+				c.note("capped by the fair share")
+			}
+			strictEqual(messageTaken(state), Math.max(1, expected))
+		}),
+	oracle: {
+		kind: "specification",
+		name: "a message carries the oldest units whose every case, at the mean case time, fills the work a message aims for, one at least, never past the fair share"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/runner/schedule.ts",
+			original: "\t\t\tconst next = work + unit.cases * mean\n",
+			replacement: "\t\t\tconst next = work + mean\n",
+			why: "A message is filled at one case a unit, as before series: a series of sixteen cheap cases counts as one case, so one worker takes a whole round of a property's series while the others idle, and the property's rounds run one worker at a time (the unit tier's quarter at 420 s against 262); this property fails."
+		}
+	]
+})
 
 export const outgrowingSpreads = property.explore(outgrowing, {
 	needs: {},

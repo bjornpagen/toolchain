@@ -162,9 +162,9 @@ export const streams = property.explore(
 		kills: [
 			{
 				file: "packages/testing/src/runner/search.ts",
-				original: "\t\t\t\tconst indices = indicesOf(start, window, floorCases)",
-				replacement: "\t\t\t\tconst indices = indicesOf(start, window, floorCases - 1)",
-				why: "The floor stream runs one case fewer than its limit (explore-floor-rounded-down, re-anchored from explore.ts's floor count to the new search's floor windows); the streams property fails."
+				original: "\t\t\t\t\tfloor,\n\t\t\t\t\tfloorCases,\n",
+				replacement: "\t\t\t\t\tfloor,\n\t\t\t\t\tfloorCases - 1,\n",
+				why: "The floor stream runs one case fewer than its limit (explore-floor-rounded-down, re-anchored from explore.ts's floor count to the floor of a property that requires no situation, sent as series); the streams property fails."
 			}
 		]
 	}
@@ -535,8 +535,9 @@ export const rotatingSeries = property.explore(streamedShapes, {
 	kills: [
 		{
 			file: "packages/testing/src/runner/series.ts",
-			original: '\t\t\torderOf(series, { kind: "random", seed, skip: 0 }, "nothing")',
-			replacement: '\t\t\torderOf(series, { kind: "random", seed, skip: 1 }, "nothing")',
+			original: '\t\t\torderOf(series, { kind: "random", seed, skip: 0 }, from.drawn, "nothing")',
+			replacement:
+				'\t\t\torderOf(series, { kind: "random", seed, skip: 1 }, from.drawn, "nothing")',
 			why: "A stream's case is drawn one word into its case seed, so the series runs other cases than the stream's; this property fails."
 		},
 		{

@@ -57,26 +57,38 @@ export const enumerated = <A>(
 /** Milliseconds of a reading of a thread's CPU, user and system. */
 const cpuMillisOf = (spent: NodeJS.CpuUsage): number => (spent.user + spent.system) / 1000
 
+/** A space counted: how many cases it holds, and the branch of every `every`-th, from the first, in order. */
+export type Counted = Readonly<{ cases: number; starts: ReadonlyArray<Branch> }>
+
 /**
- * How many cases a generator's space holds, counted as sizeOf counts it, unless the count itself takes more than
- * `cpuMillis` of CPU: none then, for a space too large to count, and so to exhaust. The count is bounded by the CPU it
- * spends, its thread's alone (no collector or other thread of the process), read around each run of cases it counts
- * between two yields, never by the time that passes, so a busy machine,
- * or a busy process whose other fibers run between those runs, never makes a countable space uncountable.
+ * How many cases a generator's space holds, counted as sizeOf counts it, with the branch of every `every`-th case on
+ * the way (where a search's series of that many sketches each start, so it walks the space once), unless the count
+ * itself takes more than `cpuMillis` of CPU: none then, for a space too large to count, and so to exhaust. The count is
+ * bounded by the CPU it spends, its thread's alone (no collector or other thread of the process), read around each run
+ * of cases it counts between two yields, never by the time that passes, so a busy machine, or a busy process whose
+ * other fibers run between those runs, never makes a countable space uncountable.
  */
 export const countWithin = (
 	generator: Gen<unknown>,
-	cpuMillis: number
-): Effect.Effect<Option.Option<number>> =>
+	cpuMillis: number,
+	every: number
+): Effect.Effect<Option.Option<Counted>> =>
 	Effect.gen(function* () {
 		const yieldEvery = yield* Scheduler.MaxOpsBeforeYield
 		const recorded = recorder()
+		const starts: Array<Branch> = []
 		let cases = 0
 		let spent = 0
 		let branch: Option.Option<Branch> = Option.some(firstBranch)
 		while (Option.isSome(branch)) {
 			const began = process.threadCpuUsage()
 			for (let run = 0; run < yieldEvery && Option.isSome(branch); run += 1) {
+				if (cases % every === 0) {
+					starts.push({
+						values: branch.value.values.slice(0, branch.value.length),
+						length: branch.value.length
+					})
+				}
 				branch = enumerated(recorded, generator, branch.value).next
 				cases += 1
 			}
@@ -86,7 +98,7 @@ export const countWithin = (
 			}
 			yield* Effect.yieldNow
 		}
-		return Option.some(cases)
+		return Option.some({ cases, starts })
 	})
 
 /**

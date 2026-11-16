@@ -322,10 +322,16 @@ export const countedBesideBusyFibers = property.explore(busyCounts, {
 	check: () => (busy) =>
 		Effect.gen(function* () {
 			const [counted] = yield* Effect.all(
-				[countWithin(int(0, busy.cases - 1), COUNT_BUDGET_MILLIS), busyFor(busy.busyMillis)],
+				[
+					countWithin(int(0, busy.cases - 1), COUNT_BUDGET_MILLIS, busy.cases),
+					busyFor(busy.busyMillis)
+				],
 				{ concurrency: "unbounded" }
 			)
-			deepStrictEqual(counted, Option.some(busy.cases))
+			deepStrictEqual(
+				Option.map(counted, (count) => count.cases),
+				Option.some(busy.cases)
+			)
 		}),
 	oracle: {
 		kind: "specification",
