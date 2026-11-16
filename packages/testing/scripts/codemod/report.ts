@@ -54,6 +54,8 @@ export type Reason = keyof typeof REASONS
 
 /** What the report tells a conversion lane about a module the codemod did convert. */
 const NOTES = {
+	"setup-per-worker":
+		"setup the search ran once before its cases is a need opened once per worker, which every case on it reads",
 	"setup-per-case":
 		"effectful setup runs per case now, on the case's own resources: a Template candidate",
 	"plant-citations": "plant citations removed from the header: its kills come from them",

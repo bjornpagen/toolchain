@@ -408,7 +408,8 @@ export const convert = (
 					? new Set([
 							...state.taken,
 							step.success.name,
-							...Arr.flatMap(step.success.lifted, declaredNamesOf)
+							...Arr.flatMap(step.success.lifted, declaredNamesOf),
+							...Option.toArray(Option.map(step.success.need, (n) => n.name))
 						])
 					: state.taken,
 				steps: [...state.steps, step]
@@ -447,7 +448,8 @@ export const convert = (
 								test: [...state.test, property.text],
 								lifted: [
 									...state.lifted,
-									...Arr.map(property.lifted, (s) => withCommentsOf(parsed, s))
+									...Arr.map(property.lifted, (s) => withCommentsOf(parsed, s)),
+									...Option.toArray(Option.map(property.need, (n) => n.text))
 								]
 							}
 				}
@@ -526,7 +528,12 @@ export const convert = (
 		parsed,
 		imports,
 		fixturesReads,
-		Result.getOrElse(fixturesDoor, () => []),
+		[
+			...Result.getOrElse(fixturesDoor, () => []),
+			...Arr.flatMap(properties, (p) =>
+				Option.match(p.need, { onNone: () => [], onSome: (n) => n.wanted })
+			)
+		],
 		api,
 		false
 	)

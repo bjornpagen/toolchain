@@ -59,6 +59,8 @@ export type Module = Readonly<{
 export type Built = Readonly<{
 	name: string
 	lifted: ReadonlyArray<ts.Statement>
+	/** The search's setup, run once per worker: the need's name, its declaration and the imports that declaration reads. */
+	need: Option.Option<Readonly<{ name: string; text: string; wanted: ReadonlyArray<Wanted> }>>
 	kept: ReadonlyArray<KeptCase>
 	text: string
 	wanted: ReadonlyArray<Wanted>
@@ -870,6 +872,7 @@ const textOfType = (expression: ts.AsExpression): string =>
 /** The setup split: what moves to module scope (pure values), and what each case runs before its check (the rest). */
 type Split = Readonly<{
 	lifted: ReadonlyArray<ts.Statement>
+	worker: ReadonlyArray<ts.Statement>
 	prefix: ReadonlyArray<ts.Statement>
 	perCase: ReadonlySet<string>
 }>
@@ -879,11 +882,15 @@ type Split = Readonly<{
  * nothing and constructs nothing (`new`) is a value and moves to module scope, under a name the module does not take;
  * every other statement runs per case, in order, before the check.
  */
-const splitOf = (setup: ReadonlyArray<ts.Statement>, taken: ReadonlySet<string>): Split => {
+const splitOf = (
+	setup: ReadonlyArray<ts.Statement>,
+	taken: ReadonlySet<string>,
+	yieldsOnWorker: boolean
+): Split => {
 	const declared = new Set(Arr.flatMap(setup, declaredNamesOf))
 	return Arr.reduce(
 		setup,
-		{ lifted: [], prefix: [], perCase: new Set<string>() },
+		{ lifted: [], worker: [], prefix: [], perCase: new Set<string>() },
 		(split: Split, statement): Split => {
 			const names = declaredNamesOf(statement)
 			const liftedNames = new Set(Arr.flatMap(split.lifted, declaredNamesOf))
@@ -904,13 +911,21 @@ const splitOf = (setup: ReadonlyArray<ts.Statement>, taken: ReadonlySet<string>)
 					identifiersUnder(statement),
 					(n) => declared.has(n) && !liftedNames.has(n) && !Arr.contains(names, n)
 				)
+			const onWorker =
+				!pure &&
+				!returnsOf(statement) &&
+				!holds(statement, ts.SyntaxKind.AwaitExpression) &&
+				(yieldsOnWorker || !holds(statement, ts.SyntaxKind.YieldExpression)) &&
+				!Arr.some(identifiersUnder(statement), (n) => split.perCase.has(n))
 			return pure
 				? { ...split, lifted: [...split.lifted, statement] }
-				: {
-						...split,
-						prefix: [...split.prefix, statement],
-						perCase: new Set([...split.perCase, ...names])
-					}
+				: onWorker
+					? { ...split, worker: [...split.worker, statement] }
+					: {
+							...split,
+							prefix: [...split.prefix, statement],
+							perCase: new Set([...split.perCase, ...names])
+						}
 		}
 	)
 }
@@ -1084,7 +1099,13 @@ const builtOf = (
 	parts: Parts
 ): Step<Built> => {
 	const { parsed } = module
-	const split = splitOf(setupOf(search.wrappers), taken)
+	const split = splitOf(
+		setupOf(search.wrappers),
+		taken,
+		!Arr.some(parts.provisions, (p) => p.kind !== "ambient") &&
+			Arr.every(stagesOf(search.wrappers), (stage) => textOf(stage) === "Effect.scoped")
+	)
+	const workerNames = Arr.flatMap(split.worker, declaredNamesOf)
 	const fromSetup = Arr.filter(
 		[
 			...parts.space.reads,
@@ -1093,7 +1114,7 @@ const builtOf = (
 			...Option.match(parts.box, { onNone: () => [], onSome: (box) => box.reads }),
 			...Arr.flatMap(parts.kept, (k) => identifiersUnder(k.value))
 		],
-		(name) => split.perCase.has(name)
+		(name) => split.perCase.has(name) || Arr.contains(workerNames, name)
 	)
 	if (Arr.isReadonlyArrayNonEmpty(fromSetup)) {
 		return refuse(
@@ -1168,12 +1189,29 @@ const builtOf = (
 		callback.kind === "literal"
 			? textOf(callback.body)
 			: `(${textOf(callback.expression)})(${valueName}, ${caseName})`
-	const lifted = new Set<ts.Statement>(split.lifted)
+	const lifted = new Set<ts.Statement>([...split.lifted, ...split.worker])
+	const name = freshName(camelOf(test), taken)
+	const need = Arr.isReadonlyArrayNonEmpty(split.worker)
+		? Option.some(
+				workerNeedOf(
+					module,
+					split.worker,
+					freshName(
+						`${Arr.head(workerNames).pipe(Option.getOrElse(() => "setup"))}Need`,
+						new Set([...used, ...taken, name])
+					)
+				)
+			)
+		: Option.none()
 	const resolveNames = Option.match(callback.kind === "literal" ? callback.value : Option.none(), {
 		onNone: () => [],
 		onSome: (p) => (Option.isSome(parts.space.resolve) ? boundNamesOf(p.name) : [])
 	})
 	const layers: ReadonlyArray<Layer> = [
+		...Option.match(need, {
+			onNone: () => [],
+			onSome: (n): ReadonlyArray<Layer> => [{ kind: "setup", lines: [n.take], names: workerNames }]
+		}),
 		...Arr.map(search.wrappers, (w): Layer =>
 			w.kind === "setup"
 				? (() => {
@@ -1196,7 +1234,7 @@ const builtOf = (
 	const perCase = [...Arr.flatMap(split.prefix, declaredNamesOf), ...resolveNames]
 	const redeclared = Option.match(inlined, {
 		onNone: () => [],
-		onSome: (body) => Arr.filter(body.names, (name) => Arr.contains(perCase, name))
+		onSome: (body) => Arr.filter(body.names, (declared) => Arr.contains(perCase, declared))
 	})
 	if (Arr.isReadonlyArrayNonEmpty(redeclared) && Arr.isReadonlyArrayNonEmpty(split.prefix)) {
 		return refuse(
@@ -1281,18 +1319,21 @@ const builtOf = (
 				return `Effect.provideServiceEffect(${effect}, ${provision.service}, ${resources[needs.indexOf(provision)] ?? provision.resource})`
 		}
 	})
-	const resourcesParameter = Arr.isReadonlyArrayNonEmpty(resources)
-		? Option.some(`{ ${Arr.join(resources, ", ")} }`)
+	const taking = [...resources, ...Option.toArray(Option.map(need, (n) => n.name))]
+	const resourcesParameter = Arr.isReadonlyArrayNonEmpty(taking)
+		? Option.some(`{ ${Arr.join(taking, ", ")} }`)
 		: Option.map(caseParameter, () => freshName("_", used))
 	const outer = Arr.join(
 		[...Option.toArray(resourcesParameter), ...Option.toArray(caseParameter)],
 		", "
 	)
 	const check = `(${outer}) => (${Option.getOrElse(valueParameter, () => "")}) => ${provided}`
-	const name = freshName(camelOf(test), taken)
 	const fields = [
 		`needs: { ${Arr.join(
-			Arr.map(needs, (need, i) => `${resources[i] ?? need.resource}: ${need.need}`),
+			[
+				...Arr.map(needs, (given, i) => `${resources[i] ?? given.resource}: ${given.need}`),
+				...Option.toArray(Option.map(need, (n) => n.name))
+			],
 			", "
 		)} }`,
 		`situations: ${Option.match(vocabulary, {
@@ -1311,6 +1352,7 @@ const builtOf = (
 	return Result.succeed({
 		name,
 		lifted: split.lifted,
+		need: Option.map(need, (n) => ({ name: n.name, text: n.text, wanted: n.wanted })),
 		kept: parts.kept,
 		text: `/** ${sentenceOf(test)} */\nexport const ${name} = ${module.locals.property}.${search.kind}(${parts.space.text}, {\n${Arr.join(fields, ",\n")}\n})`,
 		wanted: [
@@ -1329,7 +1371,7 @@ const builtOf = (
 						}
 					]
 				: []),
-			...Arr.flatMap(needs, (need) => need.imports)
+			...Arr.flatMap(needs, (given) => given.imports)
 		],
 		notes: [
 			...(Arr.isReadonlyArrayNonEmpty(effects)
@@ -1341,9 +1383,59 @@ const builtOf = (
 						}
 					]
 				: []),
+			...Option.match(need, {
+				onNone: () => [],
+				onSome: (n) => [
+					{
+						code: "setup-per-worker" as const,
+						line: lineAt(module, search.call),
+						detail: `${name}: ${n.name} (${Arr.join(workerNames, ", ")})`
+					}
+				]
+			}),
 			...(clocked
 				? [{ code: "test-services" as const, line: lineAt(module, test.call), detail: name }]
 				: [])
 		]
 	})
 }
+
+/**
+ * A search's setup that ran once before its cases and that no case's resources feed (values its search built, effects
+ * on the platform alone): a need opened once per worker, whose open runs the setup's statements as they were and gives
+ * every case on the worker what they bound, which the check takes first (`const { a, b } = yield* aNeed`). Its key is
+ * the module and the need's name, so no other need shares it.
+ */
+const workerNeedOf = (
+	module: Module,
+	statements: Arr.NonEmptyReadonlyArray<ts.Statement>,
+	name: string
+): Readonly<{ name: string; take: string; text: string; wanted: ReadonlyArray<Wanted> }> => {
+	const names = Arr.flatMap(statements, declaredNamesOf)
+	const bound = `{ ${Arr.join(names, ", ")} }`
+	const lines = Arr.join(
+		Arr.map(statements, (statement) => withCommentsOf(module.parsed, statement)),
+		"\n"
+	)
+	const effectful = Arr.some(statements, (st) => holds(st, ts.SyntaxKind.YieldExpression))
+	const key = `${module.parsed.file}#${name}`
+	const built = effectful
+		? `Effect.gen(function* () {\n${lines}\nreturn ${bound}\n}).pipe(\nEffect.mapError((error) => NeedFailed.make({ need: ${quoted(key)}, message: Cause.pretty(Cause.fail(error)) })),\nEffect.map((made) => Effect.succeed(made))\n)`
+		: `Effect.sync(() => {\n${lines}\nreturn Effect.succeed(${bound})\n})`
+	return {
+		name,
+		take: Arr.isReadonlyArrayNonEmpty(names) ? `const ${bound} = yield* ${name}` : `yield* ${name}`,
+		text: `/** What the search built once before its cases (${Arr.join(names, ", ")}), now once per worker: every case on it reads them. */\nconst ${name} = {\nkey: ${quoted(key)},\nopen: ${built}\n} as const`,
+		wanted: effectful
+			? [
+					{ module: module.api.property, name: "NeedFailed", local: "NeedFailed", type: false },
+					{ module: "effect", name: "Cause", local: "Cause", type: false },
+					{ module: "effect", name: "Effect", local: "Effect", type: false }
+				]
+			: [{ module: "effect", name: "Effect", local: "Effect", type: false }]
+	}
+}
+
+/** A string literal of `text`, in double quotes, its backslashes and quotes escaped. */
+const quoted = (text: string): string =>
+	`"${Str.replaceAll('"', '\\"')(Str.replaceAll("\\", "\\\\")(text))}"`
