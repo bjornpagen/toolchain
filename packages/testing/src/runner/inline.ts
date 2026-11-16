@@ -24,7 +24,8 @@ type InlineContext = Exclude<NeedContext, WorkerIndex | ModuleClosure>
 /**
  * The evaluator of one property in this process: each batch evaluated in turn, here, with the needs it takes opened in
  * the caller's scope and services. A meta-test of the library's own searches, and a search nested inside a case, run
- * on it: a search finds on it exactly what it finds on the pool.
+ * on it: a search finds on it exactly what it finds on the pool. Every evaluation, however it ends (interrupted
+ * included), waits for the cleanups of the cases it stopped as hung (Stopped) before it returns, so none outlives it.
  */
 export const inlineEvaluator = (
 	property: Property
@@ -76,7 +77,7 @@ export const inlineEvaluator = (
 						}
 					}
 					return judged()
-				}),
+				}).pipe(Effect.ensuring(stopped.drained)),
 			width: Effect.succeed(1)
 		}
 		return evaluator
