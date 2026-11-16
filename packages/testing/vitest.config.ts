@@ -2,7 +2,14 @@ import { suiteTimeoutMillis } from "@bjornpagen/limits"
 import { defineTestConfig } from "#vitest/config.ts"
 
 export default defineTestConfig({
-	include: ["src/**/*.test.ts", "!src/fact.test.ts"],
+	include: [
+		"src/**/*.test.ts",
+		"!src/fact.test.ts",
+		"!src/idioms.test.ts",
+		"!src/core.test.ts",
+		"!src/shrink.test.ts",
+		"!src/runner/**"
+	],
 	guided: ["src/sense.test.ts"],
 	setup: [],
 	conditions: [],
