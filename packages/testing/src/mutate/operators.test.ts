@@ -163,6 +163,7 @@ const processPool = Effect.map(
 const checkProperty = new Property({
 	kind: "explore",
 	guide: { kind: "notes" },
+	needs: {},
 	oracle: { kind: "unstated" },
 	kills: [],
 	search: (run) =>

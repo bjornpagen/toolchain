@@ -10,6 +10,7 @@ import {
 import type { Oracle } from "#explore.ts"
 import { liveMillis } from "#live.ts"
 import type { Kill, PropertyId, PropertyKind } from "#property.ts"
+import type { RunnerConfig } from "#runner/config.ts"
 import { runnerLimits } from "#runner/limits.ts"
 import { configOf, type Discovered, discover, type LoadFailed, modulesOf } from "#runner/load.ts"
 import { type PoolFailed, poolOf } from "#runner/pool.ts"
@@ -52,6 +53,9 @@ export type RunRequest = Readonly<{
 	selected: ReadonlyArray<string>
 }>
 
+/** The worker's entry module, beside this one. */
+export const WORKER_ENTRY = `${import.meta.dirname}/worker.ts`
+
 /** Whether an argument names a property, by identity or by module. */
 const names = (argument: string, discovered: Discovered): boolean =>
 	Str.includes("#")(argument)
@@ -63,6 +67,40 @@ const moduleOfArgument = (argument: string): string =>
 	Option.match(Str.indexOf("#")(argument), {
 		onNone: () => argument,
 		onSome: (hash) => Str.slice(0, hash)(argument)
+	})
+
+/** A package as a command loads it: its runner config, and the properties the arguments name, in discovery order. */
+type Loaded = Readonly<{ config: RunnerConfig; discovered: ReadonlyArray<Discovered> }>
+
+/**
+ * Loads a package's runner config and the properties `selected` names (every property when it names none): only the
+ * test modules an argument names are imported.
+ */
+export const loadPackage = (
+	root: string,
+	selected: ReadonlyArray<string>
+): Effect.Effect<Loaded, LoadFailed, FileSystem.FileSystem | Path.Path> =>
+	Effect.gen(function* () {
+		const config = yield* configOf(root)
+		const modules = yield* modulesOf(root, config)
+		const wanted = Arr.isReadonlyArrayNonEmpty(selected)
+			? Arr.filter(modules, (module) =>
+					Arr.some(selected, (argument) => {
+						const named = moduleOfArgument(argument)
+						return Str.includes("#")(argument) ? module === named : Str.startsWith(named)(module)
+					})
+				)
+			: modules
+		const loaded = yield* discover(root, wanted)
+		return {
+			config,
+			discovered: Arr.filter(
+				loaded,
+				(found) =>
+					!Arr.isReadonlyArrayNonEmpty(selected) ||
+					Arr.some(selected, (argument) => names(argument, found))
+			)
+		}
 	})
 
 /**
@@ -79,25 +117,12 @@ export const runPackage = (
 > =>
 	Effect.gen(function* () {
 		const began = yield* liveMillis
-		const config = yield* configOf(request.root)
-		const modules = yield* modulesOf(request.root, config)
-		const wanted = Arr.isReadonlyArrayNonEmpty(request.selected)
-			? Arr.filter(modules, (module) =>
-					Arr.some(request.selected, (argument) => {
-						const named = moduleOfArgument(argument)
-						return Str.includes("#")(argument) ? module === named : Str.startsWith(named)(module)
-					})
-				)
-			: modules
-		const loaded = yield* discover(request.root, wanted)
-		const discovered = Arr.filter(
-			loaded,
-			(found) =>
-				!Arr.isReadonlyArrayNonEmpty(request.selected) ||
-				Arr.some(request.selected, (argument) => names(argument, found))
-		)
+		const { discovered } = yield* loadPackage(request.root, request.selected)
 		const pool = yield* poolOf({
+			entry: WORKER_ENTRY,
 			root: request.root,
+			cwd: request.root,
+			env: {},
 			workers: testWorkers,
 			execArgv: process.execArgv,
 			guide: Arr.some(discovered, (found) => found.property.guide.kind === "blocks")
@@ -150,7 +175,10 @@ export const replayToken = (
 		const loaded = yield* discover(root, [module])
 		const found = Arr.filter(loaded, (discovered) => discovered.id === id)
 		const pool = yield* poolOf({
+			entry: WORKER_ENTRY,
 			root,
+			cwd: root,
+			env: {},
 			workers: 1,
 			execArgv: process.execArgv,
 			guide: "notes"

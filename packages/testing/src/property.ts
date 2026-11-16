@@ -173,6 +173,7 @@ export type PropertyKind = "explore" | "exhaust" | "batched" | "interleave" | "s
 /** The search a property runs and the cases it evaluates, every type it was stated with erased into closures. */
 type Made = Readonly<{
 	kind: PropertyKind
+	needs: Needs
 	guide: Sense
 	oracle: Oracle
 	kills: ReadonlyArray<Kill>
@@ -184,11 +185,12 @@ type Made = Readonly<{
 /**
  * What the runner runs: a property, its case type, needs and failures erased at construction into closures (its
  * search, its replay of one token, and the evaluation of a batch of its cases), so one runner holds properties of
- * every type with no cast. A test module only ever builds one with a constructor of `property` or a harness
+ * every type with no cast. Its needs stay readable, by key, so the mutator knows a property that needs Checkout.dir. A test module only ever builds one with a constructor of `property` or a harness
  * constructor that returns one or a Family.
  */
 export class Property {
 	readonly kind: PropertyKind
+	readonly needs: Needs
 	readonly guide: Sense
 	readonly oracle: Oracle
 	readonly kills: ReadonlyArray<Kill>
@@ -198,6 +200,7 @@ export class Property {
 
 	constructor(made: Made) {
 		this.kind = made.kind
+		this.needs = made.needs
 		this.guide = made.guide
 		this.oracle = made.oracle
 		this.kills = made.kills
@@ -263,6 +266,7 @@ const exploredAs =
 		const evaluate = evaluateCase(drawing, spec.needs, spec.check)
 		return new Property({
 			kind,
+			needs: spec.needs,
 			guide: searched.guide,
 			oracle: spec.oracle,
 			kills: spec.kills,
@@ -292,6 +296,7 @@ export const property = {
 		)
 		return new Property({
 			kind: "exhaust",
+			needs: spec.needs,
 			guide: searched.guide,
 			oracle: spec.oracle,
 			kills: spec.kills,
@@ -309,6 +314,7 @@ export const property = {
 		const checkAll: BatchCheck<S, F, N, E> = spec.checkAll
 		return new Property({
 			kind: "batched",
+			needs: spec.needs,
 			guide: searched.guide,
 			oracle: spec.oracle,
 			kills: spec.kills,

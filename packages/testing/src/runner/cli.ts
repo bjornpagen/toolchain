@@ -2,25 +2,36 @@ import { NodeRuntime, NodeServices } from "@effect/platform-node"
 import { regex } from "arkregex"
 import {
 	Array as Arr,
+	Cause,
 	Config,
 	Console,
 	Effect,
+	FileSystem,
 	Option,
 	Random,
+	Record as Rec,
 	Schema,
 	String as Str
 } from "effect"
+import { loadingOf } from "#mutate/checkout.ts"
+import { imagesOf } from "#mutate/image.ts"
+import { type Judged, killsOf } from "#mutate/kills.ts"
+import { realPathOf } from "#mutate/mutated.ts"
+import { treesOf } from "#mutate/tree.ts"
 import { replayOf } from "#replay.ts"
 import { HARDENED_FLAGS } from "#runner/config.ts"
+import { mutantPoolOf } from "#runner/lease.ts"
+import { runnerLimits } from "#runner/limits.ts"
 import { configOf } from "#runner/load.ts"
 import { failureLines, lineOf } from "#runner/report.ts"
-import { replayToken, runPackage } from "#runner/run.ts"
+import { loadPackage, replayToken, runPackage } from "#runner/run.ts"
 
 /**
  * `toolchain-test`, the runner's command, run from a package's root (its test.config.ts):
  *
  *   toolchain-test run [paths | property ids]   every property (or those named), at full width; exit 1 on any failure
  *   toolchain-test replay <token>               the one case a failure printed, as it ran
+ *   toolchain-test kills [paths | property ids] each property's kills turn its witnesses red; exit 1 on any survivor
  *
  * A run prints its seed first (TEST_SEED reproduces the run), then one line per property, then each failure: the case
  * as it ran, its failure and its replay token. Every process of the run, this one and its workers, runs under the
@@ -95,10 +106,95 @@ const replay = (args: ReadonlyArray<string>) =>
 	)
 
 /** The commands, by name: each takes its arguments and answers its exit status. */
-const commands = {
-	run,
-	replay
-} as const
+/**
+ * A command: its arguments in, its exit status out (0 passed, 1 found something), every failure of its own a
+ * CommandFailed, which prints and exits 2. It runs in the package root with the platform's services.
+ */
+export type Command = (
+	args: ReadonlyArray<string>
+) => Effect.Effect<number, CommandFailed, NodeServices.NodeServices>
+
+/** A command failed in itself (a config or module that would not load, a pool that would not start): its report. */
+export class CommandFailed extends Schema.TaggedError<
+	CommandFailed,
+	{ readonly brand: unique symbol }
+>()("CommandFailed", { message: Schema.String }) {}
+
+/** A command's own failures, of any kind, as CommandFailed with their report. */
+const failing = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, CommandFailed, R> =>
+	Effect.catchCause(effect, (cause) =>
+		Effect.fail(CommandFailed.make({ message: Cause.pretty(cause) }))
+	)
+
+/** The repository a package root lies in: the nearest directory at or above it that holds `.git`. */
+const repositoryOf = (start: string): Effect.Effect<string, CommandFailed, FileSystem.FileSystem> =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		let at = start
+		for (;;) {
+			const found = yield* Effect.orElseSucceed(fs.exists(`${at}/.git`), () => false)
+			if (found) {
+				return at
+			}
+			const parent = Option.map(Str.lastIndexOf("/")(at), (slash) => Str.slice(0, slash)(at))
+			if (Option.isNone(parent) || !Str.isNonEmpty(parent.value)) {
+				return yield* CommandFailed.make({ message: `${start} lies in no git repository` })
+			}
+			at = parent.value
+		}
+	})
+
+/** A judged kill as the gate reports it: killed, or why it fails the gate. */
+const judgedLine = (judged: Judged): string => {
+	const verdict = judged.verdict
+	switch (verdict.kind) {
+		case "killed":
+			return `${judged.property}: killed: ${judged.kill.why}`
+		case "survived":
+			return `${judged.property}: SURVIVED${verdict.loaded ? "" : ", its workers never loaded the file"}: ${judged.kill.why} (${judged.kill.file})`
+		case "stale":
+			return `${judged.property}: STALE: ${verdict.stale.message}`
+	}
+}
+
+/**
+ * `kills [paths | ids]`: every kill of every property named applied in the checkout, each property's witnesses run on
+ * workers leased for that kill alone (mutate/kills.ts); 1 when any kill survives or is stale.
+ */
+const kills = (selected: ReadonlyArray<string>) =>
+	Effect.scoped(
+		Effect.gen(function* () {
+			const repository = yield* repositoryOf(root)
+			const checkout = yield* realPathOf(repository)
+			const packageRoot = yield* realPathOf(root)
+			const { discovered } = yield* loadPackage(root, selected)
+			const trees = yield* treesOf(checkout)
+			const images = yield* imagesOf(checkout, trees)
+			const judged = yield* killsOf(
+				mutantPoolOf(checkout, packageRoot),
+				{ seed: 0, limits: runnerLimits },
+				checkout,
+				images,
+				Arr.map(discovered, (found) => ({
+					id: found.id,
+					property: found.property,
+					loading: loadingOf(found.property.needs)
+				}))
+			)
+			yield* Console.log(Arr.join(Arr.map(judged, judgedLine), "\n"))
+			return Arr.some(judged, (one) => one.verdict.kind !== "killed") ? 1 : 0
+		})
+	)
+
+/**
+ * The commands, by name. A lane's command is an entry here (affected, kills, mutate, fuzz), reading the package as
+ * loadPackage and runPackage (run.ts) give it.
+ */
+const commands: Readonly<Record<string, Command>> = {
+	run: (args) => failing(run(args)),
+	replay: (args) => failing(replay(args)),
+	kills: (args) => failing(kills(args))
+}
 
 /** The flags this process must run under: the hardened flags and the config's export conditions. */
 const requiredFlags = Effect.map(configOf(root), (config) => [
@@ -124,14 +220,14 @@ const main = Effect.gen(function* () {
 			)
 		return child.status ?? 1
 	}
-	const command = Option.fromUndefinedOr(
-		name === "run" ? commands.run : name === "replay" ? commands.replay : undefined
+	const command = Option.flatMap(Option.fromUndefinedOr(name), (named) =>
+		Option.fromUndefinedOr(commands[named])
 	)
 	return yield* Option.match(command, {
 		onNone: () =>
 			Effect.as(
 				Console.error(
-					`toolchain-test ${Str.isNonEmpty(name ?? "") ? name : ""}: the commands are run [paths | ids] and replay <token>`
+					`toolchain-test: the commands are ${Arr.join(Rec.keys(commands), ", ")}; ${name ?? "none"} is none of them`
 				),
 				2
 			),
@@ -141,7 +237,7 @@ const main = Effect.gen(function* () {
 
 NodeRuntime.runMain(
 	main.pipe(
-		Effect.catchCause((cause) => Effect.as(Console.error(String(cause)), 2)),
+		Effect.catchCause((cause) => Effect.as(Console.error(Cause.pretty(cause)), 2)),
 		Effect.flatMap((status) =>
 			Effect.sync(() => {
 				process.exitCode = status

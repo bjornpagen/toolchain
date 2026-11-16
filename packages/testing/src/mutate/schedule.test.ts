@@ -67,6 +67,7 @@ const fakeProperty = (seen: Ref.Ref<Seen>): Property =>
 	new Property({
 		kind: "explore",
 		guide: { kind: "notes" },
+		needs: {},
 		oracle: { kind: "unstated" },
 		kills: [],
 		search: (run) =>

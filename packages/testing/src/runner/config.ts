@@ -1,6 +1,7 @@
 import type { NodeServices } from "@effect/platform-node/NodeServices"
 import { type Cause, type Context, Effect, Layer, Schema, type Scope } from "effect"
 import { failureText } from "#failure.ts"
+import type { Family as OperatorFamily } from "#mutants.ts"
 import type { RunnerServices } from "#property.ts"
 import type { WorkerIndex } from "#runner/services.ts"
 
@@ -34,13 +35,16 @@ export class RunnerServicesFailed extends Schema.TaggedError<
 
 /**
  * A package's runner config, `test.config.ts`'s default export: which files are its test modules (globs from the
- * package root), the export conditions its code resolves with (on every process of the run), and its services, built
+ * package root), the export conditions its code resolves with (on every process of the run), its services, built
  * from its layer in a worker the first time a case there opens a need, so a run whose needs use no service (unit
- * properties) never builds them. Its class is how the runner tells it from any other default export.
+ * properties) never builds them, and the operator families its mutation runs add to the library's operators (mutants.ts
+ * Family: a domain's slips, such as the SQL a compiler prints). Its class is how the runner tells it from any other
+ * default export.
  */
 export class RunnerConfig {
 	readonly include: ReadonlyArray<string>
 	readonly conditions: ReadonlyArray<string>
+	readonly families: ReadonlyArray<OperatorFamily<string>>
 	readonly services: Effect.Effect<
 		Context.Context<RepositoryServices>,
 		RunnerServicesFailed,
@@ -50,19 +54,25 @@ export class RunnerConfig {
 	constructor(
 		include: ReadonlyArray<string>,
 		conditions: ReadonlyArray<string>,
+		families: ReadonlyArray<OperatorFamily<string>>,
 		services: RunnerConfig["services"]
 	) {
 		this.include = include
 		this.conditions = conditions
+		this.families = families
 		this.services = services
 	}
 }
 
-/** What a package states in its test.config.ts: its test modules, its export conditions and its services' layer. */
+/**
+ * What a package states in its test.config.ts: its test modules, its export conditions, its services' layer, and its
+ * mutation runs' operator families (none for the library's operators alone).
+ */
 export type RunnerSpec<E> = Readonly<{
 	include: ReadonlyArray<string>
 	conditions: ReadonlyArray<string>
 	layer: Layer.Layer<RepositoryServices, E, RunnerProvided>
+	families: ReadonlyArray<OperatorFamily<string>>
 }>
 
 /** The failure of a layer that would not build, as its message states it. */
@@ -70,13 +80,15 @@ const servicesFailed = <E>(cause: Cause.Cause<E>) =>
 	RunnerServicesFailed.make({ message: failureText(cause) })
 
 /**
- * A package's runner config: `export default defineRunner({ include: ["src/**\/*.test.ts"], conditions: [], layer })`,
- * where `layer` provides the RunnerServices the repository declares (Layer.empty when it declares none). There is no
+ * A package's runner config: `export default defineRunner({ include: ["src/**\/*.test.ts"], conditions: [], layer,
+ * families: [] })`, where `layer` provides the RunnerServices the repository declares (Layer.empty when it declares
+ * none). There is no
  * worker, width or timeout option: a run is one worker a core, and budgets are the runner's Limits.
  */
 export const defineRunner = <E>(spec: RunnerSpec<E>): RunnerConfig =>
 	new RunnerConfig(
 		spec.include,
 		spec.conditions,
+		spec.families,
 		Effect.catchCause(Layer.build(spec.layer), (cause) => Effect.fail(servicesFailed(cause)))
 	)

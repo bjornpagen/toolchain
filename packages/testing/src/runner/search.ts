@@ -181,8 +181,24 @@ const candidatesOf =
 			Arr.map(judgedOf)
 		)
 
-/** Where a case of a search came from, as a finding names it, and what a failure there is shrunk under. */
-type Origin = Readonly<{ phase: CasePhase; where: string; drawn: Drawn; budget: ShrinkBudget }>
+/**
+ * How a failing case is reported: shrunk within a budget, or as it ran. A kill's verdict reads witnesses alone and only
+ * whether they went red, so a search of reach `witnesses` never shrinks (shrinkOf).
+ */
+type Shrink = Readonly<{ kind: "unshrunk" }> | Readonly<{ kind: "shrunk"; budget: ShrinkBudget }>
+
+/** How a search of `run` reports a failing case: unshrunk under reach `witnesses`, shrunk within `budget` otherwise. */
+const shrinkOf = (run: SearchRun, budget: ShrinkBudget): Shrink => {
+	switch (run.reach) {
+		case "witnesses":
+			return { kind: "unshrunk" }
+		case "full":
+			return { kind: "shrunk", budget }
+	}
+}
+
+/** Where a case of a search came from, as a finding names it, and how a failure there is reported. */
+type Origin = Readonly<{ phase: CasePhase; where: string; drawn: Drawn; shrink: Shrink }>
 
 /**
  * A case that did not pass, as its search reports it: a failure shrunk under the steering it was drawn under, and
@@ -210,13 +226,25 @@ const findingOf = (
 				printed: outcome.printed,
 				token: tokenOf(run.id, drawn, outcome.tape)
 			})
-		case "failed":
+		case "failed": {
+			const shrink = origin.shrink
+			if (shrink.kind === "unshrunk") {
+				return Effect.succeedSome({
+					kind: "falsified",
+					phase,
+					where,
+					printed: outcome.printed,
+					failure: outcome.failure,
+					shrinking: { kind: "unshrunk" },
+					token: tokenOf(run.id, drawn, outcome.tape)
+				})
+			}
 			return Effect.map(
 				shrinkInOrder(
 					{ tape: outcome.tape, failure: result },
 					candidatesOf(run, drawn),
 					run.evaluator.width,
-					origin.budget
+					shrink.budget
 				),
 				(shrunk): Option.Option<Finding> => {
 					const best = shrunk.best.failure.outcome
@@ -234,6 +262,7 @@ const findingOf = (
 					})
 				}
 			)
+		}
 	}
 }
 
@@ -352,7 +381,7 @@ const tokenRun = (
 										phase,
 										where,
 										drawn: replayed.drawn,
-										budget: completeShrink
+										shrink: { kind: "unshrunk" }
 									}),
 									(found): TokenRan =>
 										Option.match(found, {
@@ -485,7 +514,7 @@ export const exploreSearch =
 						phase: "floor",
 						where: `the floor stream (seed ${hex(floor)}), case ${start + offset}`,
 						drawn: draw.drawn,
-						budget: completeShrink
+						shrink: shrinkOf(run, completeShrink)
 					})
 					if (Option.isSome(found)) {
 						return failed(found.value)
@@ -543,7 +572,7 @@ export const exploreSearch =
 							phase: "steered",
 							where: `the steered phase (seed ${hex(stream)}), case ${start + offset}`,
 							drawn: draw.drawn,
-							budget: completeShrink
+							shrink: shrinkOf(run, completeShrink)
 						})
 						if (Option.isSome(found)) {
 							return failed(found.value)
@@ -584,7 +613,7 @@ export const exploreSearch =
 							phase: "independent",
 							where: `the rotating stream (seed ${hex(rotating)}), case ${start + offset}`,
 							drawn: { kind: "unsteered" },
-							budget: completeShrink
+							shrink: shrinkOf(run, completeShrink)
 						})
 						if (Option.isSome(found)) {
 							return failed(found.value)
@@ -697,7 +726,7 @@ export const exhaustSearch =
 							phase: "exhaustive",
 							where: `case ${cases} of the exhaustive space of ${size} cases`,
 							drawn: { kind: "unsteered" },
-							budget: boundedShrink(size)
+							shrink: shrinkOf(run, boundedShrink(size))
 						})
 						if (Option.isSome(found)) {
 							return failed(found.value)

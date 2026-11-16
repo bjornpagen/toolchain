@@ -1,3 +1,4 @@
+import { messageWorkMillis } from "@bjornpagen/limits"
 import {
 	Array as Arr,
 	Deferred,
@@ -23,8 +24,9 @@ import {
 /**
  * The pool: worker processes, one a core, that evaluate the cases of every property of a run, and the parent's side of
  * them. Every search's evaluator puts its batches (units) on one queue; an idle worker is sent a message of units of
- * one property, its fair share of what is queued (what is queued over the workers, one at least), so a long queue goes
- * out in few messages and a short one spreads over every worker; a worker that goes idle with nothing queued
+ * one property, as many as fill @bjornpagen/limits's messageWorkMillis at the property's measured mean case time (one
+ * while the property has none), never more than its fair share of what is queued (what is queued over the workers);
+ * a worker that goes idle with nothing queued
  * takes the unstarted tail of the busiest worker's units, which the parent revokes from it. A unit that runs past its
  * cases' deadlines and the watchdog's grace has a silent worker: the parent kills it, reports the unit lost, and
  * forks a new worker in its place. Which worker ran a case never reaches a result, so a search finds the same at any
@@ -55,11 +57,16 @@ type Worker = {
 const OUTPUT_TAIL = 16_384
 
 /**
- * What the pool is forked to run: the package root, how many workers (one a core), their flags, and whether any
- * search guides by blocks (each worker then starts V8's coverage before it loads a module).
+ * What the pool's workers start from: the worker's entry module, the package root its test modules load from, the
+ * directory it runs in, its Node flags and what its environment adds to this process's; how many workers (one a core
+ * for a run); and whether any search guides by blocks (each worker then starts V8's coverage before it loads a module).
+ * A worker the parent kills is forked again from the same spec.
  */
 export type PoolSpec = Readonly<{
+	entry: string
 	root: string
+	cwd: string
+	env: Readonly<Record<string, string>>
 	workers: number
 	execArgv: ReadonlyArray<string>
 	guide: "notes" | "blocks"
@@ -116,8 +123,29 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 			worker.child.send(message)
 		}
 
-		/** How many units of a property one message carries: its fair share of what is queued, one at least. */
-		const perMessage = (): number => Math.max(1, Math.ceil(queue.length / workers.length))
+		/** A property's measured case time so far: cases finished and their milliseconds. */
+		const measured = new Map<string, Readonly<{ cases: number; millis: number }>>()
+
+		/**
+		 * How many units of `property` one message carries: as many as fill the work a message aims for at the property's
+		 * mean case time, one while it has none, and never more than its fair share of what is queued.
+		 */
+		const perMessage = (property: string): number => {
+			const fair = Math.max(1, Math.ceil(queue.length / workers.length))
+			return Option.match(Option.fromUndefinedOr(measured.get(property)), {
+				onNone: () => 1,
+				onSome: (stats) =>
+					Math.max(
+						1,
+						Math.min(
+							fair,
+							Math.floor(
+								(messageWorkMillis.value * stats.cases) / Math.max(stats.millis, Number.MIN_VALUE)
+							)
+						)
+					)
+			})
+		}
 
 		const idle = (worker: Worker) => worker.ready && worker.sent.length === 0
 
@@ -132,7 +160,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 				return
 			}
 			const property = first.value.property
-			const count = perMessage()
+			const count = perMessage(property)
 			const taken: Array<Unit> = []
 			for (let at = 0; at < queue.length && taken.length < count;) {
 				const unit = Arr.getUnsafe(queue, at)
@@ -193,6 +221,11 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 		const finish = (worker: Worker, unit: Unit, results: ReadonlyArray<CaseResult>) => {
 			worker.sent = Arr.filter(worker.sent, (sent) => sent.id !== unit.id)
 			counts[worker.index] = (counts[worker.index] ?? 0) + results.length
+			const before = measured.get(unit.property) ?? { cases: 0, millis: 0 }
+			measured.set(unit.property, {
+				cases: before.cases + results.length,
+				millis: Arr.reduce(results, before.millis, (total, result) => total + result.millis)
+			})
 			Deferred.doneUnsafe(unit.done, Effect.succeed(results))
 		}
 
@@ -201,9 +234,11 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 
 		const spawn = (index: number): Worker => {
 			const child = childProcesses.fork(
-				`${import.meta.dirname}/worker.ts`,
+				spec.entry,
 				[spec.root, String(index), String(spec.workers), spec.guide],
 				{
+					cwd: spec.cwd,
+					env: { ...process.env, ...spec.env },
 					execArgv: Arr.copy(spec.execArgv),
 					serialization: "advanced",
 					stdio: ["ignore", "pipe", "pipe", "ipc"]
@@ -338,12 +373,26 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 		}
 		yield* Effect.forkIn(Effect.forever(Effect.flatMap(Queue.take(events), handle)), scope)
 		yield* Effect.addFinalizer(() =>
-			Effect.sync(() => {
-				closing = true
-				for (const worker of workers) {
-					worker.child.disconnect()
-				}
-			})
+			Effect.andThen(
+				Effect.sync(() => {
+					closing = true
+				}),
+				Effect.forEach(
+					workers,
+					(worker) =>
+						Effect.callback<void>((resume) => {
+							if (worker.child.exitCode !== null || worker.child.signalCode !== null) {
+								resume(Effect.void)
+								return
+							}
+							worker.child.once("exit", () => resume(Effect.void))
+							if (worker.child.connected) {
+								worker.child.disconnect()
+							}
+						}),
+					{ concurrency: "unbounded", discard: true }
+				)
+			).pipe(Effect.uninterruptible)
 		)
 		yield* Deferred.await(started)
 

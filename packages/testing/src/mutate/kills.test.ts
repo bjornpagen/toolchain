@@ -154,6 +154,7 @@ const checkProperty = (kills: ReadonlyArray<Kill>): Property =>
 	new Property({
 		kind: "explore",
 		guide: { kind: "notes" },
+		needs: {},
 		oracle: { kind: "unstated" },
 		kills,
 		search: (run) =>
