@@ -93,8 +93,6 @@ export type Recording = Readonly<{
  */
 export type Recorder = Recording & Readonly<{ reset: (chooser: Chooser) => void }>
 
-const INITIAL_CAPACITY = 32
-
 /** A buffer `factor` times the size, holding the old one's contents. */
 const grownFloat = (buffer: Float64Array, factor: number) => {
 	const grown = new Float64Array(buffer.length * factor)
@@ -110,8 +108,9 @@ const grownInt = (buffer: Int32Array, factor: number) => {
 
 /**
  * Records every decision and span made against its chooser. Decisions are packed three numbers apiece (value, lowest,
- * highest) into one buffer, and spans three apiece (start, end, depth) into another, each doubling when full, so a
- * decision costs a few stores and a recording two allocations. A tape is copied out only when someone asks for it,
+ * highest) into one buffer, and spans three apiece (start, end, depth) into another, each starting at one and doubling
+ * when full, so the buffers grow to the longest case the search draws, and a decision costs a few stores and a
+ * recording two allocations. A tape is copied out only when someone asks for it,
  * which a passing case never does. A span still open when its tape is copied out, its case stopped inside a draw, ends
  * where the tape ends, so every span of every tape lies within its decisions. A value the chooser cannot give, because
  * a replay ran out or its value no longer fits the decision, becomes the decision's simplest value and marks the
@@ -121,11 +120,11 @@ const grownInt = (buffer: Int32Array, factor: number) => {
  */
 export const recorder = (): Recorder => {
 	let chooser: Chooser = simplestChooser
-	let decisions = new Float64Array(INITIAL_CAPACITY * 3)
+	let decisions = new Float64Array(3)
 	let length = 0
-	let spans = new Int32Array(INITIAL_CAPACITY * 3)
+	let spans = new Int32Array(3)
 	const spanLabel: Array<string> = []
-	let open = new Int32Array(INITIAL_CAPACITY)
+	let open = new Int32Array(1)
 	let depth = 0
 	let status: Status = "complete"
 	const append = (value: number, lo: number, hi: number) => {

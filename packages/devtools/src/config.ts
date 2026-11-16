@@ -20,13 +20,15 @@ export type Rejected = Readonly<{
 }>
 
 /** A pack beside the core: the SQL and Drizzle rules of a repository that owns an application database, grizzle's rules,
- * or the web rules of a repository with React apps (the React, jsx-a11y and Next plugins with the React Compiler's
+ * the limit rules of a repository that keeps its limits in a limits package (no-bare-limit and limits-sole-mint), or the
+ * web rules of a repository with React apps (the React, jsx-a11y and Next plugins with the React Compiler's
  * rules, the browser rules, each Tailwind app's class, markup and paint rules, and the style linter's stylesheet
- * contract). The web pack carries each app's style names; the drizzle and grizzle packs' names are the repository's
+ * contract). The web pack carries each app's style names; the drizzle, grizzle and limits packs' names are the repository's
  * oxlint.config.ts's, given to the preset's `lintConfig`. */
 export type Pack =
 	| Readonly<{ pack: "drizzle" }>
 	| Readonly<{ pack: "grizzle" }>
+	| Readonly<{ pack: "limits" }>
 	| Readonly<{ pack: "web"; options: WebOptions }>
 
 /** The packs a repository may run beside the core, by name. */
@@ -42,6 +44,11 @@ export const drizzle = (): PackOf<"drizzle"> => ({ pack: "drizzle" })
 /** The grizzle pack. Its rules are the oxlint plugin's, so the repository's names for them are its oxlint.config.ts's,
  * and the pack takes none here. */
 export const grizzle = (): PackOf<"grizzle"> => ({ pack: "grizzle" })
+
+/** The limits pack, which a repository runs once its limits live in its limits package (packages/limits): no-bare-limit
+ * and limits-sole-mint. Their names, the limits packages and the test files, are the repository's oxlint.config.ts's,
+ * and the pack takes none here. */
+export const limits = (): PackOf<"limits"> => ({ pack: "limits" })
 
 /** The web pack, with each app's style options by the app's repository-relative root. */
 export const web = (options: WebOptions): PackOf<"web"> => ({ pack: "web", options })

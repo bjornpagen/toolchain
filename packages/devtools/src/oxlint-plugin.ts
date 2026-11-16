@@ -3,7 +3,9 @@ import { bearerOwners } from "#oxlint/rules/bearer-owners.ts"
 import { brandsSoleMint } from "#oxlint/rules/brands-sole-mint.ts"
 import { effectFreeImports } from "#oxlint/rules/effect-free-imports.ts"
 import { importDoors } from "#oxlint/rules/import-doors.ts"
+import { limitsSoleMint } from "#oxlint/rules/limits-sole-mint.ts"
 import { markup } from "#oxlint/rules/markup.ts"
+import { noBareLimit } from "#oxlint/rules/no-bare-limit.ts"
 import { noBareMaterializedViewJoins } from "#oxlint/rules/no-bare-materialized-view-joins.ts"
 import { noCaseList } from "#oxlint/rules/no-case-list.ts"
 import { noCollation } from "#oxlint/rules/no-collation.ts"
@@ -51,7 +53,9 @@ const PLUGIN_RULES = {
 	"brands-sole-mint": brandsSoleMint,
 	"effect-free-imports": effectFreeImports,
 	"import-doors": importDoors,
+	"limits-sole-mint": limitsSoleMint,
 	markup,
+	"no-bare-limit": noBareLimit,
 	"no-bare-materialized-view-joins": noBareMaterializedViewJoins,
 	"no-case-list": noCaseList,
 	"no-collation": noCollation,

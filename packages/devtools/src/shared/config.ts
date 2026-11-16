@@ -21,6 +21,7 @@ const ToolchainSchema = Schema.Struct({
 		Schema.Union([
 			Schema.Struct({ pack: Schema.Literal("drizzle") }),
 			Schema.Struct({ pack: Schema.Literal("grizzle") }),
+			Schema.Struct({ pack: Schema.Literal("limits") }),
 			Schema.Struct({ pack: Schema.Literal("web"), options: WebOptions })
 		])
 	)

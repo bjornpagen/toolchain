@@ -1,3 +1,4 @@
+import { nudgeMax, pointEditsMax } from "@bjornpagen/limits"
 import { Option } from "effect"
 import { between, type Words } from "#random.ts"
 import type { Tape } from "#tape.ts"
@@ -5,8 +6,9 @@ import type { Tape } from "#tape.ts"
 /** The values a mutated case replays before its fresh decisions take over. */
 export type Mutant = Readonly<{ values: Float64Array; length: number }>
 
-/** How many decisions one mutation edits in place, at most, before its one structural edit. */
-const MAX_POINT_EDITS = 4
+/** How many decisions one mutation edits in place, at most, before its one structural edit: @bjornpagen/limits's
+ * pointEditsMax. */
+const MAX_POINT_EDITS = pointEditsMax.value
 
 /**
  * How many decisions a mutation edits in place: one half the time, two a quarter of the time, and so on up to the most,
@@ -20,8 +22,8 @@ const pointEditsOf = (words: Words): number => {
 	return edits
 }
 
-/** How far a nudge moves a decision, at most. */
-const MAX_NUDGE = 16
+/** How far a nudge moves a decision, at most: @bjornpagen/limits's nudgeMax. */
+const MAX_NUDGE = nudgeMax.value
 
 /** A decision's value moved to one end of its range, nudged, or redrawn anywhere in it. */
 const pointEdit = (tape: Tape, values: Float64Array, words: Words) => {

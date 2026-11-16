@@ -45,6 +45,9 @@
 		"fixtures:style": {},
 		"fixtures:oxlint": {},
 		"fixtures:workspace-gate": {},
+		"limits:check": {
+			"description": "packages/limits/limits.env, which shell scripts read, is what src/data.ts generates from the Limits it holds."
+		},
 		"test": {
 			"description": "Every test that uses no network. Each run draws fresh rotating seeds, so a test never replays from cache; the run's seed, a replay and a fuzz run come through the environment.",
 			"cache": false,

@@ -36,13 +36,7 @@ const values = int(0, 2 ** 20)
 /**
  * The timeout of a test whose deadline cuts its search: twice the print margin, so the search has as long to work as its
  * report has to print. Before the cut it runs at most ten cases and four candidates of a property that does no work,
- * less than one report, which the margin is measured to cover.
- *
- * @limitKind derived
- * @owner the choice-stream testing library's own suite
- * @unit milliseconds
- * @scope the Vitest timeout of each test here whose search its deadline cuts
- * @derivation PRINT_MARGIN_MILLIS for the report, and as long again for the work before the cut
+ * less than one report, which the margin is meant to cover.
  */
 const CUT_TIMEOUT = 2 * PRINT_MARGIN_MILLIS
 

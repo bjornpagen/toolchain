@@ -39,7 +39,8 @@ const run = Run.of({
 	deadline: noDeadline
 })
 
-/** An exploration of 125 cases of `composite` whose property costs what `property` costs. */
+/** An exploration of 125 cases of `composite` whose property costs what `property` costs. Its cases have no hang limit:
+ * a property that does nothing or waits a microtask cannot hang, so a limit would guard nothing. */
 const explored = (concurrency: number, property: () => Effect.Effect<void>) =>
 	Effect.runPromise(
 		explore(
@@ -57,7 +58,7 @@ const explored = (concurrency: number, property: () => Effect.Effect<void>) =>
 				shrink: boundedShrink(500),
 				concurrency,
 				steerEvery: 64,
-				caseHang: Duration.minutes(1)
+				caseHang: Duration.infinity
 			},
 			property
 		).pipe(Effect.provideService(Run, run))

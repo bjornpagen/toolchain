@@ -1,3 +1,4 @@
+import { lswKeyMax } from "@bjornpagen/limits"
 import { Array as Arr, Formatter, Option, Schema } from "effect"
 import {
 	boolean,
@@ -87,10 +88,13 @@ const WILD = {
 	symbol: map(text(4), (description) => ({ kind: "symbol", description })),
 	function: constant({ kind: "function" }),
 	proxy: constant({ kind: "proxy" }),
-	"throwing-getter": map(string(codePoint(0x61, 0x7a), { min: 1, max: 8 }), (key) => ({
-		kind: "throwing-getter",
-		key
-	})),
+	"throwing-getter": map(
+		string(codePoint(0x61, 0x7a), { min: 1, max: lswKeyMax.value }),
+		(key) => ({
+			kind: "throwing-getter",
+			key
+		})
+	),
 	anything: map(json(2), (value) => ({ kind: "anything", value }))
 } as const satisfies { readonly [K in WildKind]: Gen<WildOf<K>> }
 

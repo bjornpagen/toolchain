@@ -1,3 +1,4 @@
+import { fuzzStatusEveryMillis, reportMarginMillis } from "@bjornpagen/limits"
 import {
 	Array as Arr,
 	Cause,
@@ -124,45 +125,10 @@ export const noDeadline: Deadline = { kind: "unbounded" }
  * How long before its test's deadline a search stops its work and reports: the time from the moment it is due to stop
  * to the moment its test's function has failed with the report, which then beats the test's own timeout. In it the
  * search logs its report, then awaits the cleanup of every case it stopped (withCaseLives), so a report outlives a
- * cleanup slower than the margin, and only the typed failure is lost to the test's own timeout.
- *
- * @limitKind measured
- * @owner the choice-stream testing library (explore)
- * @unit milliseconds
- * @scope every search under a bounded deadline (Run.deadline), in each test process alone
- * @evidence the report: packages/testing/out/print-margin/ in superstarter's checkout of this library,
- * busy-20261104T220121.jsonl, loaded-20261104T220131.jsonl and suite-load-20261104T220131.jsonl, one row per cut
- * search, its time from its cut to its failure leaving @effect/vitest's logging, and
- * grizzle-write-literal-20261104T220220.json, four runs of Formatter.format over 300 of grizzle's write-oracle sketches;
- * the cleanup: packages/testing/out/print-margin/release-20261107T140045/ in grizzle's checkout, small.sql and large.sql
- * with small-1.txt to small-10.txt and large-1.txt to large-10.txt, the output of
- * `scripts/pg/ctl.sh admin postgres -X -q -f <script>` run ten times each, alternating
- * @observed the report 2026-11-04 21:59 to 22:03 CST; the cleanup 2026-11-07 14:00:45 to 14:01:15 UTC
- * @environment macOS (Darwin 27.0.0) on 10 cores, Node 26.13.0, Vitest 5.1.0, effect and @effect/vitest 4.1.2, the
- * library's pool of forks under its hardened flags, load average 27 to 44 from other sessions; the cleanup on grizzle
- * 5d61c85aa415's local PostgreSQL 19rc1 cluster (scripts/pg/pin.env), load average 78.8 to 85.1 from other sessions
- * @workload the report: 240 cut searches, four test files at once, two thirds of them while the library's whole suite
- * ran at four workers: a floor case fails, the shrink's next candidate never ends, and the deadline cuts it; reports of
- * 1.6 KB (an int) and 68 KB (300 records), each with a cause's stack and 50 drawn values; and grizzle's write-oracle
- * literal, 30 KB, the largest sketch the three repositories print. The cleanup: the release a grizzle test's case runs
- * when it is stopped (test/support/substrate/substrate.ts), DROP OWNED BY and DROP ROLE for each role, then DROP SCHEMA
- * CASCADE, of a schema shaped like the largest a running test held (6 tables with 12 trigger functions, 10 triggers and
- * two roles, 1,000 rows) and of one ten times its size (40 tables with 40 more indexes, 120 trigger functions, 80
- * triggers and one role)
- * @result every cut search ended in its PropertyFalsified; print time 0 to 6 ms for 1.6 KB reports and 2 to 30 ms for
- * 68 KB ones, the slowest a process's first; grizzle's literal alone 0.3 to 0.4 ms median, 11 to 47 ms p99 and 29 to
- * 87 ms worst, each worst a run's first, cold. A release of the test-sized schema 9.5 to 801 ms, five of ten under
- * 20 ms; of the ten-times schema 1,171 to 2,186 ms; no errors; event-loop lag, garbage collection and a session's
- * backend exit (pg_terminate_backend's wait) not measured apart from them
- * @decision the slowest report seen (30 ms) with the slowest literal seen (87 ms) is about 120 ms; the longer of the
- * slowest release of the ten-times schema (2,186 ms) and three stopped cases' slowest releases of the test-sized one,
- * one after another (3 x 801 ms, 2,403 ms), brings it to about 2,520 ms. 3,000 ms leaves 480 ms more, a fifth of it,
- * for timers late on a machine loaded eight times over its cores, as the release was measured under
- * @revalidate a Node, Vitest, effect or PostgreSQL upgrade; a literal much slower than 87 ms; a case whose cleanup
- * releases more than the ten-times schema, or a search that stops more cases at once; a property or finalizer that holds
- * the event loop near its deadline; any typed failure lost to a bare timeout
+ * cleanup slower than the margin, and only the typed failure is lost to the test's own timeout. It is
+ * @bjornpagen/limits's reportMarginMillis, provisional since its measured record's machine was retired.
  */
-export const PRINT_MARGIN_MILLIS = 3_000
+export const PRINT_MARGIN_MILLIS = reportMarginMillis.value
 
 /** The run an exploration draws from, as the test it runs in sees it: the process's run, and its test's deadline. */
 export class Run extends Context.Service<Run, ProcessRun & Readonly<{ deadline: Deadline }>>()(
@@ -1210,8 +1176,8 @@ const liveLog = (line: string) =>
 const liveReport = (report: string) =>
 	Console.error(report).pipe(Effect.provideService(Console.Console, Console.Console.defaultValue()))
 
-/** How often a fuzz run reports its progress, in milliseconds of wall time. */
-const STATUS_EVERY = 3000
+/** How often a fuzz run reports its progress, in milliseconds of wall time: @bjornpagen/limits's fuzzStatusEveryMillis. */
+const STATUS_EVERY = fuzzStatusEveryMillis.value
 
 /** Whether a fuzz run has spent its budget, after `cases` cases and `elapsed` milliseconds. */
 const spent = (budget: FuzzBudget, cases: number, elapsed: number): boolean => {

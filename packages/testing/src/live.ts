@@ -1,4 +1,5 @@
 import { isMainThread, Worker } from "node:worker_threads"
+import { hungCleanupGraceSeconds, watchdogGraceMillis } from "@bjornpagen/limits"
 import { Array as Arr, Clock, Duration, Effect, Fiber, Option, Record as Rec } from "effect"
 
 /** A sleep on the live clock, whatever clock the caller runs under: a hang guard must not wait on a TestClock. */
@@ -24,10 +25,10 @@ export const liveSleepUntil = (moment: number): Effect.Effect<void> =>
 
 /**
  * How long a search waits on a hung case's cleanup, on the live clock, before it reports the hang or goes on to its next
- * case. The case stays among the fibers its search awaits before it returns (explore.ts withCaseLives), so a cleanup
- * past the grace delays the search's end and never outlives it.
+ * case: @bjornpagen/limits's hungCleanupGraceSeconds. The case stays among the fibers its search awaits before it
+ * returns (explore.ts withCaseLives), so a cleanup past the grace delays the search's end and never outlives it.
  */
-export const HUNG_CLEANUP_GRACE = Duration.seconds(5)
+export const HUNG_CLEANUP_GRACE = Duration.seconds(hungCleanupGraceSeconds.value)
 
 /** Interrupts a fiber without waiting for its cleanup: its caller keeps the fiber and awaits it later. */
 export const abandon = <A, E>(running: Fiber.Fiber<A, E>): Effect.Effect<void> =>
@@ -45,6 +46,8 @@ export const stopHung = <A, E>(running: Fiber.Fiber<A, E>): Effect.Effect<void> 
 	Effect.asVoid(Fiber.interrupt(running))
 
 /**
+ * @formatConstant the watchdog's shared memory, its slots and their offsets
+ *
  * Where the watchdog's two threads meet in their shared memory: four Int32 counters (bumped when the earliest moment
  * moves earlier; the last ping the main thread answered; one nothing writes, for the watchdog's thread to time a wait
  * on; the last ping the watchdog's thread sent), then, at the first 8-byte boundary past them, two Float64 moments (the earliest moment a case in flight passes
@@ -259,37 +262,10 @@ const watchdogOfProcess = (): Watchdog => {
 
 /**
  * How long the main thread may go without answering the watchdog once a case in flight has passed the moment its
- * guard would have stopped it: a live thread answers a ping as soon as the synchronous work it is in yields, so this
- * bounds how long a live case may hold the thread past that moment, not the case's hang limit, which only says when
- * the moment comes. A Node 26 thread cannot be stopped inside synchronous JavaScript without aborting the process
- * (termination skips the `finally` of every async scope it unwinds, and Node then finds its async-hook stack
- * corrupted), so a case that never yields ends its process here, and this grace is what separates it from one that is
- * merely slow.
- *
- * @limitKind measured
- * @owner the choice-stream testing library (live.ts's watchdog)
- * @unit milliseconds
- * @scope every case a search runs on a process's main thread, once it is past its hang limit or its search's deadline
- * @evidence packages/testing/src/blocking.test.ts re-verifies it: its well-behaved bodies hold the main thread past
- * their hang limit and are never ended, and its runaways end within their limit and this grace. The latencies below
- * were measured with a worker pinging the main thread, as the watchdog does, while the main thread ran synchronous
- * segments of 1 to 200 ms with allocation enough to keep the collector busy, between yields
- * @observed 2026-11-06, 19:30 to 19:50 CST
- * @environment macOS (Darwin 27.0.0, an arm64 virtual machine) on 10 cores, Node 26.13.0, load average 37 to 58 from
- * other sessions throughout
- * @workload 2,500 pings over seven runs of 15 to 20 s, three alone and four at once, segments of 1, 5, 20, 50, 100 and
- * 200 ms
- * @result p50 2.8 to 156 ms and p99 101 to 346 ms; the slowest answer 386 ms, behind 1 ms segments under the heaviest
- * load. A ping waits for the segment in flight, so a live case answers within its longest synchronous segment and the
- * machine's scheduling delay. The watchdog's own cost is 3 to 10 µs a case (its registration and release), measured over
- * 100,000 cases against an unwatched effect
- * @decision 5 s is 13 times the slowest answer seen, and allows a live case a synchronous segment of seconds past its
- * moment; a case past its moment is a hang whichever way it ends, so the grace only decides whether its verdict is the
- * guard's typed one or the watchdog's report
- * @revalidate a Node or V8 upgrade; a suite whose property holds the thread in one synchronous segment for seconds; a
- * process the watchdog ended whose report shows a case that yields
+ * guard would have stopped it: @bjornpagen/limits's watchdogGraceMillis, measured, whose evidence says why a case that
+ * never yields ends its process here.
  */
-export const WATCHDOG_GRACE_MILLIS = 5000
+export const WATCHDOG_GRACE_MILLIS = watchdogGraceMillis.value
 
 /**
  * When a case's guard would stop it: its hang limit after it began, or its search's cut, the moment its deadline

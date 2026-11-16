@@ -47,6 +47,10 @@ export const FIXTURE_RULES: FixtureRules<typeof plugin, "no-comment"> = {
 			}
 		]
 	},
+	"limits-sole-mint": {
+		packages: ["limits-sole-mint/limits"],
+		tests: { suffixes: [".test.tsx"], directories: ["exempt"] }
+	},
 	markup: {
 		measuredStyles: Arr.map(["markup/clean.tsx", "markup/violating.tsx"], (path) => ({
 			path,
@@ -66,6 +70,10 @@ export const FIXTURE_RULES: FixtureRules<typeof plugin, "no-comment"> = {
 		})),
 		htmlTemplates: ["markup/clean.tsx"],
 		stylesheetConstructors: ["markup/clean.tsx"]
+	},
+	"no-bare-limit": {
+		packages: ["no-bare-limit/limits"],
+		tests: { suffixes: [".test.tsx"], directories: ["exempt"] }
 	},
 	"no-bare-materialized-view-joins": {
 		modules: [{ specifiers: ["#fixture/views.ts"], views: ["ledgerTotals"] }]

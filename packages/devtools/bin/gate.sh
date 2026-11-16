@@ -67,6 +67,22 @@ key_of() {
 
 cache="$cache_root/$(key_of "$common_dir")"
 
+# The limits the gate reads, GATE_LOCK_POLL_SECONDS and GATE_FULL_CHECK_DAYS: the toolchain's packages/limits/limits.env,
+# which packages/limits generates from its Limits and `pnpm check` holds to them. It sits beside the dev tools, found from
+# this script's own path through any link to it (node_modules/.bin/toolchain-gate).
+script=$0
+while [ -L "$script" ]; do
+	target=$(readlink -- "$script")
+	case $target in
+		/*) script=$target ;;
+		*) script=$(dirname -- "$script")/$target ;;
+	esac
+done
+limits_env=$(dirname -- "$script")/../../limits/limits.env
+[ -f "$limits_env" ] || die "$limits_env is missing: the toolchain's limits package generates it (pnpm limits:data)"
+# shellcheck source=../../limits/limits.env
+. "$limits_env"
+
 # fill <git dir> <commit> <directory> <snapshot git dir> <checkout>: <directory> is a checkout of <commit>, whose git
 # directory, <snapshot git dir>, borrows <git dir>'s objects and holds HEAD at <commit>; each submodule is filled the
 # same way at the commit <commit> records, from the submodule's repository in <checkout>, the working tree that holds
@@ -119,7 +135,7 @@ lock() {
 		fi
 		[ "$waited" = 0 ] && printf 'toolchain-gate: waiting for the run that holds %s\n' "$held" >&2
 		waited=1
-		sleep 1
+		sleep "$GATE_LOCK_POLL_SECONDS"
 	done
 	printf '%s\n' "$$" >"$held/pid"
 	trap 'rm -rf "$held"' EXIT
@@ -255,10 +271,11 @@ case $mode in
 				enter push "$commit"
 				# The push snapshot keeps the incremental typecheck's build info between runs, so `pnpm check` re-checks
 				# what changed. A repository whose check:full runs the same gate from scratch (no build info, every task
-				# forced) has it run once a day (Bjorn, 2026-11-15), so a stale result from build info lives a day at most;
-				# the stamp is written only when it passes.
+				# forced) has it run once every GATE_FULL_CHECK_DAYS (a day, Bjorn, 2026-11-15), so a stale result from build
+				# info lives that long at most; the stamp is written only when it passes.
 				check=check
-				if grep -q '"check:full"' package.json && [ -z "$(find "$cache/push.full" -mtime -1 2>/dev/null)" ]; then
+				if grep -q '"check:full"' package.json &&
+					[ -z "$(find "$cache/push.full" -mtime "-$GATE_FULL_CHECK_DAYS" 2>/dev/null)" ]; then
 					check=check:full
 				fi
 				printf 'toolchain-gate: pnpm %s on %s\n' "$check" "$commit" >&2

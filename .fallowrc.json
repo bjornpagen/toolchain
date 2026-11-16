@@ -37,6 +37,14 @@
 				"patterns": ["packages/testing/**"]
 			},
 			{
+				"name": "limit",
+				"patterns": ["packages/limit/**"]
+			},
+			{
+				"name": "limits",
+				"patterns": ["packages/limits/**"]
+			},
+			{
 				"name": "devtools",
 				"patterns": ["packages/devtools/**"]
 			},
@@ -48,11 +56,19 @@
 		"rules": [
 			{
 				"from": "devtools-suites",
-				"allow": ["devtools", "testing"]
+				"allow": ["devtools", "testing", "limits"]
 			},
 			{
 				"from": "testing",
+				"allow": ["limits"]
+			},
+			{
+				"from": "limit",
 				"allow": []
+			},
+			{
+				"from": "limits",
+				"allow": ["limit"]
 			},
 			{
 				"from": "devtools",

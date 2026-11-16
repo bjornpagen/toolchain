@@ -1,3 +1,4 @@
+import { suiteTimeoutMillis } from "@bjornpagen/limits"
 import { defineTestConfig } from "#vitest/config.ts"
 
 export default defineTestConfig({
@@ -6,8 +7,8 @@ export default defineTestConfig({
 	setup: [],
 	conditions: [],
 	timeouts: {
-		test: { kind: "bounded", millis: 60_000 },
-		hook: { kind: "bounded", millis: 60_000 }
+		test: { kind: "bounded", millis: suiteTimeoutMillis.value },
+		hook: { kind: "bounded", millis: suiteTimeoutMillis.value }
 	},
 	smallStack: [],
 	examples: {

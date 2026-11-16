@@ -1,3 +1,4 @@
+import { mutantDeadlineFactor } from "@bjornpagen/limits"
 import { NodeRuntime, NodeServices } from "@effect/platform-node"
 import {
 	Array as Arr,
@@ -103,16 +104,10 @@ const UNUSED: ReadonlySet<number> = new Set([6133, 6138, 6192, 6196, 6198, 6199,
 /**
  * How many mutants a run judges at once when `--workers` names no number: as many as fit, each in a Vitest of its own,
  * in the test processes one test run of the package holds, so a mutation run takes no more of the machine than the
- * package's tests do.
- *
- * @limitKind derived
- * @owner the mutation tester
- * @unit mutants judged at once
- * @scope one mutation run on one machine
- * @derivation testWorkers, the test processes one Vitest run holds (one a logical CPU),
- * divided by the processes one mutant's Vitest holds: it runs each test file in a process of its own, as many at once
- * as its config's maxWorkers, which is testWorkers under defineTestConfig, so one a test file `--test` names, up to
- * testWorkers, or testWorkers when it runs the whole suite; rounded down, and at least one
+ * package's tests do. A mutant's Vitest runs each test file in a process of its own, as many at once as its config's
+ * maxWorkers, testWorkers under defineTestConfig: one a test file `--test` names, up to testWorkers, or testWorkers
+ * when it runs the whole suite. testWorkers is what the machine reports (availableParallelism()), so this is no limit:
+ * the number of mutants is that report divided by the processes one mutant holds, rounded down, and at least one.
  */
 const defaultWorkers = (tests: ReadonlyArray<string>): number =>
 	Math.max(
@@ -123,8 +118,9 @@ const defaultWorkers = (tests: ReadonlyArray<string>): number =>
 		)
 	)
 
-/** How many times the unmutated suite's run a mutant's run may take before it times out. */
-const DEADLINE_FACTOR = 10
+/** How many times the unmutated suite's run a mutant's run may take before it times out: @bjornpagen/limits's
+ * mutantDeadlineFactor. */
+const DEADLINE_FACTOR = mutantDeadlineFactor.value
 
 /**
  * A mutant's verdict: its run's, timed against its deadline, invalid when its program has a type error, or stale when

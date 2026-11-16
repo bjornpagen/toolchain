@@ -1,3 +1,4 @@
+import { jsonBranchMax, jsonKeyMax, jsonStringMax } from "@bjornpagen/limits"
 import { Array as Arr, BigInt as BigInteger, pipe, Record as Rec, String as Str } from "effect"
 import {
 	array,
@@ -230,25 +231,26 @@ const jsonScalar = oneOf<Json>([
 	constant(null),
 	boolean,
 	double(-Number.MAX_VALUE, Number.MAX_VALUE),
-	string(codePoint(0x20, 0x7e), { min: 0, max: 8 })
+	string(codePoint(0x20, 0x7e), { min: 0, max: jsonStringMax.value })
 ])
 
-const jsonKey = string(codePoint(0x61, 0x66), { min: 0, max: 3 })
+const jsonKey = string(codePoint(0x61, 0x66), { min: 0, max: jsonKeyMax.value })
 
 /**
  * A JSON value nested at most `depth` levels: scalars, arrays of up to three items and objects of up to three keys
- * drawn from a few letters, so keys repeat and collide. Shrinks toward `null`.
+ * drawn from a few letters, so keys repeat and collide (@bjornpagen/limits's jsonStringMax, jsonKeyMax and
+ * jsonBranchMax). Shrinks toward `null`.
  */
 export const json = (depth: number): Gen<Json> =>
 	recursive(
 		jsonScalar,
 		(inner) =>
 			oneOf<Json>([
-				array(inner, { min: 0, max: 3 }),
+				array(inner, { min: 0, max: jsonBranchMax.value }),
 				map(
 					array((source) => [source.draw(jsonKey), source.draw(inner)] as const, {
 						min: 0,
-						max: 3
+						max: jsonBranchMax.value
 					}),
 					Rec.fromEntries
 				)

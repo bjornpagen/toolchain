@@ -154,6 +154,7 @@ const consumerLayer = Layer.effect(
 			{ discard: true }
 		)
 		yield* fs.makeDirectory(`${installed}/node_modules/@effect`, { recursive: true })
+		yield* fs.makeDirectory(`${installed}/node_modules/@bjornpagen`, { recursive: true })
 		yield* Effect.forEach(
 			Record.keys(manifest.dependencies),
 			(name) =>
