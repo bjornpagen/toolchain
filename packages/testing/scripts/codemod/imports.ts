@@ -45,10 +45,6 @@ const DOOR: ReadonlyArray<string> = [
 const specifierText = (w: Wanted, typeOnly: boolean): string =>
 	`${w.type && !typeOnly ? "type " : ""}${w.name === w.local ? w.name : `${w.name} as ${w.local}`}`
 
-const byName = Order.mapInput(Order.String, ([name]: readonly [string, string]) =>
-	Str.toLowerCase(name)
-)
-
 const moduleOf = (d: ts.ImportDeclaration): string =>
 	Option.getOrElse(stringValueOf(d.moduleSpecifier), () => "")
 
@@ -69,22 +65,37 @@ const importTextOf = (
 		named !== undefined && ts.isNamespaceImport(named) && keep(named.name.text)
 			? Option.some(`* as ${named.name.text}`)
 			: Option.none()
-	const specifiers = Arr.map(
-		Arr.sort(
-			[
-				...(named !== undefined && ts.isNamedImports(named)
-					? Arr.filterMap(named.elements, (e) =>
-							keep(e.name.text)
-								? Result.succeed([e.name.text, textOf(e)] as const)
-								: Result.failVoid
-						)
-					: []),
-				...Arr.map(added, (w) => [w.local, specifierText(w, typeOnly)] as const)
-			],
-			byName
-		),
-		([, text]) => text
+	const chosen = Arr.sort(
+		[
+			...(named !== undefined && ts.isNamedImports(named)
+				? Arr.filterMap(named.elements, (e) =>
+						keep(e.name.text)
+							? Result.succeed({
+									local: e.name.text,
+									bare:
+										e.propertyName === undefined
+											? e.name.text
+											: `${textOf(e.propertyName)} as ${e.name.text}`,
+									type: typeOnly || e.isTypeOnly
+								})
+							: Result.failVoid
+					)
+				: []),
+			...Arr.map(added, (w) => ({
+				local: w.local,
+				bare: w.name === w.local ? w.name : `${w.name} as ${w.local}`,
+				type: typeOnly || w.type
+			}))
+		],
+		Order.mapInput(Order.String, (c: Readonly<{ local: string }>) => Str.toLowerCase(c.local))
 	)
+	const types =
+		typeOnly ||
+		(Option.isNone(defaultName) &&
+			Option.isNone(namespace) &&
+			Arr.isReadonlyArrayNonEmpty(chosen) &&
+			Arr.every(chosen, (c) => c.type))
+	const specifiers = Arr.map(chosen, (c) => (c.type && !types ? `type ${c.bare}` : c.bare))
 	const parts = [
 		...Option.toArray(defaultName),
 		...Option.toArray(namespace),
@@ -93,7 +104,7 @@ const importTextOf = (
 	const attributes = statement.attributes === undefined ? "" : ` ${textOf(statement.attributes)}`
 	return Arr.isReadonlyArrayNonEmpty(parts)
 		? Option.some(
-				`import ${typeOnly ? "type " : ""}${Arr.join(parts, ", ")} from ${textOf(statement.moduleSpecifier)}${attributes}`
+				`import ${types ? "type " : ""}${Arr.join(parts, ", ")} from ${textOf(statement.moduleSpecifier)}${attributes}`
 			)
 		: Option.none()
 }
