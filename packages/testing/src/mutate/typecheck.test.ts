@@ -1,8 +1,9 @@
 /**
  * A mutant's typecheck (mutate/typecheck.ts): a mutant is invalid exactly when it makes a type error the unmutated
  * package does not have, in its own file or in any file whose types read it, through value imports and `import type`
- * alike and at any depth; a file that reads nothing of it is never checked against it. The check reads only the
- * mutant's file and its readers, so a reader it misses is a mistyped mutant judged valid.
+ * alike and at any depth; a file that reads nothing of it is never checked against it; and a mutant leaves nothing
+ * behind it, so the user's file checked as it is next is valid. The check reads only the mutant's file and its readers,
+ * so a reader it misses is a mistyped mutant judged valid.
  */
 import { Effect, FileSystem, Path } from "effect"
 import { deepStrictEqual } from "#assert.ts"
@@ -53,7 +54,11 @@ export const mistypedMutants = property.explore(packageGen, {
 			const mistyped = yield* typecheckerOf(root)
 			const target = yield* realPathOf(path.join(root, "f0.ts"))
 			const invalid = yield* mistyped({ target, text: rootText(pkg, '"one"') })
-			deepStrictEqual(invalid, pkg.user !== -1)
+			const userFile = pkg.user === -1 ? "stranger.ts" : `f${String(pkg.user)}.ts`
+			const user = yield* realPathOf(path.join(root, userFile))
+			const userText = yield* fs.readFileString(user)
+			const after = yield* mistyped({ target: user, text: userText })
+			deepStrictEqual({ invalid, after }, { invalid: pkg.user !== -1, after: false })
 		}),
 	oracle: {
 		kind: "specification",
@@ -69,9 +74,15 @@ export const mistypedMutants = property.explore(packageGen, {
 		},
 		{
 			file: "packages/testing/src/mutate/typecheck.ts",
-			original: "...mutant.getSemanticDiagnostics(readers(mutated.target))",
-			replacement: "...mutant.getSemanticDiagnostics(mutated.target)",
+			original: "...typed.getSemanticDiagnostics(readers(mutated.target))",
+			replacement: "...typed.getSemanticDiagnostics(mutated.target)",
 			why: "Only the mutant's own file is checked, so a mutant whose type error stands in a reader is judged valid."
+		},
+		{
+			file: "packages/testing/src/mutate/typecheck.ts",
+			original: "const restored = yield* succeeded(mutant, mutated.target, own)",
+			replacement: "const restored = mutant",
+			why: "The live snapshot keeps a mutant's text after its check, so the next check of another file reads the mutant's error."
 		}
 	]
 })

@@ -1,4 +1,13 @@
-import { Array as Arr, Effect, Option, Path, Schema, String as Str } from "effect"
+import {
+	Array as Arr,
+	Effect,
+	FileSystem,
+	Option,
+	Path,
+	Schema,
+	String as Str,
+	SynchronizedRef
+} from "effect"
 import * as ts from "typescript/ast"
 import { createFileSystemLayer, type FileSystemCallbacks, serverFS } from "typescript/fs"
 import {
@@ -138,13 +147,19 @@ const readersOf = (program: Program) =>
 
 /**
  * The package at `pkg` typed once in one native compiler session for the enclosing scope, and whether a mutant's
- * program has a type error the unmutated program does not: the unmutated snapshot with the mutant's text overlaid on
- * its file, in a snapshot of its own, checked in the files whose types can change with it, the file and its readers
- * (readersOf), not every file of the program. The unmutated program must have no error at all. A mutant with a type
- * error is invalid: no one could commit it, so no property need kill it.
+ * program has a type error the unmutated program does not, checked in the files whose types can change with it, the
+ * file and its readers (readersOf), not every file of the program. The unmutated program must have no error at all. A
+ * mutant with a type error is invalid: no one could commit it, so no property need kill it.
+ *
+ * The session holds one live snapshot, the package as it is. A mutant's check updates it with the mutant's text (an
+ * incremental update of that one file), reads the errors, and updates that back to the file's own text, each snapshot
+ * disposed as soon as its successor exists, so the session never holds more than two programs however many mutants it
+ * checks. A snapshot derived from one unmutated snapshot kept for the session's life instead holds every derivation's
+ * program state: a session over grizzle's engine grew its compiler past 19 GB in a few hundred checks.
  */
 export const typecheckerOf = Effect.fn("testing.mutate.typecheckerOf")(function* (pkg: RealPath) {
 	const path = yield* Path.Path
+	const fs = yield* FileSystem.FileSystem
 	const config = path.join(pkg, "tsconfig.json")
 	const api = yield* Effect.acquireRelease(
 		Effect.try({
@@ -156,13 +171,18 @@ export const typecheckerOf = Effect.fn("testing.mutate.typecheckerOf")(function*
 				session.close()
 			})
 	)
-	const unmutated = yield* Effect.acquireDisposable(
-		Effect.try({
-			try: () => api.createSnapshot({ openProjects: [config] }),
-			catch: refused("the native compiler did not open the package")
-		})
+	const opened = yield* Effect.try({
+		try: () => api.createSnapshot({ openProjects: [config] }),
+		catch: refused("the native compiler did not open the package")
+	})
+	const current = yield* Effect.acquireRelease(SynchronizedRef.make(opened), (live) =>
+		Effect.flatMap(SynchronizedRef.get(live), (snapshot) =>
+			Effect.sync(() => {
+				snapshot[Symbol.dispose]()
+			})
+		)
 	)
-	const program = yield* programOf(unmutated, config)
+	const program = yield* programOf(opened, config)
 	const baseline = yield* everyError(program)
 	if (Arr.isReadonlyArrayNonEmpty(baseline)) {
 		return yield* TypecheckRefused.make({
@@ -170,33 +190,41 @@ export const typecheckerOf = Effect.fn("testing.mutate.typecheckerOf")(function*
 		})
 	}
 	const readers = yield* readersOf(program)
+	/** The live snapshot updated with `file` holding `text`, and the snapshot it came from disposed. */
+	const succeeded = (snapshot: Snapshot, file: RealPath, text: string) =>
+		Effect.try({
+			try: () => {
+				const next = snapshot.update({
+					fileSystem: createFileSystemLayer([[file, text]]),
+					ensurePrograms: true
+				})
+				snapshot[Symbol.dispose]()
+				return next
+			},
+			catch: refused("the native compiler did not update the package")
+		})
 	return (mutated: MutatedFile): Effect.Effect<boolean, TypecheckRefused> =>
-		Effect.scoped(
-			Effect.flatMap(
-				Effect.acquireDisposable(
+		SynchronizedRef.modifyEffect(current, (live) =>
+			Effect.gen(function* () {
+				const own = yield* fs
+					.readFileString(mutated.target)
+					.pipe(Effect.mapError(refused(`reading ${mutated.target}`)))
+				const mutant = yield* succeeded(live, mutated.target, mutated.text)
+				const verdict = yield* Effect.flatMap(programOf(mutant, config), (typed) =>
 					Effect.try({
 						try: () =>
-							unmutated.update({
-								fileSystem: createFileSystemLayer([[mutated.target, mutated.text]]),
-								ensurePrograms: true
-							}),
-						catch: refused("the native compiler did not overlay the mutant")
+							Arr.some(
+								errorsIn([
+									...typed.getSyntacticDiagnostics(mutated.target),
+									...typed.getSemanticDiagnostics(readers(mutated.target))
+								]),
+								(error) => !UNUSED.has(error.code)
+							),
+						catch: refused("the native compiler failed")
 					})
-				),
-				(snapshot) =>
-					Effect.flatMap(programOf(snapshot, config), (mutant) =>
-						Effect.try({
-							try: () =>
-								Arr.some(
-									errorsIn([
-										...mutant.getSyntacticDiagnostics(mutated.target),
-										...mutant.getSemanticDiagnostics(readers(mutated.target))
-									]),
-									(error) => !UNUSED.has(error.code)
-								),
-							catch: refused("the native compiler failed")
-						})
-					)
-			)
+				)
+				const restored = yield* succeeded(mutant, mutated.target, own)
+				return [verdict, restored] as const
+			})
 		)
 })
