@@ -46,9 +46,19 @@
 		"fixtures:oxlint": {},
 		"fixtures:workspace-gate": {},
 		"test": {
-			"description": "Every test that uses no network. Each run draws fresh rotating seeds, so a test never replays from cache; the run's seed, a replay and a fuzz run come through the environment.",
+			"description": "Every package's properties, through toolchain-test run. Each run draws a fresh rotating seed, so a run never replays from cache; the run's seed comes through the environment (and the old fuzz script's variables), and so does the PostgreSQL cluster the testing library's database properties need (libpq's PGHOST, PGPORT, PGUSER, PGPASSWORD, PGSSLMODE; CONTRIBUTING.md, \"Properties that need a database\").",
 			"cache": false,
-			"passThroughEnv": ["TEST_SEED", "TEST_REPLAY", "TEST_FUZZ", "TEST_FUZZTIME"]
+			"passThroughEnv": [
+				"TEST_SEED",
+				"TEST_REPLAY",
+				"TEST_FUZZ",
+				"TEST_FUZZTIME",
+				"PGHOST",
+				"PGPORT",
+				"PGUSER",
+				"PGPASSWORD",
+				"PGSSLMODE"
+			]
 		},
 		"//#typecheck": {},
 		"//#typecheck:full": {},
