@@ -303,6 +303,20 @@ export const gateLockPollSeconds = provisional({
 	recorded: RECORDED
 })
 
+/** How long the push gate's last passing check:full counts, before the next push runs check:full again (gate.sh). */
+export const gateFullCheckDays = provisional({
+	value: 1,
+	owner: "the dev tools' gate (packages/devtools/bin/gate.sh, the push)",
+	unit: "days",
+	scope: "the age of the push snapshot's last passing check:full, in a repository that has one",
+	breaks:
+		"without a period a stale result of the incremental typecheck's build info (TypeScript #64386 and #64591) could pass every push for ever; with none at all every push runs the gate from scratch",
+	measure:
+		"over a few weeks of pushes, record each check:full that failed where the incremental check before it passed, and how long the build info had then been kept; choose the period below the shortest such age",
+	origin: 'Bjorn\'s decision of 2026-11-15, "once a day", written with db83729, with no evidence',
+	recorded: RECORDED
+})
+
 /**
  * How much work the runner's pool puts in one message to a worker: it fills each message with cases until their
  * expected run time reaches this, so the round trip that carries them stays a small part of the work they do. Below it,

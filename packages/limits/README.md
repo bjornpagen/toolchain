@@ -10,7 +10,7 @@ this is where the toolchain keeps it.
 - `limits.env` holds the limits a shell script reads, one `NAME=value` line each, generated from them by
   `pnpm --filter @bjornpagen/limits limits:data` (`src/data.ts`). `pnpm check` runs `limits:check`, which refuses the
   file when it differs; commit it with any change to the limits it carries. `packages/devtools/bin/gate.sh` reads it
-  for `GATE_LOCK_POLL_SECONDS`.
+  for `GATE_LOCK_POLL_SECONDS` and `GATE_FULL_CHECK_DAYS`.
 - Test files (`*.test.ts`, `*.test.tsx`, `*.fixtures.ts`, and `test/`, `tests/` and `fixtures/` directories) are exempt
   from both rules; `bench` files are not.
 
