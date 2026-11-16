@@ -148,6 +148,26 @@ const childProcesses = process.getBuiltinModule("node:child_process")
 /** A forked worker process. */
 type ChildProcess = ReturnType<typeof childProcesses.fork>
 
+/**
+ * Ends a worker with every process it started and did not detach (a property's program, a server its need started):
+ * the worker leads a process group of its own (it is forked detached), and the whole group is sent SIGKILL. A worker
+ * ended by SIGKILL, by its watchdog or by the pool, runs no finalizer, so its children would otherwise run on, parented
+ * to init, past the run (MIGRATE-TC found a mutant's runaway programs at a core each hours after their kill trials). A
+ * group with no process left in it has nothing to end, the one failure a signal to a group this process made can meet
+ * (ESRCH).
+ */
+const endGroup = (child: ChildProcess): Effect.Effect<void> =>
+	Option.match(Option.fromUndefinedOr(child.pid), {
+		onNone: () => Effect.void,
+		onSome: (pid) =>
+			Effect.ignore(
+				Effect.try({
+					try: () => process.kill(-pid, "SIGKILL"),
+					catch: () => "no process left in the group" as const
+				})
+			)
+	})
+
 /** What happens to a worker, as the pool's one fiber handles it, in order: a message, its exit, or its silence past a
  * phase of a unit's bound and grace. */
 type Event =
@@ -202,8 +222,9 @@ const compilingOf = (spec: PoolSpec) =>
 /**
  * A pool in the run's scope, which forks its workers as its queue wants them, none before a unit is queued (a run with
  * nothing to run boots no worker): closing it disconnects each worker and waits for it to exit on its own (its
- * finalizers run, a coverage dump is written), and kills one still alive past SILENCE_GRACE_MILLIS, a finalizer that
- * hangs.
+ * finalizers run, a coverage dump is written), then ends its process group (endGroup), which kills a worker still alive
+ * past SILENCE_GRACE_MILLIS, a finalizer that hangs, and whatever it left running. A worker that ends while the pool is
+ * open, however it ends, has its group ended too.
  */
 export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Scope> =>
 	Effect.gen(function* () {
@@ -384,7 +405,8 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 					env: { ...process.env, ...spec.env, ...compiling },
 					execArgv: Arr.copy(spec.execArgv),
 					serialization: "advanced",
-					stdio: ["ignore", "pipe", "pipe", "ipc"]
+					stdio: ["ignore", "pipe", "pipe", "ipc"],
+					detached: true
 				}
 			)
 			const worker: Worker = {
@@ -476,10 +498,11 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 								(running) => running.unit.id === event.unit && running.phase === event.phase
 							)
 						) {
-							worker.child.kill("SIGKILL")
+							yield* endGroup(worker.child)
 						}
 						return
 					case "exit": {
+						yield* endGroup(worker.child)
 						const wasReady = worker.ready
 						const lost = yield* settle(worker)
 						const requeued = Arr.filter(worker.sent, (unit) =>
@@ -612,23 +635,21 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 				Effect.forEach(
 					workers,
 					(worker) =>
-						Effect.raceFirst(
-							Effect.callback<void>((resume) => {
-								if (worker.child.exitCode !== null || worker.child.signalCode !== null) {
-									resume(Effect.void)
-									return
-								}
-								worker.child.once("exit", () => resume(Effect.void))
-								if (worker.child.connected) {
-									worker.child.disconnect()
-								}
-							}),
-							Effect.andThen(
-								Effect.sleep(Duration.millis(SILENCE_GRACE_MILLIS)),
-								Effect.sync(() => {
-									worker.child.kill("SIGKILL")
-								})
-							)
+						Effect.andThen(
+							Effect.raceFirst(
+								Effect.callback<void>((resume) => {
+									if (worker.child.exitCode !== null || worker.child.signalCode !== null) {
+										resume(Effect.void)
+										return
+									}
+									worker.child.once("exit", () => resume(Effect.void))
+									if (worker.child.connected) {
+										worker.child.disconnect()
+									}
+								}),
+								Effect.sleep(Duration.millis(SILENCE_GRACE_MILLIS))
+							),
+							endGroup(worker.child)
 						),
 					{ concurrency: "unbounded", discard: true }
 				)

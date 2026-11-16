@@ -218,7 +218,8 @@ const BEGAN_LINE = regex("^began: (?<moment>\\d+)$", "m")
 
 /**
  * A planted program's run under a seed, from the program at `program`, to its end: what it printed, its exit code, and
- * when it ended.
+ * when it ended. The program runs in its worker's process group, not one of its own, so a worker ended before the
+ * program (a mutant's runaway its watchdog no longer ends, in a kill trial) ends it too (pool.ts endGroup).
  */
 export const programRun = (program: string, planted: Planted, seed: number) =>
 	Effect.scoped(
@@ -234,7 +235,7 @@ export const programRun = (program: string, planted: Planted, seed: number) =>
 					String(planted.pauseMillis),
 					String(seed)
 				],
-				{ stdin: "ignore" }
+				{ stdin: "ignore", detached: false }
 			)
 			const [stdout, stderr, exit] = yield* Effect.all(
 				[
