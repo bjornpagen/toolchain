@@ -22,10 +22,11 @@ import {
 	type Evaluator,
 	FromWorker,
 	lostResult,
+	type ChildrenCpu,
 	type Printed,
 	ranOf,
 	resultsOf,
-	sketchesRanOf,
+	seriesRanOf,
 	type ToWorker,
 	type Work,
 	workOf
@@ -39,7 +40,7 @@ import {
 	schedulerOf,
 	type View
 } from "#runner/schedule.ts"
-import type { PoolUsage, PropertyUsage } from "#runner/usage.ts"
+import type { ChildrenStated, PoolUsage, PropertyUsage } from "#runner/usage.ts"
 
 /**
  * The pool: worker processes, at most one a core and forked as the queue wants them (one for each module no worker
@@ -60,8 +61,8 @@ import type { PoolUsage, PropertyUsage } from "#runner/usage.ts"
  */
 
 /**
- * One unit of work: a batch of one property's orders or a run of an exhaustion's sketches, the property and the module
- * it is declared in, how many cases it holds (a run, its sketches), and where what it gives back goes.
+ * One unit of work: a batch of one property's orders or a series of its cases, the property and the module it is
+ * declared in, how many cases it holds (a series, those its source names), and where what it gives back goes.
  */
 type Unit = Readonly<{
 	id: number
@@ -242,15 +243,38 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 		const properties = new Map<string, PropertyUsage>()
 		const processes: Array<Worker["usage"]> = []
 
-		/** Adds what a property's cases or readying cost to its usage. */
-		const spent = (label: string, cases: number, casesCpu: number, readyingCpu: number) => {
-			const before = properties.get(label) ?? { label, cases: 0, casesCpu: 0, readyingCpu: 0 }
+		let childrenStated: ChildrenStated = "stated"
+
+		/** Adds what a property's cases or readying cost to its usage, and what the children they ran cost. */
+		const spent = (
+			label: string,
+			cost: Readonly<{ cases: number; casesCpu: number; readyingCpu: number; childrenCpu: number }>
+		) => {
+			const before = properties.get(label) ?? {
+				label,
+				cases: 0,
+				casesCpu: 0,
+				readyingCpu: 0,
+				childrenCpu: 0
+			}
 			properties.set(label, {
 				label,
-				cases: before.cases + cases,
-				casesCpu: before.casesCpu + casesCpu,
-				readyingCpu: before.readyingCpu + readyingCpu
+				cases: before.cases + cost.cases,
+				casesCpu: before.casesCpu + cost.casesCpu,
+				readyingCpu: before.readyingCpu + cost.readyingCpu,
+				childrenCpu: before.childrenCpu + cost.childrenCpu
 			})
+		}
+
+		/** The CPU a worker's reading of its children states, noting a reading that states none. */
+		const childrenMillis = (children: ChildrenCpu): number => {
+			switch (children.kind) {
+				case "stated":
+					return children.millis
+				case "unstated":
+					childrenStated = "unstated"
+					return 0
+			}
 		}
 		const broken = new Set<number>()
 		let unitIds = 0
@@ -392,7 +416,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 			const ran = ranOf(done)
 			counts[worker.index] = (counts[worker.index] ?? 0) + ran.cases
 			scheduler.finished(unit.property, ran.cases, ran.millis)
-			spent(unit.property, ran.cases, ran.cpu, 0)
+			spent(unit.property, { cases: ran.cases, casesCpu: ran.cpu, readyingCpu: 0, childrenCpu: 0 })
 			Deferred.doneUnsafe(unit.done, Effect.succeed(done))
 		}
 
@@ -561,7 +585,12 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 									(unit) => {
 										scheduler.readied(worker.index, unit.module, received.millis)
 										worker.readyingMillis += received.millis
-										spent(unit.property, 0, 0, received.cpu)
+										spent(unit.property, {
+											cases: 0,
+											casesCpu: 0,
+											readyingCpu: received.cpu,
+											childrenCpu: childrenMillis(received.children)
+										})
 										afterFinished(scheduler, view, apply, worker.index, unit.module)
 										grow()
 									}
@@ -583,6 +612,12 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 									worker.occupiedSince = now
 									worker.readyingMillis = 0
 									finish(worker, unit.value, received.done)
+									spent(unit.value.property, {
+										cases: 0,
+										casesCpu: 0,
+										readyingCpu: 0,
+										childrenCpu: childrenMillis(received.children)
+									})
 									afterFinished(scheduler, view, apply, worker.index, unit.value.module)
 									grow()
 								}
@@ -720,11 +755,11 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 						return marked
 					}
 				),
-			sketch: (runs) =>
+			series: (orders) =>
 				Effect.map(
 					ranInOrder(
-						Arr.map(runs, (sketches): Work => ({ kind: "sketches", sketches })),
-						sketchesRanOf,
+						Arr.map(orders, (series): Work => ({ kind: "series", series })),
+						seriesRanOf,
 						(ran) => ran.stopped.kind === "stopped"
 					),
 					Arr.map(([, ran]) => ran)
@@ -745,7 +780,8 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 			held: Effect.sync(() => Arr.take(scheduler.held(), workers.length)),
 			usage: Effect.sync((): PoolUsage => ({
 				properties: Arr.fromIterable(properties.values()),
-				workers: Arr.map(processes, (usage) => ({ ...usage }))
+				workers: Arr.map(processes, (usage) => ({ ...usage })),
+				children: childrenStated
 			}))
 		}
 	})

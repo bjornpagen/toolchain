@@ -139,10 +139,18 @@ export type Tally<P extends Phase> = Readonly<{
 	sinceNew: number
 }>
 
-/** A tally being filled: a passing case adds its notes, and `has` says whether a case has reached a situation's key. */
+/**
+ * A tally being filled: a passing case adds its notes; `addCases` adds `cases` passing cases at once, a series run
+ * elsewhere, from each situation they noted with how many noted it and the place among them of the first that did,
+ * from 0, just as adding them one by one would; and `has` says whether a case has reached a situation's key.
+ */
 export type TallyBuilder<P extends Phase> = Readonly<{
 	phase: P
 	add: (notes: ReadonlySet<string>) => void
+	addCases: (
+		cases: number,
+		noted: ReadonlyArray<readonly [key: string, count: number, first: number]>
+	) => void
 	has: (key: string) => boolean
 	tally: () => Tally<P>
 }>
@@ -163,6 +171,16 @@ export const tallyOf = <P extends Phase>(phase: P): TallyBuilder<P> => {
 				}
 				counts.set(key, count + 1)
 			}
+		},
+		addCases: (added, noted) => {
+			for (const [key, count, first] of noted) {
+				const before = counts.get(key) ?? 0
+				if (before === 0) {
+					lastNew = Math.max(lastNew, cases + first + 1)
+				}
+				counts.set(key, before + count)
+			}
+			cases += added
 		},
 		has: (key) => counts.has(key),
 		tally: () => ({ phase, cases, counts: new Map(counts), sinceNew: cases - lastNew })

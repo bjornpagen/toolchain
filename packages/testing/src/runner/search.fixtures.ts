@@ -1,4 +1,6 @@
+import { regex } from "arkregex"
 import { Array as Arr, Effect, Option, Order, type Scope } from "effect"
+import { type Residual, residualOf, tallyOf } from "#features.ts"
 import {
 	type Aimed,
 	aimed,
@@ -20,7 +22,7 @@ import {
 	property,
 	ReplayToken
 } from "#property.ts"
-import { floorSeed } from "#random.ts"
+import { floorSeed, rotatingSeed } from "#random.ts"
 import { type Drawn, type ReplayCase, replayOf, replayTokenOf } from "#replay.ts"
 import { inlineEvaluator, searchInline } from "#runner/inline.ts"
 import { type Limits, runnerLimits } from "#runner/limits.ts"
@@ -32,8 +34,8 @@ import type {
 	Finding,
 	Printed,
 	Reach,
-	SketchesOrder,
-	SketchesRan,
+	SeriesOrder,
+	SeriesRan,
 	Verdict
 } from "#runner/protocol.ts"
 import type { ModuleClosure, WorkerIndex } from "#runner/services.ts"
@@ -94,10 +96,10 @@ const widthEvaluator = (
 						(results) => Arr.flatten(results)
 					)
 			})
-		const sketched = (run: SketchesOrder, lane: number) =>
+		const drawn = (series: SeriesOrder, lane: number) =>
 			Option.match(Arr.get(lanes, lane), {
 				onNone: () => Effect.die(`no lane ${lane} of ${width}`),
-				onSome: (evaluator) => evaluator.sketch([run])
+				onSome: (evaluator) => evaluator.series([series])
 			})
 		const evaluator: Evaluator = {
 			evaluate: (batches, stop) =>
@@ -114,11 +116,11 @@ const widthEvaluator = (
 					}
 					return judged
 				}),
-			sketch: (runs) =>
+			series: (orders) =>
 				Effect.gen(function* () {
-					const summaries: Array<SketchesRan> = []
-					for (const group of Arr.chunksOf(runs, width)) {
-						const ran = yield* Effect.forEach(group, sketched, { concurrency: "unbounded" })
+					const summaries: Array<SeriesRan> = []
+					for (const group of Arr.chunksOf(orders, width)) {
+						const ran = yield* Effect.forEach(group, drawn, { concurrency: "unbounded" })
 						for (const summary of Arr.flatten(ran)) {
 							summaries.push(summary)
 							if (summary.stopped.kind === "stopped") {
@@ -210,6 +212,91 @@ export const passing: Property = property.explore(int(0, 9), {
 	kept: [],
 	kills: []
 })
+
+/** The space of a streamed inner search: 0 to 99. */
+const streamSpace = int(0, 99)
+
+/** The situations a streamed inner search's cases note: each value's residue modulo seven. */
+const RESIDUES = [
+	"residue 0",
+	"residue 1",
+	"residue 2",
+	"residue 3",
+	"residue 4",
+	"residue 5",
+	"residue 6"
+] as const
+
+/** The situation a streamed case of `value` notes. */
+const residueOf = (value: number) => Arr.getUnsafe(RESIDUES, value % RESIDUES.length)
+
+/** A drawn streamed inner search: its rotating cases, window, width and run seed, and the values its property fails on. */
+export type StreamedShape = Readonly<{
+	runs: number
+	window: number
+	width: number
+	seed: number
+	failing: ReadonlyArray<number>
+}>
+
+/** Streamed inner searches: up to 60 rotating cases, windows of 1 to 16, and none to two failing values of 0..99. */
+export const streamedShapes: Gen<StreamedShape> = (source) => ({
+	runs: source.draw(int(0, 60)),
+	window: source.draw(int(1, 16)),
+	width: source.draw(widths),
+	seed: source.draw(seeds),
+	failing: Arr.dedupe(source.draw(array(streamSpace, { min: 0, max: 2 })))
+})
+
+/**
+ * An inner exploration over 0..99 whose property records every value it sees, notes its residue modulo seven, and
+ * fails on each of `failing`.
+ */
+export const streamed = (
+	failing: ReadonlyArray<number>
+): Readonly<{ seen: () => ReadonlyArray<number>; property: Property }> => {
+	const seen: Array<number> = []
+	return {
+		seen: () => seen,
+		property: property.explore(streamSpace, {
+			needs: {},
+			situations: RESIDUES,
+			check: (_resources, c) => (value) =>
+				Effect.suspend(() => {
+					seen.push(value)
+					c.note(residueOf(value))
+					return Arr.contains(failing, value) ? Effect.die("a failing value") : Effect.void
+				}),
+			oracle: planted,
+			kept: [],
+			kills: []
+		})
+	}
+}
+
+/** The values of a streamed inner search's rotating stream under `id` and `seed`: its first `runs` cases, in order. */
+export const streamOf = (id: string, shape: StreamedShape): ReadonlyArray<number> =>
+	sample(streamSpace, rotatingSeed(shape.seed, floorSeed(id)), shape.runs)
+
+/** Where a falsified case was found in its stream: the place its finding names. */
+const AT_CASE = regex(", case (?<at>\\d+)$")
+
+/** The place in its stream of the case a failed search's finding names, when it names one. */
+export const rotatingCaseOf = (verdict: Verdict): Option.Option<number> =>
+	Option.flatMap(findingOf(verdict), (finding) =>
+		"where" in finding
+			? Option.map(Option.fromNullishOr(AT_CASE.exec(finding.where)?.groups.at), Number)
+			: Option.none()
+	)
+
+/** The residual of a streamed search whose rotating cases were `values`, each added to its tally alone, in order. */
+export const residualOfValues = (values: ReadonlyArray<number>): Residual => {
+	const tally = tallyOf("independent")
+	for (const value of values) {
+		tally.add(new Set([residueOf(value)]))
+	}
+	return residualOf(tally.tally())
+}
 
 /** An inner search over 0..9 whose property fails, whatever the value, when its own draw of 0..1000 is `threshold`
  * or more. */

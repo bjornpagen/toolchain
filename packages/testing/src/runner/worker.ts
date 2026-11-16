@@ -28,6 +28,7 @@ import { Perception, perceptionOf } from "#runner/perceive.ts"
 import { FromWorker, lostResult, ToWorker, type Work, workOf } from "#runner/protocol.ts"
 import { ModuleClosure, WorkerIndex } from "#runner/services.ts"
 import { runOfLabel } from "#runner/stack.ts"
+import { childrenCpuNow, childrenSince } from "#runner/usage.ts"
 import { startProcessCoverage } from "#sense.ts"
 
 /**
@@ -197,13 +198,15 @@ const main = Effect.gen(function* () {
 				Effect.gen(function* () {
 					yield* send({ kind: "readying", unit: unit.unit })
 					const cpu = process.cpuUsage()
+					const children = childrenCpuNow()
 					const [took, made] = yield* Effect.timed(ready(first.property, first.open))
 					readied.set(first.property, made)
 					yield* send({
 						kind: "readied",
 						unit: unit.unit,
 						millis: Duration.toMillis(took),
-						cpu: millisOf(process.cpuUsage(cpu))
+						cpu: millisOf(process.cpuUsage(cpu)),
+						children: childrenSince(children)
 					})
 					return made
 				})
@@ -214,6 +217,7 @@ const main = Effect.gen(function* () {
 		Effect.gen(function* () {
 			const made = yield* readiedFor(unit)
 			yield* send({ kind: "started", unit: unit.unit })
+			const children = childrenCpuNow()
 			const done = yield* doneOf(made, unit.work).pipe(
 				Effect.provideService(NeedCache, cache),
 				Effect.provideService(Perception, perception),
@@ -231,7 +235,13 @@ const main = Effect.gen(function* () {
 				}),
 				Effect.provideContext(platform)
 			)
-			yield* send({ kind: "done", unit: unit.unit, done, cpu: millisOf(process.cpuUsage()) })
+			yield* send({
+				kind: "done",
+				unit: unit.unit,
+				done,
+				cpu: millisOf(process.cpuUsage()),
+				children: childrenSince(children)
+			})
 		})
 
 	const evaluating = Effect.gen(function* () {

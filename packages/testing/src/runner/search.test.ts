@@ -5,6 +5,9 @@
  *
  * - Streams: over drawn limits (rotating runs of 0 to 48, floors of 1 to 12, windows of 1 to 16), the floor runs its
  *   limit's cases and the rotating stream its runs, the residual counting the rotating cases alone.
+ * - The rotating stream, sent as series its processes draw and sum up, runs the stream's cases (its first `runs` by
+ *   value, as sample draws them) and leaves the residual they leave added one by one; a failing value is found at the
+ *   first case of the stream that draws one, at any width.
  * - A property's own budget replaces the runner's: its rotating stream runs its `runs`, its floor a quarter of them
  *   rounded up, and its steered phase stops at its `steered`.
  * - Shrinking: a property failing at every draw of at least a drawn threshold shrinks to the threshold, its own draw
@@ -29,7 +32,7 @@
  *
  * Oracles are stated per property.
  */
-import { Array as Arr, Effect, Option } from "effect"
+import { Array as Arr, Effect, Option, Order } from "effect"
 import { deepStrictEqual, strictEqual } from "#assert.ts"
 import { boolean, characterOf, int, string } from "#gen.ts"
 import { type Case, property, ReplayToken } from "#property.ts"
@@ -66,6 +69,8 @@ import {
 	steeredSituations,
 	steeredSketches,
 	printedNumber,
+	residualOfValues,
+	rotatingCaseOf,
 	seeds,
 	shownOf,
 	type SpaceShape,
@@ -73,6 +78,9 @@ import {
 	STALE_KINDS,
 	staleCases,
 	sketchExhaustion,
+	streamed,
+	streamedShapes,
+	streamOf,
 	tokenDrawn,
 	tokenValues,
 	unreachedOf,
@@ -465,6 +473,87 @@ export const steeringPhases = property.explore(
 	}
 )
 
+export const rotatingSeries = property.explore(streamedShapes, {
+	needs: {},
+	situations: ["every case passes", "a failing case", "several series at once"],
+	check: (_resources, c) => (shape) =>
+		Effect.gen(function* () {
+			const id = "rotating series/inner"
+			const inner = streamed(shape.failing)
+			const verdict = yield* searchedAt(inner.property, {
+				id,
+				seed: shape.seed,
+				reach: "rotating",
+				limits: { ...runnerLimits, runs: shape.runs, window: shape.window },
+				width: shape.width
+			})
+			const values = streamOf(id, shape)
+			const failingAt = Arr.findFirstIndex(values, (value) => Arr.contains(shape.failing, value))
+			c.note(Option.isSome(failingAt) ? "a failing case" : "every case passes")
+			if (shape.width > 1 && shape.runs > shape.window) {
+				c.note("several series at once")
+			}
+			deepStrictEqual(
+				verdict.kind === "explored"
+					? {
+							kind: "explored",
+							cases: verdict.cases,
+							residual: Option.some(verdict.residual),
+							seen: Arr.sort(inner.seen(), Order.Number),
+							at: Option.none<number>()
+						}
+					: {
+							kind: verdictKind(verdict),
+							cases: 0,
+							residual: Option.none(),
+							seen: [],
+							at: rotatingCaseOf(verdict)
+						},
+				Option.match(failingAt, {
+					onNone: () => ({
+						kind: "explored",
+						cases: shape.runs,
+						residual: Option.some(residualOfValues(values)),
+						seen: Arr.sort(values, Order.Number),
+						at: Option.none<number>()
+					}),
+					onSome: (at) => ({
+						kind: "falsified",
+						cases: 0,
+						residual: Option.none(),
+						seen: [],
+						at: Option.some(at)
+					})
+				})
+			)
+		}),
+	oracle: {
+		kind: "specification",
+		name: "the rotating stream runs its first runs cases, leaves the residual they leave one by one, and is falsified at its first failing case, at any width"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/runner/series.ts",
+			original: '\t\t\torderOf(series, { kind: "random", seed, skip: 0 }, "nothing")',
+			replacement: '\t\t\torderOf(series, { kind: "random", seed, skip: 1 }, "nothing")',
+			why: "A stream's case is drawn one word into its case seed, so the series runs other cases than the stream's; this property fails."
+		},
+		{
+			file: "packages/testing/src/runner/search.ts",
+			original: "(firsts[at] ?? 0) + summary.passed",
+			replacement: "(firsts[at] ?? 0)",
+			why: "A falsified rotating case is reported at its series' first case, not its own place in the stream; this property fails."
+		},
+		{
+			file: "packages/testing/src/features.ts",
+			original: "\t\t\t\t\tlastNew = Math.max(lastNew, cases + first + 1)",
+			replacement: "\t\t\t\t\tlastNew = Math.max(lastNew, cases + 1)",
+			why: "A series' new situation is counted new at the series' first case, not its own, so the residual's run of cases since the last new situation is too long; this property fails."
+		}
+	]
+})
+
 export const exhaustsEverything = property.explore(
 	(source): SpaceShape => ({
 		a: source.draw(int(1, 4)),
@@ -528,10 +617,10 @@ export const exhaustsEverything = property.explore(
 				why: "An exhaustion reads a space it could not count within the case deadline as a pass, with no case run (exhaust-deadline-passed, re-anchored from explore.ts's test-deadline cut to the new search's uncountable space); the exhaustive spaces property fails."
 			},
 			{
-				file: "packages/testing/src/runner/sketches.ts",
+				file: "packages/testing/src/runner/series.ts",
 				original: "Option.exists(decisions, (drawn) => branch.length > drawn)",
 				replacement: "Option.exists(decisions, (drawn) => branch.length >= drawn)",
-				why: "A sketch's run ends one decision late, so it runs on into the next sketch's first case, which runs twice (exhaust-sketch-ends-one-decision-late, re-anchored from explore.ts to the search's rounds of sketches, which a run of sketches now runs on its process, sketches.ts sketchesRun); the exhaustive spaces property fails."
+				why: "A sketch's run ends one decision late, so it runs on into the next sketch's first case, which runs twice (exhaust-sketch-ends-one-decision-late, re-anchored from explore.ts to the search's rounds of sketches, which a series of sketches now runs on its process, series.ts sketchesRun); the exhaustive spaces property fails."
 			}
 		]
 	}

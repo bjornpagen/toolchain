@@ -26,7 +26,7 @@ import {
 	type ChooserSpec,
 	type Finding,
 	type SearchRun,
-	type SketchesOrder,
+	type SeriesOrder,
 	type Verdict
 } from "#runner/protocol.ts"
 import { runOfLabel } from "#runner/stack.ts"
@@ -480,9 +480,11 @@ const randomOf = (stream: Stream, index: number): ChooserSpec => ({
 /**
  * An exploration's search, `group` cases to a batch: kept tokens first; then the witnesses, the floor stream and, while
  * a required situation is unreached, the steered phase grown from it, both fixed by the property's identity; then,
- * for a full run, the rotating stream, fresh each run seed. Cases run in windows of the runner's steering window, each
- * drawn under the snapshot of what was pending when its window began; each window's results are judged in case order,
- * so width changes how fast a search runs and never what it finds. A failing case is shrunk by editing its tape,
+ * for a full run, the rotating stream, fresh each run seed. The witnesses run in windows of the runner's steering
+ * window, each drawn under the snapshot of what was pending when its window began. The rotating stream, drawn unsteered,
+ * is sent as series of a window's cases each (their case seeds), as many at once as the evaluator has room for, each
+ * drawn, run and summed up by the process it is sent to (runner/series.ts), so its cases cross no process boundary one
+ * by one. Results are judged in case order, so width changes how fast a search runs and never what it finds. A failing case is shrunk by editing its tape,
  * property draws included, under the steering it was drawn under. The coverage verdict is judged on the witnesses
  * alone, before the rotating stream runs, so it is the same on every run seed. The residual comes from the rotating
  * stream's independent cases alone. A batched property's window holds one batch at least, so a batch is never cut
@@ -618,25 +620,42 @@ export const exploreSearch =
 
 			if (phases.rotating) {
 				const rotating = rotatingSeed(run.seed, floor)
-				for (let start = 0; start < limits.runs; start += window) {
-					const draws = Arr.map(indicesOf(start, window, limits.runs), (index): Draw => ({
-						chooser: randomOf(rotating, index),
-						drawn: { kind: "unsteered" }
-					}))
-					const results = yield* windowOf(run, draws, { keep: "nothing", sense: notesOnly, group })
-					for (const [offset, result] of results.entries()) {
-						const found = yield* findingOf(run, result, {
-							phase: "independent",
-							where: `the rotating stream (seed ${hex(rotating)}), case ${start + offset}`,
-							drawn: { kind: "unsteered" },
-							shrink: shrinkOf(run, completeShrink)
+				let start = 0
+				while (start < limits.runs) {
+					const width = yield* run.evaluator.width
+					const series: Array<SeriesOrder> = []
+					const firsts: Array<number> = []
+					while (start < limits.runs && series.length < width) {
+						const indices = indicesOf(start, window, limits.runs)
+						firsts.push(start)
+						series.push({
+							property: run.id,
+							from: {
+								kind: "stream",
+								seeds: Float64Array.from(indices, (index) => caseSeed(rotating, index))
+							},
+							group,
+							deadline: limits.deadline,
+							open: limits.open
 						})
-						if (Option.isSome(found)) {
-							return failed(found.value)
+						start += indices.length
+					}
+					const ran = yield* run.evaluator.series(series)
+					for (const [at, summary] of ran.entries()) {
+						independentTally.addCases(summary.passed, summary.notes)
+						measures.addAll(summary.measures)
+						if (summary.stopped.kind === "stopped") {
+							const found = yield* findingOf(run, summary.stopped.result, {
+								phase: "independent",
+								where: `the rotating stream (seed ${hex(rotating)}), case ${(firsts[at] ?? 0) + summary.passed}`,
+								drawn: { kind: "unsteered" },
+								shrink: shrinkOf(run, completeShrink)
+							})
+							if (Option.isSome(found)) {
+								return failed(found.value)
+							}
 						}
-						cases += 1
-						independentTally.add(new Set(result.notes))
-						measures.add(result)
+						cases += summary.passed
 					}
 				}
 			}
@@ -654,10 +673,10 @@ export const exploreSearch =
  * An exhaustion's search: kept tokens first; then its space counted before any case runs, within the case deadline,
  * since a space too large to count is too large to exhaust; then every case in enumeration order. The space is run by
  * sketches, one case of the space alone with every case its property's draws enumerate from it, in windows of as many
- * runs of sketches as the evaluator has room for, each run the steering window's count of sketches (a batch's worth at
- * least) sent to one process as one unit (runner/sketches.ts): the process enumerates them from the run's first branch,
- * runs their cases `group` to an evaluation (one, or a batched exhaustion's batch size), and gives back one summary, so
- * no case crosses a process boundary alone. The runs are judged in enumeration order, so the first failing case is the
+ * series of sketches as the evaluator has room for, each series the steering window's count of sketches (a batch's
+ * worth at least) sent to one process as one unit (runner/series.ts): the process enumerates them from the series'
+ * first branch, runs their cases `group` to an evaluation (one, or a batched exhaustion's batch size), and gives back
+ * one summary, so no case crosses a process boundary alone. The series are judged in enumeration order, so the first failing case is the
  * same at any width, and it is shrunk alone for at most as many candidates as the space holds cases. Every case is a
  * witness, so every required situation must be reached by one of them.
  */
@@ -685,28 +704,31 @@ export const exhaustSearch =
 			while (Option.isSome(next)) {
 				const width = yield* run.evaluator.width
 				const perRun = Math.max(run.limits.window, group)
-				const runs: Array<SketchesOrder> = []
-				while (Option.isSome(next) && runs.length < width) {
+				const series: Array<SeriesOrder> = []
+				while (Option.isSome(next) && series.length < width) {
 					const start = next.value
 					let count = 0
 					while (Option.isSome(next) && count < perRun) {
 						next = enumerated(sketches, space, next.value).next
 						count += 1
 					}
-					runs.push({
+					series.push({
 						property: run.id,
-						start: start.values.slice(0, start.length),
-						length: start.length,
-						count,
+						from: {
+							kind: "sketches",
+							start: start.values.slice(0, start.length),
+							length: start.length,
+							count
+						},
 						group,
 						deadline: run.limits.deadline,
 						open: run.limits.open
 					})
 				}
-				const ran = yield* run.evaluator.sketch(runs)
+				const ran = yield* run.evaluator.series(series)
 				for (const summary of ran) {
 					cases += summary.passed
-					tally.add(new Set(summary.notes))
+					tally.addCases(summary.passed, summary.notes)
 					measures.addAll(summary.measures)
 					if (summary.stopped.kind === "stopped") {
 						const found = yield* findingOf(run, summary.stopped.result, {

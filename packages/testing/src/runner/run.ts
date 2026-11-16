@@ -291,7 +291,8 @@ export const runPackage = (
 			usage: {
 				parent: (parent.user + parent.system) / 1000,
 				properties: Arr.flatMap(usages, (usage) => usage.properties),
-				workers: Arr.flatMap(usages, (usage) => usage.workers)
+				workers: Arr.flatMap(usages, (usage) => usage.workers),
+				children: Arr.every(usages, (usage) => usage.children === "stated") ? "stated" : "unstated"
 			}
 		}
 	})

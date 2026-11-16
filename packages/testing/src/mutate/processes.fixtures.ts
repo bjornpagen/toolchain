@@ -65,7 +65,7 @@ export const checkProperty = (kills: ReadonlyArray<Kill>): Property =>
 		ready: () =>
 			Effect.succeed({
 				cases: () => Effect.succeed([]),
-				sketches: () =>
+				series: () =>
 					Effect.succeed({
 						ran: 0,
 						passed: 0,
@@ -88,7 +88,7 @@ export const processPool = Effect.map(
 		width: 4,
 		lease: (image) =>
 			Effect.succeed({
-				sketch: () => Effect.succeed([]),
+				series: () => Effect.succeed([]),
 				evaluate: (batches) =>
 					Effect.forEach(batches, (batch) =>
 						Effect.forEach(batch, (order) =>

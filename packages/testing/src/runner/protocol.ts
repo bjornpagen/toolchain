@@ -1,4 +1,4 @@
-import { Array as Arr, type Effect, Schema } from "effect"
+import { Array as Arr, type Effect, Option, Schema } from "effect"
 import type { Residual } from "#features.ts"
 import { wordsOf } from "#random.ts"
 import { ClosureAnswer } from "#runner/closure-hash.ts"
@@ -199,35 +199,68 @@ const CaseResult = Schema.Struct({
 export type CaseResult = typeof CaseResult.Type
 
 /**
- * A run of an exhaustion's sketches on one process, the unit an exhaustion is sent in: its property, the branch of its
- * first sketch (the first `length` of `start`), how many sketches it runs from there in enumeration order (fewer when
- * the space ends first), how many of its cases one evaluation takes (`group`: one, or a batched exhaustion's size),
- * and each case's deadline and its needs' open bound. A sketch is one case of the space and every case its property's
- * own draws enumerate from it; the process enumerates the sketches and their cases itself, and gives back one summary,
- * so its cases cross no process boundary one by one.
+ * Where a series' cases come from, which its process draws itself: an exhaustion's sketches, `count` of them enumerated
+ * over the property's space from the branch of the first (the first `length` of `start`), a sketch being one case of the
+ * space and every case its property's own draws enumerate from it, fewer when the space ends first; or a stream of an
+ * exploration's cases, one a seed, each drawn unsteered from its case seed (random.ts caseSeed), as the rotating stream
+ * draws its cases.
  */
-const SketchesOrder = Schema.Struct({
+const SeriesFrom = Schema.Union([
+	Schema.Struct({
+		kind: Schema.Literal("sketches"),
+		start: Float64s,
+		length: Schema.Finite,
+		count: Schema.Finite
+	}),
+	Schema.Struct({ kind: Schema.Literal("stream"), seeds: Float64s })
+])
+
+export type SeriesFrom = typeof SeriesFrom.Type
+
+/**
+ * A series of one property's cases on one process, the unit an exhaustion and an exploration's rotating stream are sent
+ * in: its property, where its cases come from, how many of them one evaluation takes (`group`: one, or a batched
+ * property's batch size), and each case's deadline and its needs' open bound. The process draws the cases itself, runs
+ * them in order, and gives back one summary, so its cases cross no process boundary one by one.
+ */
+const SeriesOrder = Schema.Struct({
 	property: Schema.String,
-	start: Float64s,
-	length: Schema.Finite,
-	count: Schema.Finite,
+	from: SeriesFrom,
 	group: Schema.Finite,
 	deadline: Schema.Finite,
 	open: Schema.Finite
 })
 
-export type SketchesOrder = typeof SketchesOrder.Type
+export type SeriesOrder = typeof SeriesOrder.Type
+
+/** How many cases a series' source names: its sketches (one deadline each), or its stream's seeds. */
+const seriesCases = (from: SeriesFrom): number => {
+	switch (from.kind) {
+		case "sketches":
+			return from.count
+		case "stream":
+			return from.seeds.length
+	}
+}
 
 /**
- * What a run of sketches found, in enumeration order through its first sketch that stopped (every sketch, when none
- * did): how many of those sketches' cases passed, the situations they noted, what they measured (by name, summed), and
- * the first case that did not pass, if one did; and how many cases the process ran for it in all, with their
- * milliseconds and CPU (cases of later sketches that ran in the same rounds among them).
+ * A situation the cases of a series noted: its key, how many of the series' passing cases noted it, and the place among
+ * them of the first that did, from 0, so a search adds a series to its tally as it would add its cases one by one.
  */
-const SketchesRan = Schema.Struct({
+const Noted = Schema.Tuple([Schema.String, Schema.Finite, Schema.Finite])
+
+export type Noted = typeof Noted.Type
+
+/**
+ * What a series found, in order through its first case that stopped (every case, when none did): how many of those
+ * cases passed, the situations they noted, what they measured (by name, summed), and the first case that did not pass,
+ * if one did; and how many cases the process ran for it in all, with their milliseconds and CPU (cases of later
+ * sketches that ran in the same rounds among them).
+ */
+const SeriesRan = Schema.Struct({
 	ran: Schema.Finite,
 	passed: Schema.Finite,
-	notes: Schema.Array(Schema.String),
+	notes: Schema.Array(Noted),
 	measures: Schema.Array(Schema.Tuple([Schema.String, Schema.Finite])),
 	millis: Schema.Finite,
 	cpu: Schema.Finite,
@@ -237,12 +270,12 @@ const SketchesRan = Schema.Struct({
 	])
 })
 
-export type SketchesRan = typeof SketchesRan.Type
+export type SeriesRan = typeof SeriesRan.Type
 
-/** What a unit holds: a batch of one property's cases, or a run of an exhaustion's sketches. */
+/** What a unit holds: a batch of one property's cases, or a series of them its process draws. */
 const Work = Schema.Union([
 	Schema.Struct({ kind: Schema.Literal("cases"), batch: Batch }),
-	Schema.Struct({ kind: Schema.Literal("sketches"), sketches: SketchesOrder })
+	Schema.Struct({ kind: Schema.Literal("series"), series: SeriesOrder })
 ])
 
 export type Work = typeof Work.Type
@@ -254,19 +287,19 @@ export const workOf = (work: Work): Readonly<{ property: string; open: number; c
 			const first = Arr.headNonEmpty(work.batch)
 			return { property: first.property, open: first.open, cases: work.batch.length }
 		}
-		case "sketches":
+		case "series":
 			return {
-				property: work.sketches.property,
-				open: work.sketches.open,
-				cases: work.sketches.count
+				property: work.series.property,
+				open: work.series.open,
+				cases: seriesCases(work.series.from)
 			}
 	}
 }
 
-/** What a unit gave back: its batch's results, one an order, or its sketches' summary. */
+/** What a unit gave back: its batch's results, one an order, or its series' summary. */
 const Done = Schema.Union([
 	Schema.Struct({ kind: Schema.Literal("cases"), results: Schema.Array(CaseResult) }),
-	Schema.Struct({ kind: Schema.Literal("sketches"), ran: SketchesRan })
+	Schema.Struct({ kind: Schema.Literal("series"), ran: SeriesRan })
 ])
 
 export type Done = typeof Done.Type
@@ -285,15 +318,15 @@ const unranResult = (outcome: CaseOutcome): CaseResult => ({
 })
 
 /**
- * What bounds a unit's evaluation on a worker: each of its cases' deadlines, added up; a run of sketches, one deadline a
- * sketch.
+ * What bounds a unit's evaluation on a worker: each of its cases' deadlines, added up; a series, one deadline a case of
+ * its source (a sketch, a stream's case).
  */
 export const deadlinesOf = (work: Work): number => {
 	switch (work.kind) {
 		case "cases":
 			return Arr.reduce(work.batch, 0, (total, order) => total + order.deadline)
-		case "sketches":
-			return work.sketches.count * work.sketches.deadline
+		case "series":
+			return seriesCases(work.series.from) * work.series.deadline
 	}
 }
 
@@ -306,7 +339,7 @@ export const ranOf = (done: Done): Readonly<{ cases: number; millis: number; cpu
 				millis: Arr.reduce(done.results, 0, (total, result) => total + result.millis),
 				cpu: Arr.reduce(done.results, 0, (total, result) => total + result.cpu)
 			}
-		case "sketches":
+		case "series":
 			return { cases: done.ran.ran, millis: done.ran.millis, cpu: done.ran.cpu }
 	}
 }
@@ -314,20 +347,20 @@ export const ranOf = (done: Done): Readonly<{ cases: number; millis: number; cpu
 /** The report of a worker that answered a unit with the other kind of answer: a defect of its process. */
 const misanswered = "its worker answered it with the other kind of answer than its unit holds"
 
-/** A batch's results, as its worker answered them; a run of sketches in their place is a lost case. */
+/** A batch's results, as its worker answered them; a series' summary in their place is a lost case. */
 export const resultsOf = (done: Done): ReadonlyArray<CaseResult> => {
 	switch (done.kind) {
 		case "cases":
 			return done.results
-		case "sketches":
+		case "series":
 			return [lostResult(misanswered)]
 	}
 }
 
-/** A run of sketches' summary, as its worker answered it; a batch's results in its place stop it, lost. */
-export const sketchesRanOf = (done: Done): SketchesRan => {
+/** A series' summary, as its worker answered it; a batch's results in its place stop it, lost. */
+export const seriesRanOf = (done: Done): SeriesRan => {
 	switch (done.kind) {
-		case "sketches":
+		case "series":
 			return done.ran
 		case "cases":
 			return {
@@ -342,17 +375,30 @@ export const sketchesRanOf = (done: Done): SketchesRan => {
 	}
 }
 
+/**
+ * A case's result as its search judges it once it knows whether the case was used after it ended (`late`, printed as
+ * it ran): a passing case so used is misused, whichever evaluation ran it, a batch or a series; any other stands.
+ */
+export const judgedLate = (result: CaseResult, late: Option.Option<Printed>): CaseResult =>
+	Option.match(late, {
+		onNone: () => result,
+		onSome: (printed) =>
+			result.outcome.kind === "passed"
+				? { ...result, outcome: { kind: "misused", printed } }
+				: result
+	})
+
 /** A result no process gave: the case's process ended while it ran, with what the process last wrote. */
 export const lostResult = (report: string): CaseResult => unranResult({ kind: "lost", report })
 
-/** What a unit no process could run gives back: each of its cases, or its run of sketches, ended as `result` says. */
+/** What a unit no process could run gives back: each of its cases, or its series, ended as `result` says. */
 export const doneWith = (work: Work, result: CaseResult): Done => {
 	switch (work.kind) {
 		case "cases":
 			return { kind: "cases", results: Arr.map(work.batch, () => result) }
-		case "sketches":
+		case "series":
 			return {
-				kind: "sketches",
+				kind: "series",
 				ran: {
 					ran: 0,
 					passed: 0,
@@ -377,9 +423,9 @@ export const unopenedResult = (need: string, message: string): CaseResult =>
  * Where a search's cases evaluate. `evaluate` runs batches and gives back each batch's results in order, ending with the
  * first batch in order that holds a result `stop` holds of (a window whose case failed, a shrink whose candidate
  * failed); the batches after it that have not started are dropped, and those that have run to their end unread.
- * `sketch` runs an exhaustion's runs of sketches and gives back each one's summary in order, ending with the first
+ * `series` runs series of cases their processes draw and gives back each one's summary in order, ending with the first
  * whose case stopped, the same way. `width` is how many batches could start at once now, at least one, what a shrink
- * speculates over and an exhaustion's window counts its runs by. Two exist: the pool (a worker a core) and inline (this
+ * speculates over and a window of series counts them by. Two exist: the pool (a worker a core) and inline (this
  * process, one batch at a time), and a search finds the same on either.
  */
 export type Evaluator = Readonly<{
@@ -387,7 +433,7 @@ export type Evaluator = Readonly<{
 		batches: ReadonlyArray<Batch>,
 		stop: (result: CaseResult) => boolean
 	) => Effect.Effect<ReadonlyArray<ReadonlyArray<CaseResult>>>
-	sketch: (runs: ReadonlyArray<SketchesOrder>) => Effect.Effect<ReadonlyArray<SketchesRan>>
+	series: (orders: ReadonlyArray<SeriesOrder>) => Effect.Effect<ReadonlyArray<SeriesRan>>
 	width: Effect.Effect<number>
 }>
 
@@ -492,10 +538,22 @@ export const ToWorker = Schema.Union([
 export type ToWorker = typeof ToWorker.Type
 
 /**
+ * The CPU (ms) a worker's children took while it did one thing (readied a property, ran a unit): those it waited for,
+ * user and system, as its system states them (runner/usage.ts childrenCpuNow); or that its system states none.
+ */
+const ChildrenCpu = Schema.Union([
+	Schema.Struct({ kind: Schema.Literal("stated"), millis: Schema.Finite }),
+	Schema.Struct({ kind: Schema.Literal("unstated") })
+])
+
+export type ChildrenCpu = typeof ChildrenCpu.Type
+
+/**
  * A message from a worker to the parent: it is ready, and how many milliseconds it took to start, and of CPU; it is readying
  * a unit's property, the first unit of it the worker took (importing its module and opening its needs, within the open
  * bound); it readied it, in how many milliseconds (what scheduling measures a module's readying by) and how many of
- * CPU; it started a unit's cases; it finished one, with each order's result and the worker's CPU so far; it gave back
+ * CPU, its children's beside; it started a unit's cases; it finished one, with each order's result, the worker's CPU so
+ * far and its children's CPU while it ran; it gave back
  * these units, of those the parent revoked, none of which it had started; a case (a unit's `at`-th order) was used
  * after it ended, printed as it ran; it cannot start, and why; or it asks for a module's closure hash, which the parent
  * computes once for the whole pool.
@@ -507,14 +565,16 @@ export const FromWorker = Schema.Union([
 		kind: Schema.Literal("readied"),
 		unit: Schema.Finite,
 		millis: Schema.Finite,
-		cpu: Schema.Finite
+		cpu: Schema.Finite,
+		children: ChildrenCpu
 	}),
 	Schema.Struct({ kind: Schema.Literal("started"), unit: Schema.Finite }),
 	Schema.Struct({
 		kind: Schema.Literal("done"),
 		unit: Schema.Finite,
 		done: Done,
-		cpu: Schema.Finite
+		cpu: Schema.Finite,
+		children: ChildrenCpu
 	}),
 	Schema.Struct({ kind: Schema.Literal("revoked"), units: Schema.Array(Schema.Finite) }),
 	Schema.Struct({

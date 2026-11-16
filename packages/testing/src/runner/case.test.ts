@@ -115,12 +115,11 @@ export const lateUse = property.explore(
 		kept: [],
 		kills: [
 			{
-				file: "packages/testing/src/runner/case.ts",
+				file: "packages/testing/src/runner/protocol.ts",
 				original:
-					'\t\t\t\t\tresult.outcome.kind === "passed"\n\t\t\t\t\t\t? { ...result, outcome: { kind: "misused", printed } }',
-				replacement:
-					'\t\t\t\t\tfalse\n\t\t\t\t\t\t? { ...result, outcome: { kind: "misused", printed } }',
-				why: "A passing case is judged by its outcome alone, never as misused, so a note, a draw, an observation or a measure after the case ended goes unreported (misuse-unjudged, re-anchored from explore.ts's judgment to case.ts withLateUses); the late use property fails."
+					'\t\t\tresult.outcome.kind === "passed"\n\t\t\t\t? { ...result, outcome: { kind: "misused", printed } }',
+				replacement: '\t\t\tfalse\n\t\t\t\t? { ...result, outcome: { kind: "misused", printed } }',
+				why: "A passing case is judged by its outcome alone, never as misused, so a note, a draw, an observation or a measure after the case ended goes unreported (misuse-unjudged, re-anchored from explore.ts's judgment to protocol.ts judgedLate, which a batch's cases and a series' share); the late use property fails."
 			}
 		]
 	}

@@ -21,8 +21,8 @@ import {
 	type Printed,
 	type Reach,
 	resultsOf,
-	type SketchesRan,
-	sketchesRanOf,
+	type SeriesRan,
+	seriesRanOf,
 	type Verdict,
 	type Work,
 	workOf
@@ -105,13 +105,13 @@ export const inlineEvaluator = (
 					}
 					return judged()
 				}).pipe(Effect.ensuring(stopped.drained)),
-			sketch: (runs) =>
+			series: (orders) =>
 				Effect.gen(function* () {
-					const ran: Array<SketchesRan> = []
-					for (const sketches of runs) {
-						const answered = yield* done({ kind: "sketches", sketches })
+					const ran: Array<SeriesRan> = []
+					for (const series of orders) {
+						const answered = yield* done({ kind: "series", series })
 						yield* stopped.drained
-						const summary = sketchesRanOf(answered)
+						const summary = seriesRanOf(answered)
 						ran.push(summary)
 						if (summary.stopped.kind === "stopped") {
 							return ran

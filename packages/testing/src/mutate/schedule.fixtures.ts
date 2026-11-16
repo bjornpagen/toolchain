@@ -63,7 +63,7 @@ export const fakeProperty = (seen: Ref.Ref<Seen>): Property =>
 		ready: () =>
 			Effect.succeed({
 				cases: () => Effect.succeed([]),
-				sketches: () =>
+				series: () =>
 					Effect.succeed({
 						ran: 0,
 						passed: 0,
@@ -100,7 +100,7 @@ export const fakePool = (
 					leased: [...s.leased, workers]
 				})),
 				{
-					sketch: () => Effect.succeed([]),
+					series: () => Effect.succeed([]),
 					evaluate: (batches: ReadonlyArray<Batch>) =>
 						Effect.forEach(batches, (batch) =>
 							Effect.forEach(batch, (order) => {

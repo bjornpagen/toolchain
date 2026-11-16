@@ -28,18 +28,19 @@ import {
 	type CaseOrder,
 	type CaseOutcome,
 	type CaseResult,
+	judgedLate,
 	chooserOf,
 	type Done,
 	doneWith,
 	type Printed,
-	type SketchesOrder,
-	type SketchesRan,
+	type SeriesOrder,
+	type SeriesRan,
 	type Trace,
 	unopenedResult,
 	type Work
 } from "#runner/protocol.ts"
+import { seriesRun } from "#runner/series.ts"
 import { NeedFailed } from "#runner/services.ts"
-import { sketchesRun } from "#runner/sketches.ts"
 import { type Observed, type Recording, recording, simplestChooser } from "#source.ts"
 
 /**
@@ -256,29 +257,29 @@ const resourcesOf = <N extends Needs>(
 
 /**
  * A property's evaluations on a process where its needs are open: of a batch of its cases (the results, one an order,
- * in the batch's order), and of a run of its sketches, which the process enumerates over the property's space and runs
- * as an exhaustion's window (runner/sketches.ts).
+ * in the batch's order), and of a series of them, which the process draws itself, an exhaustion's sketches over the
+ * property's space or a stream's cases from their seeds, and runs as the search's window (runner/series.ts).
  */
 export type Evaluation = Readonly<{
 	cases: (
 		batch: Arr.NonEmptyReadonlyArray<CaseOrder>
 	) => Effect.Effect<ReadonlyArray<CaseResult>, never, CaseEnv>
-	sketches: (run: SketchesOrder) => Effect.Effect<SketchesRan, never, CaseEnv>
+	series: (series: SeriesOrder) => Effect.Effect<SeriesRan, never, CaseEnv>
 }>
 
 /**
- * A property's evaluations from its evaluation of a batch: its sketches enumerated over the unsteered space, each case
- * of them evaluated as a batch's, a late use of one reported to the run itself, which marks the case misused.
+ * A property's evaluations from its evaluation of a batch: a series' cases drawn over the unsteered space, each
+ * evaluated as a batch's, a late use of one reported to the series itself, which marks the case misused.
  */
 const evaluationOf = <S, F extends string>(
 	drawing: Drawing<S, F>,
 	cases: Evaluation["cases"]
 ): Evaluation => ({
 	cases,
-	sketches: (run) =>
+	series: (series) =>
 		Effect.suspend(() => {
 			const late = new Map<CaseOrder, Printed>()
-			return sketchesRun(
+			return seriesRun(
 				drawing.spaceUnder(Option.none()),
 				(batch) =>
 					cases(batch).pipe(
@@ -289,7 +290,7 @@ const evaluationOf = <S, F extends string>(
 						})
 					),
 				(order) => Option.fromUndefinedOr(late.get(order)),
-				run
+				series
 			)
 		})
 })
@@ -416,15 +417,7 @@ export const withLateUses = (
 	stop: (result: CaseResult) => boolean
 ): ReadonlyArray<ReadonlyArray<CaseResult>> => {
 	const marked = Arr.map(results, (batch, batchAt) =>
-		Arr.map(batch, (result, at): CaseResult =>
-			Option.match(lateAt(batchAt, at), {
-				onNone: () => result,
-				onSome: (printed) =>
-					result.outcome.kind === "passed"
-						? { ...result, outcome: { kind: "misused", printed } }
-						: result
-			})
-		)
+		Arr.map(batch, (result, at) => judgedLate(result, lateAt(batchAt, at)))
 	)
 	return Option.match(
 		Arr.findFirstIndex(marked, (batch) => Arr.some(batch, stop)),
@@ -613,8 +606,8 @@ export const readiedOf = (
 	})
 
 /**
- * A unit's work done on a process: its batch evaluated, or its run of sketches, when its property is ready; the refusal
- * for each of its cases otherwise.
+ * A unit's work done on a process: its batch evaluated, or its series, when its property is ready; the refusal for each
+ * of its cases otherwise.
  */
 export const doneOf = (readied: Readied, work: Work): Effect.Effect<Done, never, CaseEnv> => {
 	switch (readied.kind) {
@@ -625,9 +618,9 @@ export const doneOf = (readied: Readied, work: Work): Effect.Effect<Done, never,
 						kind: "cases",
 						results
 					}))
-				case "sketches":
-					return Effect.map(readied.evaluate.sketches(work.sketches), (ran) => ({
-						kind: "sketches",
+				case "series":
+					return Effect.map(readied.evaluate.series(work.series), (ran) => ({
+						kind: "series",
 						ran
 					}))
 			}
