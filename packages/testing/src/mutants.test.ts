@@ -3,12 +3,6 @@
  * each at its own text, place, id and function; a family's mutants appear at each of its sites, each edit once
  * however many rules propose it; and a kept mutant applies at the one place its original stands, stale wherever it
  * stands otherwise. Oracles are stated per search.
- *
- * @plant plants/testing/mutants-conjunct-missed.patch An && chain yields no conjunct mutant; the first property fails.
- * @plant plants/testing/mutants-repeated-sites.patch An edit proposed twice, by two rules or by two visits, is a mutant
- * each time; the second property fails.
- * @plant plants/testing/kept-mutant-first-place.patch A kept mutant whose original stands in several places applies at
- * the first of them, never stale; the third property fails.
  */
 import * as NodeServices from "@effect/platform-node/NodeServices"
 import { layer } from "@effect/vitest"

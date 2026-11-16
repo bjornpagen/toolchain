@@ -1,9 +1,6 @@
 /**
  * Awaiting a fact (fact.ts awaitFact): the value returned holds the fact and lies within what concurrent fibers made
  * true, waiting on no timer. Oracle: the specification, stated in the search.
- *
- * @plant plants/testing/fact-returns-early.patch The fact is read twice at most, back to back with no yield to the
- * fibers that make it true, and its value returned though it does not hold; the property fails.
  */
 import { describe, it } from "@effect/vitest"
 import { deepStrictEqual } from "@effect/vitest/utils"

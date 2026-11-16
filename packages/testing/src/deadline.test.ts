@@ -4,18 +4,6 @@
  * failed before the deadline though a lower case of its window was still in flight; a full shrink when the deadline
  * leaves the time; and every stopped case's finalizers run before the search returns. The reports' replay lines are
  * the contract a person replays from. Oracles are stated per search.
- *
- * @plant plants/testing/deadline-reports-unshrunk.patch A shrink the deadline cuts reports the case unshrunk, as it
- * was drawn, throwing away the smallest failing case it reached; the cut shrink property fails.
- * @plant plants/testing/deadline-in-flight-unnamed.patch A search the deadline cuts before any case failed reports no
- * case in flight; the cut search property fails.
- * @plant plants/testing/settling-in-case-order.patch A window settles its cases in case order, a cut case among them,
- * so a lower case still in flight hides the failure above it behind the deadline; the failure behind a cut property
- * fails.
- * @plant plants/testing/shrink-cut-at-start.patch A shrink candidate begun before the cut is judged cut, so a shrink
- * under a deadline ends at its start however much time is left; the time to spare property fails.
- * @plant plants/testing/finalizers-unawaited.patch A search returns without awaiting the cases it stopped, so their
- * finalizers outlive it; the case lifetimes property fails.
  */
 import { describe, it } from "@effect/vitest"
 import { deepStrictEqual, strictEqual } from "@effect/vitest/utils"

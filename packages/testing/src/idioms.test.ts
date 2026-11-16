@@ -10,57 +10,6 @@
  * drawn, printed untouched, handed as data where data, and shrunk to the simplest live value, or, in a list failing for
  * its wild value, to that value alone; a corrupted value's live share and its rules' weights; and a pattern's strings
  * matching it.
- *
- * @plant plants/testing/int-order-sign-swapped.patch int's order puts the negative side first at each distance from
- * zero; the int order enumeration fails.
- * @plant plants/testing/bigint-order-sign-swapped.patch bigint's order puts the negative side first at each distance
- * from zero; the bigint order enumeration fails.
- * @plant plants/testing/int-wide-past-hi.patch A wide int's low word goes unbounded at its high word's top, so the
- * whole passes hi; the wide ints property fails at every decision's greatest.
- * @plant plants/testing/double-past-max.patch double's whole arm runs to max rounded up, past a max that is no whole
- * number; the double bounds property fails.
- * @plant plants/testing/float-past-max.patch float's whole arm runs to max rounded up, past a max that is no whole
- * number; the float bounds property fails.
- * @plant plants/testing/double-whole-shrink-lost.patch wholeOr puts its whole arm after the arm by place, so a failing
- * double shrinks by place, never to the least whole number that still fails; the double shrink property fails.
- * @plant plants/testing/specials-without-negative-zero.patch The special doubles hold 0 where -0 belongs, so a double
- * or special from a range without -0 never draws it; the random reach property fails.
- * @plant plants/testing/uuid-variant-wrong.patch A UUID's variant bits are 11 where RFC 9562 has 10; the uuid form
- * property fails.
- * @plant plants/testing/shuffled-repeats.patch shuffled never takes a picked value out of the rest, so a value
- * repeats; the shuffled exhaustion fails.
- * @plant plants/testing/unique-array-repair-over-items.patch The repair of a repeated key walks each item, tail and
- * all, so where the keys run out it enumerates every tail and the case hangs; the unique array property fails.
- * @plant plants/testing/alphabet-kept-last.patch alphabet puts its kept letter last, after the others, so the letters
- * after the first leave their order; the alphabet exhaustion fails.
- * @plant plants/testing/clone-shares-object.patch clone hands out the first twin again for every other, so the twins
- * share their objects; the clone property fails.
- * @plant plants/testing/production-four-in-five.patch production draws its constant four times in five; the
- * production share property fails.
- * @plant plants/testing/element-reversed.patch element picks from its list's end, so it shrinks toward the last
- * literal and enumerates the list reversed; the element order property fails.
- * @plant plants/testing/unicode-scalar-surrogates.patch unicodeScalar takes its index for the code point, so it draws
- * lone surrogates and never the last plane's top; the unicode scalars property fails.
- * @plant plants/testing/proportional-zero-drawn.patch proportional counts an option of weight zero among those with
- * weight, so it draws the last option, not the floor, when none has weight, and decides where one alone has it; the
- * proportional shares property fails.
- * @plant plants/testing/swarm-half-off.patch The half omission turns a feature off a third of the time; the swarm
- * distribution exhaustion fails.
- * @plant plants/testing/swarm-keep-at-weight-one-always.patch keep keeps a feature of weight 1 at every place; the
- * swarm weights exhaustion fails.
- * @plant plants/testing/ascending-repeats.patch ascending drops its step, so increasing repeats values; the sorted
- * collections exhaustion fails.
- * @plant plants/testing/parents-self.patch parents lets a node be its own parent; the trees exhaustion fails.
- * @plant plants/testing/composition-past-total.patch composition draws each count from the whole total, not what the
- * counts before it left, so the counts run past it and the last goes negative; the compositions exhaustion fails.
- * @plant plants/testing/lsw-proxy-touched.patch wild and wildOf hand out a wild value's hostile form in place of its
- * data, so printing or reading a drawn proxy runs its traps; the lsw kinds and wild data properties fail.
- * @plant plants/testing/shrink-no-item-deletion.patch The shrinker never deletes an item, so a list failing for its
- * wild value keeps the live value before it; the lsw shrink property fails.
- * @plant plants/testing/corrupted-never-live.patch corrupted drops its live arm, so an artifact a rule has a site in is
- * never drawn live; the corrupted shares property fails.
- * @plant plants/testing/pattern-repeat-past-max.patch A repetition draws up to one item past its max; the matching
- * property fails.
  */
 import { describe, it } from "@effect/vitest"
 import { assertTrue, deepStrictEqual, strictEqual } from "@effect/vitest/utils"

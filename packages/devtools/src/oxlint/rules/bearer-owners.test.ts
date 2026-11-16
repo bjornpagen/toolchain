@@ -15,10 +15,6 @@ import { searched } from "@bjornpagen/testing/vitest"
  *
  * Oracle: the specification, the rule's JSDoc: a bearer credential is presented only by its provider's adapter.
  * Features: a template, a concatenation, a call, a statement that is no credential, and a credential in an owner.
- *
- * @plant plants/devtools/oxlint/rules/bearer-template-outside-owners.patch A template that starts with `Bearer ` and
- * holds an expression is read as no credential, so one built outside the owners goes unreported; the statement
- * property fails.
  */
 import { describe, it } from "@effect/vitest"
 import { deepStrictEqual } from "@effect/vitest/utils"

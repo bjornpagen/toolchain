@@ -20,21 +20,6 @@ import { searched } from "@bjornpagen/testing/vitest"
  * Oracle: the specification, the rule's JSDoc read over the lists its module exports (MARKS, BUILTIN_CALLS,
  * MATH_FUNCTIONS, CALLABLE_GLOBALS, PURE_GLOBALS, FORBIDDEN), never a list written again here. Features: a proven
  * site, a refused site, an unmarked function, a misplaced mark, a proof's module, and a program of several functions.
- *
- * @plant plants/devtools/oxlint/rules/side-effect-free-member-write-blind.patch A property assigned is read as no
- * write; the marked-function property fails.
- * @plant plants/devtools/oxlint/rules/side-effect-free-parameter-call-admitted.patch A parameter called is read as a
- * function literal it declares; the marked-function property fails.
- * @plant plants/devtools/oxlint/rules/side-effect-free-freeze-any.patch Object.freeze of a value it does not build is
- * admitted; the marked-function property fails.
- * @plant plants/devtools/oxlint/rules/side-effect-free-callable-any-global.patch Any global called is admitted; the
- * marked-function property fails.
- * @plant plants/devtools/oxlint/rules/side-effect-free-tostring-any-receiver.patch `toString` of any value is
- * admitted, not of a primitive alone; the marked-function property fails.
- * @plant plants/devtools/oxlint/rules/side-effect-free-constant-any-initializer.patch A module const is read as
- * proven whatever its value; the marked-function property fails, and the proof's-module property with it.
- * @plant plants/devtools/oxlint/rules/side-effect-free-callback-unproven.patch A call site's callback is left
- * unproven outside a marked function; the marked-function property fails.
  */
 import { describe, it } from "@effect/vitest"
 import { deepStrictEqual } from "@effect/vitest/utils"

@@ -12,9 +12,6 @@
  * notes nothing, a case kept, and a corpus kept whole.
  *
  * That a run that fuzzes another suite never reads the corpus is fuzz.test.ts's, beside its run as under test.
- *
- * @plant plants/testing/corpus-keeps-every-case.patch No replayed case is dropped from the corpus, though each that
- * adds nothing is counted dropped; the property fails.
  */
 import { describe, it } from "@effect/vitest"
 import { deepStrictEqual } from "@effect/vitest/utils"

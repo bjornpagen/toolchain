@@ -2,9 +2,6 @@
  * The library as a consumer installs it: a package with this library copied into its node_modules runs its tests as
  * Vitest does by default, and bjornpagen-mutate's verdicts, the residual table and the watchdog's replay report are what
  * the library's contract says of the consumer's test files. Oracle: stated in the search.
- *
- * @plant plants/testing/reporter-silent.patch The reporter prints no table: it clears the run's rows before it builds
- * the table from them; the property fails.
  */
 import * as NodeServices from "@effect/platform-node/NodeServices"
 import { layer } from "@effect/vitest"

@@ -17,10 +17,6 @@ import { searched } from "@bjornpagen/testing/vitest"
  * one Effect plugin block, every package has a tsconfig.json that declares no plugin of its own. Features: a directory
  * that holds the block as it should, a package that declares plugins, a package with no tsconfig, and a root that does
  * not declare the plugin once.
- *
- * @plant plants/devtools/workspace/shell-effect-plugin-runs.patch A package's own compiler plugins are read as none, so
- * a package that declares plugins beside the root's one Effect plugin block draws no effect-plugin-block finding; the
- * directory property fails.
  */
 import { NodeServices } from "@effect/platform-node"
 import { layer } from "@effect/vitest"

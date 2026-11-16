@@ -3,13 +3,6 @@
  * fails, no larger, the same on a repeat, and to its space's least wherever its moves reach it; it never throws, and
  * proposes only its documented moves of the smallest failing case so far, returning one its own decisions replay; and
  * it spends at most its budget of candidates, saying so when the budget stopped it. Oracles are stated per search.
- *
- * @plant plants/testing/shrink-binary-short.patch Lowering a decision stops its binary search one step short, so a
- * shrink can end above its space's least; the first property fails.
- * @plant plants/testing/shrink-proposes-below-lo.patch Lowering a decision first proposes a value below the
- * decision's simplest, a move the shrinker does not document; the second property fails.
- * @plant plants/testing/shrink-budget-plus-one.patch A bounded shrink runs one candidate past its budget; the third
- * property fails.
  */
 import { describe, it } from "@effect/vitest"
 import { assertTrue, deepStrictEqual, strictEqual } from "@effect/vitest/utils"

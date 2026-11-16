@@ -8,12 +8,6 @@
  *   explores exactly as the same run under test does, and never reads or writes the corpus. Oracle: a differential.
  * - A fuzz time reads as Go's -fuzztime does: every count of 1 to 3 in each unit. Oracle: the specification, Go's
  *   grammar.
- *
- * @plant plants/testing/fuzz-blind.patch A fuzz run perceives no note: it keeps a mutant for what its trace perceived
- * alone, so it never climbs the counts the lock notes; the first property fails.
- * @plant plants/testing/fuzz-every-suite.patch A fuzz run fuzzes whatever suite it meets, reading and writing its
- * corpus; the second property fails.
- * @plant plants/testing/fuzz-time-seconds.patch Every unit of a fuzz time is read as seconds; the third property fails.
  */
 import { describe, it } from "@effect/vitest"
 import { deepStrictEqual, strictEqual } from "@effect/vitest/utils"

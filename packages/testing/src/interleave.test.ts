@@ -17,20 +17,6 @@
  *
  * Oracles are stated per search. The replay draws a schedule through a recording whose every decision the case makes,
  * then runs it again from that recording's tape: the same decisions, every one as taped.
- *
- * @plant plants/testing/interleave-sleep-everything.patch Every session put to sleep, commuting or not; the reach and
- * deadlock properties fail.
- * @plant plants/testing/interleave-sleep-sets-off.patch Sleep sets off, no session ever asleep; the commuting property
- * fails.
- * @plant plants/testing/interleave-deadlock-settle-unrecorded.patch A deadlock the lock manager breaks while the
- * engine settles goes unrecorded; the deadlock-record property fails.
- * @plant plants/testing/interleave-after-cycle-blind.patch A self-loop among the afters unseen; the cycles property
- * fails.
- * @plant plants/testing/interleave-in-flight-allowed.patch A script's move of a session with a move in flight made
- * rather than refused; the script property fails.
- * @plant plants/testing/interleave-drawn-unobserved.patch A drawn decision left off the tape; the replay property
- * fails.
- * @plant plants/testing/interleave-unreleased.patch No session released when its run ends; the release property fails.
  */
 import { describe, it } from "@effect/vitest"
 import { assertTrue, deepStrictEqual, strictEqual } from "@effect/vitest/utils"

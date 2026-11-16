@@ -5,19 +5,6 @@
  * passes every program, refusals included; each command is drawn as often as its weight times its presence; a failing
  * program shrinks to the fewest steps that break it, keeping the refused step it needs; and a kept program runs to its
  * end or is refused at its first step the model does not allow there. Oracles are stated per search.
- *
- * @plant plants/testing/program-step-short.patch A program draws one step short of the length it chose, so no program
- * holds the box's 3 steps; the writable programs property fails.
- * @plant plants/testing/commands-divergence-by-command.patch A step's answer is held against its prediction by its
- * command alone, so a system that answers otherwise than its model passes; the verdicts property fails.
- * @plant plants/testing/commands-refusal-answered-took.patch A step the model refuses is predicted to be taken, so a
- * correct system's refusal diverges; the ring buffer property fails.
- * @plant plants/testing/commands-pick-off-by-one.patch Each command's pick owns one value past its share, so commands
- * are drawn off their weights; the command weights property fails.
- * @plant plants/testing/shrink-no-span-deletion.patch The shrink deletes no span, a step's item or any other, so a
- * failing program keeps steps it does not need; the shrinking property fails.
- * @plant plants/testing/commands-inapplicable-run.patch A step its model does not allow there runs instead of
- * refusing the program at it; the kept program property fails.
  */
 import { describe, it } from "@effect/vitest"
 import { assertTrue, deepStrictEqual, strictEqual } from "@effect/vitest/utils"

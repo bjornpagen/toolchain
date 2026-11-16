@@ -6,12 +6,12 @@ the toolchain; README.md says what a repository changes to take it.
 
 ## When each check runs
 
-| When                                | Command                                  | What runs                                                                                                                                                                                                                                                                |
-| ----------------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| After every edit                    | `pnpm types`                             | `turbo run typecheck`: each package's and the root's incremental typecheck. A re-check reads the project's build info and checks only what changed, so it takes seconds when little did, and turbo replays a package whose inputs did not change at all.                 |
-| Each commit (lefthook's pre-commit) | `toolchain-gate commit`                  | On a snapshot of what the index holds, side by side: `pnpm types`, `oxfmt --check` of the staged files, and the AST-only oxlint on the staged JavaScript and TypeScript files. No lint builds a TypeScript program. The target is 10 seconds or less.                    |
-| Each push (lefthook's pre-push)     | `toolchain-gate push`                    | `pnpm check` on a snapshot of each commit the push sends: the typecheck from scratch (`typecheck:full`, `--incremental false`), the type-aware oxlint, the format check, dead code, the lockfile's dedupe, the repository-wide checks, the plant check and the fixtures. |
-| By hand                             | `pnpm check`, `pnpm test`, `pnpm plants` | The full gate over the working tree, the tests, which no hook runs, and the plants (below), each run against the tests citing it.                                                                                                                                        |
+| When                                | Command                   | What runs                                                                                                                                                                                                                                                |
+| ----------------------------------- | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| After every edit                    | `pnpm types`              | `turbo run typecheck`: each package's and the root's incremental typecheck. A re-check reads the project's build info and checks only what changed, so it takes seconds when little did, and turbo replays a package whose inputs did not change at all. |
+| Each commit (lefthook's pre-commit) | `toolchain-gate commit`   | On a snapshot of what the index holds, side by side: `pnpm types`, `oxfmt --check` of the staged files, and the AST-only oxlint on the staged JavaScript and TypeScript files. No lint builds a TypeScript program. The target is 10 seconds or less.    |
+| Each push (lefthook's pre-push)     | `toolchain-gate push`     | `pnpm check` on a snapshot of each commit the push sends: the typecheck from scratch (`typecheck:full`, `--incremental false`), the type-aware oxlint, the format check, dead code, the lockfile's dedupe, the repository-wide checks and the fixtures.  |
+| By hand                             | `pnpm check`, `pnpm test` | The full gate over the working tree, and the tests, which no hook runs.                                                                                                                                                                                  |
 
 Type-aware lint stays out of the commit: no tool caches its results (not tsgolint, not `tsrs --lint`, not oxlint), so
 it would build every package's program on every commit, while a commit holds `.git/index.lock` for its whole hook. The
@@ -184,14 +184,13 @@ Every number that bounds concurrency answers to the indefensible-numbers policy 
 `@limitKind`, `@owner`, `@unit` and `@scope`, or it goes. A `0` or `1` identity needs no citation, and a width the data
 gives (two streams read at once, the sessions a run started) is no limit.
 
-| Limit                                              | Where                                 | Authority                                                                                                                                                                                                                                                            |
-| -------------------------------------------------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Test processes at once, `testWorkers`              | `packages/testing/src/workers.ts`     | derived: one forked test process a logical CPU (`availableParallelism()`)                                                                                                                                                                                            |
-| Mutants judged at once, without `--workers`        | `packages/testing/scripts/mutate.ts`  | derived (`defaultWorkers`): `testWorkers` over the processes one mutant's Vitest holds, so a mutation run holds no more test processes than a test run                                                                                                               |
-| turbo's tasks at once, `"concurrency": "100%"`     | `turbo.json`                          | derived: one task a logical processor; turbo documents `100%` as "all available logical processors" and 10 tasks as its default (https://turborepo.dev/docs/reference/configuration, verified 2026-11-15). JSON carries no comment, so this row is its documentation |
-| One gate run per snapshot                          | `bin/gate.sh`                         | an identity: a snapshot is one directory that a run rewrites                                                                                                                                                                                                         |
-| A search's cases at once, a search's `concurrency` | each test's `explore` or `exhaust`    | left out, one at a time (`oneAtATime`), an identity; stated above one, the test's own input, no resource's bound: the engine finds the same cases at any concurrency, and a sense that reads process-wide counters (guided coverage) runs its cases one at a time    |
-| One plant at a time                                | `packages/devtools/src/plants/run.ts` | an identity: a plant goes into the one working tree, so a second plant planted beside it would turn the first one's tests red as well                                                                                                                                |
+| Limit                                              | Where                                | Authority                                                                                                                                                                                                                                                            |
+| -------------------------------------------------- | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Test processes at once, `testWorkers`              | `packages/testing/src/workers.ts`    | derived: one forked test process a logical CPU (`availableParallelism()`)                                                                                                                                                                                            |
+| Mutants judged at once, without `--workers`        | `packages/testing/scripts/mutate.ts` | derived (`defaultWorkers`): `testWorkers` over the processes one mutant's Vitest holds, so a mutation run holds no more test processes than a test run                                                                                                               |
+| turbo's tasks at once, `"concurrency": "100%"`     | `turbo.json`                         | derived: one task a logical processor; turbo documents `100%` as "all available logical processors" and 10 tasks as its default (https://turborepo.dev/docs/reference/configuration, verified 2026-11-15). JSON carries no comment, so this row is its documentation |
+| One gate run per snapshot                          | `bin/gate.sh`                        | an identity: a snapshot is one directory that a run rewrites                                                                                                                                                                                                         |
+| A search's cases at once, a search's `concurrency` | each test's `explore` or `exhaust`   | left out, one at a time (`oneAtATime`), an identity; stated above one, the test's own input, no resource's bound: the engine finds the same cases at any concurrency, and a sense that reads process-wide counters (guided coverage) runs its cases one at a time    |
 
 ## Steering belongs to the generator
 
@@ -200,36 +199,13 @@ A search offers steering (the requirements still pending, the one a case's turn 
 steering, so no property can run a case other than the sketch the search prints, shrinks, keeps and replays. Keep it
 that way: a new phase or search passes its steering to the generator through `Under`, a replay draws under its token's,
 a shrink under its case's own, and a kept case is its sketch, drawn by nothing. `exhaust` steers nothing; its space is
-its box. The aimed-case property in `explore.test.ts` holds this, and its plant
-(`plants/testing/aimed-case-reported-unsteered.patch`) is the bug it catches.
+its box. The aimed-case property in `explore.test.ts` holds this, and its kill is the bug it catches.
 
-## Plants
+## Kills
 
-A plant is a patch under `plants/<suite>/<name>.patch` that breaks the code on purpose, as a bug would, `<suite>` being
-the directory of the first test that cites it with `packages/` and `src/` dropped:
-`packages/testing/src/vitest/adapter.test.ts` cites plants under `plants/testing/vitest/`, and
-`packages/devtools/src/oxlint/rules/side-effect-free.test.ts` under `plants/devtools/oxlint/rules/`. Every property
-names, at the end of its file's header, the plants that must turn it red, one JSDoc tag each: the plant's path, then
-the bug it plants, which may carry on over the lines below.
-
-```ts
- * @plant plants/devtools/plants/plants-dangling-unchecked.patch The judgment never finds a citation of a plant that is
- * no file; the judgment property fails.
-```
-
-The plants live at the root, not in a package: a plant is a patch on the repository, applied from its root with
-`git apply`, and may break any package a test loads; one directory holds every name, which is unique across it; and a
-package holds what a repository that takes the toolchain loads, which no plant is.
-
-`pnpm plants:check` (`packages/devtools/src/plants/check.ts`), part of `pnpm check`, reads every TypeScript file git
-shows and refuses a tag that names no plant path or no bug, a citation outside a test, a citation of a plant that is no
-file, a file under `plants/` no test cites, and two plants under one name. `pnpm plants <test or plant>...` (or
-`--all`) runs each test named against each plant it cites and each plant named against every test citing it: each test
-first runs once with no plant, then each plant goes in (`git apply`), its tests run one at a time through their
-package's `pnpm test`, and it comes out again, on success, failure and interruption alike. It prints red, green, stale
-or unjudged for each plant and test, keeps every run's log, and exits 1 unless every line is red; it refuses to start
-while the check finds anything or a file a plant changes differs from HEAD. A plant in the working tree breaks the tree
-for every lane that shares it, so run `pnpm plants` in a clone of your own.
-
-A plant that leaves its test green is a bug no test catches: it goes to main with the test and the plant, never quietly
-out of the header. A plant that no longer applies is made again against the code as it is.
+A bug a property must catch is a kill on that property (`Kill` in `packages/testing/src/property.ts`): a file from the
+repository root, an original that stands exactly once in it, the replacement that breaks the code as the bug would, and
+why the property goes red. With a kill applied, the property's witness cases (its floor and steered phase, or an
+exhaustion's every case) must fail. A kill whose original no longer stands once in its file is stale: make it again
+against the code as it is, on the property that catches it. A kill that leaves its property green is a bug no property
+catches: it stays on the property, never quietly off it.

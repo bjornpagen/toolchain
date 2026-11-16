@@ -8,8 +8,6 @@
  * The lock is a planted capability problem, its verdict the specification's: a steered search reaches what it
  * requires within its budget. It runs one case at a time, in a process of its own: V8's block counters are the
  * process's and reset when read, so a case's trace holds its blocks alone only when no other case runs beside it.
- *
- * @plant plants/testing/sense-v8-blind.patch Block coverage perceiving nothing, every trace empty; the property fails.
  */
 import { describe, it } from "@effect/vitest"
 import { strictEqual } from "@effect/vitest/utils"

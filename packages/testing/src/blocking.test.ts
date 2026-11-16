@@ -3,9 +3,6 @@
  * the hang report and its replay token once its moment and the watchdog's grace have passed, and only then; a body
  * that returns, pauses or sleeps ends its search in the program by the guard's typed verdict. Oracle: stated in the
  * search.
- *
- * @plant plants/testing/watchdog-grace-doubled.patch The watchdog waits a grace twice the one it states before it ends
- * a runaway's process; the property fails.
  */
 import * as NodeServices from "@effect/platform-node/NodeServices"
 import { layer } from "@effect/vitest"

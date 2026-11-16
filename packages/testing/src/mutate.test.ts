@@ -1,9 +1,6 @@
 /**
  * Tape mutation (mutate.ts): the same mutant from the same words, of a length its edits allow, replaying within every
  * decision's range. Oracle: stated in the search.
- *
- * @plant plants/testing/mutant-replayed-past-hi.patch A replayed value past its decision's highest value is kept, not
- * replayed as the decision's simplest, so a mutant replays outside its decision's range; the property fails.
  */
 import { describe, it } from "@effect/vitest"
 import { assertTrue, deepStrictEqual } from "@effect/vitest/utils"

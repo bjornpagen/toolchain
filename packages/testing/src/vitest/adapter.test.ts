@@ -3,13 +3,6 @@
  * deadline; the test process runs under every hardened flag, the __proto__ accessor gone; and the config's every
  * project runs natively on forks under those flags, one worker a core, with the timeouts and lists it states. Oracles
  * are stated per search.
- *
- * @plant plants/testing/vitest/run-deadline-dropped.patch The test's timeout is dropped from its deadline, so a
- * search's deadline is the moment its test began, which cuts it before its first case; the first property fails.
- * @plant plants/testing/vitest/hardened-flag-dropped.patch The config passes every hardened flag but the first,
- * --disable-proto=delete; the second property fails.
- * @plant plants/testing/vitest/config-pool-threads.patch A config that lists small-stack files runs on threads, not
- * forks; the third property fails.
  */
 import { describe, it } from "@effect/vitest"
 import { deepStrictEqual, strictEqual } from "@effect/vitest/utils"

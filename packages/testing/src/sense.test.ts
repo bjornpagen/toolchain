@@ -2,8 +2,6 @@
  * Block coverage as a sense (sense.ts v8Coverage): a fresh sense perceives exactly what its own case did, whatever
  * senses read the file before it, every case running one block and skipping another. Oracle: universal, stated in the
  * search.
- *
- * @plant plants/testing/sense-v8-blind.patch A trace of nothing; the property fails.
  */
 import { describe, it } from "@effect/vitest"
 import { deepStrictEqual } from "@effect/vitest/utils"
