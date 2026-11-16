@@ -1191,11 +1191,17 @@ const builtOf = (
 			: `(${textOf(callback.expression)})(${valueName}, ${caseName})`
 	const lifted = new Set<ts.Statement>([...split.lifted, ...split.worker])
 	const name = freshName(camelOf(test), taken)
+	const caseReads = new Set([
+		...Arr.flatMap(split.prefix, identifiersUnder),
+		...Arr.flatMap(stagesOf(search.wrappers), identifiersUnder),
+		...identifiersUnder(callback.kind === "literal" ? callback.body : callback.expression)
+	])
 	const need = Arr.isReadonlyArrayNonEmpty(split.worker)
 		? Option.some(
 				workerNeedOf(
 					module,
 					split.worker,
+					Arr.filter(workerNames, (n) => caseReads.has(n)),
 					freshName(
 						`${Arr.head(workerNames).pipe(Option.getOrElse(() => "setup"))}Need`,
 						new Set([...used, ...taken, name])
@@ -1409,9 +1415,9 @@ const builtOf = (
 const workerNeedOf = (
 	module: Module,
 	statements: Arr.NonEmptyReadonlyArray<ts.Statement>,
+	names: ReadonlyArray<string>,
 	name: string
 ): Readonly<{ name: string; take: string; text: string; wanted: ReadonlyArray<Wanted> }> => {
-	const names = Arr.flatMap(statements, declaredNamesOf)
 	const bound = `{ ${Arr.join(names, ", ")} }`
 	const lines = Arr.join(
 		Arr.map(statements, (statement) => withCommentsOf(module.parsed, statement)),
@@ -1420,12 +1426,12 @@ const workerNeedOf = (
 	const effectful = Arr.some(statements, (st) => holds(st, ts.SyntaxKind.YieldExpression))
 	const key = `${module.parsed.file}#${name}`
 	const built = effectful
-		? `Effect.gen(function* () {\n${lines}\nreturn ${bound}\n}).pipe(\nEffect.mapError((error) => NeedFailed.make({ need: ${quoted(key)}, message: Cause.pretty(Cause.fail(error)) })),\nEffect.map((made) => Effect.succeed(made))\n)`
+		? `Effect.gen(function* () {\n${lines}\nreturn ${bound}\n}).pipe(\nEffect.mapBoth({\nonFailure: (error) => NeedFailed.make({ need: ${quoted(key)}, message: Cause.pretty(Cause.fail(error)) }),\nonSuccess: (made) => Effect.succeed(made)\n})\n)`
 		: `Effect.sync(() => {\n${lines}\nreturn Effect.succeed(${bound})\n})`
 	return {
 		name,
 		take: Arr.isReadonlyArrayNonEmpty(names) ? `const ${bound} = yield* ${name}` : `yield* ${name}`,
-		text: `/** What the search built once before its cases (${Arr.join(names, ", ")}), now once per worker: every case on it reads them. */\nconst ${name} = {\nkey: ${quoted(key)},\nopen: ${built}\n} as const`,
+		text: `/** What the search built once before its cases${Arr.isReadonlyArrayNonEmpty(names) ? ` (${Arr.join(names, ", ")})` : ""}, now once per worker: every case on it reads them. */\nconst ${name} = {\nkey: ${quoted(key)},\nopen: ${built}\n} as const`,
 		wanted: effectful
 			? [
 					{ module: module.api.property, name: "NeedFailed", local: "NeedFailed", type: false },
