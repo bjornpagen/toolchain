@@ -11,8 +11,8 @@ import {
 	String as Str
 } from "effect"
 import { ChildProcess } from "effect/process"
-import { element, finite, type Gen, int } from "#gen.ts"
-import { liveMillis } from "#live.ts"
+import { array, element, finite, type Gen, int } from "#gen.ts"
+import { liveMillis, WATCHDOG_GRACE_MILLIS } from "#live.ts"
 import type { CheckoutDir } from "#mutate/checkout.ts"
 import { type Property, property } from "#property.ts"
 import { HARDENED_FLAGS } from "#runner/config.ts"
@@ -315,3 +315,33 @@ export const BODY_SITUATIONS: ReadonlyArray<BodySituation> = Arr.map(
 	bodyAims,
 	([situation]) => situation
 )
+
+/**
+ * A case in flight as the main thread holds it when the watchdog asks: whether it has passed the moment its guard would
+ * stop it, and by how far, either way, in milliseconds.
+ */
+export type InFlight = Readonly<{ past: boolean; by: number }>
+
+/** The cases a main thread holds in flight when the watchdog asks it: none to four, each past its moment or not. */
+export const inFlights: Gen<ReadonlyArray<InFlight>> = array(
+	(source) => ({
+		past: source.draw(element([false, true] as const)),
+		by: source.draw(int(0, 10_000))
+	}),
+	{ min: 0, max: 4 }
+)
+
+/** The report of the case in flight at `index`, as its watch carries it. */
+export const reportAt = (index: number): string => `<the report of case ${index}>`
+
+/**
+ * The cases in flight as the watchdog watches them at `now`: one past its moment passed it `by` milliseconds before
+ * (at `now` itself when `by` is 0), one not yet past it reaches it `by` and one more milliseconds after; each reports
+ * its index.
+ */
+export const watchedAt = (inFlight: ReadonlyArray<InFlight>, now: number) =>
+	Arr.map(inFlight, (one, index) => ({
+		hangsAt: one.past ? now - one.by : now + one.by + 1,
+		graceMillis: WATCHDOG_GRACE_MILLIS,
+		report: () => reportAt(index)
+	}))

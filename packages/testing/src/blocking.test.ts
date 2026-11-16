@@ -10,22 +10,25 @@
  * the grace, so the space draws settling bodies and an aim draws each body once its situation is pending. Oracle:
  * stated in the property.
  */
-import { Effect, Option } from "effect"
+import { Array as Arr, Effect, Option, String as Str } from "effect"
 import { deepStrictEqual } from "#assert.ts"
 import {
 	BODY_SITUATIONS,
 	bodyAims,
 	endingOf,
 	idOf,
+	inFlights,
 	programIn,
 	programRun,
+	reportAt,
 	runsAway,
 	settledHere,
 	settlingRuns,
-	values
+	values,
+	watchedAt
 } from "#blocking.fixtures.ts"
 import { aimed } from "#gen.ts"
-import { WATCHDOG_GRACE_MILLIS } from "#live.ts"
+import { answerOf, WATCHDOG_GRACE_MILLIS } from "#live.ts"
 import { Checkout } from "#mutate/checkout.ts"
 import { property } from "#property.ts"
 import { replayOf } from "#replay.ts"
@@ -88,6 +91,71 @@ export const watchdog = property.explore(aimed(settlingRuns, bodyAims), {
 			original: "\t\t\t\t\tgraceMillis: WATCHDOG_GRACE_MILLIS,",
 			replacement: "\t\t\t\t\tgraceMillis: WATCHDOG_GRACE_MILLIS * 2,",
 			why: "The watchdog waits a grace twice the one it states before it ends a runaway's process; the property fails."
+		}
+	]
+})
+
+/**
+ * What the main thread answers the watchdog's thread that asks it, interrupted, whether it is blocked (live.ts
+ * answerOf), over drawn cases in flight, each past the moment its guard would stop it or not: blocked exactly when one
+ * is past its moment, naming every case in flight, since the watchdog cannot tell which holds the thread; running
+ * otherwise, so a main thread that was merely slow to answer the thread's ping, idle between cases under load, is never
+ * ended (MIGRATE-TC met workers ended so, "one of these 0 cases in flight blocked the process"). Oracle: stated in the
+ * property, from the drawn cases.
+ */
+export const answersBlockedPastAMoment = property.explore(inFlights, {
+	needs: {},
+	situations: [
+		"nothing in flight",
+		"cases in flight, none past its moment",
+		"one case in flight, past its moment",
+		"a case past its moment among several in flight"
+	],
+	check: (_resources, c) => (inFlight) =>
+		Effect.sync(() => {
+			const past = Arr.some(inFlight, (one) => one.past)
+			if (Arr.isReadonlyArrayEmpty(inFlight)) {
+				c.note("nothing in flight")
+			} else if (!past) {
+				c.note("cases in flight, none past its moment")
+			} else if (inFlight.length === 1) {
+				c.note("one case in flight, past its moment")
+			} else {
+				c.note("a case past its moment among several in flight")
+			}
+			const now = 1_800_000_000_000
+			const answer = answerOf(watchedAt(inFlight, now), now)
+			const indices = Arr.map(inFlight, (_one, index) => index)
+			deepStrictEqual(
+				{
+					kind: answer.kind,
+					named:
+						answer.kind === "blocked"
+							? Arr.filter(indices, (index) => Str.includes(reportAt(index))(answer.report))
+							: [],
+					alone:
+						answer.kind === "blocked" && inFlight.length === 1
+							? Option.some(answer.report)
+							: Option.none<string>()
+				},
+				{
+					kind: past ? "blocked" : "running",
+					named: past ? indices : [],
+					alone: past && inFlight.length === 1 ? Option.some(reportAt(0)) : Option.none<string>()
+				}
+			)
+		}),
+	oracle: {
+		kind: "specification",
+		name: "the main thread answers blocked exactly when a case in flight is past its moment, naming every case in flight"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/live.ts",
+			original: "\tif (!Arr.some(inFlight, (watched) => watched.hangsAt <= now)) {",
+			replacement: "\tif (false) {",
+			why: "The main thread answers blocked whatever it holds in flight, as the watchdog ended a process before: a worker asked while idle between cases, or with none past its moment, is ended with a report of no case; the property fails."
 		}
 	]
 })

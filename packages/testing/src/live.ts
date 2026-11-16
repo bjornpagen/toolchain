@@ -104,18 +104,17 @@ export const stopHung = <A, E>(running: Fiber.Fiber<A, E>): Effect.Effect<void> 
 /**
  * @formatConstant the watchdog's shared memory, its slots and their offsets
  *
- * Where the watchdog's two threads meet in their shared memory: four Int32 counters (bumped when the earliest moment
- * moves earlier; the last ping the main thread answered; one nothing writes, for the watchdog's thread to time a wait
- * on; the last ping the watchdog's thread sent), then, at the first 8-byte boundary past them, two Float64 moments (the earliest moment a case in flight passes
- * the moment its guard would stop it, in milliseconds since the epoch, and how long that case's thread then has to
- * answer, in milliseconds).
+ * Where the watchdog's two threads meet in their shared memory: three Int32 counters (bumped when the earliest moment
+ * moves earlier; bumped at every sign of life of the main thread, a case's start or end or an answer to a ping; one
+ * nothing writes, for the watchdog's thread to time a wait on), then, at the first 8-byte boundary past them, two
+ * Float64 moments (the earliest moment a case in flight passes the moment its guard would stop it, in milliseconds since
+ * the epoch, and how long that case's thread then has to answer, in milliseconds).
  */
 const LAYOUT = {
 	generation: 0,
-	pong: 1,
+	progress: 1,
 	timer: 2,
-	ping: 3,
-	counters: 4,
+	counters: 3,
 	earliest: 0,
 	grace: 1,
 	moments: 2,
@@ -126,18 +125,28 @@ const LAYOUT = {
 type Layout = typeof LAYOUT
 
 /**
+ * What the main thread answers the watchdog's thread when it asks through the inspector, which interrupts even a
+ * synchronous loop: that a case in flight has passed the moment its guard would stop it, with the report of every case
+ * in flight, since the watchdog cannot tell which one holds the thread; or that none has, so the thread watches on.
+ */
+type Answer = Readonly<{ kind: "blocked"; report: string }> | Readonly<{ kind: "running" }>
+
+/**
  * The watchdog's thread, evaluated from its source text in a worker of its own, so it reads no module of the library
  * and none a transform could rewrite, only Node's built-ins. It sleeps until the earliest moment a case in flight
- * passes the moment its guard would stop it; then it pings the main thread, in shared memory and by a message, and waits
- * that case's grace for the answer. The main thread answers at its next case boundary, a case's start or end, which a
- * run of synchronous cases reaches without returning to its event loop, or on its event loop, by the message. A main
- * thread that answers is alive, so the case's own guard reports it, and the thread sleeps on. One that does not answer
- * is running JavaScript that never yields, a synchronous loop its guard cannot interrupt, since the guard's timer runs
- * on the thread the loop holds: the thread asks it, through the inspector, which interrupts even a synchronous loop, for
- * its watchdog's report, writes the report to the process's stderr, and ends the process with SIGKILL, the one signal a
- * blocked thread cannot hold. A main thread whose inspector does not answer either is ended after the grace once more,
- * with a report that says only that. Its open port keeps it alive; the main thread unrefs it. Its layout is its
- * argument, written into its source text, since the thread shares no module with the main thread.
+ * passes the moment its guard would stop it; then it notes the main thread's progress, pings it by a message, and waits
+ * that case's grace. The main thread makes progress at every case boundary, a case's start or end, which a run of
+ * synchronous cases reaches without returning to its event loop, and on its event loop, where it answers the ping. A
+ * main thread that made progress is alive, so the case's own guard reports it, and the thread sleeps on; so does one
+ * that, though silent, no longer has a case in flight past its moment. Otherwise the main thread is running JavaScript
+ * that never yields, a synchronous loop its guard cannot interrupt, since the guard's timer runs on the thread the loop
+ * holds: the thread asks it, through the inspector, which interrupts even a synchronous loop, for its Answer, judged on
+ * the main thread itself, whose cases cannot change while it is interrupted. A blocked answer is written to the
+ * process's stderr, and the process is ended with SIGKILL, the one signal a blocked thread cannot hold; a running one
+ * sends the thread back to sleep. A main thread whose inspector does not answer either is ended after the grace once
+ * more, with a report that says only that, if it still has made no progress and has a case in flight past its moment.
+ * Its open port keeps it alive; the main thread unrefs it. Its layout is its argument, written into its source text,
+ * since the thread shares no module with the main thread.
  */
 const watchdogThread = (layout: Layout): void => {
 	const threads = process.getBuiltinModule("node:worker_threads")
@@ -162,23 +171,55 @@ const watchdogThread = (layout: Layout): void => {
 		writeSync(2, `\n${report}\n`)
 		process.kill(process.pid, "SIGKILL")
 	}
-	const blocked = (graceMillis: number): void => {
-		const unanswered =
-			"@bjornpagen/testing: a case held its process's main thread without yielding past the moment its guard would stop it, and the thread's inspector did not answer for its report; the watchdog ended the process: a hang"
+	const stillBlocked = (looked: number): boolean =>
+		Atomics.load(counters, layout.progress) === looked &&
+		(moments[layout.earliest] ?? Number.POSITIVE_INFINITY) <= nowMillis()
+	const unanswered =
+		"@bjornpagen/testing: a case held its process's main thread without yielding past the moment its guard would stop it, and the thread's inspector did not answer for its report; the watchdog ended the process: a hang"
+	const blocked = (looked: number, graceMillis: number): void => {
 		const session = new Session()
 		session.connectToMainThread()
+		let pending = true
+		const settle = (then: () => void): void => {
+			if (pending) {
+				pending = false
+				then()
+			}
+		}
 		session.post(
 			"Runtime.evaluate",
-			{ expression: "globalThis.bjornpagenTestingWatchdog?.blocked()", returnByValue: true },
+			{ expression: "globalThis.bjornpagenTestingWatchdog?.answer()", returnByValue: true },
 			(error, evaluated) => {
-				const report: unknown = error === null ? evaluated.result.value : undefined
-				end(typeof report === "string" ? report : unanswered)
+				const answer: unknown = error === null ? evaluated.result.value : undefined
+				settle(() => {
+					if (typeof answer === "object" && answer !== null && "kind" in answer) {
+						if (answer.kind === "running") {
+							session.disconnect()
+							rest(graceMillis)
+							return
+						}
+						if ("report" in answer && typeof answer.report === "string") {
+							end(answer.report)
+							return
+						}
+					}
+					end(unanswered)
+				})
 			}
 		)
-		after(Atomics.waitAsync(counters, layout.timer, 0, graceMillis), () => end(unanswered))
+		after(Atomics.waitAsync(counters, layout.timer, 0, graceMillis), () =>
+			settle(() => {
+				if (stillBlocked(looked)) {
+					end(unanswered)
+					return
+				}
+				session.disconnect()
+				rest(graceMillis)
+			})
+		)
 	}
-	let pinged = 0
 	const watch = (): void => {
+		const looked = Atomics.load(counters, layout.progress)
 		const generation = Atomics.load(counters, layout.generation)
 		const hangsAt = moments[layout.earliest] ?? Number.POSITIVE_INFINITY
 		const graceMillis = moments[layout.grace] ?? 0
@@ -187,26 +228,25 @@ const watchdogThread = (layout: Layout): void => {
 			after(Atomics.waitAsync(counters, layout.generation, generation, waitMillis), watch)
 			return
 		}
-		pinged += 1
-		const ping = pinged
-		const answered = Atomics.load(counters, layout.pong)
-		Atomics.store(counters, layout.ping, ping)
-		port.postMessage(ping)
-		after(Atomics.waitAsync(counters, layout.pong, answered, graceMillis), () => {
-			if (Atomics.load(counters, layout.pong) === ping) {
-				after(
-					Atomics.waitAsync(
-						counters,
-						layout.generation,
-						Atomics.load(counters, layout.generation),
-						graceMillis
-					),
-					watch
-				)
-			} else {
-				blocked(graceMillis)
+		port.postMessage(looked)
+		after(Atomics.waitAsync(counters, layout.timer, 0, graceMillis), () => {
+			if (stillBlocked(looked)) {
+				blocked(looked, graceMillis)
+				return
 			}
+			rest(graceMillis)
 		})
+	}
+	const rest = (graceMillis: number): void => {
+		after(
+			Atomics.waitAsync(
+				counters,
+				layout.generation,
+				Atomics.load(counters, layout.generation),
+				graceMillis
+			),
+			watch
+		)
 	}
 	port.on("message", () => undefined)
 	watch()
@@ -217,15 +257,40 @@ const watchdogThread = (layout: Layout): void => {
 type Watched = Readonly<{ hangsAt: number; graceMillis: number; report: () => string }>
 
 /**
+ * What the main thread answers the watchdog at `now`, with `inFlight` its cases in flight: blocked, with the report of
+ * every case in flight, when one of them has passed the moment its guard would stop it; running when none has, so a
+ * thread that was merely slow to answer, or between cases, is never ended.
+ */
+export const answerOf = (inFlight: ReadonlyArray<Watched>, now: number): Answer => {
+	if (!Arr.some(inFlight, (watched) => watched.hangsAt <= now)) {
+		return { kind: "running" }
+	}
+	const reports = Arr.map(inFlight, (watched) => watched.report())
+	return {
+		kind: "blocked",
+		report:
+			reports.length === 1
+				? Arr.join(reports, "")
+				: Arr.join(
+						[
+							`one of these ${reports.length} cases in flight blocked the process, and the watchdog cannot tell which:`,
+							...reports
+						],
+						"\n\n"
+					)
+	}
+}
+
+/**
  * This process's watchdog of its main thread, for the hangs a case's own guard cannot stop: a case that loops
  * synchronously holds the thread its guard's timer would run on. `watch` registers a case in flight and returns its
- * release; `blocked` is what the watchdog's thread prints when the main thread has stopped answering, every case in
- * flight, since it cannot tell which one holds the thread. A process whose tests run off its main thread, in a worker,
- * has none: its watch does nothing, and only the guard's timer stops a case.
+ * release; `answer` is what the main thread tells the watchdog's thread that asks it, interrupted, whether it is
+ * blocked. A process whose tests run off its main thread, in a worker, has none: its watch does nothing, and only the
+ * guard's timer stops a case.
  */
 type Watchdog = Readonly<{
 	watch: (watched: Watched) => () => void
-	blocked: () => string
+	answer: () => Answer
 }>
 
 declare global {
@@ -235,10 +300,14 @@ declare global {
 /** The watchdog of a process whose tests do not run on its main thread: it watches nothing. */
 const offMainThread: Watchdog = {
 	watch: () => () => undefined,
-	blocked: () => ""
+	answer: () => ({ kind: "running" })
 }
 
-/** Starts this process's watchdog: its thread, its shared memory, and the cases it watches. */
+/**
+ * Starts this process's watchdog: its thread, its shared memory, and the cases it watches. The main thread publishes
+ * its cases' earliest moment before it counts the boundary as progress, so a thread that saw the progress before a
+ * case's end also sees the moment that end left.
+ */
 const startedWatchdog = (): Watchdog => {
 	const shared = new SharedArrayBuffer(LAYOUT.bytes)
 	const counters = new Int32Array(shared, 0, LAYOUT.counters)
@@ -252,20 +321,11 @@ const startedWatchdog = (): Watchdog => {
 		eval: true,
 		workerData: shared
 	})
-	worker.on("message", (ping: unknown) => {
-		if (typeof ping === "number") {
-			Atomics.store(counters, LAYOUT.pong, ping)
-			Atomics.notify(counters, LAYOUT.pong)
-		}
-	})
-	worker.unref()
-	const answer = () => {
-		const ping = Atomics.load(counters, LAYOUT.ping)
-		if (ping !== Atomics.load(counters, LAYOUT.pong)) {
-			Atomics.store(counters, LAYOUT.pong, ping)
-			Atomics.notify(counters, LAYOUT.pong)
-		}
+	const progressed = () => {
+		Atomics.add(counters, LAYOUT.progress, 1)
 	}
+	worker.on("message", progressed)
+	worker.unref()
 	const inFlight = new Map<number, Watched>()
 	let watched = 0
 	const publish = () => {
@@ -281,32 +341,21 @@ const startedWatchdog = (): Watchdog => {
 			Atomics.add(counters, LAYOUT.generation, 1)
 			Atomics.notify(counters, LAYOUT.generation)
 		}
+		progressed()
 	}
 	return {
 		watch: (watch) => {
-			answer()
 			watched += 1
 			const id = watched
 			inFlight.set(id, watch)
 			publish()
 			return () => {
-				answer()
 				inFlight.delete(id)
 				publish()
 			}
 		},
-		blocked: () => {
-			const reports = Arr.map(Arr.fromIterable(inFlight.values()), (watch) => watch.report())
-			return reports.length === 1
-				? Arr.join(reports, "")
-				: Arr.join(
-						[
-							`one of these ${reports.length} cases in flight blocked the process, and the watchdog cannot tell which:`,
-							...reports
-						],
-						"\n\n"
-					)
-		}
+		answer: () =>
+			answerOf(Arr.fromIterable(inFlight.values()), performance.timeOrigin + performance.now())
 	}
 }
 
