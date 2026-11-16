@@ -103,6 +103,14 @@ export default defineConfig(
 		},
 		overrides: [
 			{
+				files: ["packages/testing/src/assert.ts"],
+				rules: active({
+					/** The assert door keeps @effect/vitest/utils's and chai's signatures, whose message is optional, so a
+					 * test moving off Vitest renames its import's specifier and changes nothing else (TESTSYS, 2026-11-16). */
+					"devtools/no-optional-parameter": "off"
+				})
+			},
+			{
 				files: ["packages/devtools/src/shared/config.ts"],
 				rules: active({
 					/** The one load of a repository's toolchain.config.ts, whose path is known only at run time (owner, D1,

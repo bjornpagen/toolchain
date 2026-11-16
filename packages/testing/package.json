@@ -9,6 +9,7 @@
 		"#*": "./src/*"
 	},
 	"exports": {
+		"./assert": "./src/assert.ts",
 		"./commands": "./src/commands.ts",
 		"./dictionary": "./src/dictionary.ts",
 		"./enumerate": "./src/enumerate.ts",
