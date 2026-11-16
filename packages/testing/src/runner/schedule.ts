@@ -281,8 +281,11 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 
 	/**
 	 * How much of a module's queued work its holders leave undrained within a further worker's wait before its first case
-	 * of it (`before` and readying the module's queued work), and that wait; none while a part of that readying is
-	 * unmeasured.
+	 * of it (`before` and readying the module's queued work), and that wait; none before the module's import is measured.
+	 * Both sides count the queued properties measured so far alone (each opened somewhere, its occupancy known): an
+	 * unmeasured property's work counts nothing yet (workOfCases), so its opening does not either, and it never holds
+	 * back the spread of work already measured (with a property's whole streams queued at once, one property's units
+	 * could otherwise keep a module on its holder until it reached the last property's).
 	 */
 	const shortfallOf = (
 		module: string,
@@ -293,7 +296,11 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 		if (queued === undefined) {
 			return Option.none()
 		}
-		return Option.map(readyingOf(module, queued.byProperty.keys(), Option.none()), (readying) => {
+		const measured = Arr.filter(
+			Arr.fromIterable(queued.byProperty.keys()),
+			(property) => occupancies.has(property) && openings.has(property)
+		)
+		return Option.map(readyingOf(module, measured, Option.none()), (readying) => {
 			const within = before + readying
 			let drained = 0
 			for (const holder of holders.get(module) ?? []) {

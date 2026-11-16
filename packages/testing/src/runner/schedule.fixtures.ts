@@ -385,18 +385,28 @@ export const simulate = (workload: Workload, forking: Forking): Ran => {
 export type SpreadState = Readonly<{
 	importing: number
 	properties: ReadonlyArray<
-		Readonly<{ opening: number; caseMillis: number; queued: number; sent: number }>
+		Readonly<{
+			opening: number
+			caseMillis: number
+			queued: number
+			sent: number
+			measured: boolean
+		}>
 	>
 }>
 
-/** A measured property of a spread state, with up to six units queued and `sent` sent to the holder. */
+/** Whether a property of a spread state was measured: opened somewhere and its occupancy known, or not yet. */
+const measuredness: Gen<boolean> = (source) => source.draw(int(0, 3)) > 0
+
+/** A property of a spread state, with up to six units queued and `sent` sent to the holder, mostly measured. */
 const spreadProperty =
 	(sent: Gen<number>): Gen<SpreadState["properties"][number]> =>
 	(source) => ({
 		opening: source.draw(int(0, 40)),
 		caseMillis: source.draw(int(1, 20)),
 		queued: source.draw(int(0, 6)),
-		sent: source.draw(sent)
+		sent: source.draw(sent),
+		measured: source.draw(measuredness)
 	})
 
 /**
@@ -406,7 +416,7 @@ const spreadProperty =
 export const spreadStates: Gen<SpreadState> = (source) => ({
 	importing: source.draw(int(0, 40)),
 	properties: [
-		source.draw(spreadProperty(int(1, 6))),
+		{ ...source.draw(spreadProperty(int(1, 6))), measured: true },
 		...source.draw(array(spreadProperty(int(0, 6)), { min: 0, max: 3 }))
 	]
 })
@@ -426,11 +436,13 @@ export const spreadIn = (
 	const sent: Array<Scheduled> = []
 	for (const [at, drawn] of state.properties.entries()) {
 		const property = `m#p${at}`
-		scheduler.readied(0, "m", property, {
-			importing: at === 0 ? state.importing : 0,
-			opening: drawn.opening
-		})
-		scheduler.occupied(property, 1, drawn.caseMillis)
+		if (drawn.measured) {
+			scheduler.readied(0, "m", property, {
+				importing: at === 0 ? state.importing : 0,
+				opening: drawn.opening
+			})
+			scheduler.occupied(property, 1, drawn.caseMillis)
+		}
 		for (let unit = 0; unit < drawn.sent; unit += 1) {
 			ids += 1
 			sent.push({ id: ids, property, module: "m", cases: 1 })

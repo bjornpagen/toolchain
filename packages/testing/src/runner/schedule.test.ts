@@ -142,9 +142,14 @@ export const spreadPaysForItself = property.explore(
 								? "one property queued"
 								: "nothing queued"
 					)
+					const measured = Arr.filter(state.properties, (drawn) => drawn.measured)
 					const work = (count: (drawn: SpreadState["properties"][number]) => number) =>
-						Arr.reduce(state.properties, 0, (sum, drawn) => sum + count(drawn) * drawn.caseMillis)
-					const readying = Arr.reduce(queued, state.importing, (sum, drawn) => sum + drawn.opening)
+						Arr.reduce(measured, 0, (sum, drawn) => sum + count(drawn) * drawn.caseMillis)
+					const readying = Arr.reduce(
+						Arr.filter(queued, (drawn) => drawn.measured),
+						state.importing,
+						(sum, drawn) => sum + drawn.opening
+					)
 					const shortWithin = (within: number) =>
 						work((drawn) => drawn.queued) - Math.max(0, within - work((drawn) => drawn.sent))
 					const pays = (within: number) => shortWithin(within) > 0 && shortWithin(within) >= within
@@ -161,7 +166,7 @@ export const spreadPaysForItself = property.explore(
 				}),
 		oracle: {
 			kind: "specification",
-			name: "a module spreads to a further worker exactly when the queued work its holder leaves undrained while that worker gets ready (its start, if forked, its import and every queued property's opening) covers that time, and wants as many as that work holds the time whole"
+			name: "a module spreads to a further worker exactly when the measured queued work its holder leaves undrained while that worker gets ready (its start, if forked, its import and every measured queued property's opening) covers that time, and wants as many as that work holds the time whole"
 		},
 		kept: [],
 		kills: [
@@ -170,6 +175,12 @@ export const spreadPaysForItself = property.explore(
 				original: "\t\t\treadying += opening\n",
 				replacement: "\t\t\treturn Option.some(readying + opening)\n",
 				why: "A further worker's readying of a module is reckoned as its import and its first queued property's opening alone, as a module's first readying measured it before: a module of several properties costly to open (grizzle's education, a template plan a property and a worker) spreads to workers that each open every property again; this property fails."
+			},
+			{
+				file: "packages/testing/src/runner/schedule.ts",
+				original: "(property) => occupancies.has(property) && openings.has(property)",
+				replacement: "() => true",
+				why: "A queued property no worker has measured holds back its module's spread, as before: with a property's whole streams queued at once, a module stays on its holder until the holder reaches its last property (the unit tier's quarter at 4 busy cores of 64); this property fails."
 			},
 			{
 				file: "packages/testing/src/runner/schedule.ts",
