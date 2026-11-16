@@ -19,7 +19,9 @@ export default defineTestConfig({
 		"!src/mutate/**",
 		"!src/fuzz.test.ts",
 		"!src/sense.test.ts",
-		"!src/oxlint/rules.test.ts"
+		"!src/oxlint/rules.test.ts",
+		"!src/mutants.test.ts",
+		"!src/mutate.test.ts"
 	],
 	guided: [],
 	setup: [],
