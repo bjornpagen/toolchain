@@ -57,14 +57,13 @@ export type Command<M, P, V extends string> = Readonly<{
 }>
 
 /**
- * A state machine: the model's initial state, the closed vocabulary its refusals are named from, as its roster (`[]`
- * for a machine that refuses nothing), and its commands, each named, with the parameters each takes. The roster is
- * where the vocabulary's type is read from: a command's verdicts sit under its name in a record, where they never
- * name it, so a machine's step features (StepFeature) are as closed as the roster says.
+ * A state machine: the model's initial state and its commands, each named, with the parameters each takes and the
+ * vocabulary `V` its refusals are named from (`never` for a machine that refuses nothing). A command's verdicts sit
+ * under its name in a record, where TypeScript reads no type argument, so a machine states its type
+ * (`Machine<M, P, V>`), and its step features (StepFeature) are as closed as `V`.
  */
 export type Machine<M, P, V extends string> = Readonly<{
 	initial: M
-	refusals: ReadonlyArray<V>
 	commands: { readonly [K in keyof P]: Command<M, P[K], V> }
 }>
 

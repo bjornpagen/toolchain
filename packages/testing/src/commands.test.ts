@@ -68,7 +68,6 @@ const queueOf = (
 	values: Gen<number>
 ): Machine<Queue, QueueParameters, QueueRefusal> => ({
 	initial: [],
-	refusals: ["full", "empty"],
 	commands: {
 		push: {
 			weight: weights.push,
