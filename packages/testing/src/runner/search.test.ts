@@ -22,6 +22,8 @@
  * - The coverage verdict is a function of the property's identity: two run seeds at two widths give the same verdict
  *   and the same witnesses, and the floor stream decides it where its cases already reach what is required.
  * - An aimed case is the case that ran: the one its failure prints, its token replays, and its kept token runs again.
+ * - A steered space reads its case's whole steering: one floor case reaches every pending situation where an aimed
+ *   space's reaches its turn's alone, and its token replays it under the pending set it was drawn under.
  * - Replay fidelity: every failure replays alone from its token as the same case under the same steering, is found at
  *   any width, a witness's on every run seed, and its token kept fails as kept.
  *
@@ -35,6 +37,7 @@ import { replayTokenOf } from "#replay.ts"
 import { runnerLimits } from "#runner/limits.ts"
 import type { CasePhase } from "#runner/protocol.ts"
 import {
+	aimedOneSearch,
 	aimedSearch,
 	aimedSketches,
 	aimRecorder,
@@ -59,6 +62,9 @@ import {
 	rareDraw,
 	replayedAt,
 	searchedAt,
+	steeredSearch,
+	steeredSituations,
+	steeredSketches,
 	printedNumber,
 	seeds,
 	shownOf,
@@ -658,6 +664,48 @@ export const aimedCase = property.explore(aimedSketches, {
 			replacement:
 				'\t\t\tprintedOf(\n\t\t\t\tdrawing.print,\n\t\t\t\tdrawing.spaceUnder(Option.none())(\n\t\t\t\t\trecording(chooserOf({ kind: "forced", values: drawn.recorded.tape().values.subarray(0, drawn.recorded.tape().length) })).source\n\t\t\t\t),\n\t\t\t\tclosed.drew\n\t\t\t)\n\t\t)',
 			why: "A case's report prints the unsteered draw of its tape, not the case its aim drew and ran (aimed-case-reported-unsteered, re-anchored from explore.ts's sketch to case.ts's printed form); the aimed case property fails."
+		}
+	]
+})
+
+export const steeredCase = property.explore(steeredSketches, {
+	needs: {},
+	situations: [],
+	check: () => (sketch) =>
+		Effect.gen(function* () {
+			const situations = steeredSituations(sketch.situations)
+			const run = {
+				...fullRun(sketch.label, sketch.seed),
+				width: sketch.width,
+				limits: { ...runnerLimits, floor: 1, steered: 0 }
+			}
+			const everyOne = { kind: "drawn", value: Arr.join(situations, " "), draws: [] } as const
+			const found = yield* searchedAt(steeredSearch(situations), run)
+			deepStrictEqual(shownOf(found), Option.some({ phase: "floor", printed: everyOne }))
+			const token = yield* Option.match(falsifiedOf(found), {
+				onNone: () => Effect.die("the steered search's floor case did not fail"),
+				onSome: (failed) => Effect.succeed(failed.token)
+			})
+			const replayed = yield* replayedAt(steeredSearch(situations), run, token)
+			deepStrictEqual(shownOf(replayed), Option.some({ phase: "replayed", printed: everyOne }))
+			const aimedFound = yield* searchedAt(aimedOneSearch(situations), run)
+			deepStrictEqual(
+				Option.map(unreachedOf(aimedFound), (missing) => missing.length),
+				Option.some(situations.length - 1)
+			)
+		}),
+	oracle: {
+		kind: "universal",
+		name: "one floor case: a steered space reads every pending situation, so it reaches them all where an aimed one reaches its turn's alone, and its token replays it under the same pending set"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/property.ts",
+			original: "\t\t\t\treturn space.under(steering)",
+			replacement:
+				"\t\t\t\treturn space.under(Option.map(steering, (pending) => ({ ...pending, has: pending.aimed })))",
+			why: "A steered space is handed its turn's aim alone, not every pending situation (property.ts spaceUnderOf), so its one floor case reaches one situation and leaves the rest unreached; the steered case property fails."
 		}
 	]
 })

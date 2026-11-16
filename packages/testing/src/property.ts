@@ -4,7 +4,7 @@ import type { NoCommands, StatefulMachine, StatefulSpec } from "#commands.ts"
 import { statefulExplore } from "#commands.ts"
 import type { Oracle } from "#explore.ts"
 import { keyOf, type Pending, pendingAt, type Reached } from "#features.ts"
-import type { Aimed, FiniteSpace, Gen, Space } from "#gen.ts"
+import type { Aimed, FiniteSpace, Gen, Space, Steered } from "#gen.ts"
 import type { Interleaved, InterleaveSpec } from "#interleave.ts"
 import { interleaveExplore } from "#interleave.ts"
 import type { ReplayCase } from "#replay.ts"
@@ -21,7 +21,7 @@ import type { SearchRun, Sense, Verdict } from "#runner/protocol.ts"
 import { exhaustSearch, exploreSearch, replay, type Searched } from "#runner/search.ts"
 import type { ModuleClosure, NeedFailed, WorkerIndex } from "#runner/services.ts"
 
-export type { Aimed, Case, FiniteSpace, Oracle, Space }
+export type { Aimed, Case, FiniteSpace, Oracle, Space, Steered }
 export { ModuleClosure, NeedFailed, WorkerIndex } from "#runner/services.ts"
 export type { Dictionary } from "#dictionary.ts"
 export type { CaseList } from "#gen.ts"
@@ -169,7 +169,7 @@ export type ExploreStated<S, F extends string, N extends Needs, E> = Stated<S, F
 
 /** A sampled search with its space, as a harness that builds one states it (interleave.ts, commands.ts). */
 export type ExploreSpec<S, F extends string, N extends Needs, E> = ExploreStated<S, F, N, E> &
-	Readonly<{ space: Space<S> | Aimed<S, F> }>
+	Readonly<{ space: Space<S> | Aimed<S, F> | Steered<S, F> }>
 
 /** What an exhaustion states beside its finite space: the box it proves the property inside, in words. */
 export type ExhaustSpec<S, F extends string, N extends Needs, E> = Stated<S, F, N, E> &
@@ -233,16 +233,26 @@ const keepingOf =
 		return { kind: "unfound", why: unsteered.why }
 	}
 
-/** The places among `situations` of those an aimed space aims at: none for a plain space. */
+/**
+ * The places among `situations` a kept value's case may be drawn steered toward: none for a plain space, those an aimed
+ * space aims at, and every one for a steered space, which may read any of them.
+ */
 const aimPlacesOf = <S, F extends string>(
-	space: Space<S> | Aimed<S, F>,
+	space: Space<S> | Aimed<S, F> | Steered<S, F>,
 	situations: ReadonlyArray<Reached<F>>
-): ReadonlyArray<number> =>
-	typeof space === "function"
-		? []
-		: Arr.flatMap(situations, (situation, place) =>
+): ReadonlyArray<number> => {
+	if (typeof space === "function") {
+		return []
+	}
+	switch (space.kind) {
+		case "aimed":
+			return Arr.flatMap(situations, (situation, place) =>
 				Arr.some(space.aims, ([aimed]) => keyOf(aimed) === keyOf(situation)) ? [place] : []
 			)
+		case "steered":
+			return Arr.map(situations, (_situation, place) => place)
+	}
+}
 
 /** What kind of search a property is, as the report names it. */
 export type PropertyKind = "explore" | "exhaust" | "batched" | "interleave" | "stateful"
@@ -322,19 +332,27 @@ const senseOf = (guide: Guide | undefined): Sense =>
 const printOf = <S>(show: Stated<S, string, Needs, unknown>["show"]): ((value: S) => string) =>
 	show ?? ((value) => Formatter.format(value))
 
-/** The space a case's steering selects: an aimed space's aim at the pending situation its turn aims at, or the space. */
+/**
+ * The space a case's steering selects: a plain space whatever it is; an aimed space's aim at the pending situation its
+ * turn aims at, or its space; a steered space read of the whole steering, the pending set its token records.
+ */
 const spaceUnderOf =
-	<S, F extends string>(space: Space<S> | Aimed<S, F>) =>
+	<S, F extends string>(space: Space<S> | Aimed<S, F> | Steered<S, F>) =>
 	(steering: Option.Option<Pending<F>>): Gen<S> => {
 		if (typeof space === "function") {
 			return space
 		}
-		return Option.match(
-			Option.flatMap(steering, (pending) =>
-				Arr.findFirst(space.aims, ([situation]) => pending.aimed(situation))
-			),
-			{ onNone: () => space.space, onSome: ([, aim]) => aim }
-		)
+		switch (space.kind) {
+			case "aimed":
+				return Option.match(
+					Option.flatMap(steering, (pending) =>
+						Arr.findFirst(space.aims, ([situation]) => pending.aimed(situation))
+					),
+					{ onNone: () => space.space, onSome: ([, aim]) => aim }
+				)
+			case "steered":
+				return space.under(steering)
+		}
 	}
 
 /** An explored property of `kind`: its cases one an evaluation, its search an exploration. */
@@ -393,7 +411,7 @@ const boundedBy = (
 export const property = {
 	/** A sampled search of `space`, steered toward its required situations. */
 	explore: <S, const F extends string, N extends Needs, E>(
-		space: Space<S> | Aimed<S, F>,
+		space: Space<S> | Aimed<S, F> | Steered<S, F>,
 		spec: ExploreStated<S, F, N, E>
 	): Property => exploredAs("explore")({ ...spec, space }),
 	/** Every case of a finite space: passing is a proof inside the box it names. */

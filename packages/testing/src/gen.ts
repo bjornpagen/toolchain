@@ -1,6 +1,6 @@
 import { Array as Arr, Option, Schema } from "effect"
 import { enumerated, firstBranch, nextBranch } from "#enumerate.ts"
-import type { Reached } from "#features.ts"
+import type { Pending, Reached } from "#features.ts"
 import { forcedChooser, type Generated, generate, recorder, type Source } from "#source.ts"
 import type { Tape } from "#tape.ts"
 
@@ -105,6 +105,7 @@ export const element = <const A>(values: ReadonlyArray<A> & Readonly<{ 0: A }>):
  * steering window aim at distinct pending requirements (features.ts Turns).
  */
 export type Aimed<A, F extends string> = Readonly<{
+	kind: "aimed"
 	space: Space<A>
 	aims: ReadonlyArray<readonly [Reached<F>, Space<A>]>
 }>
@@ -113,7 +114,24 @@ export type Aimed<A, F extends string> = Readonly<{
 export const aimed = <A, const F extends string>(
 	space: Space<A>,
 	aims: ReadonlyArray<readonly [Reached<F>, Space<A>]>
-): Aimed<A, F> => ({ space, aims })
+): Aimed<A, F> => ({ kind: "aimed", space, aims })
+
+/**
+ * A space read of its case's steering (features.ts Pending): none for a case of the rotating stream; for a case of the
+ * floor stream or the steered phase, every required situation still pending as its window began, its turn's aim among
+ * them. A suite whose case aims at whichever pending situation the state it draws offers (a program aiming each action
+ * at every pending feature) reads them all, where an Aimed space hands a case its turn's situation alone. A replay hands
+ * the space the pending set its token records, so a replayed case draws as its case did.
+ */
+export type Steered<A, F extends string> = Readonly<{
+	kind: "steered"
+	under: (steering: Option.Option<Pending<F>>) => Space<A>
+}>
+
+/** A space read of its case's steering: `under` the pending situations, or none for a case drawn unsteered. */
+export const steered = <A, const F extends string>(
+	under: (steering: Option.Option<Pending<F>>) => Space<A>
+): Steered<A, F> => ({ kind: "steered", under })
 
 /** A space declared finite, for an exhaustion: the runner counts it before any case runs. */
 export const finite = <A>(space: Space<A>): FiniteSpace<A> =>

@@ -1,5 +1,17 @@
 import { Array as Arr, Effect, Option, Order, type Scope } from "effect"
-import { aimed, array, constant, element, finite, type Gen, int, map } from "#gen.ts"
+import {
+	type Aimed,
+	aimed,
+	array,
+	constant,
+	element,
+	finite,
+	type Gen,
+	int,
+	map,
+	type Steered,
+	steered
+} from "#gen.ts"
 import {
 	type Case,
 	type Kept,
@@ -638,6 +650,88 @@ export const aimedSearch = (sketch: AimedSketch, kept: ReadonlyArray<Kept>): Pro
 		kills: [],
 		show: String
 	})
+
+/**
+ * What the steered-case oracle draws: an inner search's identity, how many situations it requires past its first (one
+ * to four), its run seed and the width it runs at.
+ */
+export type SteeredSketch = Readonly<{
+	label: string
+	situations: number
+	seed: number
+	width: number
+}>
+
+export const steeredSketches: Gen<SteeredSketch> = (source) => ({
+	label: source.draw(labels),
+	situations: source.draw(int(1, 4)),
+	seed: source.draw(seeds),
+	width: source.draw(widths)
+})
+
+/** The situations a steered-case inner search requires: "s0" and `more` after it. */
+export const steeredSituations = (more: number): Arr.NonEmptyReadonlyArray<string> => [
+	"s0",
+	...Array.from({ length: more }, (_, index) => `s${index + 1}`)
+]
+
+/** A value of the steered-case inner searches: the situations its case reaches, beside a draw of 0..9. */
+type Reaching = Readonly<{ reaches: ReadonlyArray<string>; value: number }>
+
+/** A draw of 0..9 whose case reaches `reaches`. */
+const reaching = (reaches: ReadonlyArray<string>): Gen<Reaching> =>
+	map(int(0, 9), (value) => ({ reaches, value }))
+
+/**
+ * The steered-case oracle's inner search over `space`, requiring `situations`: a case notes each situation its value
+ * reaches and fails once it reaches every one, printed as the situations it reached.
+ */
+const reachingSearch = (
+	situations: Arr.NonEmptyReadonlyArray<string>,
+	space: Aimed<Reaching, string> | Steered<Reaching, string>
+): Property =>
+	property.explore(space, {
+		needs: {},
+		situations,
+		check: (_resources, c) => (value) =>
+			Effect.gen(function* () {
+				c.noteAll(value.reaches)
+				if (value.reaches.length === situations.length) {
+					return yield* Effect.die("falsified")
+				}
+			}),
+		oracle: planted,
+		kept: [],
+		kills: [],
+		show: (value) => Arr.join(value.reaches, " ")
+	})
+
+/**
+ * The steered inner search: a case reaches every required situation its steering holds pending, none unsteered, so
+ * one steered case before any is reached reaches them all.
+ */
+export const steeredSearch = (situations: Arr.NonEmptyReadonlyArray<string>): Property =>
+	reachingSearch(
+		situations,
+		steered((steering) =>
+			reaching(
+				Option.match(steering, {
+					onNone: () => [],
+					onSome: (pending) => Arr.filter(situations, (situation) => pending.has(situation))
+				})
+			)
+		)
+	)
+
+/** The aimed inner search over the same situations: a case aimed at a situation reaches it alone. */
+export const aimedOneSearch = (situations: Arr.NonEmptyReadonlyArray<string>): Property =>
+	reachingSearch(
+		situations,
+		aimed(
+			reaching([]),
+			Arr.map(situations, (situation) => [situation, reaching([situation])] as const)
+		)
+	)
 
 /** How the replay oracle's inner property fails: on a seventh of its values; on a high draw of a case aimed at "rare";
  * or on a high draw from a case that reached "rare". */
