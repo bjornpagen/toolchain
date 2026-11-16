@@ -21,7 +21,8 @@ export default defineTestConfig({
 		"!src/sense.test.ts",
 		"!src/oxlint/rules.test.ts",
 		"!src/mutants.test.ts",
-		"!src/mutate.test.ts"
+		"!src/mutate.test.ts",
+		"!src/blocking.test.ts"
 	],
 	guided: [],
 	setup: [],

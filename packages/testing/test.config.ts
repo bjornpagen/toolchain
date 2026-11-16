@@ -25,6 +25,7 @@ export default defineRunner({
 		"src/agree.test.ts",
 		"src/fuzz.test.ts",
 		"src/sense.test.ts",
+		"src/blocking.test.ts",
 		"src/runner/search.test.ts",
 		"src/runner/case.test.ts",
 		"src/runner/steer.test.ts",

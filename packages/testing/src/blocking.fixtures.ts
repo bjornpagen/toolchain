@@ -1,3 +1,4 @@
+import * as NodeServices from "@effect/platform-node/NodeServices"
 import { regex } from "arkregex"
 import {
 	Array as Arr,
@@ -5,21 +6,30 @@ import {
 	Duration,
 	Effect,
 	Exit,
-	Formatter,
 	Option,
+	Stream,
 	String as Str
 } from "effect"
-import { exhaust, noDeadline, Run } from "#explore.ts"
-import { noCoverage } from "#features.ts"
-import { int } from "#gen.ts"
+import { ChildProcess } from "effect/process"
+import { element, finite, type Gen, int } from "#gen.ts"
 import { liveMillis } from "#live.ts"
+import type { CheckoutDir } from "#mutate/checkout.ts"
+import { type Property, property } from "#property.ts"
+import { HARDENED_FLAGS } from "#runner/config.ts"
+import { searchInline } from "#runner/inline.ts"
+import { runnerLimits } from "#runner/limits.ts"
+
+/**
+ * The watchdog's property (live.ts) runs planted searches in programs of their own, since a runaway ends its process:
+ * this module is that program when run, and the support of the property that runs it.
+ */
 
 /**
  * What a planted property does on its cases from its threshold up, below which it returns at once: hold the main thread
  * forever, in a loop or in a regular expression that backtracks without end; return at once; hold the thread for a
- * pause, past its hang limit and short of the watchdog's grace; or sleep, yielding, past its hang limit.
+ * pause, past its case deadline and short of the watchdog's grace; or sleep, yielding, past its case deadline.
  */
-export const BODIES = ["loop", "backtrack", "returns", "pauses", "sleeps"] as const
+const BODIES = ["loop", "backtrack", "returns", "pauses", "sleeps"] as const
 
 export type Body = (typeof BODIES)[number]
 
@@ -37,23 +47,38 @@ export const runsAway = (body: Body): boolean => {
 }
 
 /**
- * A planted search, as its program takes it: the body, the least value it acts on, the case's hang limit, how long a
- * pause holds the thread, and the search's deadline, in milliseconds after the search began, or none.
+ * A planted search, as its program takes it: the body, the least value it acts on, its cases' deadline, and how long a
+ * pause holds the thread.
  */
 export type Planted = Readonly<{
 	body: Body
 	threshold: number
-	hangMillis: number
+	deadlineMillis: number
 	pauseMillis: number
-	deadlineMillis: Option.Option<number>
 }>
 
 /** The values a planted search enumerates: 0 to 9, in that order, so its first case at its threshold is the threshold. */
 export const values = int(0, 9)
 
-/** The suite of a planted search. */
-export const suiteOf = (planted: Planted): string =>
+/** The identity of a planted search. */
+export const idOf = (planted: Planted): string =>
 	`a planted ${planted.body} from ${planted.threshold}`
+
+/**
+ * A planted search of `body`: a threshold, a short case deadline, and a pause past it by far less than the watchdog's
+ * grace. A pause holds the thread on every case from the threshold up, so it is kept short.
+ */
+const plantedOf =
+	(body: Body): Gen<Planted> =>
+	(source) => {
+		const deadlineMillis = source.draw(int(20, 100))
+		return {
+			body,
+			threshold: source.draw(int(0, 9)),
+			deadlineMillis,
+			pauseMillis: deadlineMillis + source.draw(int(1, 100))
+		}
+	}
 
 /** A regular expression that backtracks without end on a run of a's that ends in another letter. */
 const BACKTRACKS = regex("^(a+)+$")
@@ -82,7 +107,7 @@ const hold = (body: "loop" | "backtrack" | "pauses", pauseMillis: number): void 
 }
 
 /** What the planted property does on a case of `value`. */
-const property =
+const bodyOf =
 	(planted: Planted) =>
 	(value: number): Effect.Effect<void> => {
 		if (value < planted.threshold) {
@@ -92,7 +117,7 @@ const property =
 			case "returns":
 				return Effect.void
 			case "sleeps":
-				return Effect.sleep(Duration.millis(planted.hangMillis * 4))
+				return Effect.sleep(Duration.millis(planted.deadlineMillis * 4))
 			case "loop":
 			case "backtrack":
 			case "pauses": {
@@ -102,58 +127,55 @@ const property =
 		}
 	}
 
+/** A planted search: an exhaustion of 0..9 whose property does what its body says from its threshold up. */
+const plantedSearch = (planted: Planted): Property =>
+	property.exhaust(finite(values), {
+		box: "every value from 0 to 9",
+		needs: {},
+		situations: [],
+		check: () => bodyOf(planted),
+		oracle: { kind: "specification", name: "a property planted to hold its process's main thread" },
+		kept: [],
+		kills: []
+	})
+
 /**
- * The program this module is when run: it prints the moment its search begins, exhausts the planted search under the
- * given run seed, and prints how the search ended. A runaway ends the process instead, by its watchdog, which prints its
- * report.
+ * How a planted search of a settling body ends in this process: its verdict, or the kind of its failure. A settling body
+ * yields or ends, so it runs beside the case that runs it, where a runaway would end the process.
+ */
+export const settledHere = (planted: Planted, seed: number) =>
+	Effect.map(
+		searchInline(plantedSearch(planted), {
+			id: idOf(planted),
+			seed,
+			reach: "full",
+			limits: { ...runnerLimits, deadline: planted.deadlineMillis }
+		}),
+		(verdict) => (verdict.kind === "failed" ? verdict.finding.kind : verdict.kind)
+	)
+
+/**
+ * The program this module is when run: it prints the moment its search begins, exhausts the planted search inline under
+ * its case deadline and the given run seed, and prints how the search ended. A runaway ends the process instead, by its
+ * watchdog, which prints its report.
  */
 const searchedAsProgram = (planted: Planted, seed: number) =>
 	Effect.runPromise(
-		Effect.gen(function* () {
-			const began = yield* liveMillis
-			yield* Console.log(`began: ${began}`)
-			const exit = yield* Effect.exit(
-				exhaust(
-					{
-						suite: suiteOf(planted),
-						oracle: {
-							kind: "specification",
-							name: "a property planted to hold its process's main thread"
-						},
-						box: "every value from 0 to 9",
-						generator: values,
-						literal: Formatter.format,
-						coverage: noCoverage,
-						caseHang: Duration.millis(planted.hangMillis)
-					},
-					property(planted)
-				).pipe(
-					Effect.provideService(
-						Run,
-						Run.of({
-							seed,
-							source: "environment",
-							replay: Option.none(),
-							fuzz: Option.none(),
-							deadline: Option.match(planted.deadlineMillis, {
-								onNone: () => noDeadline,
-								onSome: (millis) => ({ kind: "at", millis: began + millis })
-							})
-						})
-					)
+		Effect.scoped(
+			Effect.gen(function* () {
+				const began = yield* liveMillis
+				yield* Console.log(`began: ${began}`)
+				const verdict = yield* searchInline(plantedSearch(planted), {
+					id: idOf(planted),
+					seed,
+					reach: "full",
+					limits: { ...runnerLimits, deadline: planted.deadlineMillis }
+				})
+				yield* Console.log(
+					`ended: ${verdict.kind === "failed" ? verdict.finding.kind : verdict.kind}`
 				)
-			)
-			yield* Console.log(
-				`ended: ${
-					Exit.isSuccess(exit)
-						? exit.value.kind
-						: Option.getOrElse(
-								Option.map(Exit.findErrorOption(exit), (failure) => failure._tag),
-								() => "died"
-							)
-				}`
-			)
-		})
+			})
+		).pipe(Effect.provide(NodeServices.layer))
 	)
 
 /** A whole number written in decimal, or none. */
@@ -163,42 +185,97 @@ const wholeOf = (text: string | undefined): Option.Option<number> =>
 		(written) => written !== "" && Number.isSafeInteger(Number(written))
 	).pipe(Option.map(Number))
 
-/** The planted search and the seed a command line names, read strictly: `<body> <threshold> <hang> <pause> <deadline|none> <seed>`. */
-const plantedOf = (args: ReadonlyArray<string>): Option.Option<readonly [Planted, number]> => {
-	const [bodyText, threshold, hang, pause, deadline, seed] = args
-	const body = Arr.findFirst(BODIES, (known) => known === bodyText)
-	const deadlineMillis =
-		deadline === "none"
-			? Option.some(Option.none<number>())
-			: Option.map(wholeOf(deadline), Option.some)
+/** The planted search and the seed a command line names, read strictly: `<body> <threshold> <deadline> <pause> <seed>`. */
+const commandOf = (args: ReadonlyArray<string>): Option.Option<readonly [Planted, number]> => {
+	const [bodyText, threshold, deadline, pause, seed] = args
 	return Option.all([
-		body,
+		Arr.findFirst(BODIES, (known) => known === bodyText),
 		wholeOf(threshold),
-		wholeOf(hang),
+		wholeOf(deadline),
 		wholeOf(pause),
-		deadlineMillis,
 		wholeOf(seed)
 	]).pipe(
-		Option.map(([drawnBody, drawnThreshold, hangMillis, pauseMillis, drawnDeadline, drawnSeed]) => [
-			{
-				body: drawnBody,
-				threshold: drawnThreshold,
-				hangMillis,
-				pauseMillis,
-				deadlineMillis: drawnDeadline
-			},
+		Option.map(([body, drawnThreshold, deadlineMillis, pauseMillis, drawnSeed]) => [
+			{ body, threshold: drawnThreshold, deadlineMillis, pauseMillis },
 			drawnSeed
 		])
 	)
 }
 
+/** This module, the program a planted search runs in, from the package's directory in the checkout. */
+export const programIn = (checkout: CheckoutDir): string => `${checkout}/src/blocking.fixtures.ts`
+
+/** The replay token of the watchdog's report, on the report's replay line. */
+const REPLAY_LINE = regex(
+	"held its worker's event loop past its deadline(?:.*\n)*?replay: toolchain-test replay '(?<token>[^']*)'"
+)
+
+/** The line the program prints when its search ends: how it ended. */
+const ENDED_LINE = regex("^ended: (?<ending>\\S+)$", "m")
+
+/** The line the program prints as its search begins: the moment, in milliseconds since the epoch. */
+const BEGAN_LINE = regex("^began: (?<moment>\\d+)$", "m")
+
+/**
+ * A planted program's run under a seed, from the program at `program`, to its end: what it printed, its exit code, and
+ * when it ended.
+ */
+export const programRun = (program: string, planted: Planted, seed: number) =>
+	Effect.scoped(
+		Effect.gen(function* () {
+			const handle = yield* ChildProcess.make(
+				process.execPath,
+				[
+					...HARDENED_FLAGS,
+					program,
+					planted.body,
+					String(planted.threshold),
+					String(planted.deadlineMillis),
+					String(planted.pauseMillis),
+					String(seed)
+				],
+				{ stdin: "ignore" }
+			)
+			const [stdout, stderr, exit] = yield* Effect.all(
+				[
+					Stream.mkString(Stream.decodeText(handle.stdout)),
+					Stream.mkString(Stream.decodeText(handle.stderr)),
+					Effect.exit(handle.exitCode)
+				],
+				{ concurrency: "unbounded" }
+			)
+			const ended = yield* liveMillis
+			return {
+				began: Option.map(Option.fromNullishOr(BEGAN_LINE.exec(stdout)?.groups.moment), Number),
+				ended,
+				ending: Option.fromNullishOr(ENDED_LINE.exec(stdout)?.groups.ending),
+				replay: Option.fromNullishOr(REPLAY_LINE.exec(stderr)?.groups.token),
+				exitCode: Exit.isSuccess(exit) ? Option.some(Number(exit.value)) : Option.none()
+			}
+		})
+	)
+
+/** How a well-behaved planted search ends in its program: its verdict, or none for a runaway, whose process is ended. */
+export const endingOf = (planted: Planted): Option.Option<string> => {
+	switch (planted.body) {
+		case "returns":
+		case "pauses":
+			return Option.some("exhausted")
+		case "sleeps":
+			return Option.some("hung")
+		case "loop":
+		case "backtrack":
+			return Option.none()
+	}
+}
+
 if (import.meta.main) {
-	await Option.match(plantedOf(process.argv.slice(2)), {
+	await Option.match(commandOf(process.argv.slice(2)), {
 		onNone: () =>
 			Effect.runPromise(
 				Effect.andThen(
 					Console.error(
-						"usage: node blocking.fixtures.ts <loop|backtrack|returns|pauses|sleeps> <threshold> <hang ms> <pause ms> <deadline ms|none> <seed>"
+						"usage: node blocking.fixtures.ts <loop|backtrack|returns|pauses|sleeps> <threshold> <deadline ms> <pause ms> <seed>"
 					),
 					Effect.sync(() => {
 						process.exitCode = 2
@@ -208,3 +285,33 @@ if (import.meta.main) {
 		onSome: ([planted, seed]) => searchedAsProgram(planted, seed)
 	})
 }
+
+/** A planted search's case and the run seed its program searches under. */
+export type PlantedRun = Readonly<{ planted: Planted; seed: number }>
+
+/** A planted search of `body`, under a drawn run seed. */
+const runOf =
+	(body: Body): Gen<PlantedRun> =>
+	(source) => ({ planted: source.draw(plantedOf(body)), seed: source.draw(int(0, 2 ** 32 - 1)) })
+
+/** A body that yields or ends: returns, pauses or sleeps. */
+const settling: Gen<Body> = (source) =>
+	source.draw(element(["returns", "pauses", "sleeps"] as const))
+
+/** Planted searches whose bodies end by the guard's verdict: what a case draws unless an aim draws a runaway. */
+export const settlingRuns: Gen<PlantedRun> = (source) => source.draw(runOf(source.draw(settling)))
+
+/** The situation of each body. */
+export type BodySituation = `a body that ${Body}`
+
+/** Each body's situation, aimed at by a planted search of that body. */
+export const bodyAims: ReadonlyArray<readonly [BodySituation, Gen<PlantedRun>]> = Arr.map(
+	BODIES,
+	(body) => [`a body that ${body}`, runOf(body)] as const
+)
+
+/** Every body's situation. */
+export const BODY_SITUATIONS: ReadonlyArray<BodySituation> = Arr.map(
+	bodyAims,
+	([situation]) => situation
+)
