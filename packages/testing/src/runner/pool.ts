@@ -12,12 +12,14 @@ import {
 	String as Str
 } from "effect"
 import { HUNG_CLEANUP_GRACE, WATCHDOG_GRACE_MILLIS } from "#live.ts"
+import { withLateUses } from "#runner/case.ts"
 import {
 	type Batch,
 	type CaseResult,
 	type Evaluator,
 	FromWorker,
 	lostResult,
+	type Printed,
 	type ToWorker
 } from "#runner/protocol.ts"
 
@@ -114,6 +116,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 		const queue: Array<Unit> = []
 		const workers: Array<Worker> = []
 		const counts: Array<number> = Array.from({ length: spec.workers }, () => 0)
+		const lateUses = new Map<number, Map<number, Printed>>()
 		const broken = new Set<number>()
 		const started = yield* Deferred.make<void, PoolFailed>()
 		let unitIds = 0
@@ -354,6 +357,12 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 								feed(worker)
 								return
 							}
+							case "misused": {
+								const marks = lateUses.get(received.unit) ?? new Map<number, Printed>()
+								marks.set(received.at, received.printed)
+								lateUses.set(received.unit, marks)
+								return
+							}
 							case "revoked": {
 								const revoked = new Set(received.units)
 								const given = Arr.filter(worker.sent, (unit) => revoked.has(unit.id))
@@ -414,6 +423,20 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 					const units = Arr.map(batches, enqueue)
 					feedAll()
 					const results: Array<ReadonlyArray<CaseResult>> = []
+					const judged = () => {
+						const marked = withLateUses(
+							results,
+							(batchAt, at) =>
+								Option.flatMap(Arr.get(units, batchAt), (unit) =>
+									Option.fromUndefinedOr(lateUses.get(unit.id)?.get(at))
+								),
+							stop
+						)
+						for (const unit of units) {
+							lateUses.delete(unit.id)
+						}
+						return marked
+					}
 					for (const [at, unit] of units.entries()) {
 						const done = yield* Deferred.await(unit.done)
 						results.push(done)
@@ -426,9 +449,9 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 						for (const queued of kept) {
 							queue.push(queued)
 						}
-						return results
+						return judged()
 					}
-					return results
+					return judged()
 				}),
 			width: Effect.sync(() => Math.max(1, Arr.filter(workers, idle).length - queue.length))
 		}

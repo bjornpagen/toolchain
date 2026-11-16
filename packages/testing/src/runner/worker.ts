@@ -1,6 +1,6 @@
 import { NodeRuntime, NodeServices } from "@effect/platform-node"
 import { Array as Arr, Context, Effect, Latch, Option, Queue, Schema, Scope } from "effect"
-import { NeedCache, needCacheOf } from "#runner/case.ts"
+import { LateUses, NeedCache, needCacheOf, Stopped, stoppedOf } from "#runner/case.ts"
 import { configOf, propertyAt } from "#runner/load.ts"
 import { Perception, perceptionOf } from "#runner/perceive.ts"
 import { type Batch, FromWorker, lostResult, ToWorker } from "#runner/protocol.ts"
@@ -30,11 +30,13 @@ const Arguments = Schema.Tuple([
 	Schema.Literals(["notes", "blocks"])
 ])
 
+/** Sends a message to the parent over the IPC channel the worker was forked with, now. */
+const sendNow = (message: FromWorker): void => {
+	process.send?.(message)
+}
+
 /** Sends a message to the parent over the IPC channel the worker was forked with. */
-const send = (message: FromWorker): Effect.Effect<void> =>
-	Effect.sync(() => {
-		process.send?.(message)
-	})
+const send = (message: FromWorker): Effect.Effect<void> => Effect.sync(() => sendNow(message))
 
 const main = Effect.gen(function* () {
 	const [root, index, workers, guide] = yield* Schema.decodeUnknownEffect(Arguments)(
@@ -57,6 +59,7 @@ const main = Effect.gen(function* () {
 		)
 	)
 	const cache = needCacheOf(services)
+	const stopped = stoppedOf()
 	const perception = yield* perceptionOf
 	const pending: Array<Unit> = []
 	const work = Latch.makeUnsafe(false)
@@ -111,13 +114,20 @@ const main = Effect.gen(function* () {
 					}),
 				onSuccess: (property) =>
 					Effect.flatMap(
-						property
-							.evaluate(unit.batch)
-							.pipe(
-								Effect.provideService(NeedCache, cache),
-								Effect.provideService(Perception, perception),
-								Effect.provideContext(platform)
-							),
+						property.evaluate(unit.batch).pipe(
+							Effect.provideService(NeedCache, cache),
+							Effect.provideService(Perception, perception),
+							Effect.provideService(Stopped, stopped),
+							Effect.provideService(LateUses, {
+								report: (order, printed) => {
+									Option.map(
+										Arr.findFirstIndex(unit.batch, (sent) => sent === order),
+										(at) => sendNow({ kind: "misused", unit: unit.unit, at, printed })
+									)
+								}
+							}),
+							Effect.provideContext(platform)
+						),
 						(results) => send({ kind: "done", unit: unit.unit, results })
 					)
 			})
@@ -131,6 +141,7 @@ const main = Effect.gen(function* () {
 				yield* work.await
 				continue
 			}
+			yield* stopped.drained
 			yield* evaluate(next)
 		}
 	})

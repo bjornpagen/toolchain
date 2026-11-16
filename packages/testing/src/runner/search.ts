@@ -474,7 +474,8 @@ const randomOf = (stream: Stream, index: number): ChooserSpec => ({
  * so width changes how fast a search runs and never what it finds. A failing case is shrunk by editing its tape,
  * property draws included, under the steering it was drawn under. The coverage verdict is judged on the witnesses
  * alone, before the rotating stream runs, so it is the same on every run seed. The residual comes from the rotating
- * stream's independent cases alone.
+ * stream's independent cases alone. A batched property's window holds one batch at least, so a batch is never cut
+ * short by its window.
  */
 export const exploreSearch =
 	(searched: Searched, group: number) =>
@@ -486,6 +487,7 @@ export const exploreSearch =
 			}
 			const { situations } = searched
 			const { limits } = run
+			const window = Math.max(limits.window, group)
 			const required = Arr.isReadonlyArrayNonEmpty(situations)
 			const keep = required ? "tape" : "nothing"
 			const floor = floorSeed(run.id)
@@ -498,8 +500,8 @@ export const exploreSearch =
 			let cases = 0
 
 			const floorTurns = turnsOf()
-			for (let start = 0; start < limits.floor; start += limits.window) {
-				const indices = indicesOf(start, limits.window, limits.floor)
+			for (let start = 0; start < limits.floor; start += window) {
+				const indices = indicesOf(start, window, limits.floor)
 				const turnAt = floorTurns.window(
 					pendingOf(situations, [floorTally.tally()]),
 					indices.length
@@ -538,9 +540,9 @@ export const exploreSearch =
 					Arr.isReadonlyArrayNonEmpty(
 						unreachedOf(situations, [floorTally.tally(), steeredTally.tally()])
 					);
-					start += limits.window
+					start += window
 				) {
-					const indices = indicesOf(start, limits.window, limits.steered)
+					const indices = indicesOf(start, window, limits.steered)
 					const tallies = [floorTally.tally(), steeredTally.tally()]
 					const turnAt = turns.window(pendingOf(situations, tallies), indices.length)
 					const pick = seeds.picker(tallies)
@@ -603,8 +605,8 @@ export const exploreSearch =
 
 			if (run.reach === "full") {
 				const rotating = rotatingSeed(run.seed, floor)
-				for (let start = 0; start < limits.runs; start += limits.window) {
-					const draws = Arr.map(indicesOf(start, limits.window, limits.runs), (index): Draw => ({
+				for (let start = 0; start < limits.runs; start += window) {
+					const draws = Arr.map(indicesOf(start, window, limits.runs), (index): Draw => ({
 						chooser: randomOf(rotating, index),
 						drawn: { kind: "unsteered" }
 					}))

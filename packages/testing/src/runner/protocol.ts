@@ -205,9 +205,9 @@ export const lostResult = (report: string): CaseResult => ({
 })
 
 /**
- * Where a search's cases evaluate. `evaluate` runs batches and gives back each batch's results in order; once a
- * result `stop` holds of has come back, no batch after its own starts, and the results end with the first such batch
- * in order: a window whose case failed, a shrink whose candidate failed. `width` is how many batches could start at
+ * Where a search's cases evaluate. `evaluate` runs batches and gives back each batch's results in order, ending with the
+ * first batch in order that holds a result `stop` holds of (a window whose case failed, a shrink whose candidate
+ * failed); the batches after it that have not started are dropped, and those that have run to their end unread. `width` is how many batches could start at
  * once now, at least one, what a shrink speculates over. Two exist: the pool (a worker a core) and inline (this
  * process, one batch at a time), and a search finds the same on either.
  */
@@ -312,9 +312,9 @@ export const ToWorker = Schema.Union([
 export type ToWorker = typeof ToWorker.Type
 
 /**
- * A message from a worker to the parent: it is ready (its services built); it started a unit; it finished one, with
- * each order's result; it gave back these units, of those the parent revoked, none of which it had started; or it
- * cannot start, and why.
+ * A message from a worker to the parent: it is ready; it started a unit; it finished one, with each order's result; it
+ * gave back these units, of those the parent revoked, none of which it had started; a case (a unit's `at`-th order) was
+ * used after it ended, printed as it ran; or it cannot start, and why.
  */
 export const FromWorker = Schema.Union([
 	Schema.Struct({ kind: Schema.Literal("ready") }),
@@ -325,6 +325,12 @@ export const FromWorker = Schema.Union([
 		results: Schema.Array(CaseResult)
 	}),
 	Schema.Struct({ kind: Schema.Literal("revoked"), units: Schema.Array(Schema.Finite) }),
+	Schema.Struct({
+		kind: Schema.Literal("misused"),
+		unit: Schema.Finite,
+		at: Schema.Finite,
+		printed: Printed
+	}),
 	Schema.Struct({ kind: Schema.Literal("failed"), message: Schema.String })
 ])
 

@@ -1,9 +1,17 @@
-import { Array as Arr, Context, Effect, type Scope } from "effect"
+import { Array as Arr, Context, Effect, Option, type Scope } from "effect"
 import type { NeedContext, Property } from "#property.ts"
-import { NeedCache, needCacheOf } from "#runner/case.ts"
+import { LateUses, NeedCache, needCacheOf, Stopped, stoppedOf, withLateUses } from "#runner/case.ts"
 import { type Limits, runnerLimits } from "#runner/limits.ts"
 import { Perception, perceptionOf } from "#runner/perceive.ts"
-import type { Batch, CaseResult, Evaluator, Reach, Verdict } from "#runner/protocol.ts"
+import type {
+	Batch,
+	CaseOrder,
+	CaseResult,
+	Evaluator,
+	Printed,
+	Reach,
+	Verdict
+} from "#runner/protocol.ts"
 import { WorkerIndex } from "#runner/services.ts"
 
 /** What a search run in this process needs from its caller: every need's context but the worker index, which is 0. */
@@ -22,26 +30,43 @@ export const inlineEvaluator = (
 		const context = Context.add(caller, WorkerIndex, { index: 0, workers: 1 })
 		const perception = yield* perceptionOf
 		const cache = needCacheOf(Effect.succeed(context))
+		const lateUses = new Map<CaseOrder, Printed>()
+		const stopped = stoppedOf()
 		const evaluateOne = (batch: Batch) =>
-			property
-				.evaluate(batch)
-				.pipe(
-					Effect.provideService(NeedCache, cache),
-					Effect.provideService(Perception, perception),
-					Effect.provideContext(context)
-				)
+			property.evaluate(batch).pipe(
+				Effect.provideService(NeedCache, cache),
+				Effect.provideService(Perception, perception),
+				Effect.provideService(Stopped, stopped),
+				Effect.provideService(LateUses, {
+					report: (order, printed) => {
+						lateUses.set(order, printed)
+					}
+				}),
+				Effect.provideContext(context)
+			)
 		const evaluator: Evaluator = {
 			evaluate: (batches, stop) =>
 				Effect.gen(function* () {
 					const results: Array<ReadonlyArray<CaseResult>> = []
+					const judged = () =>
+						withLateUses(
+							results,
+							(batchAt, at) =>
+								Option.flatMap(
+									Option.flatMap(Arr.get(batches, batchAt), (batch) => Arr.get(batch, at)),
+									(order) => Option.fromUndefinedOr(lateUses.get(order))
+								),
+							stop
+						)
 					for (const batch of batches) {
 						const evaluated = yield* evaluateOne(batch)
+						yield* stopped.drained
 						results.push(evaluated)
 						if (Arr.some(evaluated, stop)) {
-							return results
+							return judged()
 						}
 					}
-					return results
+					return judged()
 				}),
 			width: Effect.succeed(1)
 		}

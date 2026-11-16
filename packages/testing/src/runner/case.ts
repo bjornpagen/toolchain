@@ -102,7 +102,7 @@ export const needCacheOf = (
 }
 
 /** What an evaluating process provides every case: its opened needs, its perception and the platform. */
-export type CaseEnv = NeedCache | Perception | NodeServices
+export type CaseEnv = NeedCache | Perception | LateUses | Stopped | NodeServices
 
 /** One case's taker of a need, as `Struct.map` maps a property's needs. */
 interface Taking extends Struct.Lambda {
@@ -162,31 +162,35 @@ const steeringOf = <F extends string>(
 	}
 }
 
-/** What closing a case's handle leaves: its notes, its measures, what its property drew, and whether it was used
- * after it ended. */
+/** What closing a case's handle leaves: its notes, its measures, and what its property drew. */
 type Closed = Readonly<{
 	notes: ReadonlyArray<string>
 	measures: ReadonlyArray<readonly [string, number]>
 	drew: ReadonlyArray<unknown>
-	misused: boolean
 }>
 
 /** A case's handle, and its closing. */
 type Handle<F extends string> = Readonly<{ c: Case<F>; close: () => Closed }>
 
-/** The handle of a case drawing on `recorded`: open until closed, a misuse after. */
-const handleOf = <F extends string>(recorded: Recording): Handle<F> => {
+/**
+ * The handle of a case drawing on `recorded`: open until closed. A use after it closed (a note, a draw, an observation
+ * or a measure) touches nothing of the case, whose result may have left the process, and is reported as a late use
+ * (`lateUse`, with what the property had drawn), which marks the case misused wherever its result is judged.
+ */
+const handleOf = <F extends string>(
+	recorded: Recording,
+	lateUse: (drew: ReadonlyArray<unknown>) => void
+): Handle<F> => {
 	const notes = new Set<string>()
 	const measures = new Map<string, number>()
 	const drew: Array<unknown> = []
 	let open = true
-	let misused = false
 	const whileOpen = (use: () => void) => {
 		if (open) {
 			use()
 			return
 		}
-		misused = true
+		lateUse(drew)
 	}
 	const record = (key: string) => whileOpen(() => notes.add(key))
 	return {
@@ -200,7 +204,7 @@ const handleOf = <F extends string>(recorded: Recording): Handle<F> => {
 			pair: (first, second) => record(keyOf<F>([first, second])),
 			draw: (inner) => {
 				if (!open) {
-					misused = true
+					lateUse(drew)
 					return inner(recording(simplestChooser).source)
 				}
 				const value = inner(recorded.source)
@@ -209,7 +213,7 @@ const handleOf = <F extends string>(recorded: Recording): Handle<F> => {
 			},
 			observe: (decided) => {
 				if (!open) {
-					misused = true
+					lateUse(drew)
 					return "as-recorded"
 				}
 				return recorded.source.observe(fnv1a32(decided))
@@ -224,11 +228,46 @@ const handleOf = <F extends string>(recorded: Recording): Handle<F> => {
 			return {
 				notes: Arr.fromIterable(notes),
 				measures: Arr.fromIterable(measures.entries()),
-				drew,
-				misused
+				drew
 			}
 		}
 	}
+}
+
+/**
+ * Where a process reports a case its property used after the case ended: the case's order and how it prints. The
+ * worker sends it to the parent (a `misused` message), the inline evaluator keeps it, and either marks the case's
+ * result misused before its window is judged.
+ */
+export class LateUses extends Context.Service<
+	LateUses,
+	Readonly<{ report: (order: CaseOrder, printed: Printed) => void }>
+>()("@bjornpagen/testing/runner/case/LateUses") {}
+
+/**
+ * Results with every late use reported so far marked: a passing case another fiber used after it ended is misused,
+ * printed as it ran; then cut after the first batch in order that holds a result `stop` holds of.
+ */
+export const withLateUses = (
+	results: ReadonlyArray<ReadonlyArray<CaseResult>>,
+	lateAt: (batch: number, at: number) => Option.Option<Printed>,
+	stop: (result: CaseResult) => boolean
+): ReadonlyArray<ReadonlyArray<CaseResult>> => {
+	const marked = Arr.map(results, (batch, batchAt) =>
+		Arr.map(batch, (result, at): CaseResult =>
+			Option.match(lateAt(batchAt, at), {
+				onNone: () => result,
+				onSome: (printed) =>
+					result.outcome.kind === "passed"
+						? { ...result, outcome: { kind: "misused", printed } }
+						: result
+			})
+		)
+	)
+	return Option.match(
+		Arr.findFirstIndex(marked, (batch) => Arr.some(batch, stop)),
+		{ onNone: () => marked, onSome: (first) => Arr.take(marked, first + 1) }
+	)
 }
 
 /** A value as the report prints it; a show or a value whose printing throws is stated as unprintable. */
@@ -265,17 +304,49 @@ const settledOf = <E>(exit: Exit.Exit<Exit.Exit<void, E>>): Settled => {
 }
 
 /**
+ * The cases a process stopped as hung whose cleanup outran HUNG_CLEANUP_GRACE (live.ts): `keep` holds such a case's
+ * fiber, and `drained` waits until every fiber held has ended. A worker drains them before it starts its next unit,
+ * and the inline evaluator after each batch, so no stopped case's cleanup runs beside a later case or outlives the
+ * evaluation that stopped it.
+ */
+export class Stopped extends Context.Service<
+	Stopped,
+	Readonly<{
+		keep: (fiber: Fiber.Fiber<unknown, unknown>) => void
+		drained: Effect.Effect<void>
+	}>
+>()("@bjornpagen/testing/runner/case/Stopped") {}
+
+/** A process's stopped cases, none held yet. */
+export const stoppedOf = (): Context.Service.Shape<typeof Stopped> => {
+	const held = new Set<Fiber.Fiber<unknown, unknown>>()
+	return {
+		keep: (fiber) => {
+			held.add(fiber)
+		},
+		drained: Effect.suspend(() => {
+			const waiting = Arr.fromIterable(held)
+			held.clear()
+			return Effect.forEach(waiting, (fiber) => Fiber.await(fiber), { discard: true })
+		})
+	}
+}
+
+/**
  * Runs `effect` in a fiber of its own, raced against `deadline` milliseconds on the live clock: an effect that runs to
  * its end synchronously arms no timer. A hung effect is interrupted, and its cleanup awaited for HUNG_CLEANUP_GRACE
- * (live.ts) before the case is reported. From the fork until the race, the evaluation is uninterruptible, so an
- * interruption that arrives in between reaches the race and stops the fiber rather than leaving it running detached.
+ * (live.ts) before the case is reported; a cleanup that runs longer is held among the process's stopped cases
+ * (Stopped), which the process drains before its next unit. From the fork until the race, the evaluation is
+ * uninterruptible, so an interruption that arrives in between reaches the race and stops the fiber rather than leaving
+ * it running detached.
  */
 const guarded = <E, R>(
 	effect: Effect.Effect<void, E, R>,
 	deadline: number
-): Effect.Effect<Settled, never, R> =>
+): Effect.Effect<Settled, never, R | Stopped> =>
 	Effect.uninterruptibleMask((restore) =>
 		Effect.gen(function* () {
+			const stopped = yield* Stopped
 			const running = yield* Effect.forkDetach(Effect.exit(effect), { startImmediately: true })
 			const ranThrough = running.pollUnsafe()
 			if (ranThrough !== undefined) {
@@ -286,10 +357,20 @@ const guarded = <E, R>(
 					Effect.map(Fiber.await(running), settledOf),
 					Effect.as(liveSleep(Duration.millis(deadline)), { kind: "hung" } satisfies Settled)
 				)
-			).pipe(Effect.onInterrupt(() => abandon(running)))
+			).pipe(
+				Effect.onInterrupt(() =>
+					Effect.andThen(
+						abandon(running),
+						Effect.sync(() => stopped.keep(running))
+					)
+				)
+			)
 			if (ended.kind === "hung") {
 				yield* abandon(running)
 				yield* awaitWithinGrace(running)
+				if (running.pollUnsafe() === undefined) {
+					stopped.keep(running)
+				}
 			}
 			return ended
 		})
@@ -303,19 +384,15 @@ const outcomeOf = (
 	settled: Settled,
 	order: CaseOrder,
 	recorded: Recording,
-	printed: Printed,
-	misused: boolean
+	printed: Printed
 ): CaseOutcome => {
 	switch (settled.kind) {
 		case "passed":
-			return misused
-				? { kind: "misused", printed }
-				: {
-						kind: "passed",
-						kept:
-							order.keep === "tape" ? { kind: "tape", tape: recorded.tape() } : { kind: "nothing" },
-						shown: order.print === "always" ? { kind: "shown", printed } : { kind: "unshown" }
-					}
+			return {
+				kind: "passed",
+				kept: order.keep === "tape" ? { kind: "tape", tape: recorded.tape() } : { kind: "nothing" },
+				shown: order.print === "always" ? { kind: "shown", printed } : { kind: "unshown" }
+			}
 		case "failed":
 			return { kind: "failed", failure: failureText(settled.cause), tape: recorded.tape(), printed }
 		case "hung":
@@ -361,9 +438,13 @@ type Slot<S, F extends string> =
 	| Readonly<{ kind: "drawn"; drawn: DrawnCase<S, F> }>
 	| Readonly<{ kind: "undrawn"; recorded: Recording; ran: Ran }>
 
-/** Draws one case from its order, the `at`-th of its evaluation's drawn cases should it draw. */
+/**
+ * Draws one case from its order, the `at`-th of its evaluation's drawn cases should it draw; a use of its handle after
+ * it ends is reported to `lateUses`.
+ */
 const slotOf = <S, F extends string>(
 	drawing: Drawing<S, F>,
+	lateUses: Context.Service.Shape<typeof LateUses>,
 	order: CaseOrder,
 	at: number
 ): Slot<S, F> => {
@@ -395,7 +476,9 @@ const slotOf = <S, F extends string>(
 			order,
 			recorded,
 			value: drawn.success,
-			handle: handleOf<F>(recorded),
+			handle: handleOf<F>(recorded, (drew) =>
+				lateUses.report(order, printedOf(drawing.print, drawn.success, drew))
+			),
 			sketchDecisions: recorded.decided(),
 			at
 		}
@@ -419,8 +502,7 @@ const ranOf = <S, F extends string>(
 			settled,
 			drawn.order,
 			drawn.recorded,
-			printedOf(drawing.print, drawn.value, closed.drew),
-			closed.misused
+			printedOf(drawing.print, drawn.value, closed.drew)
 		)
 	}
 }
@@ -483,7 +565,8 @@ export const evaluateCase =
 	(order: CaseOrder): Effect.Effect<CaseResult, never, CaseEnv> =>
 		Effect.gen(function* () {
 			const began = yield* liveNanos
-			const slot = slotOf(drawing, order, 0)
+			const lateUses = yield* LateUses
+			const slot = slotOf(drawing, lateUses, order, 0)
 			const ran = yield* watchedCase(
 				{ caseHang: Duration.millis(order.deadline), cut: Option.none() },
 				blockedReport([slot], drawing.print),
@@ -540,8 +623,9 @@ export const evaluateBatch =
 	): Effect.Effect<ReadonlyArray<CaseResult>, never, CaseEnv> =>
 		Effect.gen(function* () {
 			const began = yield* liveNanos
+			const lateUses = yield* LateUses
 			const [, slots] = Arr.mapAccum(batch, 0, (drawnSoFar, order) => {
-				const slot = slotOf(drawing, order, drawnSoFar)
+				const slot = slotOf(drawing, lateUses, order, drawnSoFar)
 				return [slot.kind === "drawn" ? drawnSoFar + 1 : drawnSoFar, slot] as const
 			})
 			const runs = yield* watchedCase(
