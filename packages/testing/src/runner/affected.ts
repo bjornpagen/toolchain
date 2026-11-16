@@ -17,6 +17,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { loadingOf } from "#mutate/checkout.ts"
 import { imagesOf } from "#mutate/image.ts"
 import { type Judged, killsOf } from "#mutate/kills.ts"
+import { mutatorPool } from "#mutate/lease.ts"
 import { realPathOf } from "#mutate/mutated.ts"
 import { treesOf } from "#mutate/tree.ts"
 import type { Kill, PropertyId } from "#property.ts"
@@ -39,7 +40,6 @@ import {
 	type Files,
 	workingTree
 } from "#runner/closure.ts"
-import { mutantPoolOf } from "#runner/lease.ts"
 import { runnerLimits } from "#runner/limits.ts"
 import type { Discovered } from "#runner/load.ts"
 import { failureLines, lineOf } from "#runner/report.ts"
@@ -301,7 +301,7 @@ const settledOf = (weighing: Weighing, due: ReadonlyArray<Weighed>, outcome: Run
 					Effect.flatMap(treesOf(checkout), (trees) => imagesOf(checkout, trees)),
 					(images) =>
 						killsOf(
-							mutantPoolOf(checkout, killedRoot),
+							mutatorPool(checkout, killedRoot),
 							{ seed: 0, limits: runnerLimits },
 							checkout,
 							images,
