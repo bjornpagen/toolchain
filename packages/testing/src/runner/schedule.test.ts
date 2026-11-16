@@ -8,6 +8,8 @@
  *   worker would spend more readying it than it could take off the holder.
  * - A module whose queued work outgrows its holder (cases at least as long as readying it, four or more a worker) is
  *   readied by more than one worker: the spread is measured, never refused.
+ * - A module whose cases cost nothing but whose units each hold their worker for a round trip as long as readying it,
+ *   four or more a worker, spreads too: a unit's work is how long it holds its worker, as the pool saw it.
  * - The pool is as wide as its work: a run of one module whose work is no more than its readying forks one worker, at
  *   any width, where a pool forked whole up front starts every worker it may have.
  *
@@ -17,7 +19,14 @@ import { Array as Arr, Effect, Order } from "effect"
 import { deepStrictEqual, strictEqual } from "#assert.ts"
 import { element } from "#gen.ts"
 import { property } from "#property.ts"
-import { cheap, FORKINGS, outgrowing, simulate, workloads } from "#runner/schedule.fixtures.ts"
+import {
+	cheap,
+	FORKINGS,
+	outgrowing,
+	simulate,
+	tripBound,
+	workloads
+} from "#runner/schedule.fixtures.ts"
 
 export const everyCaseOnce = property.explore(
 	(source) => ({ workload: source.draw(workloads), forking: source.draw(element(FORKINGS)) }),
@@ -144,6 +153,29 @@ export const sizedToWork = property.explore(cheap, {
 			original: "\t\t\tscheduler.wanted(view, pool.started) - pool.idling - pool.starting",
 			replacement: "\t\t\tpool.most",
 			why: "The pool forks every worker it may have as soon as it can, whatever its queue wants, so a run of one small module starts one worker a core (PERF: a one-kill run spent 139 of its 180 CPU-s booting workers); this property fails."
+		}
+	]
+})
+
+export const tripsSpread = property.explore(tripBound, {
+	needs: {},
+	situations: [],
+	check: () => (workload) =>
+		Effect.sync(() => {
+			const ran = simulate(workload, "whole")
+			strictEqual((ran.readiedBy.get("m0")?.size ?? 0) > 1, true)
+		}),
+	oracle: {
+		kind: "specification",
+		name: "a module whose units hold their workers past their cases (a round trip) spreads by how long they hold them"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/runner/schedule.ts",
+			original: "\t\tconst sum = occupancies.get(property)\n\t\treturn sum === undefined",
+			replacement: "\t\tconst sum = cases.get(property)\n\t\treturn sum === undefined",
+			why: "A unit's work is its cases' own time, so a module whose units are bound by their round trips (grizzle's template forms under load: 33 ms of CPU a case, about a second a unit) never outgrows the worker that holds it, and its cases queue for that one worker; this property fails."
 		}
 	]
 })

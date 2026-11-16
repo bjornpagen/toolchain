@@ -4,7 +4,8 @@ import { runOfLabel } from "#runner/stack.ts"
 /**
  * What the pool's scheduling knows and chooses: the queue, which modules each worker holds (it was sent a unit of a
  * property declared there, so it imported that module and readied that property), and what the workers measured: each
- * property's mean case time and each module's readying time, the least any worker took to ready the first property of
+ * property's mean case time (what a message is sized by), its mean occupancy a case (how long a unit held its worker,
+ * as the pool saw it, round trip included: what a unit's work is reckoned by), and each module's readying time, the least any worker took to ready the first property of
  * the module it ran (its import and that property's needs opened): what a further worker pays once whatever the
  * module's needs share is in place (a template built once on the cluster, which only the first worker waits for). An idle worker takes queued units of a module it holds first; else of a module no worker holds,
  * which some worker must ready; else of a module whose queued work is more than its holders drain within the time a
@@ -115,6 +116,12 @@ export type Scheduler<U extends Scheduled> = Readonly<{
 	holds: (worker: number, module: string) => boolean
 	/** A property's cases finished: how many, and their milliseconds. */
 	finished: (property: string, cases: number, millis: number) => void
+	/**
+	 * How long a unit of a property held its worker, as the pool saw it: from when it was sent (or the worker's last unit
+	 * finished, if later) to its answer, its readying taken out; with how many cases it held. A unit's work is reckoned
+	 * by this, a case's round trip and the worker's turn included, not by its cases' own time alone.
+	 */
+	occupied: (property: string, cases: number, millis: number) => void
 	/** Worker `worker` readied a property of `module` in `millis`: the module's import when new there, and its needs. */
 	readied: (worker: number, module: string, millis: number) => void
 	/** Worker `worker` was replaced by a fresh process: it holds nothing and has readied nothing. */
@@ -158,12 +165,16 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 	const holders = new Map<string, Set<number>>()
 	const readiedOn: Array<Set<string>> = Array.from({ length: workers }, () => new Set())
 	const cases = new Map<string, Sum>()
+	const occupancies = new Map<string, Sum>()
 	const readyings = new Map<string, number>()
 	let total = 0
 
-	/** The expected work of `count` cases of a property at its mean case time; none counted before it is measured. */
+	/**
+	 * The expected work of `count` cases of a property: how long they hold a worker, at the property's measured mean
+	 * occupancy a case (Scheduler.occupied); none counted before it is measured.
+	 */
 	const workOfCases = (property: string, count: number): number => {
-		const sum = cases.get(property)
+		const sum = occupancies.get(property)
 		return sum === undefined ? 0 : (count * sum.millis) / sum.count
 	}
 
@@ -479,6 +490,12 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 			sum.count += count
 			sum.millis += millis
 			cases.set(property, sum)
+		},
+		occupied: (property, count, millis) => {
+			const sum = occupancies.get(property) ?? { count: 0, millis: 0 }
+			sum.count += count
+			sum.millis += millis
+			occupancies.set(property, sum)
 		},
 		readied: (worker, module, millis) => {
 			if (readiedOn[worker]?.has(module) ?? false) {

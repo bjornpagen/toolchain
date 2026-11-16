@@ -22,10 +22,14 @@ export type DrawnProperty = Readonly<{ caseMillis: number; windows: ReadonlyArra
 /** A module of a drawn workload: what a worker spends readying it, once, and its properties. */
 export type DrawnModule = Readonly<{ readying: number; properties: ReadonlyArray<DrawnProperty> }>
 
-/** A drawn workload: the pool's width at most, how long a worker takes to start, and its modules. */
+/**
+ * A drawn workload: the pool's width at most, how long a worker takes to start, how long each unit holds its worker
+ * beyond its case (its round trip), and its modules.
+ */
 export type Workload = Readonly<{
 	workers: number
 	starting: number
+	trip: number
 	modules: ReadonlyArray<DrawnModule>
 }>
 
@@ -43,6 +47,7 @@ const modules: Gen<DrawnModule> = (source) => ({
 export const workloads: Gen<Workload> = (source) => ({
 	workers: source.draw(int(1, 8)),
 	starting: source.draw(int(1, 30)),
+	trip: source.draw(int(0, 5)),
 	modules: source.draw(array(modules, { min: 1, max: 5 }))
 })
 
@@ -58,6 +63,7 @@ export const cheap: Gen<Workload> = (source) => {
 	return {
 		workers: source.draw(int(1, 8)),
 		starting: source.draw(int(1, 30)),
+		trip: 0,
 		modules: [{ ...module, readying: workOfModule(module) + source.draw(int(0, 60)) }]
 	}
 }
@@ -71,6 +77,7 @@ export const outgrowing: Gen<Workload> = (source) => {
 	const readying = source.draw(int(1, 20))
 	return {
 		starting: source.draw(int(1, 10)),
+		trip: 0,
 		workers,
 		modules: [
 			{
@@ -81,6 +88,27 @@ export const outgrowing: Gen<Workload> = (source) => {
 						windows: [source.draw(int(4 * workers, 8 * workers))]
 					}
 				]
+			}
+		]
+	}
+}
+
+/**
+ * Workloads of one module whose cases cost almost nothing but whose units each hold their worker for a round trip at
+ * least as long as readying the module, four or more cases a worker in one window: a module bound by its round trips,
+ * which only its units' occupancy, never its cases' time, shows outgrowing one worker.
+ */
+export const tripBound: Gen<Workload> = (source) => {
+	const workers = source.draw(int(2, 8))
+	const readying = source.draw(int(1, 20))
+	return {
+		starting: source.draw(int(1, 10)),
+		trip: source.draw(int(readying, 3 * readying)),
+		workers,
+		modules: [
+			{
+				readying,
+				properties: [{ caseMillis: 1, windows: [source.draw(int(4 * workers, 8 * workers))] }]
 			}
 		]
 	}
@@ -182,7 +210,7 @@ export const simulate = (workload: Workload, forking: Forking): Ran => {
 	const start = (worker: SimWorker) => {
 		Option.map(Arr.head(worker.sent), (unit) => {
 			const readying = worker.readied.has(unit.module) ? 0 : unit.readying
-			worker.busyUntil = Option.some(now + readying + unit.caseMillis)
+			worker.busyUntil = Option.some(now + readying + unit.caseMillis + workload.trip)
 			if (readying === 0) {
 				return
 			}
@@ -283,6 +311,7 @@ export const simulate = (workload: Workload, forking: Forking): Ran => {
 			worker.sent = Arr.drop(worker.sent, 1)
 			runs.set(unit.id, (runs.get(unit.id) ?? 0) + 1)
 			scheduler.finished(unit.property, 1, unit.caseMillis)
+			scheduler.occupied(unit.property, 1, unit.caseMillis + workload.trip)
 			start(worker)
 			Option.map(
 				Arr.findFirst(searches, (search) => search.property === unit.property),

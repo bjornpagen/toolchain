@@ -11,7 +11,7 @@ import {
 	Scope,
 	String as Str
 } from "effect"
-import { HUNG_CLEANUP_GRACE, WATCHDOG_GRACE_MILLIS } from "#live.ts"
+import { HUNG_CLEANUP_GRACE, liveMillis, WATCHDOG_GRACE_MILLIS } from "#live.ts"
 import { withLateUses } from "#runner/case.ts"
 import { compileCacheDirectory, readsCoverage } from "#runner/compile-cache.ts"
 import { moduleClosureAt } from "#runner/module-closure.ts"
@@ -81,8 +81,9 @@ type Phase = "readying" | "evaluating"
 
 /**
  * A worker process and what the parent knows of it: the units it was sent and has not finished, the one it runs and in
- * what phase, the idle worker its unstarted tail is being revoked for, the busy worker whose tail it waits for, and the
- * last of what it wrote.
+ * what phase, the idle worker its unstarted tail is being revoked for, the busy worker whose tail it waits for, the
+ * last of what it wrote, what its process reported of its CPU, and since when (on the parent's clock) its next unit to
+ * finish has held it, with the readying in that time to take out.
  */
 type Worker = {
 	readonly index: number
@@ -94,6 +95,8 @@ type Worker = {
 	awaiting: Option.Option<Worker>
 	output: string
 	usage: { started: number; reported: number }
+	occupiedSince: number
+	readyingMillis: number
 }
 
 /** How much of what a worker wrote the parent keeps, to report a lost case with: the end of it. */
@@ -208,6 +211,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 		const closures = yield* moduleClosureAt(spec.root)
 		const events = yield* Queue.unbounded<Event>()
 		const scheduler = schedulerOf<Unit>(spec.workers)
+		let now = yield* liveMillis
 		const compiling = yield* Effect.mapError(compilingOf(spec), (missing) =>
 			PoolFailed.make({ message: `the compile cache has no directory: ${missing.message}` })
 		)
@@ -276,6 +280,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 		/** Sends a worker units to evaluate. */
 		const give = (worker: Worker, units: ReadonlyArray<Unit>) => {
 			worker.sent = [...units]
+			worker.occupiedSince = now
 			const sent = Arr.map(units, (unit) => ({ unit: unit.id, work: unit.work }))
 			if (Arr.isReadonlyArrayNonEmpty(sent)) {
 				send(worker, { kind: "evaluate", units: sent })
@@ -391,7 +396,9 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 				revokingFor: Option.none(),
 				awaiting: Option.none(),
 				output: "",
-				usage: { started: 0, reported: 0 }
+				usage: { started: 0, reported: 0 },
+				occupiedSince: now,
+				readyingMillis: 0
 			}
 			processes.push(worker.usage)
 			const keep = (chunk: unknown) => {
@@ -459,6 +466,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 
 		const handle = (event: Event): Effect.Effect<void> =>
 			Effect.gen(function* () {
+				now = yield* liveMillis
 				const worker = event.worker
 				switch (event.kind) {
 					case "silent":
@@ -529,6 +537,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 									Arr.findFirst(worker.sent, (sent) => sent.id === received.unit),
 									(unit) => {
 										scheduler.readied(worker.index, unit.module, received.millis)
+										worker.readyingMillis += received.millis
 										spent(unit.property, 0, 0, received.cpu)
 										afterFinished(scheduler, view, apply, worker.index, unit.module)
 										grow()
@@ -543,6 +552,13 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 								const unit = Arr.findFirst(worker.sent, (sent) => sent.id === received.unit)
 								if (Option.isSome(unit)) {
 									yield* settle(worker)
+									scheduler.occupied(
+										unit.value.property,
+										ranOf(received.done).cases,
+										Math.max(0, now - worker.occupiedSince - worker.readyingMillis)
+									)
+									worker.occupiedSince = now
+									worker.readyingMillis = 0
 									finish(worker, unit.value, received.done)
 									afterFinished(scheduler, view, apply, worker.index, unit.value.module)
 									grow()
@@ -644,6 +660,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 			stops: (read: A) => boolean
 		): Effect.Effect<ReadonlyArray<readonly [Unit, A]>> =>
 			Effect.gen(function* () {
+				now = yield* liveMillis
 				const units = Arr.map(works, enqueue)
 				feedAll()
 				const given: Array<readonly [Unit, A]> = []
