@@ -6,6 +6,7 @@
 	"sideEffects": false,
 	"imports": {
 		"#package.json": "./package.json",
+		"#codemod/*": "./scripts/codemod/*",
 		"#*": "./src/*"
 	},
 	"exports": {
@@ -54,7 +55,8 @@
 		"oxlint": "toolchain-oxlint",
 		"test": "vitest run",
 		"bench": "vitest bench --run",
-		"mutate": "node scripts/mutate.ts"
+		"mutate": "node scripts/mutate.ts",
+		"codemod": "node scripts/codemod/main.ts"
 	},
 	"dependencies": {
 		"@bjornpagen/limits": "workspace:*",
