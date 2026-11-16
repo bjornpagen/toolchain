@@ -97,6 +97,7 @@ const orderOf = (run: SearchRun, draw: Draw, ordering: Ordering): CaseOrder => (
 	keep: ordering.keep,
 	sense: ordering.sense,
 	deadline: run.limits.deadline,
+	open: run.limits.open,
 	print: "failing"
 })
 
@@ -163,6 +164,7 @@ const judgedOf = (result: CaseResult): Judged<CaseResult> => {
 		case "misused":
 		case "hung":
 		case "lost":
+		case "unopened":
 			return { kind: "holds" }
 	}
 }
@@ -221,6 +223,8 @@ const findingOf = (
 			return Effect.succeedSome({ kind: "misused", phase, where, printed: outcome.printed })
 		case "lost":
 			return Effect.succeedSome({ kind: "lost", phase, where, report: outcome.report })
+		case "unopened":
+			return Effect.succeedSome({ kind: "unopened", need: outcome.need, message: outcome.message })
 		case "hung":
 			return Effect.succeedSome({
 				kind: "hung",
@@ -318,6 +322,7 @@ const tokenOrderOf = (run: SearchRun, replayed: ReplayCase): Batch => [
 		keep: "nothing",
 		sense: notesOnly,
 		deadline: run.limits.deadline,
+		open: run.limits.open,
 		print: "always"
 	}
 ]
@@ -379,6 +384,7 @@ const tokenRun = (
 							case "misused":
 							case "hung":
 							case "lost":
+							case "unopened":
 								return Effect.map(
 									findingOf(run, result, {
 										phase,

@@ -1,11 +1,13 @@
 /**
  * The runner's budgets, which no property states: every search runs the required situations' witnesses and these
  * counts. A property that needs more says so with a cited Limit of its own; nothing else moves them. Each is a Limit of
- * @bjornpagen/limits (searchRuns, floorCases, steeredCases, steeringWindow, caseDeadlineMillis), with its evidence.
+ * @bjornpagen/limits (searchRuns, floorCases, steeredCases, steeringWindow, caseDeadlineMillis, needOpenMillis), with
+ * its evidence.
  */
 import {
 	caseDeadlineMillis,
 	floorCases,
+	needOpenMillis,
 	searchRuns,
 	steeredCases,
 	steeringWindow
@@ -44,13 +46,21 @@ const STEERING_WINDOW = steeringWindow.value
  */
 const CASE_DEADLINE_MILLIS = caseDeadlineMillis.value
 
-/** The budgets one search runs under. */
+/**
+ * How long a property's needs may take to open on a process that has not opened them, before its first case there and
+ * outside every case's deadline: a need's one-time cost (a template built or awaited, a module's import closure hashed,
+ * an install planned) is the process's, never a case's. A need that outruns it fails the property, once.
+ */
+const NEED_OPEN_MILLIS = needOpenMillis.value
+
+/** The budgets one search runs under, and the bounds its cases' orders carry: a case's deadline and its needs' open. */
 export type Limits = Readonly<{
 	runs: number
 	floor: number
 	steered: number
 	window: number
 	deadline: number
+	open: number
 }>
 
 /** The runner's own budgets. */
@@ -59,5 +69,6 @@ export const runnerLimits: Limits = {
 	floor: FLOOR_CASES,
 	steered: STEERED_CASES,
 	window: STEERING_WINDOW,
-	deadline: CASE_DEADLINE_MILLIS
+	deadline: CASE_DEADLINE_MILLIS,
+	open: NEED_OPEN_MILLIS
 }

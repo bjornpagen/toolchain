@@ -139,7 +139,8 @@ export const turnLimits = (shape: TurnShape): Limits => ({
 	floor: shape.floor,
 	steered: shape.budget,
 	window: shape.window,
-	deadline: runnerLimits.deadline
+	deadline: runnerLimits.deadline,
+	open: runnerLimits.open
 })
 
 /** What the turns oracle notes of a stream's windows. */

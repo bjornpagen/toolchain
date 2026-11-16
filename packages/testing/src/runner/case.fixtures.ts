@@ -1,13 +1,14 @@
 import { createHook } from "node:async_hooks"
-import { Duration, Effect } from "effect"
+import { Duration, Effect, Record as Rec } from "effect"
 import { element, finite, type Gen, int, map } from "#gen.ts"
 import { HUNG_CLEANUP_GRACE, liveSleep } from "#live.ts"
-import { type Case, type Property, property } from "#property.ts"
+import { type Case, type Need, NeedFailed, type Property, property } from "#property.ts"
 import { widths } from "#runner/search.fixtures.ts"
 
 /**
  * What the meta-tests of a case's evaluation (runner/case.ts) share: inner properties that hang, that use their case
- * after it ended, that run synchronously, and whose cases hold a resource with a cleanup of a drawn length.
+ * after it ended, that run synchronously, whose cases hold a resource with a cleanup of a drawn length, and whose needs
+ * take a drawn time to open and end as drawn.
  */
 
 /** The oracle of an inner search: a property planted to exercise a case's evaluation. */
@@ -204,4 +205,94 @@ export const lifetimesOf = (shape: Lifetimes): Readonly<{ counts: Counts; proper
 			kills: []
 		})
 	}
+}
+
+/** How a drawn need's open ends: it opens, its open fails, or it runs past the open bound. */
+const OPEN_ENDINGS = ["opens", "fails", "outruns the open bound"] as const
+
+export type OpenEnding = (typeof OPEN_ENDINGS)[number]
+
+/** The ways a need may fail to open. */
+export const UNOPENED_ENDINGS = ["fails", "outruns the open bound"] as const
+
+export type UnopenedEnding = (typeof UNOPENED_ENDINGS)[number]
+
+export const unopenedEndings: Gen<UnopenedEnding> = (source) =>
+	source.draw(element(UNOPENED_ENDINGS))
+
+/** The message a drawn need's failing open fails with. */
+export const FAILED_OPEN = "the drawn need's open failed"
+
+/** What a needing search counted: the opens its needs started, and the checks its cases started. */
+export type OpenCounts = { opens: number; checks: number }
+
+/**
+ * A need of key `key` whose open counts itself in `counts`, takes `millis` on the live clock (none at once), then ends
+ * as `ending` says: opens (its resource the count of opens so far), or fails with FAILED_OPEN; an open meant to outrun
+ * its bound opens, late.
+ */
+const drawnNeed = (
+	key: string,
+	millis: number,
+	ending: OpenEnding,
+	counts: OpenCounts
+): Need<number> => ({
+	key,
+	open: Effect.andThen(
+		Effect.sync(() => {
+			counts.opens += 1
+		}),
+		Effect.andThen(
+			millis > 0 ? liveSleep(Duration.millis(millis)) : Effect.void,
+			ending === "fails"
+				? Effect.fail(NeedFailed.make({ need: key, message: FAILED_OPEN }))
+				: Effect.sync(() => Effect.succeed(counts.opens))
+		)
+	)
+})
+
+/**
+ * An inner search over 0..9 whose property needs one drawn need, `drawn` (its open `millis` long, ending as `ending`
+ * says), beside `others` needs that open at once, and whose every case takes each of them; and its counts.
+ */
+export const needing = (
+	millis: number,
+	ending: OpenEnding,
+	others: number
+): Readonly<{ counts: OpenCounts; property: Property }> => {
+	const counts: OpenCounts = { opens: 0, checks: 0 }
+	const needs: Readonly<Record<string, Need<number>>> = {
+		drawn: drawnNeed("drawn", millis, ending, counts),
+		...Rec.fromEntries(
+			Array.from(
+				{ length: others },
+				(_, at) => [`other${at}`, drawnNeed(`other${at}`, 0, "opens", counts)] as const
+			)
+		)
+	}
+	return {
+		counts,
+		property: property.explore(int(0, 9), {
+			needs,
+			situations: [],
+			check: (resources) => () =>
+				Effect.gen(function* () {
+					counts.checks += 1
+					for (const resource of Rec.values(resources)) {
+						yield* resource
+					}
+				}),
+			oracle: planted,
+			kept: [],
+			kills: []
+		})
+	}
+}
+
+/** A need slower to open than the case deadline: the deadline, and the open, three to eight deadlines long. */
+export type SlowOpen = Readonly<{ deadline: number; openMillis: number }>
+
+export const slowOpens: Gen<SlowOpen> = (source) => {
+	const deadline = source.draw(int(10, 50))
+	return { deadline, openMillis: source.draw(int(3 * deadline, 8 * deadline)) }
 }

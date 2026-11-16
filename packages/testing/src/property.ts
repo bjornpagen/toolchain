@@ -11,14 +11,14 @@ import { interleaveExplore } from "#interleave.ts"
 import type { ReplayCase } from "#replay.ts"
 import {
 	type BatchCheck,
+	batchesReadied,
 	type Case,
-	type CaseEnv,
+	casesReadied,
 	type Drawing,
-	evaluateBatch,
-	evaluateCase
+	type Readying
 } from "#runner/case.ts"
 import { keptOf } from "#runner/keep.ts"
-import type { Batch, CaseResult, SearchRun, Sense, Verdict } from "#runner/protocol.ts"
+import type { SearchRun, Sense, Verdict } from "#runner/protocol.ts"
 import { exhaustSearch, exploreSearch, replay, type Searched } from "#runner/search.ts"
 import type { ModuleClosure, NeedFailed, WorkerIndex } from "#runner/services.ts"
 
@@ -67,9 +67,11 @@ export interface RunnerServices {
 export type NeedContext = Scope.Scope | RunnerServices[keyof RunnerServices]
 
 /**
- * A per-case resource. `open` runs once per worker, in the worker's scope, the first time a case on that worker needs
- * it (needs with the same `key` share it), and keeps warm what the need keeps warm (a pool of pre-cloned databases);
- * the effect it returns gives one case its resource in the case's scope, released when the case ends. A shared mutable
+ * A per-case resource. `open` runs once per worker, in the worker's scope, when the worker readies the first property
+ * that needs it (needs with the same `key` share it): before that property's first case there and outside every case's
+ * deadline, within the runner's open bound (needOpenMillis), so a need that fails to open or outruns it fails the
+ * property once, never a case. It keeps warm what the need keeps warm (a pool of pre-cloned databases); the effect it
+ * returns gives one case its resource in the case's scope, released when the case ends. A shared mutable
  * resource is unrepresentable: what is shared is immutable (a Template) and what a case gets is its own.
  */
 export type Need<A> = Readonly<{
@@ -236,7 +238,10 @@ const aimPlacesOf = <S, F extends string>(
 /** What kind of search a property is, as the report names it. */
 export type PropertyKind = "explore" | "exhaust" | "batched" | "interleave" | "stateful"
 
-/** The search a property runs and the cases it evaluates, every type it was stated with erased into closures. */
+/**
+ * The search a property runs and how a process readies it to evaluate its cases (its needs opened first), every type it
+ * was stated with erased into closures.
+ */
 type Made = Readonly<{
 	kind: PropertyKind
 	needs: Needs
@@ -246,12 +251,13 @@ type Made = Readonly<{
 	search: (run: SearchRun) => Effect.Effect<Verdict>
 	replay: (run: SearchRun, token: string) => Effect.Effect<Verdict>
 	keep: (target: unknown) => Keeping
-	evaluate: (batch: Batch) => Effect.Effect<ReadonlyArray<CaseResult>, never, CaseEnv>
+	ready: Readying
 }>
 
 /**
  * What the runner runs: a property, its case type, needs and failures erased at construction into closures (its
- * search, its replay of one token, and the evaluation of a batch of its cases), so one runner holds properties of
+ * search, its replay of one token, and how a process readies it: its needs opened, outside any case's deadline, then the
+ * evaluation of a batch of its cases), so one runner holds properties of
  * every type with no cast. Its needs stay readable, by key, so the mutator knows a property that needs Checkout.dir. A test module only ever builds one with a constructor of `property` or a harness
  * constructor that returns one or a Family.
  */
@@ -264,7 +270,7 @@ export class Property {
 	readonly search: Made["search"]
 	readonly replay: Made["replay"]
 	readonly keep: Made["keep"]
-	readonly evaluate: Made["evaluate"]
+	readonly ready: Made["ready"]
 
 	constructor(made: Made) {
 		this.kind = made.kind
@@ -275,7 +281,7 @@ export class Property {
 		this.search = made.search
 		this.replay = made.replay
 		this.keep = made.keep
-		this.evaluate = made.evaluate
+		this.ready = made.ready
 	}
 }
 
@@ -332,7 +338,6 @@ const exploredAs =
 			spaceUnder: spaceUnderOf(spec.space),
 			print: printOf(spec.show)
 		}
-		const evaluate = evaluateCase(drawing, spec.needs, spec.check)
 		return new Property({
 			kind,
 			needs: spec.needs,
@@ -341,7 +346,7 @@ const exploredAs =
 			kills: spec.kills,
 			...boundedBy(spec, exploreSearch(searched, 1), replay(searched)),
 			keep: keepingOf(drawing, aimPlacesOf(spec.space, spec.situations)),
-			evaluate: (batch) => Effect.forEach(batch, evaluate)
+			ready: casesReadied(drawing, spec.needs, spec.check)
 		})
 	}
 
@@ -391,7 +396,6 @@ export const property = {
 			spaceUnder: () => space,
 			print: printOf(spec.show)
 		}
-		const evaluate = evaluateCase(drawing, spec.needs, spec.check)
 		return new Property({
 			kind: "exhaust",
 			needs: spec.needs,
@@ -400,7 +404,7 @@ export const property = {
 			kills: spec.kills,
 			...boundedBy(spec, exhaustSearch(searched, space, spec.box, 1), replay(searched)),
 			keep: keepingOf(drawing, []),
-			evaluate: (batch) => Effect.forEach(batch, evaluate)
+			ready: casesReadied(drawing, spec.needs, spec.check)
 		})
 	},
 	/** Cases checked a batch at a time in one evaluation, still drawn and shrunk one by one. */
@@ -423,7 +427,7 @@ export const property = {
 			kills: spec.kills,
 			...boundedBy(spec, exploreSearch(searched, spec.size), replay(searched)),
 			keep: keepingOf(drawing, aimPlacesOf(space, spec.situations)),
-			evaluate: evaluateBatch(drawing, spec.needs, checkAll)
+			ready: batchesReadied(drawing, spec.needs, checkAll)
 		})
 	},
 	/**
@@ -450,7 +454,7 @@ export const property = {
 			kills: spec.kills,
 			...boundedBy(spec, exhaustSearch(searched, space, spec.box, spec.size), replay(searched)),
 			keep: keepingOf(drawing, []),
-			evaluate: evaluateBatch(drawing, spec.needs, checkAll)
+			ready: batchesReadied(drawing, spec.needs, checkAll)
 		})
 	},
 	/** Concurrent sessions run under every order or a drawn schedule (interleave.ts). */

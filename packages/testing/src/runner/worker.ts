@@ -1,6 +1,15 @@
 import { NodeRuntime, NodeServices } from "@effect/platform-node"
 import { Array as Arr, Context, Effect, Latch, Option, Queue, Schema, Scope } from "effect"
-import { LateUses, NeedCache, needCacheOf, Stopped, stoppedOf } from "#runner/case.ts"
+import {
+	LateUses,
+	NeedCache,
+	needCacheOf,
+	type Readied,
+	readiedOf,
+	resultsOf,
+	Stopped,
+	stoppedOf
+} from "#runner/case.ts"
 import { askedClosuresOf } from "#runner/closure-requests.ts"
 import { configOf, propertyAt } from "#runner/load.ts"
 import { Perception, perceptionOf } from "#runner/perceive.ts"
@@ -13,9 +22,12 @@ import { startProcessCoverage } from "#sense.ts"
  * A worker of the pool: a child process the parent forks, one a core, warm across properties. It loads the package's
  * runner config, then evaluates the units the parent sends, one at a time, in the order sent: it tells the parent when
  * it starts each, so the parent knows which are unstarted, and gives back the unstarted ones the parent revokes to
- * hand to an idle worker. A property's module is imported the first time a unit of it arrives and stays loaded; a
- * need is opened the first time a case here takes it and stays open, in the worker's scope, until the parent
- * disconnects. When its run guides a search by blocks, it starts V8's precise coverage before it loads any module.
+ * hand to an idle worker. The first unit of a property here readies it first, a phase of its own that it tells the
+ * parent of: its module is imported (once, and it stays loaded) and its needs are opened within the open bound its
+ * orders carry (each once per key, staying open in the worker's scope until the parent disconnects), before any case
+ * of it starts and outside every case's deadline. A property that could not be readied (its module did not load, a
+ * need did not open) gives every case of it here that one outcome. When its run guides a search by blocks, it starts
+ * V8's precise coverage before it loads any module.
  *
  *   node runner/worker.ts <package root> <index> <workers> <notes | blocks>
  */
@@ -111,36 +123,52 @@ const main = Effect.gen(function* () {
 		}
 	})
 
+	const readied = new Map<string, Readied>()
+
+	/** A property readied here, its module imported and its needs opened within `bound`, before any case of it. */
+	const ready = (label: string, bound: number): Effect.Effect<Readied> =>
+		Effect.matchEffect(propertyAt(root, runOfLabel(label).id), {
+			onFailure: (failed) =>
+				Effect.succeed<Readied>({ kind: "refused", result: lostResult(failed.message) }),
+			onSuccess: (property) =>
+				readiedOf(property.ready, bound).pipe(Effect.provideService(NeedCache, cache))
+		}).pipe(Effect.provideContext(platform))
+
+	/** The unit's property as this worker readied it, readying it first, and telling the parent so, when it is new here. */
+	const readiedFor = (unit: Unit): Effect.Effect<Readied> => {
+		const first = Arr.headNonEmpty(unit.batch)
+		return Option.match(Option.fromUndefinedOr(readied.get(first.property)), {
+			onSome: Effect.succeed,
+			onNone: () =>
+				Effect.gen(function* () {
+					yield* send({ kind: "readying", unit: unit.unit })
+					const made = yield* ready(first.property, first.open)
+					readied.set(first.property, made)
+					return made
+				})
+		})
+	}
+
 	const evaluate = (unit: Unit) =>
-		Effect.andThen(
-			send({ kind: "started", unit: unit.unit }),
-			Effect.matchEffect(propertyAt(root, runOfLabel(Arr.headNonEmpty(unit.batch).property).id), {
-				onFailure: (failed) =>
-					send({
-						kind: "done",
-						unit: unit.unit,
-						results: Arr.map(unit.batch, () => lostResult(failed.message))
-					}),
-				onSuccess: (property) =>
-					Effect.flatMap(
-						property.evaluate(unit.batch).pipe(
-							Effect.provideService(NeedCache, cache),
-							Effect.provideService(Perception, perception),
-							Effect.provideService(Stopped, stopped),
-							Effect.provideService(LateUses, {
-								report: (order, printed) => {
-									Option.map(
-										Arr.findFirstIndex(unit.batch, (sent) => sent === order),
-										(at) => sendNow({ kind: "misused", unit: unit.unit, at, printed })
-									)
-								}
-							}),
-							Effect.provideContext(platform)
-						),
-						(results) => send({ kind: "done", unit: unit.unit, results })
-					)
-			})
-		)
+		Effect.gen(function* () {
+			const made = yield* readiedFor(unit)
+			yield* send({ kind: "started", unit: unit.unit })
+			const results = yield* resultsOf(made, unit.batch).pipe(
+				Effect.provideService(NeedCache, cache),
+				Effect.provideService(Perception, perception),
+				Effect.provideService(Stopped, stopped),
+				Effect.provideService(LateUses, {
+					report: (order, printed) => {
+						Option.map(
+							Arr.findFirstIndex(unit.batch, (sent) => sent === order),
+							(at) => sendNow({ kind: "misused", unit: unit.unit, at, printed })
+						)
+					}
+				}),
+				Effect.provideContext(platform)
+			)
+			yield* send({ kind: "done", unit: unit.unit, results })
+		})
 
 	const evaluating = Effect.gen(function* () {
 		for (;;) {

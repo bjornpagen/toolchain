@@ -1,6 +1,16 @@
 import { Array as Arr, Context, Effect, Option, type Scope } from "effect"
 import type { NeedContext, Property } from "#property.ts"
-import { LateUses, NeedCache, needCacheOf, Stopped, stoppedOf, withLateUses } from "#runner/case.ts"
+import {
+	LateUses,
+	NeedCache,
+	needCacheOf,
+	type Readied,
+	readiedOf,
+	resultsOf,
+	Stopped,
+	stoppedOf,
+	withLateUses
+} from "#runner/case.ts"
 import { type Limits, runnerLimits } from "#runner/limits.ts"
 import { moduleClosureAt } from "#runner/module-closure.ts"
 import { Perception, perceptionOf } from "#runner/perceive.ts"
@@ -22,10 +32,12 @@ import { ModuleClosure, WorkerIndex } from "#runner/services.ts"
 type InlineContext = Exclude<NeedContext, WorkerIndex | ModuleClosure>
 
 /**
- * The evaluator of one property in this process: each batch evaluated in turn, here, with the needs it takes opened in
- * the caller's scope and services. A meta-test of the library's own searches, and a search nested inside a case, run
- * on it: a search finds on it exactly what it finds on the pool. Every evaluation, however it ends (interrupted
- * included), waits for the cleanups of the cases it stopped as hung (Stopped) before it returns, so none outlives it.
+ * The evaluator of one property in this process: each batch evaluated in turn, here, the property readied first as a
+ * worker readies it: its needs opened in the caller's scope and services within the open bound its first batch's
+ * orders carry, before any case and outside every case's deadline, and a need that did not open giving every case that
+ * one outcome. A meta-test of the library's own searches, and a search nested inside a case, run on it: a search finds
+ * on it exactly what it finds on the pool. Every evaluation, however it ends (interrupted included), waits for the
+ * cleanups of the cases it stopped as hung (Stopped) before it returns, so none outlives it.
  */
 export const inlineEvaluator = (
 	property: Property
@@ -42,8 +54,18 @@ export const inlineEvaluator = (
 		const cache = needCacheOf(Effect.succeed(context))
 		const lateUses = new Map<CaseOrder, Printed>()
 		const stopped = stoppedOf()
+		let readied = Option.none<Readied>()
+		const readiedFor = (batch: Batch): Effect.Effect<Readied, never, NeedCache> =>
+			Option.match(readied, {
+				onSome: Effect.succeed,
+				onNone: () =>
+					Effect.map(readiedOf(property.ready, Arr.headNonEmpty(batch).open), (made) => {
+						readied = Option.some(made)
+						return made
+					})
+			})
 		const evaluateOne = (batch: Batch) =>
-			property.evaluate(batch).pipe(
+			Effect.flatMap(readiedFor(batch), (made) => resultsOf(made, batch)).pipe(
 				Effect.provideService(NeedCache, cache),
 				Effect.provideService(Perception, perception),
 				Effect.provideService(Stopped, stopped),

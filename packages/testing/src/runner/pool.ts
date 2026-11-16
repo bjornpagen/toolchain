@@ -31,10 +31,12 @@ import {
  * one property, as many as fill @bjornpagen/limits's messageWorkMillis at the property's measured mean case time (one
  * while the property has none), never more than its fair share of what is queued (what is queued over the workers);
  * a worker that goes idle with nothing queued
- * takes the unstarted tail of the busiest worker's units, which the parent revokes from it. A unit that runs past its
- * cases' deadlines and the watchdog's grace has a silent worker: the parent kills it, reports the unit lost, and
- * forks a new worker in its place. Which worker ran a case never reaches a result, so a search finds the same at any
- * width.
+ * takes the unstarted tail of the busiest worker's units, which the parent revokes from it. A worker runs a unit in
+ * phases it tells the parent of: readying the unit's property, the first unit of it the worker took (its module
+ * imported, its needs opened), then evaluating its cases; a worker silent past its phase's bound (the needs' open bound,
+ * or the cases' deadlines added up) and the silence grace is killed, its unit reported lost with the phase it was in,
+ * and a new worker forked in its place. Which worker ran a case never reaches a result, so a search finds the same at
+ * any width.
  */
 
 /** One unit of work: a batch of one property's orders, and where its results go. */
@@ -45,14 +47,21 @@ type Unit = Readonly<{
 	done: Deferred.Deferred<ReadonlyArray<CaseResult>>
 }>
 
+/**
+ * What a worker is doing with the unit it runs: readying the unit's property (importing its module, opening its needs,
+ * before any case of it and outside every case's deadline), or evaluating its cases; the parent watches each phase
+ * under its own bound.
+ */
+type Phase = "readying" | "evaluating"
+
 /** A worker process and what the parent knows of it: the units it was sent and has not finished, the one it runs and
- * since when, how many cases it finished, and the last of what it wrote. */
+ * in what phase, how many cases it finished, and the last of what it wrote. */
 type Worker = {
 	readonly index: number
 	child: ChildProcess
 	ready: boolean
 	sent: Array<Unit>
-	running: Option.Option<Readonly<{ unit: Unit; silence: Fiber.Fiber<void> }>>
+	running: Option.Option<Readonly<{ unit: Unit; phase: Phase; silence: Fiber.Fiber<void> }>>
 	revoking: boolean
 	output: string
 }
@@ -97,18 +106,41 @@ const childProcesses = process.getBuiltinModule("node:child_process")
 type ChildProcess = ReturnType<typeof childProcesses.fork>
 
 /** What happens to a worker, as the pool's one fiber handles it, in order: a message, its exit, or its silence past a
- * unit's deadline and grace. */
+ * phase of a unit's bound and grace. */
 type Event =
 	| Readonly<{ kind: "message"; worker: Worker; message: unknown }>
 	| Readonly<{ kind: "exit"; worker: Worker; code: number | null; signal: string | null }>
-	| Readonly<{ kind: "silent"; worker: Worker; unit: number }>
+	| Readonly<{ kind: "silent"; worker: Worker; unit: number; phase: Phase }>
 
 /**
- * How long past a unit's deadlines (each case's, added up) the parent waits before it kills a worker that has not
- * answered: the watchdog's grace twice (its ping's, then its inspector's, should the main thread be blocked), and the
- * cleanup grace a hung case's guard waits; past that the worker's own guards have failed.
+ * How long past a phase's bound the parent waits before it kills a worker that has not answered: the watchdog's grace
+ * twice (its ping's, then its inspector's, should the main thread be blocked), and the cleanup grace a hung case's
+ * guard waits; past that the worker's own guards have failed.
  */
 const SILENCE_GRACE_MILLIS = 2 * WATCHDOG_GRACE_MILLIS + Duration.toMillis(HUNG_CLEANUP_GRACE)
+
+/**
+ * A phase's bound for a unit: readying, its orders' open bound, within which each need opens on the worker (the
+ * module's import shares it); evaluating, each case's deadline, added up.
+ */
+const boundOf = (unit: Unit, phase: Phase): number => {
+	switch (phase) {
+		case "readying":
+			return Arr.headNonEmpty(unit.batch).open
+		case "evaluating":
+			return Arr.reduce(unit.batch, 0, (total, order) => total + order.deadline)
+	}
+}
+
+/** What the report of a unit lost with its worker says the worker was doing. */
+const lostIn = (unit: Unit, phase: Phase): string => {
+	switch (phase) {
+		case "readying":
+			return `the worker readying its property (importing its module and opening its needs, each need within the open bound of ${Duration.format(Duration.millis(boundOf(unit, phase)))})`
+		case "evaluating":
+			return "the worker running it"
+	}
+}
 
 /**
  * Forks the pool's workers, in the run's scope: closing it disconnects each worker and waits for it to exit on its own
@@ -129,8 +161,15 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 		let unitIds = 0
 		let closing = false
 
+		/**
+		 * Sends a worker a message. A worker whose channel has closed is ending, and its exit, which the pool handles,
+		 * gives back every unit it was sent; so a message it can no longer take is not sent, and a send that fails as it
+		 * closes reaches the callback, never the child's error event, which nothing listens to.
+		 */
 		const send = (worker: Worker, message: ToWorker) => {
-			worker.child.send(message)
+			if (worker.child.connected) {
+				worker.child.send(message, () => undefined)
+			}
 		}
 
 		/** A property's measured case time so far: cases finished and their milliseconds. */
@@ -239,9 +278,6 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 			Deferred.doneUnsafe(unit.done, Effect.succeed(results))
 		}
 
-		const deadlineOf = (unit: Unit) =>
-			Arr.reduce(unit.batch, 0, (total, order) => total + order.deadline) + SILENCE_GRACE_MILLIS
-
 		const spawn = (index: number): Worker => {
 			const child = childProcesses.fork(
 				spec.entry,
@@ -277,7 +313,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 			return worker
 		}
 
-		/** Ends the watch on a worker's running unit. */
+		/** Ends the watch on a worker's running unit, and gives the unit and the phase it was in. */
 		const settle = (worker: Worker) =>
 			Effect.gen(function* () {
 				const running = worker.running
@@ -285,7 +321,25 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 				if (Option.isSome(running)) {
 					yield* Fiber.interrupt(running.value.silence)
 				}
-				return Option.map(running, (ran) => ran.unit)
+				return Option.map(running, (ran) => ({ unit: ran.unit, phase: ran.phase }))
+			})
+
+		/** Watches a worker in a phase of one of its units: silent past the phase's bound and the grace, it is killed. */
+		const watch = (worker: Worker, id: number, phase: Phase) =>
+			Effect.gen(function* () {
+				yield* settle(worker)
+				const unit = Arr.findFirst(worker.sent, (sent) => sent.id === id)
+				if (Option.isNone(unit)) {
+					return
+				}
+				const silence = yield* Effect.forkIn(
+					Effect.andThen(
+						Effect.sleep(Duration.millis(boundOf(unit.value, phase) + SILENCE_GRACE_MILLIS)),
+						Queue.offer(events, { kind: "silent", worker, unit: id, phase })
+					).pipe(Effect.asVoid),
+					scope
+				)
+				worker.running = Option.some({ unit: unit.value, phase, silence })
 			})
 
 		/**
@@ -318,7 +372,12 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 				const worker = event.worker
 				switch (event.kind) {
 					case "silent":
-						if (Option.exists(worker.running, (running) => running.unit.id === event.unit)) {
+						if (
+							Option.exists(
+								worker.running,
+								(running) => running.unit.id === event.unit && running.phase === event.phase
+							)
+						) {
 							worker.child.kill("SIGKILL")
 						}
 						return
@@ -328,14 +387,14 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 						const requeued = Arr.filter(worker.sent, (unit) =>
 							Option.match(lost, {
 								onNone: () => true,
-								onSome: (running) => running.id !== unit.id
+								onSome: (running) => running.unit.id !== unit.id
 							})
 						)
 						worker.sent = []
 						worker.ready = false
-						Option.map(lost, (unit) => {
+						Option.map(lost, ({ unit, phase }) => {
 							const how = event.signal ?? `exit ${event.code}`
-							const report = `the worker running it ended (${how}), past its deadline and grace or by a crash; what it last wrote:\n${worker.output}`
+							const report = `${lostIn(unit, phase)} ended (${how}), past its bound and grace or by a crash; what it last wrote:\n${worker.output}`
 							finish(
 								worker,
 								unit,
@@ -370,20 +429,12 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 							case "failed":
 								yield* breaks(worker, received.message)
 								return
-							case "started": {
-								const unit = Arr.findFirst(worker.sent, (sent) => sent.id === received.unit)
-								if (Option.isSome(unit)) {
-									const silence = yield* Effect.forkIn(
-										Effect.andThen(
-											Effect.sleep(Duration.millis(deadlineOf(unit.value))),
-											Queue.offer(events, { kind: "silent", worker, unit: received.unit })
-										).pipe(Effect.asVoid),
-										scope
-									)
-									worker.running = Option.some({ unit: unit.value, silence })
-								}
+							case "readying":
+								yield* watch(worker, received.unit, "readying")
 								return
-							}
+							case "started":
+								yield* watch(worker, received.unit, "evaluating")
+								return
 							case "done": {
 								const unit = Arr.findFirst(worker.sent, (sent) => sent.id === received.unit)
 								if (Option.isSome(unit)) {

@@ -100,6 +100,8 @@ const headlineOf = (finding: Finding): string => {
 			return `used its case after the case ended, on ${finding.where}`
 		case "lost":
 			return `lost its worker on ${finding.where}`
+		case "unopened":
+			return `its need ${finding.need} did not open on a worker, so no case of it ran there`
 		case "stale":
 			return `${finding.where} is stale`
 		case "unreached":
@@ -125,6 +127,8 @@ const findingLines = (finding: Finding): ReadonlyArray<string> => {
 			return printedText(finding.printed)
 		case "lost":
 			return [finding.report]
+		case "unopened":
+			return [finding.message]
 		case "stale":
 			return [finding.why]
 		case "unreached":

@@ -116,7 +116,8 @@ export const streams = property.explore(
 						floor: shape.floor,
 						steered: 0,
 						window: shape.window,
-						deadline: runnerLimits.deadline
+						deadline: runnerLimits.deadline,
+						open: runnerLimits.open
 					},
 					width: shape.width
 				})
@@ -411,7 +412,8 @@ export const steeringPhases = property.explore(
 					floor: shape.floor,
 					steered: runnerLimits.steered,
 					window: shape.window,
-					deadline: runnerLimits.deadline
+					deadline: runnerLimits.deadline,
+					open: runnerLimits.open
 				}
 				const inner = aimRecorder([
 					keptOf(id, { drawn: { kind: "unsteered" }, values: [shape.kept] })

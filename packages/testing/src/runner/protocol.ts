@@ -84,8 +84,9 @@ export type Sense = typeof Sense.Type
 /**
  * One case, as a search orders it: the property (by identity), how its decisions are chosen, the steering it is drawn
  * under, whether its tape comes back when it passes (`tape`, for a seed or an enumeration's next branch), what it
- * perceives, how long it may run before it is hung (milliseconds), and whether a passing case is printed too (a
- * failing or hung case always is).
+ * perceives, how long it may run before it is hung (milliseconds), how long its property's needs may take to open on a
+ * process that has not opened them (milliseconds, before the case and outside its deadline), and whether a passing
+ * case is printed too (a failing or hung case always is).
  */
 const CaseOrder = Schema.Struct({
 	property: Schema.String,
@@ -94,6 +95,7 @@ const CaseOrder = Schema.Struct({
 	keep: Schema.Literals(["nothing", "tape"]),
 	sense: Sense,
 	deadline: Schema.Finite,
+	open: Schema.Finite,
 	print: Schema.Literals(["failing", "always"])
 })
 
@@ -138,9 +140,9 @@ export type Printed = typeof Printed.Type
 /**
  * How a case ended: it passed, keeping its tape and its printed form as its order asked; it passed but used its case
  * after the case ended (`misused`); its check failed, with the failure as its report states it; it ran past its
- * deadline (`hung`); or its process ended while it ran (`lost`: a blocked event loop its watchdog ended, a crash),
- * which the parent reports with what the process last wrote. A failed or hung case carries its tape and its printed
- * form.
+ * deadline (`hung`); its process ended while it ran (`lost`: a blocked event loop its watchdog ended, a crash), which
+ * the parent reports with what the process last wrote; or it never ran, because a need of its property did not open on
+ * its process (`unopened`), which is no fact of the case. A failed or hung case carries its tape and its printed form.
  */
 const CaseOutcome = Schema.Union([
 	Schema.Struct({
@@ -162,7 +164,8 @@ const CaseOutcome = Schema.Union([
 		printed: Printed
 	}),
 	Schema.Struct({ kind: Schema.Literal("hung"), tape: Tape, printed: Printed }),
-	Schema.Struct({ kind: Schema.Literal("lost"), report: Schema.String })
+	Schema.Struct({ kind: Schema.Literal("lost"), report: Schema.String }),
+	Schema.Struct({ kind: Schema.Literal("unopened"), need: Schema.String, message: Schema.String })
 ])
 
 export type CaseOutcome = typeof CaseOutcome.Type
@@ -193,17 +196,27 @@ const CaseResult = Schema.Struct({
 
 export type CaseResult = typeof CaseResult.Type
 
-/** A result no process gave: the case's process ended while it ran, with what the process last wrote. */
-export const lostResult = (report: string): CaseResult => ({
+/** The result of a case that never ran: no decision made, nothing noted, measured or traced, and why. */
+const unranResult = (outcome: CaseOutcome): CaseResult => ({
 	decisions: 0,
 	sketchDecisions: 0,
 	overrun: false,
 	notes: [],
 	measures: [],
 	trace: [],
-	outcome: { kind: "lost", report },
+	outcome,
 	millis: 0
 })
+
+/** A result no process gave: the case's process ended while it ran, with what the process last wrote. */
+export const lostResult = (report: string): CaseResult => unranResult({ kind: "lost", report })
+
+/**
+ * The result of a case whose property's need `need` did not open on its process: why (its NeedFailed's message, its
+ * open past the open bound among them).
+ */
+export const unopenedResult = (need: string, message: string): CaseResult =>
+	unranResult({ kind: "unopened", need, message })
 
 /**
  * Where a search's cases evaluate. `evaluate` runs batches and gives back each batch's results in order, ending with the
@@ -256,8 +269,9 @@ export type Witnessed =
 
 /**
  * Why a property failed: a case failed (shrunk as far as it went), hung, used its case after it ended, or was lost
- * with its process; a required situation no witness reached; a kept or replayed token that no longer runs as it says
- * (`stale`); or an exhaustion's space too large to count within the case deadline. Every case-borne finding names
+ * with its process; a need of the property did not open on a process, so no case of it ran there (`unopened`, borne by
+ * no case, printed once); a required situation no witness reached; a kept or replayed token that no longer runs as it
+ * says (`stale`); or an exhaustion's space too large to count within the case deadline. Every case-borne finding names
  * where its case came from and prints it as it ran, with its replay token where it has one.
  */
 export type Finding =
@@ -273,6 +287,7 @@ export type Finding =
 	| Readonly<{ kind: "hung"; phase: CasePhase; where: string; printed: Printed; token: string }>
 	| Readonly<{ kind: "misused"; phase: CasePhase; where: string; printed: Printed }>
 	| Readonly<{ kind: "lost"; phase: CasePhase; where: string; report: string }>
+	| Readonly<{ kind: "unopened"; need: string; message: string }>
 	| Readonly<{
 			kind: "unreached"
 			missing: Arr.NonEmptyReadonlyArray<string>
@@ -315,13 +330,15 @@ export const ToWorker = Schema.Union([
 export type ToWorker = typeof ToWorker.Type
 
 /**
- * A message from a worker to the parent: it is ready; it started a unit; it finished one, with each order's result; it
- * gave back these units, of those the parent revoked, none of which it had started; a case (a unit's `at`-th order) was
- * used after it ended, printed as it ran; it cannot start, and why; or it asks for a module's closure hash, which the
- * parent computes once for the whole pool.
+ * A message from a worker to the parent: it is ready; it is readying a unit's property, the first unit of it the
+ * worker took (importing its module and opening its needs, within the open bound); it started a unit's cases; it
+ * finished one, with each order's result; it gave back these units, of those the parent revoked, none of which it had
+ * started; a case (a unit's `at`-th order) was used after it ended, printed as it ran; it cannot start, and why; or it
+ * asks for a module's closure hash, which the parent computes once for the whole pool.
  */
 export const FromWorker = Schema.Union([
 	Schema.Struct({ kind: Schema.Literal("ready") }),
+	Schema.Struct({ kind: Schema.Literal("readying"), unit: Schema.Finite }),
 	Schema.Struct({ kind: Schema.Literal("started"), unit: Schema.Finite }),
 	Schema.Struct({
 		kind: Schema.Literal("done"),

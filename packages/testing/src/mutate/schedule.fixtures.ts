@@ -60,7 +60,7 @@ export const fakeProperty = (seen: Ref.Ref<Seen>): Property =>
 			}),
 		replay: () =>
 			Effect.succeed({ kind: "exhausted", cases: 1, box: "one fake case", measures: [] }),
-		evaluate: () => Effect.succeed([])
+		ready: () => Effect.succeed(() => Effect.succeed([]))
 	})
 
 /** The image key of stage `stage` of trial `trial`, which its leases are known by. */

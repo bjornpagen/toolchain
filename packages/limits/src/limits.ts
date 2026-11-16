@@ -217,6 +217,34 @@ export const caseDeadlineMillis = provisional({
 	recorded: RECORDED
 })
 
+/**
+ * How long one need may take to open on a worker that has not opened it (runner/case.ts NeedCache): the open runs once
+ * per worker per need key, when the worker readies the first property that needs it, before that property's first case
+ * and outside every case's deadline. An open past it fails the property on that worker, once, as unopened; the parent
+ * watches a readying worker for this long and its silence grace.
+ */
+export const needOpenMillis = measured({
+	value: 300_000,
+	owner:
+		"the testing library's runner (runner/case.ts NeedCache, runner/worker.ts, runner/pool.ts)",
+	unit: "milliseconds per need's open",
+	scope:
+		"each need's open on one worker, once per worker per need key; a property's needs open at once, each under it",
+	evidence:
+		"packages/testing/out/need-open/ in TESTSYS lane CORE-2's toolchain clone (~/.cache/grizzle-release/TESTSYS/CORE-2/toolchain), the uncommitted record of `GRIZZLE_PG_CLUSTER=5967 sh forms.sh forms-cold-1` and `... forms-warm-2`: forms.sh, instrument.patch (each worker appends one JSON line per property it readies, the readying's wall and CPU milliseconds), forms-uncited.patch (no property cites a case deadline of its own), and per run <name>.readying.jsonl, .json, .time and .load. Beside it, lane GZ-FOUNDATION's ~/.cache/grizzle-release/TESTSYS/GZ-FOUNDATION/measure/overhead1.jsonl (a worker's first take of a built template, its open included, at 64 workers) and out/forms3.log (the forms at load 616 to 1,127, templates unbuilt, under a cited 240 s first-case deadline)",
+	observed: "2026-11-16 10:30:19 to 10:32:41 UTC",
+	environment:
+		"cassowary, Ubuntu 26.04.1 (Linux 7.0.0-1016-aws) on an AWS Graviton3 (arm64) instance with 64 logical CPUs and 247 GiB, Node 26.13.1; a private family of four PostgreSQL 19rc2 members (grizzle's scripts/pg/init.sh, fsync off, on GRIZZLE_PG_CLUSTER=5967) made just before; grizzle 0baff5d6, toolchain 88d76b7 (this lane's need-open phase); load average 391 to 468 from other sessions",
+	workload:
+		"grizzle's template forms, test/pg/substrate/forms.test.ts (freshBase, freshInstalled, seated, rolledBack, oneOfTemplates, served), 150 cases each at full width (64 workers), every case under the runner's 60 s case deadline: first on the new family, every template unbuilt (each member's first worker builds it under its build lock while the others wait), then again with them built. A worker's readying is timed from before its first property of the module is imported to its needs open (each module's import, its import closure hashed for the template's name, the install's plan, the template's build or the wait on it, the clone pool started), so it bounds the opens from above",
+	result:
+		"unbuilt: 323 readyings, p50 0.6 s, p90 19.2 s, p99 32.2 s, slowest 34.7 s (oneOfTemplates; freshInstalled 33.7 s, rolledBack 32.4 s, seated 28.3 s, freshBase 13.3 s, served 4.6 s); built: 295 readyings, p50 1.0 s, p90 15.6 s, p99 20.7 s, slowest 22.9 s. No open failed; every property passed both runs (0 of 6 failed, 63 s each), where before this phase every first case of these forms was cut at 60 s at load 400 to 600. GZ-FOUNDATION's built-template first takes at load 300 to 350 reached 18.5 s; its unbuilt run at load 616 to 1,127 ended every first case within the 240 s it cited. Not measured: opens with fsync on, where a member's DROP DATABASE waits on the checkpoints it forces (RESOURCES saw clone waits to 84 s there)",
+	decision:
+		"300 s: 8.6 times the slowest open measured here (34.7 s at load 391 to 468), 3.3 times that open scaled to the worst load seen today (1,127, 2.6 times as loaded: about 91 s), and above the 240 s within which every first case of the unbuilt forms ended at that load. The costs are lopsided: a bound too short fails a property whose need was only slow to open, one too long only delays the report of an open that hangs, so the headroom is wide. Unmeasured gap: opens at loads past 1,127, and with fsync on",
+	revalidate:
+		"a template whose build takes minutes (an install of many migrations), a family with fsync on, a run whose readyings come near a minute, a property reported unopened for running past it, another machine or a PostgreSQL repin"
+})
+
 /** The longest string a `json` value holds (values.ts): printable ASCII, so a value stays readable when printed. */
 export const jsonStringMax = provisional({
 	value: 8,

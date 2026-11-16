@@ -12,31 +12,47 @@
  * - A case's cleanup has run when its search returns: every resource its cases acquired is released, the hung case's
  *   included, however long that cleanup takes, past the hung-cleanup grace too: a cleanup the grace does not wait for is
  *   awaited before the process's next case.
+ * - A property's needs open before its first case on a process, once there, and outside every case's deadline: a need
+ *   slower to open than the case deadline hangs no case.
+ * - A need that does not open on a process (its open fails, or runs past the open bound) fails its property once, with
+ *   the need and why, and no case of the property runs there.
  *
  * Oracles are stated per property.
  */
-import { Clock, Effect } from "effect"
+import { Clock, Effect, Option } from "effect"
 import { TestClock } from "effect/testing"
 import { deepStrictEqual, strictEqual } from "#assert.ts"
 import { aimed, int } from "#gen.ts"
 import { property } from "#property.ts"
 import {
+	FAILED_OPEN,
 	hanging,
 	LATE_USES,
 	lateUses,
 	graceMillis,
 	lifetimes,
 	lifetimesOf,
+	needing,
 	pastTheGrace,
 	shortReleases,
 	SYNC_PROPERTIES,
 	scheduledBy,
+	slowOpens,
 	syncExhaustion,
 	syncProperties,
+	UNOPENED_ENDINGS,
+	unopenedEndings,
 	usingLate
 } from "#runner/case.fixtures.ts"
 import { runnerLimits } from "#runner/limits.ts"
-import { fullRun, searchedAt, searchedInline, seeds, verdictKind } from "#runner/search.fixtures.ts"
+import {
+	findingOf,
+	fullRun,
+	searchedAt,
+	searchedInline,
+	seeds,
+	verdictKind
+} from "#runner/search.fixtures.ts"
 
 export const hangsOnTheLiveClock = property.explore(
 	(source) => ({ deadline: source.draw(int(1, 20)), seed: source.draw(seeds) }),
@@ -174,7 +190,8 @@ export const caseLifetimes = property.explore(
 						floor: 1,
 						steered: 0,
 						window: runnerLimits.window,
-						deadline: shape.deadline
+						deadline: shape.deadline,
+						open: runnerLimits.open
 					},
 					width: shape.width
 				})
@@ -195,6 +212,102 @@ export const caseLifetimes = property.explore(
 					"\t\t\t\tif (running.pollUnsafe() === undefined) {\n\t\t\t\t\tstopped.keep(running)\n\t\t\t\t}\n",
 				replacement: "",
 				why: "A hung case whose cleanup outruns the grace is reported and let go, never held for its process to drain, so its finalizers outlive the search that started it (finalizers-unawaited, re-anchored from explore.ts's case keeper to case.ts guarded's keep); the case lifetimes property fails."
+			}
+		]
+	}
+)
+
+export const opensOutsideTheCase = property.explore(slowOpens, {
+	needs: {},
+	situations: [],
+	check:
+		() =>
+		({ deadline, openMillis }) =>
+			Effect.gen(function* () {
+				const inner = needing(openMillis, "opens", 0)
+				const verdict = yield* searchedAt(inner.property, {
+					...fullRun("opens outside the case/inner", 0),
+					limits: { ...runnerLimits, deadline }
+				})
+				deepStrictEqual(
+					{ verdict: verdictKind(verdict), opens: inner.counts.opens },
+					{ verdict: "explored", opens: 1 }
+				)
+			}),
+	oracle: {
+		kind: "specification",
+		name: "a need opens once a process, before the property's first case there and outside every case's deadline"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/runner/case.ts",
+			original:
+				"\t\tEffect.as(openAll(needs, bound), (batch: Arr.NonEmptyReadonlyArray<CaseOrder>) =>",
+			replacement: "\t\tEffect.as(Effect.void, (batch: Arr.NonEmptyReadonlyArray<CaseOrder>) =>",
+			why: "A property's needs are no longer opened when it is readied, so the first case that takes one opens it inside its own deadline (need-open-in-case, GZ-FOUNDATION's template forms killed at 60 s on their first cases); a need slower to open than the case deadline hangs that case, and the property fails."
+		}
+	]
+})
+
+export const unopenedOnce = property.explore(
+	(source) => ({
+		ending: source.draw(unopenedEndings),
+		bound: source.draw(int(200, 500)),
+		others: source.draw(int(0, 2))
+	}),
+	{
+		needs: {},
+		situations: UNOPENED_ENDINGS,
+		check:
+			(_resources, c) =>
+			({ ending, bound, others }) =>
+				Effect.gen(function* () {
+					c.note(ending)
+					const inner = needing(ending === "fails" ? 0 : 4 * bound, ending, others)
+					const verdict = yield* searchedAt(inner.property, {
+						...fullRun("unopened once/inner", 0),
+						limits: { ...runnerLimits, open: bound }
+					})
+					const found = findingOf(verdict)
+					deepStrictEqual(
+						{
+							finding: Option.map(found, (finding) =>
+								finding.kind === "unopened"
+									? {
+											kind: finding.kind,
+											need: finding.need,
+											failed: finding.message === FAILED_OPEN
+										}
+									: { kind: finding.kind, need: "", failed: false }
+							),
+							checks: inner.counts.checks
+						},
+						{
+							finding: Option.some({ kind: "unopened", need: "drawn", failed: ending === "fails" }),
+							checks: 0
+						}
+					)
+				}),
+		oracle: {
+			kind: "specification",
+			name: "a need that does not open fails its property once, naming it and why, and no case of it runs"
+		},
+		kept: [],
+		kills: [
+			{
+				file: "packages/testing/src/runner/case.ts",
+				original:
+					"\t\tEffect.as(openAll(needs, bound), (batch: Arr.NonEmptyReadonlyArray<CaseOrder>) =>",
+				replacement:
+					"\t\tEffect.as(Effect.ignore(openAll(needs, bound)), (batch: Arr.NonEmptyReadonlyArray<CaseOrder>) =>",
+				why: "A need that did not open is left to the cases, as 3714090 left it: each case takes it and fails on its failure, so the property is falsified case by case instead of failing once as unopened, and its cases run; the property fails."
+			},
+			{
+				file: "packages/testing/src/runner/case.ts",
+				original: "\t\t\t\t\t\t\t\tliveSleep(Duration.millis(bound)),",
+				replacement: "\t\t\t\t\t\t\t\tEffect.never,",
+				why: "A need's open has no bound, so one that never ends holds its process forever, and one past the bound opens late instead of failing its property; the outrunning need's property passes, and this property fails."
 			}
 		]
 	}

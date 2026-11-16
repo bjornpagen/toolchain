@@ -10,6 +10,7 @@ import {
 	Fiber,
 	Formatter,
 	Option,
+	Record as Rec,
 	Result,
 	type Scope,
 	Struct
@@ -29,7 +30,8 @@ import {
 	type CaseResult,
 	chooserOf,
 	type Printed,
-	type Trace
+	type Trace,
+	unopenedResult
 } from "#runner/protocol.ts"
 import { NeedFailed } from "#runner/services.ts"
 import { type Observed, type Recording, recording, simplestChooser } from "#source.ts"
@@ -62,13 +64,15 @@ const needSlotOf = <A>(need: Need<A>) =>
 	Context.Service<NeedSlot<A>>(`@bjornpagen/testing/runner/case/need/${need.key}`)
 
 /**
- * The needs an evaluating process has opened: `take` gives a case a need's resource in the case's scope, opening the
- * need the first time any case of the process takes it (needs of one key share it), in the process's own scope and
- * services, so what a need keeps warm stays warm across cases and properties.
+ * The needs an evaluating process has opened. `opened` opens a need the first time the process asks for it (needs of
+ * one key share it), in the process's own scope and services and on a fiber of its own, within `bound` milliseconds on
+ * the live clock; every later ask gets what that open gave: the need's taker, or the NeedFailed it failed with (its
+ * open past the bound among them), which no later ask retries. What a need keeps warm stays warm across cases and
+ * properties.
  */
 export class NeedCache extends Context.Service<
 	NeedCache,
-	Readonly<{ take: <A>(need: Need<A>) => Taker<A> }>
+	Readonly<{ opened: <A>(need: Need<A>, bound: number) => Effect.Effect<Taker<A>, NeedFailed> }>
 >()("@bjornpagen/testing/runner/case/NeedCache") {}
 
 /**
@@ -79,32 +83,62 @@ export class NeedCache extends Context.Service<
 export const needCacheOf = (
 	services: Effect.Effect<Context.Context<NeedContext>, RunnerServicesFailed>
 ): Context.Service.Shape<typeof NeedCache> => {
-	let opened: Context.Context<never> = Context.empty()
+	let slots: Context.Context<never> = Context.empty()
 	return {
-		take: <A>(need: Need<A>) =>
+		opened: <A>(need: Need<A>, bound: number) =>
 			Effect.suspend(() =>
-				Option.match(Context.getOption(opened, needSlotOf(need)), {
-					onSome: (taker) => Effect.flatten(Deferred.await(taker)),
+				Option.match(Context.getOption(slots, needSlotOf(need)), {
+					onSome: (slot) => Deferred.await(slot),
 					onNone: () => {
-						const taker = Deferred.makeUnsafe<Taker<A>, NeedFailed>()
-						opened = Context.add(opened, needSlotOf(need), taker)
-						const open = Effect.flatMap(
-							Effect.mapError(services, (failed) =>
-								NeedFailed.make({ need: need.key, message: failed.message })
+						const slot = Deferred.makeUnsafe<Taker<A>, NeedFailed>()
+						slots = Context.add(slots, needSlotOf(need), slot)
+						const open = Effect.raceFirst(
+							Effect.flatMap(
+								Effect.mapError(services, (failed) =>
+									NeedFailed.make({ need: need.key, message: failed.message })
+								),
+								(context) => Effect.provideContext(need.open, context)
 							),
-							(context) => Effect.provideContext(need.open, context)
+							Effect.andThen(
+								liveSleep(Duration.millis(bound)),
+								Effect.fail(
+									NeedFailed.make({
+										need: need.key,
+										message: `its open ran past the open bound of ${Duration.format(Duration.millis(bound))} (needOpenMillis)`
+									})
+								)
+							)
 						)
-						return Effect.andThen(Deferred.into(open, taker), Effect.flatten(Deferred.await(taker)))
+						return Effect.andThen(
+							Effect.forkDetach(Deferred.into(open, slot)),
+							Deferred.await(slot)
+						)
 					}
 				})
 			)
 	}
 }
 
-/** What an evaluating process provides every case: its opened needs, its perception and the platform. */
+/**
+ * What an evaluating process provides every case of a property it readied: its opened needs, its perception and the
+ * platform, and where it reports a late use and holds a stopped case.
+ */
 export type CaseEnv = NeedCache | Perception | LateUses | Stopped | NodeServices
 
-/** One case's taker of a need, as `Struct.map` maps a property's needs. */
+/**
+ * A property's needs opened on this process, all at once, each within `bound` milliseconds (NeedCache.opened), before
+ * any case of the property and outside every case's deadline: the first that does not open is why the property's
+ * cases cannot run here.
+ */
+const openAll = (needs: Needs, bound: number): Effect.Effect<void, NeedFailed, NeedCache> =>
+	NeedCache.use((cache) =>
+		Effect.forEach(Rec.values(needs), (need) => cache.opened(need, bound), {
+			concurrency: "unbounded",
+			discard: true
+		})
+	)
+
+/** One case's taker of a need its process opened, as `Struct.map` maps a property's needs. */
 interface Taking extends Struct.Lambda {
 	<A>(need: Need<A>): Taker<A>
 	readonly "~lambda.out": Taker<NeedValue<this["~lambda.in"]>>
@@ -127,17 +161,34 @@ const once = <A, E>(effect: Effect.Effect<A, E, Scope.Scope>): Effect.Effect<A, 
 }
 
 /**
- * A case's resources, by the name its check reads each under: each an effect that takes the need's resource in the
- * case's scope the first time the check yields it, and gives the same resource every later time.
+ * One case's resources, by the name its check reads each under: each an effect that takes the need's resource, the
+ * need opened on this process before the case (openAll, within `bound`), in the case's scope the first time the check
+ * yields it, and gives the same resource every later time.
  */
 const resourcesOf = <N extends Needs>(
 	needs: N,
-	cache: Context.Service.Shape<typeof NeedCache>
+	cache: Context.Service.Shape<typeof NeedCache>,
+	bound: number
 ): Resources<N> =>
 	Struct.map(
 		needs,
-		Struct.lambda<Taking>((need) => once(cache.take(need)))
+		Struct.lambda<Taking>((need) => once(Effect.flatten(cache.opened(need, bound))))
 	)
+
+/**
+ * A property's evaluation of a batch of its cases on a process where its needs are open: the results, one an order, in
+ * the batch's order.
+ */
+export type Evaluation = (
+	batch: Arr.NonEmptyReadonlyArray<CaseOrder>
+) => Effect.Effect<ReadonlyArray<CaseResult>, never, CaseEnv>
+
+/**
+ * How a process readies a property for its cases: it opens the property's needs within `bound` milliseconds, before
+ * any case and outside every case's deadline, and gives the evaluation of its batches with them open; or why a need did
+ * not open, which no case of the property can run without.
+ */
+export type Readying = (bound: number) => Effect.Effect<Evaluation, NeedFailed, NeedCache>
 
 /**
  * How a property's cases are drawn and printed, its value type erased into closures: the generator a case's steering
@@ -409,6 +460,41 @@ type Ran = Readonly<{
 	outcome: CaseOutcome
 }>
 
+/**
+ * A property as a process readied it: its needs open, with the evaluation of its batches; or refused, with the one
+ * result every case of it gets on that process (unopened when a need did not open; lost when a worker could not load
+ * its module).
+ */
+export type Readied =
+	| Readonly<{ kind: "ready"; evaluate: Evaluation }>
+	| Readonly<{ kind: "refused"; result: CaseResult }>
+
+/** A property readied on this process, its needs opened within `bound`: ready, or refused as unopened. */
+export const readiedOf = (
+	ready: Readying,
+	bound: number
+): Effect.Effect<Readied, never, NeedCache> =>
+	Effect.match(ready(bound), {
+		onFailure: (unopened): Readied => ({
+			kind: "refused",
+			result: unopenedResult(unopened.need, unopened.message)
+		}),
+		onSuccess: (evaluate): Readied => ({ kind: "ready", evaluate })
+	})
+
+/** A batch's results on a process: its evaluation when its property is ready, the refusal for each case otherwise. */
+export const resultsOf = (
+	readied: Readied,
+	batch: Arr.NonEmptyReadonlyArray<CaseOrder>
+): Effect.Effect<ReadonlyArray<CaseResult>, never, CaseEnv> => {
+	switch (readied.kind) {
+		case "ready":
+			return readied.evaluate(batch)
+		case "refused":
+			return Effect.succeed(Arr.map(batch, () => readied.result))
+	}
+}
+
 /** A property's check of one case. */
 export type CaseCheck<S, F extends string, N extends Needs, E> = (
 	resources: Resources<N>,
@@ -550,13 +636,13 @@ const deadlineOf = (orders: ReadonlyArray<CaseOrder>) =>
 	Arr.reduce(orders, 0, (total, order) => total + order.deadline)
 
 /**
- * Evaluates one case of a property: rebuilds its chooser, draws its value from the space its steering selects, and
- * runs its check under the case deadline in the case's own scope, where its needs' resources are taken, perceived as
- * its order's sense asks; the process's watchdog watches it from before its value is drawn. A space that throws while
+ * Evaluates one case of a property whose needs are open: rebuilds its chooser, draws its value from the space its
+ * steering selects, and runs its check under the case deadline in the case's own scope, where it takes its needs'
+ * resources from its needs, opened on this process before it, perceived as its order's sense asks; the process's watchdog watches it from before its value is drawn. A space that throws while
  * drawing fails the case, undrawn. The tape is copied out only for a case that did not pass and one whose order keeps
  * it.
  */
-export const evaluateCase =
+const evaluateCase =
 	<S, F extends string, N extends Needs, E>(
 		drawing: Drawing<S, F>,
 		needs: N,
@@ -584,7 +670,7 @@ export const evaluateCase =
 											order.sense,
 											Effect.scoped(
 												NeedCache.use((cache) =>
-													check(resourcesOf(needs, cache), drawn.handle.c)(drawn.value)
+													check(resourcesOf(needs, cache, order.open), drawn.handle.c)(drawn.value)
 												)
 											)
 										),
@@ -606,21 +692,34 @@ export const evaluateCase =
 		})
 
 /**
- * Evaluates a batch of a batched property's cases in one check: draws each case (one its space throws on fails alone,
- * undrawn), runs `checkAll` on the drawn cases under the case deadline times their count in the batch's scope, where
- * its needs' resources are taken, then each case's own effect under the case deadline as its verdict. A check that
+ * How a property checked one case at a time is readied on a process: its needs opened within the bound, then each
+ * case of a batch evaluated in turn (evaluateCase).
+ */
+export const casesReadied =
+	<S, F extends string, N extends Needs, E>(
+		drawing: Drawing<S, F>,
+		needs: N,
+		check: CaseCheck<S, F, N, E>
+	): Readying =>
+	(bound) =>
+		Effect.as(openAll(needs, bound), (batch: Arr.NonEmptyReadonlyArray<CaseOrder>) =>
+			Effect.forEach(batch, evaluateCase(drawing, needs, check))
+		)
+
+/**
+ * Evaluates a batch of a batched property's cases in one check, its needs open: draws each case (one its space throws
+ * on fails alone, undrawn), runs `checkAll` on the drawn cases under the case deadline times their count in the batch's
+ * scope, where it takes its needs' resources (opened on this process before it), then each case's own effect under the case deadline as its verdict. A check that
  * fails or hangs as a whole fails or hangs every case it held; a case it gave no verdict fails. Each case's measured
  * time is the batch's, shared evenly.
  */
-export const evaluateBatch =
+const evaluateBatch =
 	<S, F extends string, N extends Needs, E>(
 		drawing: Drawing<S, F>,
 		needs: N,
 		checkAll: BatchCheck<S, F, N, E>
-	) =>
-	(
-		batch: Arr.NonEmptyReadonlyArray<CaseOrder>
-	): Effect.Effect<ReadonlyArray<CaseResult>, never, CaseEnv> =>
+	): Evaluation =>
+	(batch) =>
 		Effect.gen(function* () {
 			const began = yield* liveNanos
 			const lateUses = yield* LateUses
@@ -631,7 +730,7 @@ export const evaluateBatch =
 			const runs = yield* watchedCase(
 				{ caseHang: Duration.millis(deadlineOf(batch)), cut: Option.none() },
 				blockedReport(slots, drawing.print),
-				runsOf(drawing, needs, checkAll, slots, deadlineOf(batch))
+				runsOf(drawing, needs, checkAll, Arr.headNonEmpty(batch).open, slots, deadlineOf(batch))
 			)
 			const millis = (yield* millisSince(began)) / batch.length
 			return Arr.zipWith(slots, runs, (slot, ran) =>
@@ -639,11 +738,23 @@ export const evaluateBatch =
 			)
 		})
 
+/** How a batched property is readied on a process: its needs opened within the bound, then each batch evaluated in
+ * one check (evaluateBatch). */
+export const batchesReadied =
+	<S, F extends string, N extends Needs, E>(
+		drawing: Drawing<S, F>,
+		needs: N,
+		checkAll: BatchCheck<S, F, N, E>
+	): Readying =>
+	(bound) =>
+		Effect.as(openAll(needs, bound), evaluateBatch(drawing, needs, checkAll))
+
 /** Each case's run, in the batch's order: the batch's check over its drawn cases, then each case's verdict. */
 const runsOf = <S, F extends string, N extends Needs, E>(
 	drawing: Drawing<S, F>,
 	needs: N,
 	checkAll: BatchCheck<S, F, N, E>,
+	bound: number,
 	slots: ReadonlyArray<Slot<S, F>>,
 	deadline: number
 ): Effect.Effect<ReadonlyArray<Ran>, never, CaseEnv> =>
@@ -656,7 +767,7 @@ const runsOf = <S, F extends string, N extends Needs, E>(
 			const whole: Settled = Arr.isReadonlyArrayNonEmpty(drawnCases)
 				? yield* guarded(
 						NeedCache.use((cache) =>
-							Effect.map(checkAll(resourcesOf(needs, cache))(drawnCases), (given) => {
+							Effect.map(checkAll(resourcesOf(needs, cache, bound))(drawnCases), (given) => {
 								verdicts = given
 							})
 						),
