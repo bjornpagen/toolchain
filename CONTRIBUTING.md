@@ -1,7 +1,8 @@
 # Contributing to the toolchain
 
-The toolchain is two workspace packages, `@bjornpagen/devtools` and `@bjornpagen/testing`, which every repository
-takes as the submodule `vendor/toolchain`. This file says how the checks run, here and in every repository that takes
+The toolchain is four workspace packages, `@bjornpagen/devtools`, `@bjornpagen/testing`, `@bjornpagen/limit` (the
+Limit and its mints) and `@bjornpagen/limits` (the toolchain's own limits), which every repository takes as the
+submodule `vendor/toolchain`. This file says how the checks run, here and in every repository that takes
 the toolchain; README.md says what a repository changes to take it.
 
 ## When each check runs
@@ -90,7 +91,8 @@ style linter and the workspace gate read files as text. A new rule goes, in this
   among them (tsgolint runs those in `pnpm check` only);
 - to the devtools oxlint plugin (`packages/devtools/src/oxlint/rules/`), reading one file's syntax and scopes, with
   its `clean.tsx` and `violating.tsx` fixtures under `src/oxlint/fixtures/<rule>/`, its fixture options in
-  `src/oxlint/fixture-rules.ts` and its place in the preset's `PLACES`; a rule for one repository only goes to that
+  `src/oxlint/fixture-rules.ts` and its place in the preset's `PLACES` (a rule that judges a file by its path, as the
+  limit rules do, also proves its paths on RuleTester, as `src/oxlint/limit-cases.ts` does); a rule for one repository only goes to that
   repository's own plugin (`ownPlugin`);
 - to the workspace gate (`packages/devtools/src/workspace/`), when it reads the repository's JSON or file names;
 - to the testing library's reporter, when it judges what a test did at run time.
@@ -115,7 +117,7 @@ repository is the owner's decision, as a repository's rejection is.
 
 `missingConcurrencyOption` is dropped (Bjorn, 2026-11-14): it demanded a `concurrency` option on every `Effect.forEach`
 and `Effect.all`, so code stated `{ concurrency: 1 }`, the default, to please it. Write no concurrency where the run is
-sequential; a wider one is a limit, and it answers to the policy below.
+sequential; a wider one is a limit, and it answers to the limits below.
 
 ## The gate: snapshots
 
@@ -177,20 +179,40 @@ A snapshot directory is safe to delete when no gate is running; the next run bui
 Never set `cacheDir` in turbo.json: a machine-wide `TURBO_CACHE_DIR` (which the gate passes on) is what lets clones
 share one cache.
 
-## Concurrency limits
+## Limits
 
-Every number that bounds concurrency answers to the indefensible-numbers policy (edullm's
-`.agents/skills/indefensible-numbers/SKILL.md`): its JSDoc names a published, measured or derived authority with
-`@limitKind`, `@owner`, `@unit` and `@scope`, or it goes. A `0` or `1` identity needs no citation, and a width the data
-gives (two streams read at once, the sessions a run started) is no limit.
+Every number that bounds something, here and in every repository, answers to the limits skill
+(`packages/devtools/skills/limits/SKILL.md`, linked as `.agents/skills/limits`), which keeps the indefensible-numbers
+policy. Its first question is whether a cap should exist at all: one that guards nothing named is deleted, not minted.
+What stays is a `Limit` of `@bjornpagen/limit`, `published`, `measured`, `derived` or `provisional`, minted in the
+repository's own limits package and read by its `.value`.
 
-| Limit                                              | Where                                | Authority                                                                                                                                                                                                                                                            |
-| -------------------------------------------------- | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Test processes at once, `testWorkers`              | `packages/testing/src/workers.ts`    | derived: one forked test process a logical CPU (`availableParallelism()`)                                                                                                                                                                                            |
-| Mutants judged at once, without `--workers`        | `packages/testing/scripts/mutate.ts` | derived (`defaultWorkers`): `testWorkers` over the processes one mutant's Vitest holds, so a mutation run holds no more test processes than a test run                                                                                                               |
-| turbo's tasks at once, `"concurrency": "100%"`     | `turbo.json`                         | derived: one task a logical processor; turbo documents `100%` as "all available logical processors" and 10 tasks as its default (https://turborepo.dev/docs/reference/configuration, verified 2026-11-15). JSON carries no comment, so this row is its documentation |
-| One gate run per snapshot                          | `bin/gate.sh`                        | an identity: a snapshot is one directory that a run rewrites                                                                                                                                                                                                         |
-| A search's cases at once, a search's `concurrency` | each test's `explore` or `exhaust`   | left out, one at a time (`oneAtATime`), an identity; stated above one, the test's own input, no resource's bound: the engine finds the same cases at any concurrency, and a sense that reads process-wide counters (guided coverage) runs its cases one at a time    |
+The toolchain's own limits are `@bjornpagen/limits` (`packages/limits/src/limits.ts`); its README lists what it holds.
+Two rules of the devtools plugin hold that by syntax, in the limits pack (`limits()` in `toolchain.config.ts`), with
+`{ packages: ["packages/limits"], tests: LIMIT_TESTS }` as their options in `oxlint.config.ts`:
+
+- `devtools/no-bare-limit` refuses a numeric literal in a governed place outside the limits package: a value whose
+  name carries bound vocabulary, a Duration, Schedule or Effect time or count, a semaphore's permits, a timer's delay, a
+  duration as text. The not-a-limit list passes where syntax shows it.
+- `devtools/limits-sole-mint` refuses a call of a mint of `@bjornpagen/limit` outside the limits package.
+
+Test files (`*.test.ts`, `*.test.tsx`, `*.fixtures.ts`, and every `test/`, `tests/` and `fixtures/` directory) are exempt
+from both; `bench` files are not. An exception is an override block in `oxlint.config.ts` with its reason: the engine
+bench's is the only one, since its generator ranges are its workload.
+
+A shell script reads a limit from `packages/limits/limits.env`, which `src/data.ts` generates from the Limits
+(`pnpm --filter @bjornpagen/limits limits:data`); `limits:check`, in `pnpm check`, refuses the file when it differs.
+`bin/gate.sh` reads its lock poll and its daily check:full period there.
+
+A number the machine reports is read where it is used, never minted, and widths computed from it are no limit:
+
+| Width                                              | Where                                | What it is                                                                                                                                                                                                                                                        |
+| -------------------------------------------------- | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Test processes at once, `testWorkers`              | `packages/testing/src/workers.ts`    | what the machine reports, `availableParallelism()`: one forked test process a logical CPU                                                                                                                                                                         |
+| Mutants judged at once, without `--workers`        | `packages/testing/scripts/mutate.ts` | `defaultWorkers`, a plain function of `testWorkers`: over the processes one mutant's Vitest holds, so a mutation run holds no more test processes than a test run                                                                                                 |
+| turbo's tasks at once, `"concurrency": "100%"`     | `turbo.json`                         | one task a logical processor; turbo documents `100%` as "all available logical processors" and 10 tasks as its default (https://turborepo.dev/docs/reference/configuration, verified 2026-11-15). JSON carries no comment, so this row is its documentation       |
+| One gate run per snapshot                          | `bin/gate.sh`                        | an identity: a snapshot is one directory that a run rewrites                                                                                                                                                                                                      |
+| A search's cases at once, a search's `concurrency` | each test's `explore` or `exhaust`   | left out, one at a time (`oneAtATime`), an identity; stated above one, the test's own input, no resource's bound: the engine finds the same cases at any concurrency, and a sense that reads process-wide counters (guided coverage) runs its cases one at a time |
 
 ## Steering belongs to the generator
 
