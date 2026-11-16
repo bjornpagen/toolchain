@@ -10,6 +10,17 @@ import { isTestScope } from "#shared/tests.ts"
  */
 const Draws = Schema.Literals(["list", "value", "range", "each", "union"])
 
+/**
+ * Where a search holds its space: an argument of its call, by its place (`property.explore(space, spec)` holds it at
+ * 0), or a field of the spec it is handed first (`exhaust({ generator }, check)` holds it in `generator`).
+ */
+const Holds = Schema.Union([
+	Schema.Struct({ argument: Schema.Int }),
+	Schema.Struct({ field: Schema.String })
+])
+
+type Holds = typeof Holds.Type
+
 /** An export, by the module it is imported from and its names there. */
 const Exported = Schema.Struct({ module: Schema.String, names: Schema.Array(Schema.String) })
 
@@ -18,8 +29,8 @@ type Draws = typeof Draws.Type
 /**
  * The searches and generators by the module they are imported from, as the code imports it
  * (`@bjornpagen/testing/property`), each search by the name it is called by (`exhaust`, or `property.explore` for a
- * member of a named import) with the property of its spec that holds its space (`space`, `exhaust`'s `generator`,
- * `explore`'s `draw`), each generator with what it draws, and the mints of a dictionary (`dictionary(items)`), whose
+ * member of a named import) with where it holds its space (the first argument of `property.explore`, `exhaust`'s
+ * spec field `generator`, `explore`'s `draw`), each generator with what it draws, and the mints of a dictionary (`dictionary(items)`), whose
  * list is a vocabulary of the domain: the testing library's own (its oxlint module's CASE_LISTS) beside a repository's
  * own search helpers and generators. Then the files whose own lists are lists of cases beyond test scope, whose lists
  * always are: a directory (`src/planted/`), or one file, from the repository root; and the dictionary doors in test
@@ -27,7 +38,7 @@ type Draws = typeof Draws.Type
  */
 const Options = Schema.Struct({
 	searches: Schema.Array(
-		Schema.Struct({ module: Schema.String, name: Schema.String, space: Schema.String })
+		Schema.Struct({ module: Schema.String, name: Schema.String, space: Holds })
 	),
 	generators: Schema.Array(
 		Schema.Struct({ module: Schema.String, names: Schema.Array(Schema.String), draws: Draws })
@@ -244,7 +255,7 @@ export const noCaseList = configured(Options, (context, options) => {
 		Option.exists(exportOf(context, callee), ({ module, name }) =>
 			Arr.some(options.mints, (mint) => mint.module === module && Arr.contains(mint.names, name))
 		)
-	const spaceNameOf = (callee: AnyNode): Option.Option<string> =>
+	const holdsOf = (callee: AnyNode): Option.Option<Holds> =>
 		Option.flatMap(exportOf(context, callee), ({ module, name }) =>
 			Option.map(
 				Arr.findFirst(
@@ -436,15 +447,30 @@ export const noCaseList = configured(Options, (context, options) => {
 		return node.type === "Identifier" ? Option.flatMap(heldBy(node), specOf) : Option.none()
 	}
 	/** The property of a spec that holds its space, and the space. */
-	const spaceOf = (
+	const fieldOf = (
 		spec: NodeOf<"ObjectExpression">,
 		name: string
-	): Option.Option<Readonly<{ property: AnyNode; space: AnyNode }>> =>
+	): Option.Option<Readonly<{ at: AnyNode; space: AnyNode }>> =>
 		Arr.findLast(spec.properties, (property) =>
 			property.type === "Property" && Option.contains(propertyNameOf(property), name)
-				? Option.some({ property, space: property.value })
+				? Option.some({ at: property, space: property.value })
 				: Option.none()
 		)
+	/** A search call's space, where it holds it, and the node a report points at: the argument, or the spec's field. */
+	const spaceOf = (
+		call: NodeOf<"CallExpression">,
+		holds: Holds
+	): Option.Option<Readonly<{ at: AnyNode; space: AnyNode }>> => {
+		if ("argument" in holds) {
+			return Option.map(Option.fromUndefinedOr(call.arguments[holds.argument]), (space) => ({
+				at: space,
+				space
+			}))
+		}
+		return Option.flatMap(Option.flatMap(Arr.head(call.arguments), specOf), (spec) =>
+			fieldOf(spec, holds.field)
+		)
+	}
 	const whereOf = (origin: Origin): string => {
 		switch (origin.kind) {
 			case "written":
@@ -467,18 +493,12 @@ export const noCaseList = configured(Options, (context, options) => {
 	}
 	return {
 		CallExpression: (node) => {
-			const [spec] = node.arguments
-			const name = spaceNameOf(node.callee)
-			if (Option.isNone(name) || spec === undefined) {
-				return
-			}
 			const found = Option.flatMap(
-				Option.flatMap(specOf(spec), (literal) => spaceOf(literal, name.value)),
-				({ property, space }) =>
-					Option.map(caseListOf(space, new Set()), (list) => ({ property, list }))
+				Option.flatMap(holdsOf(node.callee), (holds) => spaceOf(node, holds)),
+				({ at, space }) => Option.map(caseListOf(space, new Set()), (list) => ({ at, list }))
 			)
 			if (Option.isSome(found)) {
-				context.report({ node: found.value.property, message: messageOf(found.value.list) })
+				context.report({ node: found.value.at, message: messageOf(found.value.list) })
 			}
 		}
 	}

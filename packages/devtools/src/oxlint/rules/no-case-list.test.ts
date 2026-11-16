@@ -205,37 +205,69 @@ const spaces: Gen<Drawn> = weighted([
 
 /** The names every module reads: the library's constructors, the dictionary's mint, and a bound held by a name. */
 const HEADER = `import { property } from "@bjornpagen/testing/property"
-import { constant, element, int, map, oneOf } from "@bjornpagen/testing/gen"
+import { drawn, explore } from "@bjornpagen/testing/explore"
+import { aimed, constant, element, int, map, oneOf } from "@bjornpagen/testing/gen"
 import { dictionary, word } from "@bjornpagen/testing/dictionary"
 import { KEYWORDS } from "${DOOR}"
 declare const k: number
+declare const check: unknown
 `
+
+/**
+ * A search that holds a space, and whether it reads it: a property constructor's first argument (aimed or not), the
+ * old `explore`'s spec field `draw`, or `property.stateful`'s machine, which is no space.
+ */
+type Search = Readonly<{ call: (space: string) => string; reads: boolean }>
+
+const PROPERTY_KINDS = ["explore", "exhaust", "batched", "interleave"] as const
+
+const SEARCHES: readonly [Search, ...Array<Search>] = [
+	...Arr.map(PROPERTY_KINDS, (kind): Search => ({
+		call: (space) => `property.${kind}(${space}, { situations: [] })`,
+		reads: true
+	})),
+	{
+		call: (space) =>
+			`property.explore(aimed(${space}, [["a situation", constant(1)]]), { situations: [] })`,
+		reads: true
+	},
+	{ call: (space) => `explore({ suite: "s", draw: drawn(${space}) }, check)`, reads: true },
+	{ call: (space) => `property.stateful(${space}, { situations: [] })`, reads: false }
+]
+
+/** One property: its space and the search that holds it. */
+type Stated = Readonly<{ space: Drawn; search: Search }>
 
 type Program = Readonly<{
 	code: string
 	reports: number
 	inScope: boolean
-	spaces: ReadonlyArray<Drawn>
+	stated: ReadonlyArray<Stated>
 }>
 
 const programs: Gen<Program> = (source) => {
-	const drawnSpaces = source.draw(array(spaces, { min: 1, max: 3 }))
+	const stated = source.draw(
+		array((one): Stated => ({ space: one.draw(spaces), search: one.draw(element(SEARCHES)) }), {
+			min: 1,
+			max: 3
+		})
+	)
 	const inScope = source.draw(boolean)
 	return {
 		code: Arr.join(
-			Arr.map(drawnSpaces, (one, at) =>
+			Arr.map(stated, ({ space, search }, at) =>
 				Str.replaceAll(
 					"$",
 					String(at)
-				)(
-					`${one.declared}export const p$ = property.explore({ space: ${one.space}, situations: [] })`
-				)
+				)(`${space.declared}export const p$ = ${search.call(space.space)}`)
 			),
 			"\n"
 		),
-		reports: Arr.reduce(drawnSpaces, 0, (sum, one) => sum + (inScope ? one.inScope : one.inSource)),
+		reports: Arr.reduce(stated, 0, (sum, { space, search }) =>
+			search.reads ? sum + (inScope ? space.inScope : space.inSource) : sum
+		),
 		inScope,
-		spaces: drawnSpaces
+		stated
 	}
 }
 
@@ -297,11 +329,11 @@ describe("no-case-list", () => {
 					},
 					(program, c) =>
 						Effect.sync(() => {
-							for (const one of program.spaces) {
-								c.note(one.kind)
+							for (const one of program.stated) {
+								c.note(one.search.reads ? one.space.kind : "a space that is no case list")
 							}
 							c.note(program.inScope ? "a module of test scope" : "a source module")
-							if (program.spaces.length > 1) {
+							if (program.stated.length > 1) {
 								c.note("a program of several properties")
 							}
 							deepStrictEqual(

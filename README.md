@@ -88,9 +88,12 @@ are properties is the properties pack, which that repository's conversion turns 
   (`testing/test-module-shape`: imports, type declarations and `export const x = <call>` alone, no Vitest import),
   which the preset applies to test modules only under the properties pack.
 - `devtools/no-case-list` is the core's: every repository states `"no-case-list": { searches, generators, mints,
-  cases, dictionaries }`. Spread `CASE_LISTS` (`@bjornpagen/testing/oxlint`: `property.explore`/`exhaust`/`batched`'s
-  `space`, the old `explore`/`exhaust`, `element`, `constant`, `int` (`"range"`), `map`, `span`, `aimed`, `finite`,
-  the choices, and the `dictionary` mint) and add the repository's own search helpers and generators; `cases` names
+  cases, dictionaries }`. A search says where it holds its space: `space: { argument: 0 }` (the constructors take it
+  first: `property.explore(space, spec)`, `exhaust`, `batched`, `interleave`; `stateful` takes a machine, no space) or
+  `space: { field: "draw" }` (the old `explore`'s spec field). Spread `CASE_LISTS` (`@bjornpagen/testing/oxlint`: the
+  four constructors, the old `explore`/`exhaust`, `element`, `constant`, `int` (`"range"`), `map`, `span`, `aimed`,
+  `finite`, the choices, and the `dictionary` mint), and `PROPERTY_SEARCHES(specifier)` for another specifier of the
+  property module (the toolchain's own `#property.ts`), and add the repository's own search helpers and generators; `cases` names
   source paths whose lists are cases (test scope needs no entry); `dictionaries` names the dictionary door modules
   of test scope a list may be imported from. It now follows a list imported from a module of test scope, a range of
   one value (`int(n, n)`) and a range over a list's index (`int(0, xs.length - 1)`).

@@ -84,8 +84,8 @@ export const FIXTURE_RULES: FixtureRules<
 	},
 	"no-case-list": {
 		searches: [
-			{ module: "#fixture/testing.ts", name: "exhaust", space: "generator" },
-			{ module: "#fixture/testing.ts", name: "explore", space: "draw" }
+			{ module: "#fixture/testing.ts", name: "exhaust", space: { field: "generator" } },
+			{ module: "#fixture/testing.ts", name: "explore", space: { field: "draw" } }
 		],
 		generators: [
 			{ module: "#fixture/testing.ts", names: ["element"], draws: "list" },

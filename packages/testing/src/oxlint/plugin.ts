@@ -123,17 +123,25 @@ export const TEST_RULES: DummyRuleMap = {
 export const MODULE_RULES: DummyRuleMap = atError(MODULE)
 
 /**
+ * The property constructors that take a space, as no-case-list reads them from a module: each holds it in its first
+ * argument (`property.explore(space, spec)`). `property.stateful` takes a machine, no space.
+ */
+export const PROPERTY_SEARCHES = (module: string) =>
+	Arr.map(
+		["property.explore", "property.exhaust", "property.batched", "property.interleave"] as const,
+		(name) => ({ module, name, space: { argument: 0 } }) as const
+	)
+
+/**
  * The library's searches, generators and dictionary mint as no-case-list reads them (the dev tools' rule), by the
  * specifiers a consumer imports them with: each search with the field of its spec that holds its space, each generator
  * with what it draws. A repository's configuration gives the rule these beside its own search helpers and generators.
  */
 export const CASE_LISTS = {
 	searches: [
-		{ module: "@bjornpagen/testing/property", name: "property.explore", space: "space" },
-		{ module: "@bjornpagen/testing/property", name: "property.exhaust", space: "space" },
-		{ module: "@bjornpagen/testing/property", name: "property.batched", space: "space" },
-		{ module: "@bjornpagen/testing/explore", name: "explore", space: "draw" },
-		{ module: "@bjornpagen/testing/explore", name: "exhaust", space: "generator" }
+		...PROPERTY_SEARCHES("@bjornpagen/testing/property"),
+		{ module: "@bjornpagen/testing/explore", name: "explore", space: { field: "draw" } },
+		{ module: "@bjornpagen/testing/explore", name: "exhaust", space: { field: "generator" } }
 	],
 	generators: [
 		{ module: "@bjornpagen/testing/gen", names: ["element"], draws: "list" },

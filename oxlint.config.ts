@@ -4,6 +4,7 @@ import {
 	CLOCK_RULES,
 	EVERY_FILE_RULES,
 	MODULE_RULES,
+	PROPERTY_SEARCHES,
 	TEST_RULES
 } from "@bjornpagen/testing/oxlint"
 import { defineConfig } from "oxlint"
@@ -45,8 +46,9 @@ export default defineConfig(
 			"no-case-list": {
 				searches: [
 					...CASE_LISTS.searches,
-					{ module: "#explore.ts", name: "exhaust", space: "generator" },
-					{ module: "#explore.ts", name: "explore", space: "draw" }
+					...PROPERTY_SEARCHES("#property.ts"),
+					{ module: "#explore.ts", name: "exhaust", space: { field: "generator" } },
+					{ module: "#explore.ts", name: "explore", space: { field: "draw" } }
 				],
 				generators: [
 					...CASE_LISTS.generators,
