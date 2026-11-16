@@ -187,8 +187,10 @@ whole section, and do every part: the parts are one migration, in the order a re
   `typecheck:full` in place of `typecheck`.
 - turbo.json: a `typecheck:full` task with the `typecheck` task's `dependsOn` and `inputs`, and `//#typecheck:full`;
   `NODE_OPTIONS` moves from `globalEnv` to `globalPassThroughEnv`. Never set `cacheDir`.
-- Agents' instructions: run `pnpm types` after an edit, never the root's `pnpm typecheck` (it checks the root's config
-  files only); the hooks run the linters; never `--no-verify` in the main tree.
+- Agents' instructions: no typecheck after an edit or in a hook; main is checked in full (`pnpm check`) every 30
+  minutes once changes are on it, and a red is fixed forward; never the root's `pnpm typecheck` (it checks the root's
+  config files only); the hooks run the AST-only linter and the affected properties; never `--no-verify` in the main
+  tree.
 
 ### 3. Hooks (e277d8d, 266897f, 057540d)
 
@@ -226,7 +228,8 @@ whole section, and do every part: the parts are one migration, in the order a re
         use_stdin: true
   ```
 
-  The commit gate needs the root's `types` script and `oxlint.ast.config.ts`; the push gate runs the root's `check`.
+  The commit gate needs `oxlint.ast.config.ts`; the push gate runs `toolchain-test affected` in each package with a
+  `test.config.ts`.
 
 - A repository's own index-copy script (grizzle's `scripts/dev/check-commit.sh`, the old `scripts/check-staged.sh`)
   becomes `sh vendor/toolchain/packages/devtools/bin/gate.sh run index pnpm check`: it handles submodules, which `git checkout-index` left

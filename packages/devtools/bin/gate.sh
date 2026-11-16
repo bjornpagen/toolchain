@@ -2,14 +2,16 @@
 # toolchain-gate: runs a check on exactly one snapshot of the repository, never on the working tree, so lanes that share
 # one checkout never fail or pass each other's work in progress.
 #
-#   toolchain-gate commit           the commit gate (lefthook's pre-commit): on what the index holds, `pnpm types`,
-#                                   oxfmt's check of the staged files and the AST-only oxlint (oxlint.ast.config.ts)
-#                                   on the staged files it reads, side by side
-#   toolchain-gate push             the push gate (lefthook's pre-push, with use_stdin): `pnpm check` on each commit the
-#                                   push sends, read from git's pre-push lines on stdin (HEAD when there are none);
-#                                   once a day `pnpm check:full` instead, where the repository has one; then, in each
-#                                   package with a test.config.ts, `toolchain-test affected <what the remote held>`:
-#                                   every property with no cached pass, and its kills, at full width
+#   toolchain-gate commit           the commit gate (lefthook's pre-commit): on what the index holds, oxfmt's check of
+#                                   the staged files and the AST-only oxlint (oxlint.ast.config.ts) on the staged files
+#                                   it reads, side by side
+#   toolchain-gate push             the push gate (lefthook's pre-push, with use_stdin): on each commit the push sends,
+#                                   read from git's pre-push lines on stdin (HEAD when there are none), in each package
+#                                   with a test.config.ts, `toolchain-test affected <what the remote held>`: every
+#                                   property with no cached pass, and its kills, at full width
+#
+# Neither gate typechecks or runs `pnpm check`: main is checked in full on a timer, every 30 minutes, once changes are
+# on it (Bjorn, 2026-11-16: "i would rather typecheck on a 30 min timer"), and a red there is fixed forward.
 #   toolchain-gate run <index|commit> <command> [arguments]
 #                                   any command on what the index holds, or on a commit
 #
@@ -27,12 +29,11 @@
 # is the first 12 hex digits of the git hash of the repository's identity: its origin remote URL when it has one, else
 # the absolute common git directory. Every clone of one repository (grizzle's lanes clone it under
 # ~/.cache/grizzle-release/<LANE>/) therefore shares the one commit snapshot and the one push snapshot, taking turns
-# under the lock, and the first run of the second clone is warm: the install and the typecheck's build info are there.
+# under the lock, and the first run of the second clone is warm: the install is there.
 #
 #   <key>/clones          the common git directories of the clones that have run here, one a line
 #   <key>/commit, push    the snapshots' checkouts           <key>/commit.git, push.git   their git directories
 #   <key>/commit.lock, push.lock   held (a pid file in a directory) while a run uses the snapshot
-#   <key>/push.full       stamped when the daily check:full passed
 #
 # The snapshot's git directory borrows objects (alternates) from ONE repository, and a shared snapshot has several
 # candidates. Each run rewrites the alternates to the objects of the clone whose commit it checks, under the lock and
@@ -69,7 +70,7 @@ key_of() {
 
 cache="$cache_root/$(key_of "$common_dir")"
 
-# The limits the gate reads, GATE_LOCK_POLL_SECONDS and GATE_FULL_CHECK_DAYS: the toolchain's packages/limits/limits.env,
+# The limit the gate reads, GATE_LOCK_POLL_SECONDS: the toolchain's packages/limits/limits.env,
 # which packages/limits generates from its Limits and `pnpm check` holds to them. It sits beside the dev tools, found from
 # this script's own path through any link to it (node_modules/.bin/toolchain-gate).
 script=$0
@@ -239,7 +240,6 @@ case $mode in
 		[ -f oxlint.ast.config.ts ] || die "the repository has no oxlint.ast.config.ts, the commit gate's AST-only oxlint"
 		logs=$(mktemp -d)
 		failed=
-		started types pnpm types
 		set -f
 		IFS=$newline
 		# shellcheck disable=SC2086
@@ -248,7 +248,6 @@ case $mode in
 		[ -z "$lintable" ] || started lint pnpm exec oxlint -c oxlint.ast.config.ts --no-error-on-unmatched-pattern $lintable
 		unset IFS
 		set +f
-		report types
 		report format
 		report lint
 		rm -rf "$logs"
@@ -284,18 +283,6 @@ case $mode in
 			base=${pair#*:}
 			(
 				enter push "$commit"
-				# The push snapshot keeps the incremental typecheck's build info between runs, so `pnpm check` re-checks
-				# what changed. A repository whose check:full runs the same gate from scratch (no build info, every task
-				# forced) has it run once every GATE_FULL_CHECK_DAYS (a day, Bjorn, 2026-11-15), so a stale result from build
-				# info lives that long at most; the stamp is written only when it passes.
-				check=check
-				if grep -q '"check:full"' package.json &&
-					[ -z "$(find "$cache/push.full" -mtime "-$GATE_FULL_CHECK_DAYS" 2>/dev/null)" ]; then
-					check=check:full
-				fi
-				printf 'toolchain-gate: pnpm %s on %s\n' "$check" "$commit" >&2
-				pnpm "$check"
-				[ "$check" = check ] || touch "$cache/push.full"
 				# The snapshot carries the repository's origin, so toolchain-test names the repository as every clone does
 				# and reads the verdicts their runs cached (${XDG_CACHE_HOME:-~/.cache}/toolchain-test/<key>/verdicts).
 				[ -z "$origin" ] || git config remote.origin.url "$origin"

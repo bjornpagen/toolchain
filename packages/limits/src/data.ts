@@ -1,7 +1,7 @@
 #!/usr/bin/env -S node
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
-import { gateFullCheckDays, gateLockPollSeconds } from "#limits.ts"
+import { gateLockPollSeconds } from "#limits.ts"
 
 /**
  * limits.env, the limits a program in another language reads, generated from the Limits that state them: a shell
@@ -11,8 +11,7 @@ import { gateFullCheckDays, gateLockPollSeconds } from "#limits.ts"
 
 /** Each limit a program in another language reads, by the name it reads it under. */
 const DATA = {
-	GATE_LOCK_POLL_SECONDS: gateLockPollSeconds,
-	GATE_FULL_CHECK_DAYS: gateFullCheckDays
+	GATE_LOCK_POLL_SECONDS: gateLockPollSeconds
 } as const
 
 const FILE = `${import.meta.dirname}/../limits.env`

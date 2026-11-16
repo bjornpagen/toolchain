@@ -5,10 +5,11 @@
 lefthook: node_modules/.bin/lefthook
 # Check-only gates: the hooks never format or stage files, they only refuse. Each runs on a snapshot of exactly what it
 # lets through, never on the working tree (toolchain-gate, packages/devtools/bin/gate.sh), so one lane's unfinished
-# files never fail another's commit or push. The commit's gate, on what the index holds, runs `pnpm types`, oxfmt's
-# check of the staged files and the AST-only oxlint (oxlint.ast.config.ts) on them, and builds no lint program; the
-# push's gate runs the full `pnpm check` on each commit the push sends, which git names on stdin. A merge or rebase
-# skips pre-commit; the push gate covers it.
+# files never fail another's commit or push. The commit's gate, on what the index holds, runs oxfmt's check of the
+# staged files and the AST-only oxlint (oxlint.ast.config.ts) on them, and builds no lint program; the push's gate runs
+# `toolchain-test affected` on each commit the push sends, which git names on stdin. Neither typechecks: main is
+# checked in full (`pnpm check`) every 30 minutes once changes are on it (Bjorn, 2026-11-16). A merge or rebase skips
+# pre-commit; the push gate covers it.
 pre-commit:
   skip:
     - merge
