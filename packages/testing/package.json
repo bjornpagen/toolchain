@@ -42,6 +42,7 @@
 		"./vitest/run": "./src/vitest/run.ts",
 		"./pattern": "./src/pattern.ts",
 		"./property": "./src/property.ts",
+		"./runner": "./src/runner/config.ts",
 		"./oxlint": "./src/oxlint/plugin.ts",
 		"./workers": "./src/workers.ts"
 	},
