@@ -183,6 +183,7 @@ const checkProperty = (kills: ReadonlyArray<Kill>): Property =>
 								finding: { kind: "lost", phase: "floor", where: run.id, report: "red" }
 							}
 			),
+		keep: () => ({ kind: "unfound", why: "a fixture keeps nothing" }),
 		replay: () => Effect.succeed({ kind: "exhausted", cases: 1, box: "the check", measures: [] }),
 		evaluate: () => Effect.succeed([])
 	})

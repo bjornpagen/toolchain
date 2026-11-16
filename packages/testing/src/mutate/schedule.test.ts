@@ -105,6 +105,7 @@ const fakeProperty = (seen: Ref.Ref<Seen>): Property =>
 						}
 					: { kind: "exhausted", cases: 1, box: "one fake case", measures: [] }
 			}),
+		keep: () => ({ kind: "unfound", why: "a fixture keeps nothing" }),
 		replay: () =>
 			Effect.succeed({ kind: "exhausted", cases: 1, box: "one fake case", measures: [] }),
 		evaluate: () => Effect.succeed([])

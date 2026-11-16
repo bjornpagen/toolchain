@@ -7,6 +7,7 @@ import {
 	Console,
 	Effect,
 	FileSystem,
+	Formatter,
 	Option,
 	Random,
 	Record as Rec,
@@ -18,13 +19,13 @@ import { imagesOf } from "#mutate/image.ts"
 import { type Judged, killsOf } from "#mutate/kills.ts"
 import { realPathOf } from "#mutate/mutated.ts"
 import { treesOf } from "#mutate/tree.ts"
-import { replayOf } from "#replay.ts"
+import { replayOf, replayTokenOf } from "#replay.ts"
 import { affected } from "#runner/affected.ts"
 import { HARDENED_FLAGS } from "#runner/config.ts"
 import { fuzz } from "#runner/fuzz.ts"
 import { mutantPoolOf } from "#runner/lease.ts"
 import { runnerLimits } from "#runner/limits.ts"
-import { configOf } from "#runner/load.ts"
+import { configOf, keptValuesAt } from "#runner/load.ts"
 import { failureLines, lineOf } from "#runner/report.ts"
 import { loadPackage, replayToken, runPackage } from "#runner/run.ts"
 
@@ -36,6 +37,7 @@ import { loadPackage, replayToken, runPackage } from "#runner/run.ts"
  *   toolchain-test kills [paths | property ids] each property's kills turn its witnesses red; exit 1 on any survivor
  *   toolchain-test affected <ref>               the push gate: every property with no cached pass, and its kills
  *   toolchain-test fuzz <fuzztime> [paths | ids] the scheduled fuzz budget: fresh seeds round after round
+ *   toolchain-test keep <id> <value file>       kept values as replay tokens, to paste into the property's kept
  *
  * A run prints its seed first (TEST_SEED reproduces the run), then one line per property, then each failure: the case
  * as it ran, its failure and its replay token. Every process of the run, this one and its workers, runs under the
@@ -191,6 +193,45 @@ const kills = (selected: ReadonlyArray<string>) =>
 	)
 
 /**
+ * `keep <id> <value file>`: each value the file keeps (its default export, an array of { value, reason, since }) as the
+ * replay token of the case the property's space draws it from (keep.ts), printed as a kept entry to paste into the
+ * property's `kept`; a value no tape draws is reported with why. 1 when any value has no token.
+ */
+const keep = (args: ReadonlyArray<string>) =>
+	Effect.gen(function* () {
+		const [id, file] = args
+		if (id === undefined || file === undefined) {
+			return yield* CommandFailed.make({
+				message: "keep takes a property and a value file: toolchain-test keep <id> <value file>"
+			})
+		}
+		const { discovered } = yield* loadPackage(root, [id])
+		const found = yield* Effect.mapError(
+			Effect.fromOption(Arr.findFirst(discovered, (one) => one.id === id)),
+			() => CommandFailed.make({ message: `${id} names no property of this package` })
+		)
+		const values = yield* keptValuesAt(root, file)
+		const tokens = Arr.map(values, (value) => ({
+			kept: value,
+			keeping: found.property.keep(value.value)
+		}))
+		yield* Console.log(
+			Arr.join(
+				Arr.map(tokens, ({ kept, keeping }) => {
+					switch (keeping.kind) {
+						case "found":
+							return `{ token: ReplayToken(${Formatter.format(replayTokenOf(id, keeping.replayed))}), reason: ${Formatter.format(kept.reason)}, since: ${Formatter.format(kept.since)} },`
+						case "unfound":
+							return `UNFOUND ${Formatter.format(kept.reason)}: ${keeping.why}`
+					}
+				}),
+				"\n"
+			)
+		)
+		return Arr.some(tokens, ({ keeping }) => keeping.kind === "unfound") ? 1 : 0
+	})
+
+/**
  * The commands, by name. A lane's command is an entry here (affected, kills, mutate, fuzz), reading the package as
  * loadPackage and runPackage (run.ts) give it.
  */
@@ -199,7 +240,8 @@ const commands: Readonly<Record<string, Command>> = {
 	replay: (args) => failing(replay(args)),
 	kills: (args) => failing(kills(args)),
 	affected: (args) => failing(affected(root, args)),
-	fuzz: (args) => failing(fuzz(root, args))
+	fuzz: (args) => failing(fuzz(root, args)),
+	keep: (args) => failing(keep(args))
 }
 
 /** The flags this process must run under: the hardened flags and the config's export conditions. */

@@ -3,10 +3,11 @@ import { Array as Arr, Brand, Effect, Formatter, Option, type Scope } from "effe
 import type { Machine, StatefulSpec } from "#commands.ts"
 import { statefulExplore } from "#commands.ts"
 import type { Oracle } from "#explore.ts"
-import { keyOf, type Pending, type Reached } from "#features.ts"
+import { keyOf, type Pending, pendingAt, type Reached } from "#features.ts"
 import type { Aimed, FiniteSpace, Gen, Space } from "#gen.ts"
 import type { Interleaved, InterleaveSpec } from "#interleave.ts"
 import { interleaveExplore } from "#interleave.ts"
+import type { ReplayCase } from "#replay.ts"
 import {
 	type BatchCheck,
 	type Case,
@@ -15,6 +16,7 @@ import {
 	evaluateBatch,
 	evaluateCase
 } from "#runner/case.ts"
+import { keptOf } from "#runner/keep.ts"
 import type { Batch, CaseResult, SearchRun, Sense, Verdict } from "#runner/protocol.ts"
 import { exhaustSearch, exploreSearch, replay, type Searched } from "#runner/search.ts"
 import type { NeedFailed, WorkerIndex } from "#runner/services.ts"
@@ -167,6 +169,57 @@ export type BatchedSpec<S, F extends string, N extends Needs, E> = Omit<
 		) => Effect.Effect<ReadonlyArray<Effect.Effect<void, E>>, E, CheckContext>
 	}>
 
+/**
+ * The case a kept value is, as a replay token holds it: the steering it is drawn under and its tape's values (keep.ts
+ * keptOf, under each steering the space aims by), or why none was found.
+ */
+export type Keeping =
+	| Readonly<{ kind: "found"; replayed: ReplayCase }>
+	| Readonly<{ kind: "unfound"; why: string }>
+
+/**
+ * The case a space draws `target` from: unsteered first, then under each of `aims` (an aimed space's situations, by
+ * place, each pending and aimed at), so a value only an aim draws is found with the steering that draws it.
+ */
+const keepingOf =
+	<S, F extends string>(drawing: Drawing<S, F>, aims: ReadonlyArray<number>) =>
+	(target: unknown): Keeping => {
+		const unsteered = keptOf(drawing.spaceUnder(Option.none()), target)
+		if (unsteered.kind === "found") {
+			return {
+				kind: "found",
+				replayed: { drawn: { kind: "unsteered" }, values: Arr.fromIterable(unsteered.values) }
+			}
+		}
+		for (const place of aims) {
+			const kept = keptOf(
+				drawing.spaceUnder(Option.some(pendingAt(drawing.situations, [place]))),
+				target
+			)
+			if (kept.kind === "found") {
+				return {
+					kind: "found",
+					replayed: {
+						drawn: { kind: "steered", pending: [place] },
+						values: Arr.fromIterable(kept.values)
+					}
+				}
+			}
+		}
+		return { kind: "unfound", why: unsteered.why }
+	}
+
+/** The places among `situations` of those an aimed space aims at: none for a plain space. */
+const aimPlacesOf = <S, F extends string>(
+	space: Space<S> | Aimed<S, F>,
+	situations: ReadonlyArray<Reached<F>>
+): ReadonlyArray<number> =>
+	typeof space === "function"
+		? []
+		: Arr.flatMap(situations, (situation, place) =>
+				Arr.some(space.aims, ([aimed]) => keyOf(aimed) === keyOf(situation)) ? [place] : []
+			)
+
 /** What kind of search a property is, as the report names it. */
 export type PropertyKind = "explore" | "exhaust" | "batched" | "interleave" | "stateful"
 
@@ -179,6 +232,7 @@ type Made = Readonly<{
 	kills: ReadonlyArray<Kill>
 	search: (run: SearchRun) => Effect.Effect<Verdict>
 	replay: (run: SearchRun, token: string) => Effect.Effect<Verdict>
+	keep: (target: unknown) => Keeping
 	evaluate: (batch: Batch) => Effect.Effect<ReadonlyArray<CaseResult>, never, CaseEnv>
 }>
 
@@ -196,6 +250,7 @@ export class Property {
 	readonly kills: ReadonlyArray<Kill>
 	readonly search: Made["search"]
 	readonly replay: Made["replay"]
+	readonly keep: Made["keep"]
 	readonly evaluate: Made["evaluate"]
 
 	constructor(made: Made) {
@@ -206,6 +261,7 @@ export class Property {
 		this.kills = made.kills
 		this.search = made.search
 		this.replay = made.replay
+		this.keep = made.keep
 		this.evaluate = made.evaluate
 	}
 }
@@ -272,6 +328,7 @@ const exploredAs =
 			kills: spec.kills,
 			search: exploreSearch(searched, 1),
 			replay: replay(searched),
+			keep: keepingOf(drawing, aimPlacesOf(spec.space, spec.situations)),
 			evaluate: (batch) => Effect.forEach(batch, evaluate)
 		})
 	}
@@ -289,11 +346,12 @@ export const property = {
 		spec: ExhaustSpec<S, F, N, E>
 	): Property => {
 		const searched = searchedOf(spec.situations, spec.kept, { kind: "notes" })
-		const evaluate = evaluateCase(
-			{ situations: spec.situations, spaceUnder: () => space, print: printOf(spec.show) },
-			spec.needs,
-			spec.check
-		)
+		const drawing: Drawing<S, F> = {
+			situations: spec.situations,
+			spaceUnder: () => space,
+			print: printOf(spec.show)
+		}
+		const evaluate = evaluateCase(drawing, spec.needs, spec.check)
 		return new Property({
 			kind: "exhaust",
 			needs: spec.needs,
@@ -302,6 +360,7 @@ export const property = {
 			kills: spec.kills,
 			search: exhaustSearch(searched, space, spec.box),
 			replay: replay(searched),
+			keep: keepingOf(drawing, []),
 			evaluate: (batch) => Effect.forEach(batch, evaluate)
 		})
 	},
@@ -312,6 +371,11 @@ export const property = {
 	): Property => {
 		const searched = searchedOf(spec.situations, spec.kept, { kind: "notes" })
 		const checkAll: BatchCheck<S, F, N, E> = spec.checkAll
+		const drawing: Drawing<S, F> = {
+			situations: spec.situations,
+			spaceUnder: () => space,
+			print: printOf(spec.show)
+		}
 		return new Property({
 			kind: "batched",
 			needs: spec.needs,
@@ -320,11 +384,8 @@ export const property = {
 			kills: spec.kills,
 			search: exploreSearch(searched, spec.size),
 			replay: replay(searched),
-			evaluate: evaluateBatch(
-				{ situations: spec.situations, spaceUnder: () => space, print: printOf(spec.show) },
-				spec.needs,
-				checkAll
-			)
+			keep: keepingOf(drawing, []),
+			evaluate: evaluateBatch(drawing, spec.needs, checkAll)
 		})
 	},
 	/** Concurrent sessions run under every order or a drawn schedule (interleave.ts). */

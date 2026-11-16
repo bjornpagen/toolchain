@@ -1,3 +1,4 @@
+import { regex } from "arkregex"
 import {
 	Array as Arr,
 	Effect,
@@ -257,3 +258,34 @@ export const propertyAt = (
 						)
 			})
 	})
+
+/** One value a kept regression holds, as a value file states it: the value, why it is kept, and since when. */
+const KeptValue = Schema.Struct({
+	value: Schema.Unknown,
+	reason: Schema.String,
+	since: Schema.String.check(Schema.isPattern(regex("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")))
+})
+
+/** The kept values a value file states: its default export, an array of { value, reason, since }. */
+const KeptValues = Schema.Array(KeptValue)
+
+export type KeptValue = typeof KeptValue.Type
+
+/**
+ * The kept values of a value file (a module under `root` whose default export is an array of { value, reason, since }),
+ * which `toolchain-test keep` turns into replay tokens.
+ */
+export const keptValuesAt = (
+	root: string,
+	path: string
+): Effect.Effect<ReadonlyArray<KeptValue>, LoadFailed, Path.Path> =>
+	Effect.flatMap(imported(root, path), (namespace) =>
+		Effect.mapError(
+			Schema.decodeUnknownEffect(KeptValues)(Reflect.get(namespace, "default")),
+			(wrong) =>
+				LoadFailed.make({
+					path,
+					message: `${path} must export as its default an array of { value, reason, since: "YYYY-MM-DD" }: ${wrong.message}`
+				})
+		)
+	)
