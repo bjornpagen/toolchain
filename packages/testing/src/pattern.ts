@@ -280,6 +280,9 @@ const parse = (source: string): Node => {
 		}
 		if (point === "?") {
 			at += 1
+			if (peek() === "?") {
+				at += 1
+			}
 			return { kind: "repeat", node, min: 0, max: 1 }
 		}
 		if (point !== "{") {

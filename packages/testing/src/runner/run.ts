@@ -13,7 +13,7 @@ import type { Kill, PropertyId, PropertyKind } from "#property.ts"
 import { type RunnerConfig, SMALL_STACK } from "#runner/config.ts"
 import { runnerLimits } from "#runner/limits.ts"
 import { configOf, type Discovered, discover, type LoadFailed, matchedBy } from "#runner/load.ts"
-import { type Pool, type PoolFailed, poolOf } from "#runner/pool.ts"
+import { type Pool, PoolFailed, poolOf } from "#runner/pool.ts"
 import type { Reach, Verdict } from "#runner/protocol.ts"
 import { labelOf, runOfLabel, type Stack } from "#runner/stack.ts"
 import { testWorkers } from "#workers.ts"
@@ -61,6 +61,18 @@ export type RunRequest = Readonly<{
 
 /** The worker's entry module, beside this one. */
 export const WORKER_ENTRY = `${import.meta.dirname}/worker.ts`
+
+/**
+ * Which workers a run's cases go to: its stack, and whether they start V8's precise coverage before loading any module
+ * (a guided property's), so only a guided property's workers pay for counting blocks.
+ */
+type Workers = readonly [stack: Stack, guide: "notes" | "blocks"]
+
+/** The workers a property's run on `stack` takes its cases to. */
+const workersOf = (stack: Stack, found: Discovered): Workers => [stack, found.property.guide.kind]
+
+/** A kind of workers as a key. */
+const labelOfWorkers = ([stack, guide]: Workers): string => `${stack}/${guide}`
 
 /** The flags a stack's workers run under: this process's, and the small stack's on top for the small stack. */
 const flagsOf = (stack: Stack): ReadonlyArray<string> => {
@@ -147,32 +159,38 @@ export const runPackage = (
 		const runs = Arr.flatMap(discovered, (found) =>
 			Arr.map(stacksOf(found), (stack) => ({ found, stack }))
 		)
-		const poolFor = (stack: Stack) =>
-			poolOf({
+		const kinds = new Map(
+			Arr.map(runs, ({ found, stack }) => {
+				const kind = workersOf(stack, found)
+				return [labelOfWorkers(kind), kind] as const
+			})
+		)
+		const pools = new Map<string, Pool>()
+		for (const [label, [stack, guide]] of kinds) {
+			const pool = yield* poolOf({
 				entry: WORKER_ENTRY,
 				root: request.root,
 				cwd: request.root,
 				env: {},
 				workers: testWorkers,
 				execArgv: flagsOf(stack),
-				guide: Arr.some(discovered, (found) => found.property.guide.kind === "blocks")
-					? "blocks"
-					: "notes"
+				guide
 			})
-		const pool = yield* poolFor("default")
-		const small: Option.Option<Pool> = yield* Arr.some(runs, (one) => one.stack === "small")
-			? Effect.asSome(poolFor("small"))
-			: Effect.succeedNone
+			pools.set(label, pool)
+		}
 		const properties = yield* Effect.forEach(
 			runs,
 			({ found, stack }) =>
 				Effect.gen(function* () {
 					const start = yield* liveMillis
 					const label = labelOf(found.id, stack)
-					const evaluator = Option.match(small, {
-						onNone: () => pool.evaluator,
-						onSome: (smallPool) => (stack === "small" ? smallPool.evaluator : pool.evaluator)
-					})
+					const pool = yield* Effect.mapError(
+						Effect.fromOption(
+							Option.fromUndefinedOr(pools.get(labelOfWorkers(workersOf(stack, found))))
+						),
+						() => PoolFailed.make({ message: `no pool was forked for ${label}` })
+					)
+					const evaluator = pool.evaluator
 					const verdict = yield* found.property.search({
 						id: label,
 						seed: request.seed,
@@ -195,7 +213,8 @@ export const runPackage = (
 				}),
 			{ concurrency: "unbounded" }
 		)
-		const workers = yield* pool.cases
+		const counted = yield* Effect.forEach(Arr.fromIterable(pools.values()), (pool) => pool.cases)
+		const workers = Arr.flatten(counted)
 		const ended = yield* liveMillis
 		return { properties, millis: ended - began, workers }
 	})
