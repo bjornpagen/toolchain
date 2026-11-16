@@ -1,7 +1,8 @@
-import { grizzle, toolchain } from "@bjornpagen/devtools/config"
+import { grizzle, properties, toolchain } from "@bjornpagen/devtools/config"
 
-/** The toolchain repository's own decisions: the rules and diagnostics it rejects, and the grizzle pack, whose standard
- * the testing library is held to; the pack's names are oxlint.config.ts's. */
+/** The toolchain repository's own decisions: the rules and diagnostics it rejects, the grizzle pack, whose standard the
+ * testing library is held to, and the properties pack, since its tests are the runner's properties; the packs' names are
+ * oxlint.config.ts's. */
 export default toolchain({
 	rejected: {
 		rules: {
@@ -109,5 +110,5 @@ export default toolchain({
 	},
 	exceptions: [],
 	effectFree: [],
-	packs: [grizzle()]
+	packs: [grizzle(), properties()]
 })

@@ -55,7 +55,7 @@
 		"typecheck": "toolchain-typecheck",
 		"typecheck:full": "toolchain-typecheck --incremental false",
 		"oxlint": "toolchain-oxlint",
-		"test": "vitest run",
+		"test": "toolchain-test run",
 		"bench": "vitest bench --run",
 		"mutate": "toolchain-test mutate",
 		"codemod": "node scripts/codemod/main.ts"

@@ -2,10 +2,10 @@ import { fixtureServices } from "#resources/resources.fixtures.ts"
 import { defineRunner } from "#runner/config.ts"
 
 /**
- * The testing library's runner config: the test modules toolchain-test runs, which Vitest's config leaves to it as
- * they are converted to properties; no export conditions; the PostgreSQL cluster libpq's environment names
- * (resources.fixtures.ts; CONTRIBUTING.md, "Properties that need a database"), built only when a case first opens a
- * need; and the library's operators alone for mutation.
+ * The testing library's runner config: the test modules toolchain-test runs, every property module of the package; no
+ * export conditions; the PostgreSQL cluster libpq's environment names (resources.fixtures.ts; CONTRIBUTING.md,
+ * "Properties that need a database"), built only when a case first opens a need; and the library's operators alone
+ * for mutation.
  */
 export default defineRunner({
 	include: [

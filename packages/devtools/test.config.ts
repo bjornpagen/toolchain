@@ -2,9 +2,8 @@ import { defineRunner } from "@bjornpagen/testing/runner"
 import { Layer } from "effect"
 
 /**
- * The dev tools' runner config: the test modules toolchain-test runs, which Vitest's config leaves to it as they are
- * converted to properties; no export conditions; no services beyond the runner's own; and the library's operators
- * alone for mutation.
+ * The dev tools' runner config: the test modules toolchain-test runs, every property module of the package; no export
+ * conditions; no services beyond the runner's own; and the library's operators alone for mutation.
  */
 export default defineRunner({
 	include: [
