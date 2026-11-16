@@ -1,0 +1,240 @@
+import { regex } from "arkregex"
+import {
+	Array as Arr,
+	Brand,
+	Context,
+	Deferred,
+	Effect,
+	Layer,
+	Option,
+	Predicate,
+	Ref,
+	Scope,
+	String as Str
+} from "effect"
+import { NeedFailed, WorkerIndex } from "#runner/services.ts"
+
+/**
+ * A member of a repository's PostgreSQL cluster: one postmaster, where templates are built and cloned. A cluster is one
+ * member or a family of them (grizzle's), and a worker reaches one member for its life. A repository whose checks
+ * connect to a case's database by more than the member's name (a port, a CA, a password) adds those fields by
+ * augmenting this interface: `declare module "@bjornpagen/testing/resources" { interface PgMember { port: number } }`.
+ */
+export interface PgMember {
+	/** The member's name, unique among its cluster's members for the member's life (grizzle: its port). */
+	readonly name: string
+}
+
+/**
+ * A session on one member as the cluster's owner role (the role that may CREATE DATABASE and owns what it creates),
+ * which the repository opens over its own client: one statement at a time, concurrent callers taking turns, each with
+ * text parameters. Every statement this library sends casts each column it reads to text, so a row's columns arrive as
+ * strings, or null, from any client.
+ */
+export interface PgSession {
+	readonly query: (
+		sql: string,
+		params: ReadonlyArray<string>
+	) => Effect.Effect<ReadonlyArray<ReadonlyArray<unknown>>, NeedFailed>
+}
+
+/** A statement's rows as this library reads them: each column the server's text, or null. */
+export type TextRows = ReadonlyArray<ReadonlyArray<string | null>>
+
+/** The prefix every database this library names on a cluster carries: the repository's, so its sweep can tell them. */
+export type DatabasePrefix = string & Brand.Brand<"DatabasePrefix">
+
+/**
+ * A prefix is a lowercase letter, then lowercase letters, digits and underscores, at most 27 characters in all, so the
+ * longest name this library mints after it (names.ts templateName: `tpl_` and 32 hex digits) fits PostgreSQL's
+ * identifiers.
+ *
+ * @formatConstant PostgreSQL's NAMEDATALEN of 64: an identifier is at most 63 bytes
+ * (https://github.com/postgres/postgres/blob/REL_19_RC2/src/include/pg_config_manual.h#L29), less the 36 of the
+ * longest suffix
+ */
+const prefixPattern = regex("^[a-z][a-z0-9_]{0,26}$")
+
+/** The repository's prefix, refused unless it is a lowercase identifier short enough for every name minted after it. */
+export const DatabasePrefix = Brand.make<DatabasePrefix>((text) => prefixPattern.test(text))
+
+/** A database name on a member: minted only in names.ts, after the cluster's prefix. */
+export type DatabaseName = string & Brand.Brand<"DatabaseName">
+
+/**
+ * What a repository states about its cluster, which `PgCluster.layer` turns into the runner service its databases come
+ * from: the prefix of every name this library mints there; its members (the first a worker of index i reaches is
+ * member i mod their count, so a run's workers spread over them evenly); the database a template built from the
+ * cluster itself copies (IS_TEMPLATE, never connected to, grizzle_template); the owner's own database, where this
+ * library's sessions and advisory locks live; and how to open a session as the owner on a member in a database.
+ */
+export type PgClusterSpec = Readonly<{
+	prefix: DatabasePrefix
+	members: Effect.Effect<Arr.NonEmptyReadonlyArray<PgMember>, NeedFailed>
+	base: string
+	maintenance: string
+	connect: (member: PgMember, database: string) => Effect.Effect<PgSession, NeedFailed, Scope.Scope>
+}>
+
+/**
+ * A worker's owner session on one member, opened the first time the worker reaches the member and held for the
+ * worker's life: every create and drop of the worker's databases there runs on it, and it holds the session-level
+ * advisory lock of the worker's owner key, which every clone the worker makes carries in its name. A clone whose owner
+ * lock is free belongs to a worker that has ended, so collection drops it (collect.ts); the lock, not a process id, is
+ * what tells, so it holds across machines and reused pids.
+ */
+export type Owner = Readonly<{
+	member: PgMember
+	session: PgSession
+	key: OwnerKey
+	serial: Effect.Effect<number>
+}>
+
+/** A worker's owner key on a member: 16 lowercase hex digits, 64 random bits, an advisory lock's bigint key. */
+export type OwnerKey = string & Brand.Brand<"OwnerKey">
+
+const ownerKey = Brand.nominal<OwnerKey>()
+
+/** The service a repository's runner config provides for its cluster (PgCluster.layer of its spec). */
+export type PgClusterShape = Readonly<{
+	prefix: DatabasePrefix
+	base: string
+	maintenance: string
+	connect: PgClusterSpec["connect"]
+	/** The cluster's members, read once, the first time a need asks. */
+	members: Effect.Effect<Arr.NonEmptyReadonlyArray<PgMember>, NeedFailed>
+	/** The member a worker reaches: worker i of a run on member i mod the members' count. */
+	memberOf: (
+		worker: Context.Service.Shape<typeof WorkerIndex>
+	) => Effect.Effect<PgMember, NeedFailed>
+	/** The worker's owner on `member`, opened once (Owner). */
+	owner: (member: PgMember) => Effect.Effect<Owner, NeedFailed>
+}>
+
+/** The decode of a statement's rows: every column a string or null, or NeedFailed naming the statement. */
+const textRows = (
+	sql: string,
+	rows: ReadonlyArray<ReadonlyArray<unknown>>
+): Effect.Effect<TextRows, NeedFailed> =>
+	Arr.every(rows, (row) =>
+		Arr.every(row, (column) => Predicate.isString(column) || Predicate.isNull(column))
+	)
+		? Effect.succeed(
+				Arr.map(rows, (row) =>
+					Arr.map(row, (column) => (Predicate.isString(column) ? column : null))
+				)
+			)
+		: Effect.fail(
+				NeedFailed.make({
+					need: "pg",
+					message: `a column of ${sql} came back as neither text nor null: the session must give each column's text`
+				})
+			)
+
+/** One statement on `session`, its rows decoded as text. */
+export const run = (
+	session: PgSession,
+	sql: string,
+	params: ReadonlyArray<string>
+): Effect.Effect<TextRows, NeedFailed> =>
+	Effect.flatMap(session.query(sql, params), (rows) => textRows(sql, rows))
+
+/** The first column of the first row of `sql`'s answer, or NeedFailed when it has none. */
+export const single = (
+	session: PgSession,
+	sql: string,
+	params: ReadonlyArray<string>
+): Effect.Effect<string | null, NeedFailed> =>
+	Effect.flatMap(run(session, sql, params), (rows) =>
+		Effect.mapError(Effect.fromOption(Option.flatMap(Arr.head(rows), Arr.head)), () =>
+			NeedFailed.make({ need: "pg", message: `${sql} answered no row` })
+		)
+	)
+
+/** The bigint advisory-lock key a 16-hex-digit text names, in SQL: its 64 bits read as a signed int8. */
+export const lockKey = (placeholder: string): string => `('x' || ${placeholder})::bit(64)::int8`
+
+/**
+ * Opens the worker's owner on `member` in `scope`: a session in the owner's database holding the lock of a fresh owner
+ * key, 64 bits the server draws (the MD5 of a random UUID's text) and locks in one statement, and the counter of the
+ * clones it names.
+ */
+const openOwner = (
+	spec: PgClusterSpec,
+	member: PgMember,
+	scope: Scope.Scope
+): Effect.Effect<Owner, NeedFailed> =>
+	Effect.gen(function* () {
+		const session = yield* Scope.provide(spec.connect(member, spec.maintenance), scope)
+		const key = ownerKey(
+			(yield* single(
+				session,
+				`SELECT k FROM (SELECT pg_catalog.substr(pg_catalog.md5(pg_catalog.gen_random_uuid()::text), 1, 16) AS k) AS fresh, LATERAL (SELECT pg_catalog.pg_advisory_lock(${lockKey("fresh.k")})) AS locked`,
+				[]
+			)) ?? ""
+		)
+		const serial = yield* Ref.make(0)
+		return { member, session, key, serial: Ref.updateAndGet(serial, (n) => n + 1) }
+	})
+
+/** The runner service of a repository's PostgreSQL cluster, from which every Template.database and Database comes. */
+export class PgCluster extends Context.Service<PgCluster, PgClusterShape>()(
+	"@bjornpagen/testing/resources/cluster/PgCluster"
+) {
+	/**
+	 * The service a repository's runner config provides (its `layer`), built once per worker the first time a case
+	 * there opens a need: it reads nothing then, so a worker whose needs use no database never reaches the cluster; its
+	 * members are read the first time a need asks, and an owner per member opened when the worker first reaches it,
+	 * held until the worker ends.
+	 */
+	static readonly layer = (spec: PgClusterSpec): Layer.Layer<PgCluster> =>
+		Layer.effect(
+			PgCluster,
+			Effect.gen(function* () {
+				const scope = yield* Effect.scope
+				const members = yield* Effect.cached(spec.members)
+				const owners = new Map<string, Deferred.Deferred<Owner, NeedFailed>>()
+				return {
+					prefix: spec.prefix,
+					base: spec.base,
+					maintenance: spec.maintenance,
+					connect: spec.connect,
+					members,
+					memberOf: (worker) =>
+						Effect.map(members, (all) => Arr.getUnsafe(all, worker.index % all.length)),
+					owner: (member) =>
+						Effect.suspend(() =>
+							Option.match(Option.fromUndefinedOr(owners.get(member.name)), {
+								onSome: Deferred.await,
+								onNone: () => {
+									const opened = Deferred.makeUnsafe<Owner, NeedFailed>()
+									owners.set(member.name, opened)
+									return Effect.andThen(
+										Deferred.into(openOwner(spec, member, scope), opened),
+										Deferred.await(opened)
+									)
+								}
+							})
+						)
+				}
+			})
+		)
+}
+
+/**
+ * A repository's runner service a need reads (PgCluster, which its runner config's layer provides): the library does
+ * not declare it in RunnerServices, so a repository with no database needs provides none; a need that reads one the run
+ * lacks fails, naming it.
+ */
+export const required = <I, S>(key: Context.Key<I, S>, why: string): Effect.Effect<S, NeedFailed> =>
+	Effect.flatMap(Effect.serviceOption(key), (found) =>
+		Effect.mapError(Effect.fromOption(found), () =>
+			NeedFailed.make({ need: key.key, message: `the run provides no ${key.key}: ${why}` })
+		)
+	)
+
+/** An identifier quoted for SQL: in double quotes, each double quote doubled. */
+export const quoteIdent = (name: string): string => `"${Str.replaceAll('"', '""')(name)}"`
+
+/** A text quoted as an SQL literal under standard_conforming_strings: in single quotes, each single quote doubled. */
+export const quoteLiteral = (text: string): string => `'${Str.replaceAll("'", "''")(text)}'`

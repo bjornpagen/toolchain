@@ -1,0 +1,464 @@
+/**
+ * The per-case resources (resources/): a fresh clone holds its template's rows and its case's alone; a template is
+ * built once however many open it at once; a template whose module's closure changed is a new one and the old is
+ * collected, with the clones of a worker that ended; a pool never hands one clone twice; a seat comes back to its
+ * template after every case or is replaced, failing the case that left something; a transaction case is rolled back
+ * and one that commits fails; a scratch directory is the case's own and gone after it. Run against the PostgreSQL
+ * libpq's environment names (resources.fixtures.ts). Oracle: the specification, stated in each check.
+ */
+import {
+	Array as Arr,
+	Cause,
+	Context,
+	Effect,
+	Exit,
+	Layer,
+	Number as Num,
+	Ref,
+	Scope
+} from "effect"
+import { assertTrue, deepStrictEqual, strictEqual } from "#assert.ts"
+import { array, boolean, int } from "#gen.ts"
+import { property } from "#property.ts"
+import { PgCluster, single } from "#resources/cluster.ts"
+import { collect } from "#resources/collect.ts"
+import { Database } from "#resources/database.ts"
+import {
+	dropTemplate,
+	exists,
+	inDatabase,
+	marksTemplate,
+	ownCluster,
+	runsOf,
+	seatReset,
+	seatTemplate,
+	services,
+	fixturesModule,
+	templateNameOf,
+	tokenTemplate
+} from "#resources/resources.fixtures.ts"
+import { ModuleClosure, WorkerIndex } from "#runner/services.ts"
+
+export const freshIsolation = property.explore(array(int(-5, 5), { min: 0, max: 6 }), {
+	needs: { db: Database.fresh(marksTemplate), services },
+	situations: ["a case writing no row", "a case writing several rows"],
+	check:
+		({ db, services: context }, c) =>
+		(values) =>
+			Effect.gen(function* () {
+				c.note(values.length === 0 ? "a case writing no row" : "a case writing several rows")
+				const ctx = yield* context
+				const database = yield* db
+				const seen = yield* Effect.provideContext(
+					Effect.gen(function* () {
+						const [[token] = []] = yield* inDatabase(
+							database,
+							"SELECT pg_catalog.gen_random_uuid()::text",
+							[]
+						)
+						yield* Effect.forEach(
+							values,
+							(value) =>
+								inDatabase(database, "INSERT INTO public.marks VALUES ($1, $2::int4)", [
+									token ?? "",
+									String(value)
+								]),
+							{ discard: true }
+						)
+						const rows = yield* inDatabase(
+							database,
+							"SELECT m.token, m.value::text FROM public.marks AS m WHERE m.token <> 'seed' ORDER BY m.value, m.token",
+							[]
+						)
+						const settings = yield* inDatabase(
+							database,
+							"SELECT pg_catalog.current_setting('default_transaction_isolation'), pg_catalog.current_setting('search_path'), pg_catalog.has_database_privilege('pg_monitor', pg_catalog.current_database(), 'TEMPORARY')::text, pg_catalog.has_database_privilege('public', pg_catalog.current_database(), 'TEMPORARY')::text",
+							[]
+						)
+						const seeds = yield* inDatabase(
+							database,
+							"SELECT pg_catalog.count(*)::text FROM public.marks WHERE token = 'seed'",
+							[]
+						)
+						return { rows, token: token ?? "", seeds, settings }
+					}),
+					ctx
+				)
+				deepStrictEqual(seen.seeds, [["1"]])
+				deepStrictEqual(seen.settings, [
+					["serializable", '"$user", public, pg_catalog', "true", "false"]
+				])
+				deepStrictEqual(
+					seen.rows,
+					Arr.map(Arr.sort(values, Num.Order), (value) => [seen.token, String(value)])
+				)
+			}),
+	oracle: {
+		kind: "specification",
+		name: "a fresh clone holds its template's seed and the rows its own case wrote, and no other case's"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/resources/database.ts",
+			original: "\t\t\t\tyield* Queue.offer(ready, { made, done })\n",
+			replacement:
+				"\t\t\t\tyield* Queue.offer(ready, { made, done })\n\t\t\t\tyield* Queue.offer(ready, { made, done })\n",
+			why: "A slot offers each clone twice, so a second case is handed the database a first case wrote to, or already dropped; the property fails."
+		},
+		{
+			file: "packages/testing/src/resources/template.ts",
+			original: "replay(quoteIdent(made)),",
+			replacement: "[],",
+			why: "A clone is not given its template's settings and privileges, which CREATE DATABASE does not copy, so it serializes nothing by default and PUBLIC may create temporary tables in it; the property fails."
+		}
+	]
+})
+
+export const builtOnce = property.explore(int(2, 8), {
+	needs: { services },
+	situations: ["two builders at once", "many builders at once"],
+	check:
+		({ services: context }, c) =>
+		(builders) =>
+			Effect.gen(function* () {
+				c.note(builders === 2 ? "two builders at once" : "many builders at once")
+				const ctx = yield* context
+				const builds = yield* Ref.make(0)
+				const outcome = yield* Effect.provideContext(
+					Effect.gen(function* () {
+						const cluster = yield* PgCluster
+						const member = yield* Effect.map(cluster.members, Arr.headNonEmpty)
+						const token = yield* Effect.scoped(
+							Effect.flatMap(cluster.connect(member, cluster.maintenance), (session) =>
+								single(session, "SELECT pg_catalog.gen_random_uuid()::text", [])
+							)
+						)
+						const template = tokenTemplate(token ?? "", () => Ref.update(builds, (n) => n + 1))
+						const names = yield* Effect.forEach(
+							Array.from({ length: builders }, () => template.open),
+							(open) =>
+								Effect.scoped(
+									Effect.flatMap(open, (opened) => Effect.map(opened.clone, (clone) => clone.name))
+								),
+							{ concurrency: "unbounded" }
+						)
+						const built = yield* Effect.flatMap(cluster.members, (all) =>
+							Effect.scoped(
+								Effect.flatMap(
+									cluster.connect(Arr.headNonEmpty(all), cluster.maintenance),
+									(session) =>
+										single(
+											session,
+											"SELECT pg_catalog.count(*)::text FROM pg_catalog.pg_database WHERE datistemplate AND pg_catalog.shobj_description(oid, 'pg_database') LIKE $1",
+											[`%token ${token ?? ""}%`]
+										)
+								)
+							)
+						)
+						const templateName = yield* Effect.flatMap(cluster.members, (all) =>
+							Effect.scoped(
+								Effect.flatMap(
+									cluster.connect(Arr.headNonEmpty(all), cluster.maintenance),
+									(session) =>
+										single(
+											session,
+											"SELECT datname::text FROM pg_catalog.pg_database WHERE pg_catalog.shobj_description(oid, 'pg_database') LIKE $1",
+											[`%token ${token ?? ""}%`]
+										)
+								)
+							)
+						)
+						yield* dropTemplate({ member, name: templateNameOf(templateName ?? "") })
+						return { names, built }
+					}),
+					ctx
+				)
+				const buildsRun = yield* Ref.get(builds)
+				strictEqual(buildsRun, 1)
+				strictEqual(outcome.built, "1")
+				strictEqual(new Set(outcome.names).size, builders)
+			}),
+	oracle: {
+		kind: "specification",
+		name: "concurrent openers of one template on one member build it once, each then cloning its own database"
+	},
+	kept: [],
+	kills: []
+})
+
+export const pooledOnce = property.explore(array(boolean, { min: 1, max: 12 }), {
+	needs: { services },
+	situations: ["takers one after another", "takers at once"],
+	check:
+		({ services: context }, c) =>
+		(atOnce) =>
+			Effect.gen(function* () {
+				c.note(Arr.some(atOnce, (b) => b) ? "takers at once" : "takers one after another")
+				const ctx = yield* context
+				const held = yield* Ref.make<ReadonlySet<string>>(new Set())
+				const taken = yield* Ref.make<ReadonlyArray<string>>([])
+				const twice = yield* Ref.make(false)
+				yield* Effect.provideContext(
+					Effect.scoped(
+						Effect.gen(function* () {
+							const take = yield* Database.fresh(marksTemplate).open
+							const takeOne = Effect.scoped(
+								Effect.gen(function* () {
+									const database = yield* take
+									const already = yield* Ref.modify(
+										held,
+										(names): readonly [boolean, ReadonlySet<string>] => [
+											names.has(database.name),
+											new Set([...names, database.name])
+										]
+									)
+									if (already) {
+										yield* Ref.set(twice, true)
+									}
+									yield* Ref.update(taken, (names) => [...names, database.name])
+									yield* Effect.yieldNow
+									yield* Ref.update(
+										held,
+										(names) => new Set(Arr.filter([...names], (name) => name !== database.name))
+									)
+								})
+							)
+							yield* Effect.forEach(
+								runsOf(atOnce),
+								(run) =>
+									Effect.forEach(run, () => takeOne, { concurrency: "unbounded", discard: true }),
+								{ discard: true }
+							)
+						})
+					),
+					ctx
+				)
+				const names = yield* Ref.get(taken)
+				const handedTwice = yield* Ref.get(twice)
+				assertTrue(!handedTwice)
+				strictEqual(new Set(names).size, names.length)
+			}),
+	oracle: { kind: "specification", name: "a pool hands each clone to one case, never to two" },
+	kept: [],
+	kills: []
+})
+
+export const staleCollected = property.explore(int(1, 3), {
+	needs: { services },
+	situations: ["one clone of an ended worker", "several clones of an ended worker"],
+	check:
+		({ services: context }, c) =>
+		(clones) =>
+			Effect.gen(function* () {
+				c.note(clones === 1 ? "one clone of an ended worker" : "several clones of an ended worker")
+				const ctx = yield* context
+				const worker = Context.get(ctx, WorkerIndex)
+				const outcome = yield* Effect.scoped(
+					Effect.gen(function* () {
+						const prefixToken = yield* Effect.provideContext(
+							Effect.gen(function* () {
+								const cluster = yield* PgCluster
+								const member = yield* Effect.map(cluster.members, Arr.headNonEmpty)
+								return yield* Effect.scoped(
+									Effect.flatMap(cluster.connect(member, cluster.maintenance), (session) =>
+										single(
+											session,
+											"SELECT pg_catalog.substr(pg_catalog.md5(pg_catalog.gen_random_uuid()::text), 1, 12)",
+											[]
+										)
+									)
+								)
+							}),
+							ctx
+						)
+						const prefix = `tcs${prefixToken ?? ""}_`
+						const template = tokenTemplate(prefix, () => Effect.void)
+						const runnerClosures = Context.get(ctx, ModuleClosure)
+						const closure = (module: string) =>
+							Context.make(ModuleClosure, { hashOf: () => runnerClosures.hashOf(module) })
+						const ended = yield* Scope.make()
+						const endedCluster = yield* Scope.provide(Layer.build(ownCluster(prefix)), ended)
+						const left = yield* Effect.provideContext(
+							Effect.gen(function* () {
+								const opened = yield* template.open
+								return yield* Effect.forEach(
+									Array.from({ length: clones }, () => opened.clone),
+									(clone) => clone
+								)
+							}),
+							Context.merge(
+								endedCluster,
+								Context.merge(closure(fixturesModule), Context.make(WorkerIndex, worker))
+							)
+						)
+						yield* Scope.close(ended, Exit.void)
+						const live = yield* Layer.build(ownCluster(prefix))
+						const inLive = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+							Effect.provideContext(
+								effect,
+								Context.merge(
+									live,
+									Context.merge(closure(import.meta.url), Context.make(WorkerIndex, worker))
+								)
+							)
+						const current = yield* inLive(Effect.flatMap(template.open, (opened) => opened.clone))
+						const collected = yield* inLive(collect([template]))
+						const gone = yield* inLive(
+							Effect.forEach(left, (database) => Effect.map(exists(database), (found) => !found))
+						)
+						const kept = yield* inLive(exists(current))
+						yield* inLive(collect([]))
+						return { collected, gone, kept }
+					})
+				)
+				assertTrue(Arr.every(outcome.gone, (gone) => gone))
+				assertTrue(outcome.kept)
+				strictEqual(Arr.flatMap(outcome.collected, (member) => member.dropped).length, clones + 1)
+			}),
+	oracle: {
+		kind: "specification",
+		name: "collection drops the clones of an ended worker and the template no declaration names, and keeps the declared one"
+	},
+	kept: [],
+	kills: []
+})
+
+export const seatSettles = property.explore(
+	(source) => ({
+		values: source.draw(array(int(0, 9), { min: 0, max: 5 })),
+		leaks: source.draw(boolean)
+	}),
+	{
+		needs: { services },
+		situations: ["a seat reset after rows", "a seat replaced after a leak"],
+		check:
+			({ services: context }, c) =>
+			({ values, leaks }) =>
+				Effect.gen(function* () {
+					c.note(leaks ? "a seat replaced after a leak" : "a seat reset after rows")
+					const ctx = yield* context
+					const outcome = yield* Effect.provideContext(
+						Effect.scoped(
+							Effect.gen(function* () {
+								const take = yield* Database.seat(seatTemplate, seatReset).open
+								const first = yield* Scope.make()
+								const database = yield* Scope.provide(take, first)
+								yield* Effect.forEach(
+									values,
+									(value) =>
+										inDatabase(database, "INSERT INTO public.items (value) VALUES ($1::int4)", [
+											String(value)
+										]),
+									{ discard: true }
+								)
+								yield* inDatabase(database, "SELECT pg_catalog.nextval('public.tickets')::text", [])
+								if (leaks) {
+									yield* inDatabase(database, "INSERT INTO public.ledger VALUES ('leak')", [])
+								}
+								const closed = yield* Effect.exit(Scope.close(first, Exit.void))
+								const again = yield* Effect.scoped(
+									Effect.gen(function* () {
+										const next = yield* take
+										const items = yield* inDatabase(
+											next,
+											"SELECT pg_catalog.count(*)::text FROM public.items",
+											[]
+										)
+										const ledger = yield* inDatabase(
+											next,
+											"SELECT entry FROM public.ledger ORDER BY 1",
+											[]
+										)
+										const ticket = yield* inDatabase(
+											next,
+											"SELECT pg_catalog.nextval('public.tickets')::text",
+											[]
+										)
+										const id = yield* inDatabase(
+											next,
+											"INSERT INTO public.items (value) VALUES (0) RETURNING id::text",
+											[]
+										)
+										return { name: next.name, items, ledger, ticket, id }
+									})
+								)
+								return { closed, again, first: database.name }
+							})
+						),
+						ctx
+					)
+					strictEqual(Exit.isFailure(outcome.closed), leaks)
+					strictEqual(outcome.again.name !== outcome.first, leaks)
+					deepStrictEqual(outcome.again.items, [["0"]])
+					deepStrictEqual(outcome.again.ledger, [["seed"]])
+					deepStrictEqual(outcome.again.ticket, [["2"]])
+					deepStrictEqual(outcome.again.id, [["1"]])
+				}),
+		oracle: {
+			kind: "specification",
+			name: "a seat is its template again after every case (reset, sequences put back), or is replaced and the case fails"
+		},
+		kept: [],
+		kills: []
+	}
+)
+
+export const transactionsRollBack = property.explore(
+	(source) => ({
+		values: source.draw(array(int(0, 9), { min: 0, max: 5 })),
+		commits: source.draw(boolean)
+	}),
+	{
+		needs: { services },
+		situations: ["a case rolled back", "a case that commits"],
+		check:
+			({ services: context }, c) =>
+			({ values, commits }) =>
+				Effect.gen(function* () {
+					c.note(commits ? "a case that commits" : "a case rolled back")
+					const ctx = yield* context
+					const outcome = yield* Effect.provideContext(
+						Effect.scoped(
+							Effect.gen(function* () {
+								const take = yield* Database.transaction(seatTemplate).open
+								const first = yield* Scope.make()
+								const transaction = yield* Scope.provide(take, first)
+								yield* Effect.forEach(
+									values,
+									(value) =>
+										transaction.session.query(
+											"INSERT INTO public.items (value) VALUES ($1::int4)",
+											[String(value)]
+										),
+									{ discard: true }
+								)
+								if (commits) {
+									yield* transaction.session.query("COMMIT", [])
+								}
+								const closed = yield* Effect.exit(Scope.close(first, Exit.void))
+								const items = yield* Effect.scoped(
+									Effect.flatMap(take, (next) =>
+										next.session.query("SELECT pg_catalog.count(*)::text FROM public.items", [])
+									)
+								)
+								return { closed, items }
+							})
+						),
+						ctx
+					)
+					strictEqual(Exit.isFailure(outcome.closed), commits)
+					strictEqual(
+						Exit.match(outcome.closed, { onFailure: Cause.hasDies, onSuccess: () => false }),
+						commits
+					)
+					deepStrictEqual(outcome.items, [["0"]])
+				}),
+		oracle: {
+			kind: "specification",
+			name: "a transaction case leaves nothing behind, and one that commits fails and leaves nothing either"
+		},
+		kept: [],
+		kills: []
+	}
+)

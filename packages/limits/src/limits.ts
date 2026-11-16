@@ -340,3 +340,31 @@ export const messageWorkMillis = measured({
 	revalidate:
 		"a Node upgrade; a different machine; a change to the message's format or the worker transport; a run whose workers sit idle at its end while one message's cases finish"
 })
+
+/**
+ * How many clones of one template a worker's Database.fresh pool holds (packages/testing/src/resources/database.ts):
+ * each slot clones, offers its clone to the next case, waits for that case to end, drops it and clones again, so a
+ * worker holds at most this many clones of a template and the next cases' clones are made while the current one runs.
+ * Fewer, and a case waits for a clone; more, and a worker holds clones no case waits for.
+ */
+export const freshPoolDepth = measured({
+	value: 4,
+	owner: "the testing library's per-case resources (resources/database.ts, Database.fresh)",
+	unit: "clones of one template per worker",
+	scope:
+		"one worker's pool of one template's clones; every worker holds its own, so a run holds up to this many clones of a template per worker that served it",
+	evidence:
+		"~/.cache/grizzle-release/TESTSYS/RESOURCES/measure/pool/ on cassowary, the uncommitted record of lane RESOURCES's probe: pool.ts, which runs the library's own Database.fresh (toolchain at 15bdf33 with the resources of slice 2) in 64 fibers of one process, each with a PgCluster service of its own (its own owner session, as a runner worker has) on member index mod 4 of a private family, one case after another: take a clone (the wait timed), connect, CREATE TABLE, then INSERT and count for the case's time; depth.jsonl and depth-on.jsonl, one row per case; env-fsync-off.txt and env-fsync-on.txt; summarize.cjs, which leaves out each run's first 8 s (the pools filling) and prints throughput and the take wait's quantiles",
+	observed:
+		"2026-11-16 08:25:00 to 08:30:54 UTC with fsync off; 2026-11-16 08:32:55 to 08:36:26 UTC with fsync on",
+	environment:
+		"cassowary, Ubuntu 26.04 (Linux 7.0.0-1016-aws) on an AWS Graviton3 (arm64) instance with 64 logical CPUs and 247 GiB on one EBS volume, Node 26.13.1; a private family of four PostgreSQL 19rc2 members (grizzle's scripts/pg/init.sh at ac71cfbb, each sized for 16 workers) on that volume; load average 366 to 457 from other sessions during the fsync-off runs, 351 to 372 during the fsync-on ones",
+	workload:
+		"64 workers, one a core, each its own pool over one template (two statements: a table and its seed row, 8 MB as cloned), 40 s a run; cases of 100 ms and of 25 ms of read-write work in their clone; depths 1, 2, 3 and 4 with fsync off, the clones FILE_COPY; depths 2 and 4 with fsync on at 100 ms, the clones WAL_LOG",
+	result:
+		"fsync off, 100 ms cases (take wait p50 / p90 / p99, ms; share of takes that waited under 5 ms): depth 1 892 / 3,322 / 9,049, 0.00; 2 261 / 1,684 / 3,144, 0.43; 3 0 / 539 / 2,744, 0.84; 4 0 / 2 / 2,504, 0.90; 33 to 39 cases a second at every depth. 25 ms cases: depth 1 855 / 1,388 / 1,845, 0.00; 2 17 / 938 / 1,776, 0.49; 3 0 / 508 / 1,326, 0.82; 4 0 / 0 / 1,555, 0.90; 47 to 79 cases a second. fsync on, 100 ms cases: depth 2 25,737 / 47,184 / 48,789, 0.25, 3.4 cases a second; depth 4 0 / 27,444 / 84,054, 0.53, 1.7 cases a second: each DROP DATABASE waited on checkpoints it forces, which synced thousands of files on the loaded volume, so no depth hid a clone there. No errors; the cases' own run time rose with depth (more clones in flight on the cluster), not measured apart from it",
+	decision:
+		"4: the smallest depth at which nine takes in ten wait for no clone (p90 2 ms and 0 ms) at full width, at both case times; at 3 the p90 wait is still half a second. Each slot past it adds a clone held per worker and in flight on the cluster, and the throughput did not rise with depth: the cluster, not the pool, bounds a run's cases a second. No headroom added; 5 and above are unmeasured",
+	revalidate:
+		"a PostgreSQL repin; another machine or disk; a family of another size, or clusters with fsync on (the clones then WAL_LOG); a template much larger than 8 MB; cases much shorter than 25 ms; a run whose takes wait past their p90 here"
+})

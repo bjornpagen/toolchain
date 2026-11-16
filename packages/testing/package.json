@@ -67,6 +67,10 @@
 		"arkregex": "catalog:",
 		"effect": "catalog:"
 	},
+	"devDependencies": {
+		"@types/pg": "catalog:",
+		"pg": "catalog:"
+	},
 	"peerDependencies": {
 		"oxlint": "^1.93.0",
 		"typescript": "^7.1.0-beta",

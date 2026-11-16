@@ -1,10 +1,12 @@
-import { Layer } from "effect"
+import { fixtureServices } from "#resources/resources.fixtures.ts"
 import { defineRunner } from "#runner/config.ts"
 
 /**
  * The testing library's runner config: the test modules toolchain-test runs, which Vitest's config leaves to it as
- * they are converted to properties; no export conditions; no services beyond the runner's own; and the library's
- * operators alone for mutation.
+ * they are converted to properties; no export conditions; the PostgreSQL cluster libpq's environment names
+ * (resources.fixtures.ts), built only when a case first opens a need, for the database resource properties
+ * (src/resources/resources.test.ts), which join the include once the push gate's run has a cluster to reach; and the
+ * library's operators alone for mutation.
  */
 export default defineRunner({
 	include: [
@@ -30,6 +32,6 @@ export default defineRunner({
 	],
 	smallStack: [],
 	conditions: [],
-	layer: Layer.empty,
+	layer: fixtureServices,
 	families: []
 })
