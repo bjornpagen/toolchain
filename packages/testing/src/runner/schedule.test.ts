@@ -118,7 +118,7 @@ export const outgrowingSpreads = property.explore(outgrowing, {
 	kills: [
 		{
 			file: "packages/testing/src/runner/schedule.ts",
-			original: "\t\t\treadyings.set(module, sum)",
+			original: "\t\t\treadyings.set(module, Math.min(readyings.get(module) ?? millis, millis))",
 			replacement: "\t\t\treadyings.delete(module)",
 			why: "A module's readying is never measured, so no further worker is ever judged to find work left once ready, and a module stays on the one worker that first took it however much work it queues; this property fails."
 		}

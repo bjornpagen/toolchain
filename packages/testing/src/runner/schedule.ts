@@ -4,8 +4,9 @@ import { runOfLabel } from "#runner/stack.ts"
 /**
  * What the pool's scheduling knows and chooses: the queue, which modules each worker holds (it was sent a unit of a
  * property declared there, so it imported that module and readied that property), and what the workers measured: each
- * property's mean case time and each module's readying time (its import and its properties' needs opened, per worker
- * that readied it). An idle worker takes queued units of a module it holds first; else of a module no worker holds,
+ * property's mean case time and each module's readying time, the least any worker took to ready the first property of
+ * the module it ran (its import and that property's needs opened): what a further worker pays once whatever the
+ * module's needs share is in place (a template built once on the cluster, which only the first worker waits for). An idle worker takes queued units of a module it holds first; else of a module no worker holds,
  * which some worker must ready; else of a module whose queued work is more than its holders drain within the time a
  * further worker would spend readying it, so a module spreads to another worker only when that worker will find work
  * left once it is ready. Stealing keeps the same order: half a busy worker's unstarted units of a module the thief
@@ -155,7 +156,7 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 	const holders = new Map<string, Set<number>>()
 	const readiedOn: Array<Set<string>> = Array.from({ length: workers }, () => new Set())
 	const cases = new Map<string, Sum>()
-	const readyings = new Map<string, Sum>()
+	const readyings = new Map<string, number>()
 	let total = 0
 
 	/** The expected work of `count` cases of a property at its mean case time; none counted before it is measured. */
@@ -243,7 +244,7 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 		if (readying === undefined || queued === undefined) {
 			return false
 		}
-		const within = before + readying.millis / readying.count
+		const within = before + readying
 		let drained = 0
 		for (const holder of holders.get(module) ?? []) {
 			drained += Math.max(0, within - workOf(view.sentOf(holder)))
@@ -321,11 +322,10 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 		if (holds[thief]?.has(first.module) ?? false) {
 			return Math.floor(unstarted.length / 2)
 		}
-		const readying = readyings.get(first.module)
-		if (readying === undefined) {
+		const within = readyings.get(first.module)
+		if (within === undefined) {
 			return 0
 		}
-		const within = readying.millis / readying.count
 		const keep = (workOf(unstarted) + within) / 2
 		let kept = 0
 		let work = 0
@@ -461,13 +461,11 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 			cases.set(property, sum)
 		},
 		readied: (worker, module, millis) => {
-			const sum = readyings.get(module) ?? { count: 0, millis: 0 }
-			if (!(readiedOn[worker]?.has(module) ?? false)) {
-				readiedOn[worker]?.add(module)
-				sum.count += 1
+			if (readiedOn[worker]?.has(module) ?? false) {
+				return
 			}
-			sum.millis += millis
-			readyings.set(module, sum)
+			readiedOn[worker]?.add(module)
+			readyings.set(module, Math.min(readyings.get(module) ?? millis, millis))
 		},
 		forget: (worker) => {
 			for (const module of holds[worker] ?? []) {
