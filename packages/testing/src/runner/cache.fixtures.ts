@@ -40,7 +40,7 @@ import {
 	contentHashOf,
 	ModuleSyntax,
 	repoPathOf,
-	type Tree
+	type Files
 } from "#runner/closure.ts"
 
 /**
@@ -142,7 +142,7 @@ export const hashesOf = Effect.fn("hashesOf")(function* (
 		["b.json", encoder.encode("1")],
 		["pnpm-lock.yaml", encoder.encode("lockfileVersion: '9.0'\n")]
 	])
-	const tree: Tree = { read: (path) => Effect.succeed(Option.fromUndefinedOr(files.get(path))) }
+	const tree: Files = { read: (path) => Effect.succeed(Option.fromUndefinedOr(files.get(path))) }
 	const [a, b] = yield* Effect.fromOption(Option.all([repoPathOf("a.json"), repoPathOf("b.json")]))
 	const closures = yield* closuresOf({
 		tree,

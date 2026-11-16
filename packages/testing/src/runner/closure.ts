@@ -116,7 +116,7 @@ export type ClosureFailure =
  * The repository's files at one moment, by path: `read` answers the file's bytes, or none when no file is there (a
  * directory included, which Node will not load either).
  */
-export type Tree = Readonly<{
+export type Files = Readonly<{
 	read: (path: RepoPath) => Effect.Effect<Option.Option<Uint8Array>, TreeUnreadable>
 }>
 
@@ -173,9 +173,9 @@ const directoryOf = (path: RepoPath): string =>
 const parentOf = (directory: string): string =>
 	Arr.join(Arr.initNonEmpty(Str.split("/")(directory)), "/")
 
-/** The working tree under `root` (an absolute directory) as a Tree. */
-export const workingTree = (root: string): Effect.Effect<Tree, never, FileSystem.FileSystem> =>
-	Effect.map(FileSystem.FileSystem, (fs): Tree => ({
+/** The working tree under `root` (an absolute directory) as Files. */
+export const workingTree = (root: string): Effect.Effect<Files, never, FileSystem.FileSystem> =>
+	Effect.map(FileSystem.FileSystem, (fs): Files => ({
 		read: (path) =>
 			fs.readFile(`${root}/${path}`).pipe(
 				Effect.asSome,
@@ -702,7 +702,7 @@ export type Closure = Readonly<{
 
 /** What a closure is computed from. */
 export type ClosureInput = Readonly<{
-	tree: Tree
+	tree: Files
 	/** The conditions the runner config adds to Node's own (node, import, module-sync, default). */
 	conditions: ReadonlyArray<string>
 	/** The runtime the modules run on, by its version: a closure, like a verdict, holds for one runtime. */
@@ -1187,3 +1187,23 @@ const membersOf = (walked: ReadonlyArray<Walked>, root: number): Omit<Closure, "
 		hooked: Arr.sort(hooked, Str.Order)
 	}
 }
+
+/**
+ * The closure of several modules together, as one verdict depends on them all (a property's module, its runner
+ * config, the runner itself): its hash is that of their hashes, so it changes when any of theirs does, and it holds
+ * what any of them holds.
+ */
+export const jointClosureOf = Effect.fn("jointClosureOf")(function* (
+	closures: Arr.NonEmptyReadonlyArray<Closure>
+) {
+	const hash = yield* linesHashOf(Arr.map(closures, (closure) => `closure ${closure.hash}`))
+	const union = <A extends string>(pick: (closure: Closure) => ReadonlyArray<A>) =>
+		Arr.sort(Arr.dedupe(Arr.flatMap(closures, pick)), Str.Order)
+	return {
+		hash: ClosureHash(hash),
+		files: union((closure) => closure.files),
+		packages: union((closure) => closure.packages),
+		builtins: union((closure) => closure.builtins),
+		hooked: union((closure) => closure.hooked)
+	}
+})

@@ -7,7 +7,9 @@
 #                                   on the staged files it reads, side by side
 #   toolchain-gate push             the push gate (lefthook's pre-push, with use_stdin): `pnpm check` on each commit the
 #                                   push sends, read from git's pre-push lines on stdin (HEAD when there are none);
-#                                   once a day `pnpm check:full` instead, where the repository has one
+#                                   once a day `pnpm check:full` instead, where the repository has one; then, in each
+#                                   package with a test.config.ts, `toolchain-test affected <what the remote held>`:
+#                                   every property with no cached pass, and its kills, at full width
 #   toolchain-gate run <index|commit> <command> [arguments]
 #                                   any command on what the index holds, or on a commit
 #
@@ -253,20 +255,33 @@ case $mode in
 		[ -z "$failed" ] || die "failed:$failed"
 		;;
 	push)
-		# Each line names a ref the push updates and the commit it sends; a commit of zeros deletes the ref, which sends
-		# nothing to check. With no lines at all (run by hand), the push is HEAD's.
+		# Each line names a ref the push updates, the commit it sends and the commit the remote held; a commit of zeros
+		# sends nothing to check (a deletion). What the remote held is what `toolchain-test affected` counts changes
+		# against: the empty tree when the ref is new or the remote's commit is not here. With no lines at all (run by
+		# hand), the push is HEAD's, against its upstream.
+		empty=$(git hash-object -t tree /dev/null)
 		pushed=
 		lines=0
 		if [ ! -t 0 ]; then
-			while read -r _ local_commit _ _; do
+			while read -r _ local_commit _ remote_commit; do
 				lines=$((lines + 1))
 				case $local_commit in
-					*[!0]*) pushed="$pushed $local_commit" ;;
+					*[!0]*) ;;
+					*) continue ;;
 				esac
+				base=$empty
+				case $remote_commit in
+					*[!0]*) git cat-file -e "$remote_commit^{commit}" 2>/dev/null && base=$remote_commit ;;
+				esac
+				pushed="$pushed $local_commit:$base"
 			done
 		fi
-		[ "$lines" -gt 0 ] || pushed=$(git rev-parse HEAD)
-		for commit in $pushed; do
+		[ "$lines" -gt 0 ] ||
+			pushed="$(git rev-parse HEAD):$(git rev-parse --verify --quiet '@{upstream}' || printf '%s' "$empty")"
+		origin=$(git --git-dir="$common_dir" config --get remote.origin.url || true)
+		for pair in $pushed; do
+			commit=${pair%%:*}
+			base=${pair#*:}
 			(
 				enter push "$commit"
 				# The push snapshot keeps the incremental typecheck's build info between runs, so `pnpm check` re-checks
@@ -281,6 +296,23 @@ case $mode in
 				printf 'toolchain-gate: pnpm %s on %s\n' "$check" "$commit" >&2
 				pnpm "$check"
 				[ "$check" = check ] || touch "$cache/push.full"
+				# The snapshot carries the repository's origin, so toolchain-test names the repository as every clone does
+				# and reads the verdicts their runs cached (${XDG_CACHE_HOME:-~/.cache}/toolchain-test/<key>/verdicts).
+				[ -z "$origin" ] || git config remote.origin.url "$origin"
+				# Each package with a runner config runs the properties whose verdict key holds no cached pass, and the
+				# kills of each that passes (packages/testing/src/runner/affected.ts). A submodule's packages are its own
+				# repository's to gate: git lists its gitlink, not its files.
+				configs=$(git ls-files | grep -E '(^|/)test\.config\.ts$' || true)
+				set -f
+				IFS=$newline
+				for config in $configs; do
+					unset IFS
+					directory=$(dirname -- "$config")
+					printf 'toolchain-gate: toolchain-test affected %s in %s\n' "$base" "$directory" >&2
+					(cd "$directory" && pnpm exec toolchain-test affected "$base")
+				done
+				unset IFS
+				set +f
 			)
 		done
 		;;

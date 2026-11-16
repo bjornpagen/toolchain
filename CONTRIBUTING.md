@@ -7,12 +7,13 @@ the toolchain; README.md says what a repository changes to take it.
 
 ## When each check runs
 
-| When                                | Command                   | What runs                                                                                                                                                                                                                                                |
-| ----------------------------------- | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| After every edit                    | `pnpm types`              | `turbo run typecheck`: each package's and the root's incremental typecheck. A re-check reads the project's build info and checks only what changed, so it takes seconds when little did, and turbo replays a package whose inputs did not change at all. |
-| Each commit (lefthook's pre-commit) | `toolchain-gate commit`   | On a snapshot of what the index holds, side by side: `pnpm types`, `oxfmt --check` of the staged files, and the AST-only oxlint on the staged JavaScript and TypeScript files. No lint builds a TypeScript program. The target is 10 seconds or less.    |
-| Each push (lefthook's pre-push)     | `toolchain-gate push`     | `pnpm check` on a snapshot of each commit the push sends: the typecheck from scratch (`typecheck:full`, `--incremental false`), the type-aware oxlint, the format check, dead code, the lockfile's dedupe, the repository-wide checks and the fixtures.  |
-| By hand                             | `pnpm check`, `pnpm test` | The full gate over the working tree, and the tests, which no hook runs.                                                                                                                                                                                  |
+| When                                | Command                   | What runs                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ----------------------------------- | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| After every edit                    | `pnpm types`              | `turbo run typecheck`: each package's and the root's incremental typecheck. A re-check reads the project's build info and checks only what changed, so it takes seconds when little did, and turbo replays a package whose inputs did not change at all.                                                                                                                                                    |
+| Each commit (lefthook's pre-commit) | `toolchain-gate commit`   | On a snapshot of what the index holds, side by side: `pnpm types`, `oxfmt --check` of the staged files, and the AST-only oxlint on the staged JavaScript and TypeScript files. No lint builds a TypeScript program. The target is 10 seconds or less.                                                                                                                                                       |
+| Each push (lefthook's pre-push)     | `toolchain-gate push`     | `pnpm check` on a snapshot of each commit the push sends: the typecheck from scratch (`typecheck:full`, `--incremental false`), the type-aware oxlint, the format check, dead code, the lockfile's dedupe, the repository-wide checks and the fixtures; then, in each package with a `test.config.ts`, `toolchain-test affected`: every property with no cached pass, and its kills, at full width (below). |
+| On the consumer's schedule          | `toolchain-test fuzz`     | The scheduled fuzz budget, in each package root its own scheduler names: fresh seeds round after round until a case fails or the budget (`1h`, `100000x`) is spent. Never in a hook.                                                                                                                                                                                                                        |
+| By hand                             | `pnpm check`, `pnpm test` | The full gate over the working tree, and the tests, which no hook runs.                                                                                                                                                                                                                                                                                                                                     |
 
 Type-aware lint stays out of the commit: no tool caches its results (not tsgolint, not `tsrs --lint`, not oxlint), so
 it would build every package's program on every commit, while a commit holds `.git/index.lock` for its whole hook. The
@@ -173,6 +174,37 @@ the old per-path layout and goes the same way (a hard cutover; nothing reads it)
 costs its repository one cold snapshot at most, when the last clone is gone.
 
 A snapshot directory is safe to delete when no gate is running; the next run builds it again.
+
+## The push gate's properties: affected and the verdict cache
+
+`toolchain-test affected <ref>` (`packages/testing/src/runner/affected.ts`) runs, in a package root, every property
+whose verdict key holds no cached pass, at full width, then the kills of each that passed; a property passes when its
+search passes and every kill of it turns its witnesses red, and only then is its pass cached. A cached pass is a known
+answer: it never runs again. A failure removes the pass its key held. The push gate runs it after `pnpm check`, in each
+package of the snapshot with a `test.config.ts`, against the commit the remote held (the empty tree for a new ref); the
+ref only sorts the report's count of what ran into "changed since <ref>" and "not verified at this content".
+
+A property's key is its identity, the closure hash of its module joined with those of the package's `test.config.ts`
+and the runner's own entry modules (`runner/cli.ts`, `runner/worker.ts`), the seed policy of a gate run, and each kill
+with the content hash of the file it mutates. A closure hash (`runner/closure.ts`) is the SHA-256 of everything a
+module loads as Node loads it: every file reached through static imports, re-exports and dynamic imports of a literal
+(never `import type` or `export type`, which Node erases), resolved by relative path, `imports` and `exports` maps under
+Node's conditions and the config's, and workspace packages; each external package by its lockfile entry and those of
+the packages it depends on; built-ins by name; the config's conditions and Node's version. Import cycles hash as one
+unit. A specifier that resolves to nothing, an undeclared package or a key the lockfile lacks fails the command.
+
+What a property reads without importing it, a fixture file read at run time or code a child process runs, is outside
+its closure: a full run (`toolchain-test run`) per production version covers it.
+
+Verdicts live per repository, shared by every clone and the gate's snapshots (the push snapshot carries the
+repository's origin URL so it names the repository as the clones do):
+
+| Path                                                                              | What it is                                                                                                                                                            |
+| --------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `${XDG_CACHE_HOME:-~/.cache}/toolchain-test/<key>/verdicts/<2 hex>/<62 hex>.json` | One pass, named by the SHA-256 of its key and holding the key itself. A record whose text is not its key is refused and its property runs. `<key>` is the gate's key. |
+
+Writes go to a temporary file beside the record and are renamed into place, so no lock is needed. A record is safe to
+delete at any time; its property runs at the next push.
 
 ## Turbo's cache
 

@@ -19,7 +19,9 @@ import { type Judged, killsOf } from "#mutate/kills.ts"
 import { realPathOf } from "#mutate/mutated.ts"
 import { treesOf } from "#mutate/tree.ts"
 import { replayOf } from "#replay.ts"
+import { affected } from "#runner/affected.ts"
 import { HARDENED_FLAGS } from "#runner/config.ts"
+import { fuzz } from "#runner/fuzz.ts"
 import { mutantPoolOf } from "#runner/lease.ts"
 import { runnerLimits } from "#runner/limits.ts"
 import { configOf } from "#runner/load.ts"
@@ -32,6 +34,8 @@ import { loadPackage, replayToken, runPackage } from "#runner/run.ts"
  *   toolchain-test run [paths | property ids]   every property (or those named), at full width; exit 1 on any failure
  *   toolchain-test replay <token>               the one case a failure printed, as it ran
  *   toolchain-test kills [paths | property ids] each property's kills turn its witnesses red; exit 1 on any survivor
+ *   toolchain-test affected <ref>               the push gate: every property with no cached pass, and its kills
+ *   toolchain-test fuzz <fuzztime> [paths | ids] the scheduled fuzz budget: fresh seeds round after round
  *
  * A run prints its seed first (TEST_SEED reproduces the run), then one line per property, then each failure: the case
  * as it ran, its failure and its replay token. Every process of the run, this one and its workers, runs under the
@@ -193,7 +197,9 @@ const kills = (selected: ReadonlyArray<string>) =>
 const commands: Readonly<Record<string, Command>> = {
 	run: (args) => failing(run(args)),
 	replay: (args) => failing(replay(args)),
-	kills: (args) => failing(kills(args))
+	kills: (args) => failing(kills(args)),
+	affected: (args) => failing(affected(root, args)),
+	fuzz: (args) => failing(fuzz(root, args))
 }
 
 /** The flags this process must run under: the hardened flags and the config's export conditions. */

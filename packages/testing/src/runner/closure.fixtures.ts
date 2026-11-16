@@ -23,7 +23,7 @@ import {
 	nativeSyntax,
 	type RepoPath,
 	repoPathOf,
-	type Tree,
+	type Files,
 	workingTree
 } from "#runner/closure.ts"
 
@@ -607,8 +607,8 @@ export const filesOf = (
 export const rootsOf = (workspace: Workspace): Option.Option<Arr.NonEmptyReadonlyArray<RepoPath>> =>
 	Option.all(Arr.map(workspace.modules, (_, index) => repoPathOf(modulePathOf(workspace, index))))
 
-/** The files as a Tree held in memory. */
-export const treeOf = (files: ReadonlyArray<readonly [path: string, text: string]>): Tree => {
+/** The files as Files held in memory. */
+export const treeOf = (files: ReadonlyArray<readonly [path: string, text: string]>): Files => {
 	const held = new Map(
 		Arr.map(files, ([path, text]) => [path, new TextEncoder().encode(text)] as const)
 	)
@@ -631,7 +631,7 @@ export type Hashing = Readonly<{
 /** The closures of the roots of a workspace held in a tree, under the workspace's conditions. */
 export const closuresIn = (
 	workspace: Workspace,
-	tree: Tree,
+	tree: Files,
 	roots: ReadonlyArray<RepoPath>,
 	hashing: Hashing
 ): Effect.Effect<ReadonlyMap<RepoPath, Closure>, ClosureFailure> =>
