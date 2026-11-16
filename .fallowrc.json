@@ -33,7 +33,11 @@
 		"zones": [
 			{
 				"name": "devtools-suites",
-				"patterns": ["packages/devtools/src/**/*.test.ts", "packages/devtools/vitest.config.ts"]
+				"patterns": [
+					"packages/devtools/src/**/*.test.ts",
+					"packages/devtools/src/**/*.fixtures.ts",
+					"packages/devtools/vitest.config.ts"
+				]
 			},
 			{
 				"name": "testing",

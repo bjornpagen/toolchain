@@ -2,213 +2,245 @@
  * The gate's snapshot cache (bin/gate.sh): one snapshot per repository, shared by every clone of it, with the objects
  * of the clone whose commit is checked, and a snapshot whose repository is gone collected.
  *
- * Each case builds a small repository with a submodule in a scratch directory and runs the gate over its clones with a
- * cache of its own (XDG_CACHE_HOME), so nothing here touches the real cache. Oracle: the specification: a command the
- * gate runs on a commit sees that commit's files, and a file a first run left under .gitignore (node_modules) is still
- * there for a second clone's first run, which is what a warm snapshot is.
+ * Each case draws the shape of a scenario (how many clones of one repository, what each commits and leaves uncommitted,
+ * which clone each run checks, whether the repository has a submodule and at which commit, what a run's command leaves
+ * behind, the key directories beside it and what became of their clones and locks), builds it from real git
+ * repositories in a scratch directory of its own, and runs the gate over its clones with a cache of its own
+ * (XDG_CACHE_HOME), so nothing here touches the real cache. Oracle: the specification, the gate's header: a command
+ * the gate runs on a commit sees exactly that commit's files, a submodule's at the commit it records; a file a first
+ * run left under .gitignore (node_modules) is still there for a second clone's first run, which is what a warm
+ * snapshot is; and a run collects every other key directory whose repository is gone and that holds no live lock,
+ * leaving the old per-path layout alone.
  */
-import { NodeServices } from "@effect/platform-node"
-import { layer } from "@effect/vitest"
-import { deepStrictEqual } from "@effect/vitest/utils"
-import { Array as Arr, Effect, FileSystem, Order, Path, Stream, String as Str } from "effect"
-import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { deepStrictEqual } from "@bjornpagen/testing/assert"
+import { property } from "@bjornpagen/testing/property"
+import { Scratch } from "@bjornpagen/testing/resources"
+import { Array as Arr, Effect, Order } from "effect"
+import {
+	alternatesOf,
+	befell,
+	checkedClones,
+	checkingFeatures,
+	checkings,
+	clonedRepository,
+	clonesListed,
+	clonesRunBy,
+	collectingFeatures,
+	collectings,
+	commonDirectory,
+	fillingFeatures,
+	fillings,
+	kept,
+	keys,
+	looked,
+	objectsOf,
+	onlyKey,
+	registered,
+	sandboxOf,
+	sharingFeatures,
+	sharings,
+	stampsBefore,
+	submoduleClones,
+	treeOf,
+	versionFile,
+	versionFilesOf
+} from "#gate.fixtures.ts"
 
-const GATE = new URL("../bin/gate.sh", import.meta.url).pathname
-
-const IDENTITY: Readonly<Record<string, string>> = Object.freeze({
-	GIT_AUTHOR_NAME: "gate-test",
-	GIT_AUTHOR_EMAIL: "gate-test@localhost",
-	GIT_COMMITTER_NAME: "gate-test",
-	GIT_COMMITTER_EMAIL: "gate-test@localhost",
-	GIT_ALLOW_PROTOCOL: "file"
-})
-
-type Scratch = Readonly<{ dir: string; cache: string; root: string }>
-
-/** Runs a command to completion in a directory, answering its status and output, with the scratch's cache. */
-const ran = Effect.fn("ran")(function* (
-	scratch: Scratch,
-	cwd: string,
-	command: string,
-	args: ReadonlyArray<string>
-) {
-	const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-	const [stdout, status] = yield* Effect.scoped(
-		Effect.flatMap(
-			spawner.spawn(
-				ChildProcess.make(command, args, {
-					cwd,
-					stdin: "ignore",
-					extendEnv: true,
-					env: { ...IDENTITY, XDG_CACHE_HOME: scratch.cache }
-				})
-			),
-			(handle) =>
-				Effect.all([Stream.mkString(Stream.decodeText(handle.stdout)), handle.exitCode], {
-					concurrency: "unbounded"
-				})
-		)
-	)
-	return { stdout, status }
-})
-
-/** Runs a command that must succeed, answering its output. */
-const sh = Effect.fn("sh")(function* (
-	scratch: Scratch,
-	cwd: string,
-	command: string,
-	...args: ReadonlyArray<string>
-) {
-	const { stdout, status } = yield* ran(scratch, cwd, command, args)
-	deepStrictEqual(status, 0, `${command} ${Arr.join(args, " ")} exited ${status} in ${cwd}`)
-	return stdout
-})
-
-/** The gate's run of a command on HEAD, in a clone. */
-const gate = (scratch: Scratch, clone: string, ...command: ReadonlyArray<string>) =>
-	ran(scratch, clone, "sh", [GATE, "run", "HEAD", ...command])
-
-const gated = (scratch: Scratch, clone: string, ...command: ReadonlyArray<string>) =>
-	Effect.map(gate(scratch, clone, ...command), ({ stdout }) => stdout)
-
-/** A repository of one file under a workspace and a lockfile, committed. */
-const repository = Effect.fn("repository")(function* (scratch: Scratch, name: string) {
-	const fs = yield* FileSystem.FileSystem
-	const path = yield* Path.Path
-	const directory = path.join(scratch.dir, name)
-	yield* fs.makeDirectory(directory)
-	yield* sh(scratch, directory, "git", "init", "-q", "-b", "main")
-	yield* fs.writeFileString(path.join(directory, ".gitignore"), "node_modules\n")
-	yield* fs.writeFileString(
-		path.join(directory, "package.json"),
-		`{"name":"${name}","private":true}\n`
-	)
-	yield* fs.writeFileString(path.join(directory, "pnpm-workspace.yaml"), "packages: []\n")
-	yield* sh(scratch, directory, "pnpm", "install", "--lockfile-only", "--reporter=silent")
-	return directory
-})
-
-const committed = (scratch: Scratch, directory: string, message: string) =>
-	sh(scratch, directory, "git", "add", ".").pipe(
-		Effect.andThen(sh(scratch, directory, "git", "commit", "-qm", message))
-	)
-
-/** A repository with a submodule, and two clones of it. */
-const cloned = Effect.fn("cloned")(function* (scratch: Scratch) {
-	const fs = yield* FileSystem.FileSystem
-	const path = yield* Path.Path
-	const sub = path.join(scratch.dir, "sub")
-	yield* fs.makeDirectory(sub)
-	yield* sh(scratch, sub, "git", "init", "-q", "-b", "main")
-	yield* fs.writeFileString(path.join(sub, "s.txt"), "submodule\n")
-	yield* committed(scratch, sub, "sub")
-	const origin = yield* repository(scratch, "origin")
-	yield* sh(scratch, origin, "git", "submodule", "add", "-q", sub, "sub")
-	yield* committed(scratch, origin, "origin")
-	yield* sh(scratch, scratch.dir, "git", "clone", "-q", "--recurse-submodules", origin, "a")
-	yield* sh(scratch, scratch.dir, "git", "clone", "-q", "--recurse-submodules", origin, "b")
-	return { a: path.join(scratch.dir, "a"), b: path.join(scratch.dir, "b") }
-})
-
-/** The cache's key directories, the ones a run made visible, in name order. */
-const keys = Effect.fn("keys")(function* (scratch: Scratch) {
-	const fs = yield* FileSystem.FileSystem
-	const names = yield* fs.readDirectory(scratch.root)
-	return Arr.sort(
-		Arr.filter(names, (name) => !Str.startsWith(".")(name)),
-		Order.String
-	)
-})
-
-const scratched = <A, E, R>(body: (scratch: Scratch) => Effect.Effect<A, E, R>) =>
-	Effect.gen(function* () {
-		const fs = yield* FileSystem.FileSystem
-		const path = yield* Path.Path
-		const dir = yield* fs.makeTempDirectoryScoped({ prefix: "toolchain-gate-test-" })
-		const cache = path.join(dir, "xdg")
-		return yield* body({ dir, cache, root: path.join(cache, "toolchain-gate") })
-	}).pipe(Effect.scoped)
-
-layer(NodeServices.layer)("the gate's snapshot cache", (it) => {
-	it.effect("shares one snapshot between clones of a repository, warm for the second", () =>
-		scratched((scratch) =>
+export const sharedSnapshot = property.explore(sharings, {
+	needs: { dir: Scratch.dir },
+	situations: [
+		"a second clone's first run finds what a first run left under .gitignore",
+		"a clone runs again after another clone's run",
+		"three clones share one snapshot"
+	],
+	check:
+		({ dir }, c) =>
+		(sharing) =>
 			Effect.gen(function* () {
-				const { a, b } = yield* cloned(scratch)
-				yield* gate(
-					scratch,
-					a,
-					"sh",
-					"-c",
-					"mkdir -p node_modules && echo first >node_modules/stamp"
-				)
-				const seen = yield* gated(scratch, b, "cat", "node_modules/stamp")
-				deepStrictEqual(seen, "first\n")
-				deepStrictEqual((yield* keys(scratch)).length, 1)
-			})
-		)
-	)
-
-	it.effect("checks a commit in a clone against that clone's tree and objects", () =>
-		scratched((scratch) =>
-			Effect.gen(function* () {
-				const fs = yield* FileSystem.FileSystem
-				const path = yield* Path.Path
-				const { a, b } = yield* cloned(scratch)
-				yield* gate(scratch, a, "true")
-				yield* fs.writeFileString(path.join(b, "only-b.txt"), "b\n")
-				yield* committed(scratch, b, "b")
-				const seen = yield* gated(scratch, b, "cat", "only-b.txt")
-				deepStrictEqual(seen, "b\n")
-				const [key = ""] = yield* keys(scratch)
-				const alternates = yield* fs.readFileString(
-					path.join(scratch.root, key, "push.git", "objects", "info", "alternates")
-				)
-				deepStrictEqual(Str.trim(alternates), path.join(b, ".git", "objects"))
-				const back = yield* gate(scratch, a, "cat", "only-b.txt")
-				deepStrictEqual(
-					back.status !== 0,
-					true,
-					"clone A's commit lacks only-b.txt, so the snapshot must too"
-				)
-			})
-		)
-	)
-
-	it.effect("fills a submodule at the commit the snapshot records", () =>
-		scratched((scratch) =>
-			Effect.gen(function* () {
-				const { a } = yield* cloned(scratch)
-				const seen = yield* gated(scratch, a, "cat", "sub/s.txt")
-				deepStrictEqual(seen, "submodule\n")
-			})
-		)
-	)
-
-	it.effect(
-		"collects a snapshot whose repository is gone, and keeps a held one and the old per-path layout an older gate may be running in",
-		() =>
-			scratched((scratch) =>
-				Effect.gen(function* () {
-					const fs = yield* FileSystem.FileSystem
-					const path = yield* Path.Path
-					const { a, b } = yield* cloned(scratch)
-					yield* gate(scratch, a, "true")
-					const [live = ""] = yield* keys(scratch)
-					const other = yield* repository(scratch, "other")
-					yield* committed(scratch, other, "other")
-					yield* gate(scratch, other, "true")
-					deepStrictEqual((yield* keys(scratch)).length, 2)
-					yield* fs.makeDirectory(path.join(scratch.root, "0123456789ab", "commit"), {
-						recursive: true
+				c.noteAll(sharingFeatures(sharing))
+				const sandbox = yield* Effect.map(dir, sandboxOf)
+				const { clones } = yield* clonedRepository(sandbox, sharing.clones)
+				yield* Effect.forEach(sharing.runs, (run, index) =>
+					Effect.gen(function* () {
+						const clone = Arr.getUnsafe(clones, run.clone)
+						const seen = yield* looked(sandbox, clone, index, { stamp: run.stamps, stray: false })
+						deepStrictEqual(seen.stamps, stampsBefore(sharing, index))
+						const key = yield* onlyKey(sandbox)
+						const listed = yield* clonesListed(sandbox, key)
+						deepStrictEqual(
+							listed,
+							Arr.map(clonesRunBy(sharing, index), (at) =>
+								commonDirectory(Arr.getUnsafe(clones, at))
+							)
+						)
 					})
-					const held = path.join(scratch.root, "ba9876543210", "commit.lock")
-					yield* fs.makeDirectory(held, { recursive: true })
-					yield* fs.writeFileString(path.join(held, "pid"), `${process.pid}\n`)
-					yield* fs.remove(other, { recursive: true })
-					yield* gate(scratch, b, "true")
-					const left = yield* keys(scratch)
-					deepStrictEqual(left, Arr.sort([live, "0123456789ab", "ba9876543210"], Order.String))
-				})
-			)
-	)
+				)
+			}),
+	oracle: {
+		kind: "specification",
+		name: "the gate's cache layout: one key directory per repository, named by its origin's URL and listing every clone that ran, whose snapshot keeps what .gitignore names between runs"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/devtools/bin/gate.sh",
+			original: 'identity=$(git --git-dir="$1" config --get remote.origin.url 2>/dev/null || true)',
+			replacement: "identity=",
+			why: "The key is each clone's own git directory, not its repository's URL, so every clone keeps a snapshot of its own (the old per-path layout) and a second clone's first run is cold; the shared-snapshot property fails."
+		}
+	]
+})
+
+export const checkedCommit = property.explore(checkings, {
+	needs: { dir: Scratch.dir },
+	situations: [
+		"a commit checked after another clone's different commit",
+		"a commit lacking a file the commit checked before held",
+		"a working tree with edits it has not committed",
+		"a stray file an earlier run left"
+	],
+	check:
+		({ dir }, c) =>
+		(checking) =>
+			Effect.gen(function* () {
+				c.noteAll(checkingFeatures(checking))
+				const sandbox = yield* Effect.map(dir, sandboxOf)
+				const { clones } = yield* checkedClones(sandbox, checking.clones)
+				yield* Effect.forEach(checking.runs, (run, index) =>
+					Effect.gen(function* () {
+						const clone = Arr.getUnsafe(clones, run.clone)
+						const seen = yield* looked(sandbox, clone, index, { stamp: false, stray: run.strays })
+						const tree = yield* treeOf(sandbox, clone)
+						deepStrictEqual(seen.files, tree)
+						const key = yield* onlyKey(sandbox)
+						const borrowed = yield* alternatesOf(sandbox, key)
+						deepStrictEqual(borrowed, objectsOf(clone))
+					})
+				)
+			}),
+	oracle: {
+		kind: "specification",
+		name: "a command the gate runs on a commit sees exactly that commit's files, from the objects of the clone that holds it"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/devtools/bin/gate.sh",
+			original: 'GIT_DIR=$1 git rev-parse --git-path objects >"$4/objects/info/alternates"',
+			replacement:
+				'[ -s "$4/objects/info/alternates" ] || GIT_DIR=$1 git rev-parse --git-path objects >"$4/objects/info/alternates"',
+			why: "The snapshot keeps borrowing the objects of the first clone that ran, so a commit only a later clone holds is not there to check out; the checked-commit property fails."
+		},
+		{
+			file: "packages/devtools/bin/gate.sh",
+			original: 'GIT_DIR=$4 git --work-tree="$3" clean -fdq',
+			replacement: "true",
+			why: "A file no index knows, a stray an earlier run's check wrote, stays in the snapshot, so a later run sees a file its commit lacks; the checked-commit property fails."
+		}
+	]
+})
+
+export const filledSubmodule = property.explore(fillings, {
+	needs: { dir: Scratch.dir },
+	situations: [
+		"a submodule at the commit the repository recorded",
+		"a submodule its clone's own commit moved",
+		"a submodule recorded behind its repository's tip",
+		"a working tree's submodule checked out at another commit",
+		"a submodule filled at another commit by the run before"
+	],
+	check:
+		({ dir }, c) =>
+		(filling) =>
+			Effect.gen(function* () {
+				c.noteAll(fillingFeatures(filling))
+				const sandbox = yield* Effect.map(dir, sandboxOf)
+				const { clones } = yield* submoduleClones(sandbox, filling)
+				yield* Effect.forEach(filling.runs, (at, index) =>
+					Effect.gen(function* () {
+						const clone = Arr.getUnsafe(clones, at)
+						const seen = yield* looked(sandbox, clone, index, { stamp: false, stray: false })
+						deepStrictEqual(versionFilesOf(seen), [
+							versionFile(Arr.getUnsafe(filling.clones, at).committed)
+						])
+						const tree = yield* treeOf(sandbox, clone)
+						deepStrictEqual(seen.files, tree)
+					})
+				)
+			}),
+	oracle: {
+		kind: "specification",
+		name: "a snapshot fills each submodule at the commit the snapshot's commit records, never the working tree's checkout"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/devtools/bin/gate.sh",
+			original: `\t\tcommit=\${entry##* }`,
+			replacement: '\t\tcommit=$(git -C "$5/$path" rev-parse HEAD)',
+			why: "Each submodule is filled at the commit its working tree has checked out, not the one the snapshot's commit records; the filled-submodule property fails."
+		}
+	]
+})
+
+export const collectedSnapshots = property.explore(collectings, {
+	needs: { dir: Scratch.dir },
+	situations: [
+		"a key directory whose clones are all gone is collected",
+		"a key directory kept by a clone still there among gone ones",
+		"a key directory whose clones are gone kept by a live lock",
+		"a stale lock keeps nothing",
+		"a re-pointed clone counts as gone",
+		"a repository with no origin remote, keyed by its path",
+		"an old-layout directory left alone",
+		"a held old-layout directory left alone"
+	],
+	check:
+		({ dir }, c) =>
+		(entries) =>
+			Effect.gen(function* () {
+				c.noteAll(collectingFeatures(entries))
+				const sandbox = yield* Effect.map(dir, sandboxOf)
+				const made = yield* Effect.forEach(entries, (entry, index) =>
+					registered(sandbox, entry, index)
+				)
+				yield* Effect.forEach(made, (one) => befell(sandbox, one))
+				const { clones } = yield* clonedRepository(sandbox, 1)
+				yield* looked(sandbox, Arr.headNonEmpty(clones), 0, { stamp: false, stray: false })
+				const left = yield* keys(sandbox)
+				const entryKeys = Arr.map(made, (one) => one.key)
+				deepStrictEqual(
+					Arr.filter(left, (key) => Arr.contains(entryKeys, key)),
+					Arr.sort(
+						Arr.flatMap(made, (one) => (kept(one.entry) ? [one.key] : [])),
+						Order.String
+					)
+				)
+				deepStrictEqual(Arr.filter(left, (key) => !Arr.contains(entryKeys, key)).length, 1)
+			}),
+	oracle: {
+		kind: "specification",
+		name: "a run deletes each other key directory whose repository is gone (none of its listed clones still there under its key) and that holds no live lock, and leaves the old per-path layout alone"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/devtools/bin/gate.sh",
+			original: '[ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && return 0',
+			replacement: '[ -n "$pid" ] && return 0',
+			why: "A lock whose run has exited still holds its key directory, so a snapshot whose repository is gone stays while a stale pid file names it; the collection property fails."
+		},
+		{
+			file: "packages/devtools/bin/gate.sh",
+			original: '[ -f "$dir/clones" ] || continue',
+			replacement: '[ -d "$dir" ] || continue',
+			why: "A directory of the old per-path layout, which lists no clones, is collected as gone, under an older gate that may be running in it; the collection property fails."
+		},
+		{
+			file: "packages/devtools/bin/gate.sh",
+			original: 'if [ -d "$clone" ] && [ "$(key_of "$clone")" = "$(basename -- "$dir")" ]; then',
+			replacement: 'if [ -d "$clone" ]; then',
+			why: "A listed clone re-pointed at another repository still keeps its old key directory alive; the collection property fails."
+		}
+	]
 })

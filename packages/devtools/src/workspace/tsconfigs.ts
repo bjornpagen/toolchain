@@ -613,7 +613,7 @@ export const tsconfigFindings = (
 
 /** The workspaces that prove the workspace gate: in each `violating-*` one the root and every package draw a finding,
  * and in each `clean-*` one nothing does. */
-export const WORKSPACE_FIXTURES = `${import.meta.dirname}/fixtures`
+const WORKSPACE_FIXTURES = `${import.meta.dirname}/fixtures`
 
 /** A fixture workspace's root package.json: the Effect-free list, as the repository's names it. */
 const FixtureManifest = Schema.fromJsonString(
@@ -661,7 +661,7 @@ const fixtureWorkspaceOf = (root: string) =>
 	})
 
 /** One fixture workspace, by its directory's name, and every finding the gate makes of it. */
-export const fixtureFindings = (name: string) =>
+const fixtureFindings = (name: string) =>
 	Effect.gen(function* () {
 		const workspace = yield* fixtureWorkspaceOf(`${WORKSPACE_FIXTURES}/${name}`)
 		const findings = yield* workspaceFindings(workspace)
