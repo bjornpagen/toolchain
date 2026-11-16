@@ -583,7 +583,10 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 								Option.map(
 									Arr.findFirst(worker.sent, (sent) => sent.id === received.unit),
 									(unit) => {
-										scheduler.readied(worker.index, unit.module, received.millis)
+										scheduler.readied(worker.index, unit.module, unit.property, {
+											importing: received.imported,
+											opening: Math.max(0, received.millis - received.imported)
+										})
 										worker.readyingMillis += received.millis
 										spent(unit.property, {
 											cases: 0,

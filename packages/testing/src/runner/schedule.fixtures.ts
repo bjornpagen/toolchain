@@ -16,11 +16,18 @@ import {
  * in virtual time, the pool's loop over the scheduler as runner/pool.ts drives it, with what the run did.
  */
 
-/** A property of a drawn workload: its case time and its search's windows, each its count of cases, run in turn. */
-export type DrawnProperty = Readonly<{ caseMillis: number; windows: ReadonlyArray<number> }>
+/**
+ * A property of a drawn workload: its case time, its search's windows, each its count of cases, run in turn, and what a
+ * worker spends opening its needs, once, before its first case there.
+ */
+export type DrawnProperty = Readonly<{
+	caseMillis: number
+	windows: ReadonlyArray<number>
+	opening: number
+}>
 
-/** A module of a drawn workload: what a worker spends readying it, once, and its properties. */
-export type DrawnModule = Readonly<{ readying: number; properties: ReadonlyArray<DrawnProperty> }>
+/** A module of a drawn workload: what a worker spends importing it, once, and its properties. */
+export type DrawnModule = Readonly<{ importing: number; properties: ReadonlyArray<DrawnProperty> }>
 
 /**
  * A drawn workload: the pool's width at most, how long a worker takes to start, how long each unit holds its worker
@@ -35,11 +42,12 @@ export type Workload = Readonly<{
 
 const properties: Gen<DrawnProperty> = (source) => ({
 	caseMillis: source.draw(int(1, 20)),
-	windows: source.draw(array(int(1, 16), { min: 1, max: 6 }))
+	windows: source.draw(array(int(1, 16), { min: 1, max: 6 })),
+	opening: source.draw(int(0, 30))
 })
 
 const modules: Gen<DrawnModule> = (source) => ({
-	readying: source.draw(int(1, 60)),
+	importing: source.draw(int(1, 60)),
 	properties: source.draw(array(properties, { min: 1, max: 3 }))
 })
 
@@ -51,20 +59,22 @@ export const workloads: Gen<Workload> = (source) => ({
 	modules: source.draw(array(modules, { min: 1, max: 5 }))
 })
 
+/** A drawn property's work: every case of every window of it at its case time. */
+const workOfProperty = (drawn: DrawnProperty): number =>
+	Arr.reduce(drawn.windows, 0, (sum, cases) => sum + cases * drawn.caseMillis)
+
 /** A drawn module's work: every case of every window of its properties at its property's case time. */
 const workOfModule = (module: DrawnModule): number =>
-	Arr.reduce(module.properties, 0, (sum, drawn) =>
-		Arr.reduce(drawn.windows, sum, (inner, cases) => inner + cases * drawn.caseMillis)
-	)
+	Arr.reduce(module.properties, 0, (sum, drawn) => sum + workOfProperty(drawn))
 
-/** Workloads of one module whose readying takes at least as long as its every case together: a cheap module. */
+/** Workloads of one module whose import takes at least as long as its every case together: a cheap module. */
 export const cheap: Gen<Workload> = (source) => {
 	const module = source.draw(modules)
 	return {
 		workers: source.draw(int(1, 8)),
 		starting: source.draw(int(1, 30)),
 		trip: 0,
-		modules: [{ ...module, readying: workOfModule(module) + source.draw(int(0, 60)) }]
+		modules: [{ ...module, importing: workOfModule(module) + source.draw(int(0, 60)) }]
 	}
 }
 
@@ -81,11 +91,12 @@ export const outgrowing: Gen<Workload> = (source) => {
 		workers,
 		modules: [
 			{
-				readying,
+				importing: readying,
 				properties: [
 					{
 						caseMillis: source.draw(int(readying, 3 * readying)),
-						windows: [source.draw(int(4 * workers, 8 * workers))]
+						windows: [source.draw(int(4 * workers, 8 * workers))],
+						opening: 0
 					}
 				]
 			}
@@ -107,28 +118,38 @@ export const tripBound: Gen<Workload> = (source) => {
 		workers,
 		modules: [
 			{
-				readying,
-				properties: [{ caseMillis: 1, windows: [source.draw(int(4 * workers, 8 * workers))] }]
+				importing: readying,
+				properties: [
+					{ caseMillis: 1, windows: [source.draw(int(4 * workers, 8 * workers))], opening: 0 }
+				]
 			}
 		]
 	}
 }
 
 /** A unit of the simulated pool: one case of a property of a module. */
-type SimUnit = Scheduled & Readonly<{ caseMillis: number; readying: number }>
+type SimUnit = Scheduled & Readonly<{ caseMillis: number; importing: number; opening: number }>
 
-/** A simulated worker: what it was sent, which modules it readied, and when its running unit ends. */
+/**
+ * A simulated worker: what it was sent, which modules it imported and which properties it opened, and when its running
+ * unit ends.
+ */
 type SimWorker = {
 	readonly index: number
 	ready: boolean
 	sent: Array<SimUnit>
-	readied: Set<string>
+	imported: Set<string>
+	opened: Set<string>
 	busyUntil: Option.Option<number>
 }
 
-/** What a simulated run did: each module's workers that readied it, each case's runs by unit id, and its end. */
+/**
+ * What a simulated run did: each module's workers that imported it and each property's that opened it, each case's runs
+ * by unit id, and its end.
+ */
 export type Ran = Readonly<{
 	readiedBy: ReadonlyMap<string, ReadonlySet<number>>
+	openedBy: ReadonlyMap<string, ReadonlySet<number>>
 	runs: ReadonlyMap<number, number>
 	units: number
 	forked: number
@@ -158,12 +179,14 @@ export const simulate = (workload: Workload, forking: Forking): Ran => {
 	const workers: Array<SimWorker> = []
 	let started = false
 	const readiedBy = new Map<string, Set<number>>()
+	const openedBy = new Map<string, Set<number>>()
 	const runs = new Map<number, number>()
 	const searches = Arr.flatMap(workload.modules, (module, moduleAt) =>
 		Arr.map(module.properties, (drawn, propertyAt) => ({
 			module: `m${moduleAt}`,
 			property: `m${moduleAt}#p${propertyAt}`,
-			readying: module.readying,
+			importing: module.importing,
+			opening: drawn.opening,
 			caseMillis: drawn.caseMillis,
 			windows: drawn.windows,
 			next: 0,
@@ -187,7 +210,8 @@ export const simulate = (workload: Workload, forking: Forking): Ran => {
 					module: search.module,
 					cases: 1,
 					caseMillis: search.caseMillis,
-					readying: search.readying
+					importing: search.importing,
+					opening: search.opening
 				})
 			}
 		})
@@ -209,14 +233,22 @@ export const simulate = (workload: Workload, forking: Forking): Ran => {
 
 	const start = (worker: SimWorker) => {
 		Option.map(Arr.head(worker.sent), (unit) => {
-			const readying = worker.readied.has(unit.module) ? 0 : unit.readying
-			worker.busyUntil = Option.some(now + readying + unit.caseMillis + workload.trip)
-			if (readying === 0) {
+			if (worker.opened.has(unit.property)) {
+				worker.busyUntil = Option.some(now + unit.caseMillis + workload.trip)
 				return
 			}
-			worker.readied.add(unit.module)
+			const importing = worker.imported.has(unit.module) ? 0 : unit.importing
+			worker.busyUntil = Option.some(
+				now + importing + unit.opening + unit.caseMillis + workload.trip
+			)
+			worker.imported.add(unit.module)
+			worker.opened.add(unit.property)
 			readiedBy.set(unit.module, (readiedBy.get(unit.module) ?? new Set()).add(worker.index))
-			scheduler.readied(worker.index, unit.module, readying)
+			openedBy.set(unit.property, (openedBy.get(unit.property) ?? new Set()).add(worker.index))
+			scheduler.readied(worker.index, unit.module, unit.property, {
+				importing,
+				opening: unit.opening
+			})
 			afterFinished(scheduler, view, apply, worker.index, unit.module)
 		})
 	}
@@ -257,7 +289,8 @@ export const simulate = (workload: Workload, forking: Forking): Ran => {
 				index: workers.length,
 				ready: false,
 				sent: [],
-				readied: new Set(),
+				imported: new Set(),
+				opened: new Set(),
 				busyUntil: Option.some(now + workload.starting)
 			})
 		}
@@ -278,7 +311,8 @@ export const simulate = (workload: Workload, forking: Forking): Ran => {
 			index,
 			ready: forking === "whole",
 			sent: [],
-			readied: new Set(),
+			imported: new Set(),
+			opened: new Set(),
 			busyUntil: forking === "whole" ? Option.none() : Option.some(workload.starting)
 		})
 	}
@@ -329,6 +363,7 @@ export const simulate = (workload: Workload, forking: Forking): Ran => {
 	}
 	return {
 		readiedBy,
+		openedBy,
 		runs,
 		units,
 		forked: workers.length,
@@ -337,5 +372,81 @@ export const simulate = (workload: Workload, forking: Forking): Ran => {
 			(search) => search.next === search.windows.length && search.outstanding === 0
 		),
 		end: now
+	}
+}
+
+/**
+ * A module's state as a spread decision reads it: what importing it took, and for each of its properties what opening
+ * its needs took, its occupancy a case, how many of its units are queued and how many its one holder was sent.
+ */
+export type SpreadState = Readonly<{
+	importing: number
+	properties: ReadonlyArray<
+		Readonly<{ opening: number; caseMillis: number; queued: number; sent: number }>
+	>
+}>
+
+/** A measured property of a spread state, with up to six units queued and `sent` sent to the holder. */
+const spreadProperty =
+	(sent: Gen<number>): Gen<SpreadState["properties"][number]> =>
+	(source) => ({
+		opening: source.draw(int(0, 40)),
+		caseMillis: source.draw(int(1, 20)),
+		queued: source.draw(int(0, 6)),
+		sent: source.draw(sent)
+	})
+
+/**
+ * Modules of one to four properties, each measured, with up to six units of each queued and up to six sent to the
+ * holder, one at least (the holder is busy with its first property's), as a holder is that a spread is decided beside.
+ */
+export const spreadStates: Gen<SpreadState> = (source) => ({
+	importing: source.draw(int(0, 40)),
+	properties: [
+		source.draw(spreadProperty(int(1, 6))),
+		...source.draw(array(spreadProperty(int(0, 6)), { min: 0, max: 3 }))
+	]
+})
+
+/**
+ * What the scheduler judges of the module of `state`, beside its one holder (worker 0, which readied every property of
+ * it and was sent its units) and a second worker idle: whether it outgrows its holder, and how many new workers it
+ * wants when a worker takes `starting` milliseconds to start; the scheduler as the pool feeds it, every number
+ * measured.
+ */
+export const spreadIn = (
+	state: SpreadState,
+	starting: number
+): Readonly<{ outgrows: boolean; wanted: number }> => {
+	const scheduler = schedulerOf<Scheduled>(2)
+	let ids = 0
+	const sent: Array<Scheduled> = []
+	for (const [at, drawn] of state.properties.entries()) {
+		const property = `m#p${at}`
+		scheduler.readied(0, "m", property, {
+			importing: at === 0 ? state.importing : 0,
+			opening: drawn.opening
+		})
+		scheduler.occupied(property, 1, drawn.caseMillis)
+		for (let unit = 0; unit < drawn.sent; unit += 1) {
+			ids += 1
+			sent.push({ id: ids, property, module: "m", cases: 1 })
+		}
+		for (let unit = 0; unit < drawn.queued; unit += 1) {
+			ids += 1
+			scheduler.enqueue({ id: ids, property, module: "m", cases: 1 })
+		}
+	}
+	scheduler.hand(0, sent)
+	const view: View<Scheduled> = {
+		workers: 2,
+		sentOf: (worker) => (worker === 0 ? sent : []),
+		unstartedOf: (worker) => (worker === 0 ? Arr.drop(sent, 1) : []),
+		stealable: () => true,
+		idle: (worker) => worker === 1
+	}
+	return {
+		outgrows: scheduler.outgrows("m", view),
+		wanted: scheduler.wanted(view, Option.some(starting))
 	}
 }

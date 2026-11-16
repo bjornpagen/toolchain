@@ -7,6 +7,7 @@ import {
 	Latch,
 	Option,
 	Queue,
+	Result,
 	Schema,
 	Scope
 } from "effect"
@@ -169,14 +170,24 @@ const main = Effect.gen(function* () {
 	 * A property readied here, its module imported and its needs opened within `bound`, before any case of it; its needs'
 	 * keys are held for it until it retires.
 	 */
-	const ready = (label: string, bound: number): Effect.Effect<Readied> =>
-		Effect.matchEffect(propertyAt(root, runOfLabel(label).id), {
-			onFailure: (failed) =>
-				Effect.succeed<Readied>({ kind: "refused", result: lostResult(failed.message) }),
-			onSuccess: (property) => {
-				holdings.readied(label, needKeysOf(property.needs))
-				return readiedOf(property.ready, bound).pipe(Effect.provideService(NeedCache, cache))
+	const ready = (
+		label: string,
+		bound: number
+	): Effect.Effect<Readonly<{ readied: Readied; imported: number }>> =>
+		Effect.gen(function* () {
+			const [importing, loaded] = yield* Effect.timed(
+				Effect.result(propertyAt(root, runOfLabel(label).id))
+			)
+			const imported = Duration.toMillis(importing)
+			if (Result.isFailure(loaded)) {
+				const refused: Readied = { kind: "refused", result: lostResult(loaded.failure.message) }
+				return { readied: refused, imported }
 			}
+			holdings.readied(label, needKeysOf(loaded.success.needs))
+			const opened = yield* readiedOf(loaded.success.ready, bound).pipe(
+				Effect.provideService(NeedCache, cache)
+			)
+			return { readied: opened, imported }
 		}).pipe(Effect.provideContext(platform))
 
 	/** Retires a property: no unit of it comes again, so the needs only it held here are released. */
@@ -200,15 +211,16 @@ const main = Effect.gen(function* () {
 					const cpu = process.cpuUsage()
 					const children = childrenCpuNow()
 					const [took, made] = yield* Effect.timed(ready(first.property, first.open))
-					readied.set(first.property, made)
+					readied.set(first.property, made.readied)
 					yield* send({
 						kind: "readied",
 						unit: unit.unit,
 						millis: Duration.toMillis(took),
+						imported: made.imported,
 						cpu: millisOf(process.cpuUsage(cpu)),
 						children: childrenSince(children)
 					})
-					return made
+					return made.readied
 				})
 		})
 	}

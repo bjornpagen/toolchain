@@ -5,12 +5,16 @@ import { runOfLabel } from "#runner/stack.ts"
  * What the pool's scheduling knows and chooses: the queue, which modules each worker holds (it was sent a unit of a
  * property declared there, so it imported that module and readied that property), and what the workers measured: each
  * property's mean case time (what a message is sized by), its mean occupancy a case (how long a unit held its worker,
- * as the pool saw it, round trip included: what a unit's work is reckoned by), and each module's readying time, the least any worker took to ready the first property of
- * the module it ran (its import and that property's needs opened): what a further worker pays once whatever the
- * module's needs share is in place (a template built once on the cluster, which only the first worker waits for). An idle worker takes queued units of a module it holds first; else of a module no worker holds,
- * which some worker must ready; else of a module whose queued work is more than its holders drain within the time a
- * further worker would spend readying it, so a module spreads to another worker only when that worker will find work
- * left once it is ready. Stealing keeps the same order: half a busy worker's unstarted units of a module the thief
+ * as the pool saw it, round trip included: what a unit's work is reckoned by), and what readying costs, in two parts a
+ * worker measures apart: each module's import, the least any worker took to import it, and each property's opening of
+ * its needs (a template's plan, a seat's clones), the least any worker took to open them. The least, since it is what a
+ * further worker pays once whatever the needs share is in place (a template built once on the cluster, which only the
+ * first worker waits for). What a further worker spends readying a module's queued work is its import and the opening
+ * of every property queued there, each of which it readies in turn; a module with a queued property no worker has
+ * readied yet has no measured readying. An idle worker takes queued units of a module it holds first; else of a module
+ * no worker holds, which some worker must ready; else of a module whose queued work, past what its holders drain
+ * within the time a further worker would spend readying it, covers that time, so a module spreads to another worker
+ * only when the work that worker finds left once it is ready is at least what it spent getting ready. Stealing keeps the same order: half a busy worker's unstarted units of a module the thief
  * holds; else, of another module, the share that balances the victim's end against the thief's, its readying
  * included, when the thief would end before the victim alone. Every number a choice reads is a measurement or a count;
  * which worker runs a case never reaches its result.
@@ -98,14 +102,14 @@ export type Scheduler<U extends Scheduled> = Readonly<{
 	 * steal names its victim, and the pool hands the worker the units it gets back (`hand`).
 	 */
 	choose: (worker: number, view: View<U>) => Choice<U>
-	/** Whether a module's queued work outgrows what its holders drain within its measured readying, now. */
+	/** Whether a module's queued work left undrained by its holders covers a further worker's readying, now. */
 	outgrows: (module: string, view: View<U>) => boolean
 	/**
 	 * How many workers that hold nothing the queue would give work to now: one for each queued module no worker holds,
-	 * and, for each module whose queued work outgrows what its holders drain within a new worker's start (`starting`,
-	 * its measured milliseconds; none before one started) and the module's readying, as many as that wait divides the
-	 * undrained work into, since each further worker drains at most that much in it. A pool sized to its work forks no
-	 * more.
+	 * and, for each module whose work left undrained by its holders within a new worker's start (`starting`, its
+	 * measured milliseconds; none before one started) and its readying covers that wait, as many as the undrained work
+	 * holds that wait whole, so each further worker's share of it pays for its start and readying. A pool sized to its
+	 * work forks no more.
 	 */
 	wanted: (view: View<U>, starting: Option.Option<number>) => number
 	/** One message of the module's oldest queued property for `worker`, out of the queue, its module held from now on. */
@@ -122,8 +126,16 @@ export type Scheduler<U extends Scheduled> = Readonly<{
 	 * by this, a case's round trip and the worker's turn included, not by its cases' own time alone.
 	 */
 	occupied: (property: string, cases: number, millis: number) => void
-	/** Worker `worker` readied a property of `module` in `millis`: the module's import when new there, and its needs. */
-	readied: (worker: number, module: string, millis: number) => void
+	/**
+	 * Worker `worker` readied `property` of `module`: it took `importing` milliseconds to import the module (none when it
+	 * had imported it before) and `opening` to open the property's needs.
+	 */
+	readied: (
+		worker: number,
+		module: string,
+		property: string,
+		readying: Readonly<{ importing: number; opening: number }>
+	) => void
 	/** Worker `worker` was replaced by a fresh process: it holds nothing and has readied nothing. */
 	forget: (worker: number) => void
 	/** How many modules each worker holds, by index. */
@@ -163,10 +175,12 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 	const queue = new Map<string, ModuleQueue<U>>()
 	const holds: Array<Set<string>> = Array.from({ length: workers }, () => new Set())
 	const holders = new Map<string, Set<number>>()
-	const readiedOn: Array<Set<string>> = Array.from({ length: workers }, () => new Set())
+	const importedOn: Array<Set<string>> = Array.from({ length: workers }, () => new Set())
+	const openedOn: Array<Set<string>> = Array.from({ length: workers }, () => new Set())
 	const cases = new Map<string, Sum>()
 	const occupancies = new Map<string, Sum>()
-	const readyings = new Map<string, number>()
+	const imports = new Map<string, number>()
+	const openings = new Map<string, number>()
 	let total = 0
 
 	/**
@@ -246,34 +260,75 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 	}
 
 	/**
-	 * Whether a module's queued work is more than its holders drain within the time a further worker spends before it
-	 * runs a case of it: readying it (its measured readying), and `before` that (a new worker's start, or nothing): each
-	 * holder drains what that time leaves after the work it was already sent. A module not yet readied anywhere has no
-	 * measured readying, and spreads to no further worker until it has.
+	 * Whether a further worker pays for itself on a module: the queued work its holders leave undrained within the time
+	 * that worker spends before it runs a case of it (readying the module's queued work, and `before` that a new worker's
+	 * start, or nothing), each holder draining what that time leaves after the work it was already sent, covers that
+	 * time, so the work the worker finds left once ready is at least what it spent getting ready (main's rule, from
+	 * grizzle's education: seven properties of about 50 one-second cases and 2 to 4 s of readying each, spread over up
+	 * to 64 workers at 959 CPU-s against Vitest's 450). A module with a part of that readying unmeasured spreads to no
+	 * further worker until it is measured.
 	 */
 	const outgrowsAfter = (module: string, view: View<U>, before: number): boolean =>
-		Option.exists(shortfallOf(module, view, before), ({ short }) => short > 0)
+		Option.exists(shortfallOf(module, view, before), covered)
+
+	/** Whether undrained work covers the wait a further worker spends before it can take any of it. */
+	const covered = ({ short, within }: Readonly<{ short: number; within: number }>): boolean =>
+		short > 0 && short >= within
 
 	/**
 	 * How much of a module's queued work its holders leave undrained within a further worker's wait before its first case
-	 * of it (`before` and the module's measured readying), and that wait; none before the module was readied anywhere.
+	 * of it (`before` and readying the module's queued work), and that wait; none while a part of that readying is
+	 * unmeasured.
 	 */
 	const shortfallOf = (
 		module: string,
 		view: View<U>,
 		before: number
 	): Option.Option<Readonly<{ short: number; within: number }>> => {
-		const readying = readyings.get(module)
 		const queued = queue.get(module)
-		if (readying === undefined || queued === undefined) {
+		if (queued === undefined) {
 			return Option.none()
 		}
-		const within = before + readying
-		let drained = 0
-		for (const holder of holders.get(module) ?? []) {
-			drained += Math.max(0, within - workOf(view.sentOf(holder)))
+		return Option.map(readyingOf(module, queued.byProperty.keys(), Option.none()), (readying) => {
+			const within = before + readying
+			let drained = 0
+			for (const holder of holders.get(module) ?? []) {
+				drained += Math.max(0, within - workOf(view.sentOf(holder)))
+			}
+			return { short: queuedWorkOf(queued) - drained, within }
+		})
+	}
+
+	/**
+	 * What a worker spends readying `properties` of `module` before it runs their cases: the module's import unless the
+	 * worker (`on`, when one is meant) has imported it, and the opening of each property it has not readied; none while
+	 * one of those is unmeasured.
+	 */
+	const readyingOf = (
+		module: string,
+		properties: Iterable<string>,
+		on: Option.Option<number>
+	): Option.Option<number> => {
+		const imported = Option.exists(on, (worker) => importedOn[worker]?.has(module) ?? false)
+		let readying = 0
+		if (!imported) {
+			const importing = imports.get(module)
+			if (importing === undefined) {
+				return Option.none()
+			}
+			readying += importing
 		}
-		return Option.some({ short: queuedWorkOf(queued) - drained, within })
+		for (const property of properties) {
+			if (Option.exists(on, (worker) => openedOn[worker]?.has(property) ?? false)) {
+				continue
+			}
+			const opening = openings.get(property)
+			if (opening === undefined) {
+				return Option.none()
+			}
+			readying += opening
+		}
+		return Option.some(readying)
 	}
 
 	/** The module whose oldest queued unit is the oldest of those `admits`. */
@@ -333,22 +388,29 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 	}
 
 	/**
-	 * How many of a busy worker's unstarted units, from its tail, a thief would take. Of a module the thief holds, half
-	 * of them. Of another, which the thief must ready first: the victim keeps the oldest units up to half of its
-	 * unstarted work and the module's readying, and the thief takes the rest, when that leaves the victim more than the
-	 * readying to do, so the thief ends before the victim alone would; an unmeasured readying admits no such steal.
+	 * How many of a busy worker's unstarted units, from its tail, a thief would take. Of a module the thief holds with
+	 * every property of them readied, half of them. Otherwise the thief must ready what it lacks first (the module's
+	 * import, the opening of each property it has not readied): the victim keeps the oldest units up to half of its
+	 * unstarted work and that readying, and the thief takes the rest, when that leaves the victim more than the readying
+	 * to do and the thief at least as much work as that readying, so the thief ends before the victim alone would and
+	 * pays for its readying; an unmeasured readying admits no such steal.
 	 */
 	const tailOf = (thief: number, unstarted: ReadonlyArray<U>): number => {
 		const first = unstarted[0]
 		if (first === undefined) {
 			return 0
 		}
-		if (holds[thief]?.has(first.module) ?? false) {
-			return Math.floor(unstarted.length / 2)
-		}
-		const within = readyings.get(first.module)
-		if (within === undefined) {
+		const readying = readyingOf(
+			first.module,
+			new Set(Arr.map(unstarted, (unit) => unit.property)),
+			Option.some(thief)
+		)
+		if (Option.isNone(readying)) {
 			return 0
+		}
+		const within = readying.value
+		if (within === 0) {
+			return Math.floor(unstarted.length / 2)
 		}
 		const keep = (workOf(unstarted) + within) / 2
 		let kept = 0
@@ -361,7 +423,7 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 			work = next
 			kept += 1
 		}
-		return work > within ? unstarted.length - kept : 0
+		return work > within && workOf(unstarted) - work >= within ? unstarted.length - kept : 0
 	}
 
 	/** The steal for an idle worker: the longest tail of a module it holds, else the longest of another module. */
@@ -472,7 +534,10 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 					Option.flatMap(starting, (millis) => shortfallOf(module, view, millis)),
 					{
 						onNone: () => 0,
-						onSome: ({ short, within }) => Math.max(0, Math.ceil(short / within))
+						onSome: (shortfall) =>
+							covered(shortfall)
+								? Math.floor(shortfall.short / Math.max(shortfall.within, Number.MIN_VALUE))
+								: 0
 					}
 				)
 			}
@@ -497,19 +562,26 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 			sum.millis += millis
 			occupancies.set(property, sum)
 		},
-		readied: (worker, module, millis) => {
-			if (readiedOn[worker]?.has(module) ?? false) {
-				return
+		readied: (worker, module, property, readying) => {
+			if (!(importedOn[worker]?.has(module) ?? false)) {
+				importedOn[worker]?.add(module)
+				imports.set(module, Math.min(imports.get(module) ?? readying.importing, readying.importing))
 			}
-			readiedOn[worker]?.add(module)
-			readyings.set(module, Math.min(readyings.get(module) ?? millis, millis))
+			if (!(openedOn[worker]?.has(property) ?? false)) {
+				openedOn[worker]?.add(property)
+				openings.set(
+					property,
+					Math.min(openings.get(property) ?? readying.opening, readying.opening)
+				)
+			}
 		},
 		forget: (worker) => {
 			for (const module of holds[worker] ?? []) {
 				holders.get(module)?.delete(worker)
 			}
 			holds[worker] = new Set()
-			readiedOn[worker] = new Set()
+			importedOn[worker] = new Set()
+			openedOn[worker] = new Set()
 		},
 		held: () => Arr.map(holds, (modules) => modules.size)
 	}
