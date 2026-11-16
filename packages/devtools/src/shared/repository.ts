@@ -47,11 +47,21 @@ export class Repository extends Context.Service<
 /** Files under these directory segments are generated or installed, never maintained source. */
 const GENERATED_SEGMENTS: ReadonlyArray<string> = ["node_modules", ".next", ".git", ".turbo"]
 
-/** A path relative to `root`; a file outside it keeps its absolute path. */
+/** A path relative to `root`, its `.` segments dropped (a root package's files are `package.json`, the root itself
+ * `.`); a file outside it keeps its absolute path. */
 export const relativeTo =
 	(root: string) =>
-	(file: string): string =>
-		Str.startsWith(`${root}/`)(file) ? Str.slice(root.length + 1)(file) : file
+	(file: string): string => {
+		const normal = Arr.join(
+			Arr.filter(Str.split("/")(file), (segment) => segment !== "."),
+			"/"
+		)
+		return normal === root
+			? "."
+			: Str.startsWith(`${root}/`)(normal)
+				? Str.slice(root.length + 1)(normal)
+				: normal
+	}
 
 /** True when the file lies under a directory that holds generated or installed code. */
 export const isGeneratedPath = (file: string): boolean =>

@@ -785,7 +785,9 @@ export const standard = <const T extends Toolchain>(
 				},
 				overrides: [
 					...block(
-						Arr.map(toolchain.effectFree, (directory) => `${directory}/**`),
+						Arr.map(toolchain.effectFree, (directory) =>
+							directory === "." ? "**" : `${directory}/**`
+						),
 						{
 							...pluginRules(names, "effect-free code"),
 							...EFFECT_FREE_BANS,
