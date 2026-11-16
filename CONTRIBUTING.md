@@ -194,17 +194,24 @@ the packages it depends on; built-ins by name; the config's conditions and Node'
 unit. A specifier that resolves to nothing, an undeclared package or a key the lockfile lacks fails the command.
 
 What a property reads without importing it, a fixture file read at run time or code a child process runs, is outside
-its closure: a full run (`toolchain-test run`) per production version covers it.
+its closure: the full run per production version, `toolchain-test run`, covers it. It reads no cached pass: every
+property named runs, then the kills of each whose search passed, and every verdict is recorded, so a property whose
+kills did not all turn red fails the run and is never a cached pass.
 
 Verdicts live per repository, shared by every clone and the gate's snapshots (the push snapshot carries the
 repository's origin URL so it names the repository as the clones do):
 
-| Path                                                                              | What it is                                                                                                                                                            |
-| --------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `${XDG_CACHE_HOME:-~/.cache}/toolchain-test/<key>/verdicts/<2 hex>/<62 hex>.json` | One pass, named by the SHA-256 of its key and holding the key itself. A record whose text is not its key is refused and its property runs. `<key>` is the gate's key. |
+| Path                                                                                   | What it is                                                                                                                                                                                                                 |
+| -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `${XDG_CACHE_HOME:-~/.cache}/toolchain-test/<key>/verdicts/<property>/<key hash>.json` | One pass: `<property>` is the SHA-256 of the property id, `<key hash>` that of the key, and the file holds the key itself. A record whose text is not its key is refused and its property runs. `<key>` is the gate's key. |
 
-Writes go to a temporary file beside the record and are renamed into place, so no lock is needed. A record is safe to
-delete at any time; its property runs at the next push.
+A property keeps one record at most, its newest verdict's: every write collects the property's other records, so a
+pass keeps only its own and a failure keeps none. What goes is decided by the key, never by an age. Writes go to a
+temporary file beside the record and are renamed into place, so no lock is needed; a record a concurrent writer's
+collection removes costs its property one run. A record is safe to delete at any time.
+
+`toolchain-test fuzz <fuzztime>` runs each round at reach `rotating`: a property's rotating stream alone, under a fresh
+seed, since its kept tokens, floor and steered phase are the same on every seed and every run and push checks them.
 
 ## Turbo's cache
 

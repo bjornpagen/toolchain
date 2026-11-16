@@ -30,6 +30,7 @@ export const verdictsAreWhatWasLastRecorded = property.explore(aimedPrograms, {
 		"a pass read back",
 		"a key never passed read as none",
 		"a key read as none after a failure cleared its pass",
+		"a pass collected by a newer verdict of its property read as none",
 		"a corrupt record refused",
 		"kills in another order answering as one key",
 		"a key whose property alone differs from a pass read as none",
@@ -79,9 +80,16 @@ export const verdictsAreWhatWasLastRecorded = property.explore(aimedPrograms, {
 		},
 		{
 			file: "packages/testing/src/runner/cache.ts",
-			original: "yield* Effect.mapError(fs.remove(file, { force: true }), unusable(file))",
-			replacement: "yield* Effect.void",
+			original:
+				'verdict === "passed" ? Option.some(Str.slice(shard.length + 1)(file)) : Option.none()',
+			replacement: "Option.some(Str.slice(shard.length + 1)(file))",
 			why: "a failure that leaves the pass its key held: the failure is read as a pass"
+		},
+		{
+			file: "packages/testing/src/runner/cache.ts",
+			original: "!Option.contains(kept, name)",
+			replacement: "false",
+			why: "a write that collects nothing: a pass its property's newer verdict replaced is still read as a pass"
 		},
 		{
 			file: "packages/testing/src/runner/cache.ts",

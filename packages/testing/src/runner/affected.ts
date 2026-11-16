@@ -19,11 +19,12 @@ import { imagesOf } from "#mutate/image.ts"
 import { type Judged, killsOf } from "#mutate/kills.ts"
 import { realPathOf } from "#mutate/mutated.ts"
 import { treesOf } from "#mutate/tree.ts"
-import type { Kill } from "#property.ts"
+import type { Kill, PropertyId } from "#property.ts"
 import {
 	type KillContent,
 	repositoryKeyOf,
 	SeedPolicy,
+	type VerdictCache,
 	type VerdictKey,
 	verdictCacheAt
 } from "#runner/cache.ts"
@@ -42,7 +43,7 @@ import { mutantPoolOf } from "#runner/lease.ts"
 import { runnerLimits } from "#runner/limits.ts"
 import type { Discovered } from "#runner/load.ts"
 import { failureLines, lineOf } from "#runner/report.ts"
-import { loadPackage, runPackage, WORKER_ENTRY } from "#runner/run.ts"
+import { loadPackage, type RunOutcome, runPackage, WORKER_ENTRY } from "#runner/run.ts"
 
 /**
  * `toolchain-test affected <ref>`, the push gate's run: every property of the package whose verdict key holds no
@@ -185,6 +186,169 @@ const seedOf = Effect.gen(function* () {
 	return { seed, drawn: true }
 })
 
+/**
+ * A package weighed for the verdict cache: its repository and package root (real paths), the repository's verdict
+ * cache, and each property `selected` names (every one when it names none) with its joint closure and key.
+ */
+type Weighing = Readonly<{
+	repository: string
+	packageRoot: string
+	cache: VerdictCache
+	weighed: ReadonlyArray<Weighed>
+}>
+
+/** Weighs the properties `selected` names in the package at `root`: their closures, keys and the repository's cache. */
+const weighingOf = (root: string, selected: ReadonlyArray<string>) =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		const packageRoot = yield* fs.realPath(root)
+		const toplevel = yield* required(
+			packageRoot,
+			["rev-parse", "--show-toplevel"],
+			`${root} lies in no git repository`
+		)
+		const repository = yield* fs.realPath(toplevel)
+		const identity = yield* Effect.flatMap(
+			gitOf(repository, ["config", "--get", "remote.origin.url"]),
+			(url) =>
+				Option.match(Option.filter(Option.map(url, Str.trim), Str.isNonEmpty), {
+					onSome: Effect.succeed,
+					onNone: () =>
+						required(
+							repository,
+							["rev-parse", "--path-format=absolute", "--git-common-dir"],
+							"the repository has no git directory"
+						)
+				})
+		)
+		const home = yield* Config.String("HOME")
+		const cacheHome = yield* Config.withDefault(Config.String("XDG_CACHE_HOME"), `${home}/.cache`)
+		const { config, discovered } = yield* loadPackage(root, selected)
+		const hashing = yield* Layer.build(Layer.merge(nativeSyntax, layerDigest))
+		const tree = yield* workingTree(repository)
+		const packageFile = (path: string) => underRepository(repository, `${packageRoot}/${path}`)
+		const runner = yield* Effect.forEach(
+			[`${import.meta.dirname}/cli.ts`, WORKER_ENTRY, `${packageRoot}/test.config.ts`],
+			(file) => Effect.flatMap(fs.realPath(file), (real) => underRepository(repository, real))
+		)
+		const modules = yield* Effect.forEach(
+			Arr.dedupe(Arr.map(discovered, (found) => found.module)),
+			(module) => Effect.map(packageFile(module), (path) => [module, path] as const)
+		)
+		const closures = yield* closuresOf({
+			tree,
+			conditions: config.conditions,
+			runtime: process.version,
+			roots: [...runner, ...Arr.map(modules, ([, path]) => path)]
+		}).pipe(Effect.provide(hashing))
+		const closureOf = (path: RepoPath) =>
+			Effect.mapError(Effect.fromOption(Option.fromUndefinedOr(closures.get(path))), () =>
+				AffectedRefused.make({ message: `${path} has no closure` })
+			)
+		const shared = yield* Effect.forEach(runner, closureOf)
+		const paths = new Map(modules)
+		const weighed = yield* Effect.forEach(discovered, (found) =>
+			Effect.gen(function* () {
+				const path = yield* Effect.mapError(
+					Effect.fromOption(Option.fromUndefinedOr(paths.get(found.module))),
+					() => AffectedRefused.make({ message: `${found.module} was not hashed` })
+				)
+				const own = yield* closureOf(path)
+				const closure = yield* jointClosureOf([own, ...shared]).pipe(Effect.provide(hashing))
+				const kills = yield* Effect.forEach(found.property.kills, (kill) =>
+					killContentOf(tree, kill)
+				).pipe(Effect.provide(hashing))
+				const key = Option.map(Option.all(kills), (contents): VerdictKey => ({
+					property: found.id,
+					closure: closure.hash,
+					seeds: RUN_SEEDS,
+					kills: contents
+				}))
+				return { found, closure, key } satisfies Weighed
+			})
+		)
+		const repositoryKey = yield* repositoryKeyOf(identity).pipe(Effect.provide(hashing))
+		const cache = yield* verdictCacheAt(
+			`${cacheHome}/toolchain-test/${repositoryKey}/verdicts`
+		).pipe(Effect.provide(hashing))
+		return { repository, packageRoot, cache, weighed } satisfies Weighing
+	})
+
+/** What a run settles to: the kills it judged, and the properties that passed with every kill turning them red. */
+type Settled = Readonly<{ judged: ReadonlyArray<Judged>; passing: ReadonlySet<PropertyId> }>
+
+/**
+ * Settles a run of `due`: the kills of each property whose searches passed (on every stack it ran on) are judged on leased workers (MUTATOR's
+ * killsOf), and each property's verdict is recorded under its key: a pass when its search passed and every kill turned
+ * its witnesses red, a failure otherwise. A property with no key (a kill's file gone) records nothing; its kill is
+ * judged stale.
+ */
+const settledOf = (weighing: Weighing, due: ReadonlyArray<Weighed>, outcome: RunOutcome) =>
+	Effect.gen(function* () {
+		const passedSearch = Arr.filter(due, (one) => {
+			const runs = Arr.filter(outcome.properties, (ran) => ran.id === one.found.id)
+			return (
+				Arr.isReadonlyArrayNonEmpty(runs) && Arr.every(runs, (ran) => ran.verdict.kind !== "failed")
+			)
+		})
+		const killed = Arr.filter(passedSearch, (one) =>
+			Arr.isReadonlyArrayNonEmpty(one.found.property.kills)
+		)
+		const checkout = yield* realPathOf(weighing.repository)
+		const killedRoot = yield* realPathOf(weighing.packageRoot)
+		const judged = Arr.isReadonlyArrayNonEmpty(killed)
+			? yield* Effect.flatMap(
+					Effect.flatMap(treesOf(checkout), (trees) => imagesOf(checkout, trees)),
+					(images) =>
+						killsOf(
+							mutantPoolOf(checkout, killedRoot),
+							{ seed: 0, limits: runnerLimits },
+							checkout,
+							images,
+							Arr.map(killed, ({ found }) => ({
+								id: found.id,
+								property: found.property,
+								loading: loadingOf(found.property.needs)
+							}))
+						)
+				)
+			: []
+		const passing: ReadonlySet<PropertyId> = new Set(
+			Arr.map(
+				Arr.filter(
+					passedSearch,
+					(one) =>
+						!Arr.some(
+							judged,
+							(verdict) => verdict.property === one.found.id && verdict.verdict.kind !== "killed"
+						)
+				),
+				(one) => one.found.id
+			)
+		)
+		yield* Effect.forEach(
+			due,
+			(one) =>
+				Option.match(one.key, {
+					onNone: () => Effect.void,
+					onSome: (key) =>
+						weighing.cache.record(key, passing.has(one.found.id) ? "passed" : "failed")
+				}),
+			{ discard: true }
+		)
+		return { judged, passing } satisfies Settled
+	})
+
+/**
+ * The verdict cache's side of `toolchain-test run`, the full run per production version: it reads no cached pass, so
+ * every property `selected` names ran (`outcome`); this judges the kills of each whose search passed and records every
+ * verdict, so a property whose kills did not all turn red is a failure of the run, never a cached pass.
+ */
+export const recordedRun = (root: string, selected: ReadonlyArray<string>, outcome: RunOutcome) =>
+	Effect.flatMap(weighingOf(root, selected), (weighing) =>
+		settledOf(weighing, weighing.weighed, outcome)
+	)
+
 /** `affected <ref>` in the package at `root`: 0 when every affected property and its kills passed, 1 otherwise. */
 export const affected = (root: string, args: ReadonlyArray<string>) =>
 	Effect.scoped(
@@ -196,87 +360,17 @@ export const affected = (root: string, args: ReadonlyArray<string>) =>
 						"affected takes one ref, what the report counts changes against: toolchain-test affected <ref>"
 				})
 			}
-			const fs = yield* FileSystem.FileSystem
-			const packageRoot = yield* fs.realPath(root)
-			const toplevel = yield* required(
-				packageRoot,
-				["rev-parse", "--show-toplevel"],
-				`${root} lies in no git repository`
-			)
-			const repository = yield* fs.realPath(toplevel)
+			const weighing = yield* weighingOf(root, [])
 			const base = yield* required(
-				repository,
+				weighing.repository,
 				["rev-parse", "--verify", "--quiet", `${ref}^{tree}`],
 				`${ref} names no commit or tree`
 			)
-			const identity = yield* Effect.flatMap(
-				gitOf(repository, ["config", "--get", "remote.origin.url"]),
-				(url) =>
-					Option.match(Option.filter(Option.map(url, Str.trim), Str.isNonEmpty), {
-						onSome: Effect.succeed,
-						onNone: () =>
-							required(
-								repository,
-								["rev-parse", "--path-format=absolute", "--git-common-dir"],
-								"the repository has no git directory"
-							)
-					})
-			)
-			const home = yield* Config.String("HOME")
-			const cacheHome = yield* Config.withDefault(Config.String("XDG_CACHE_HOME"), `${home}/.cache`)
-			const { config, discovered } = yield* loadPackage(root, [])
-			const hashing = yield* Layer.build(Layer.merge(nativeSyntax, layerDigest))
-			const tree = yield* workingTree(repository)
-			const packageFile = (path: string) => underRepository(repository, `${packageRoot}/${path}`)
-			const runner = yield* Effect.forEach(
-				[`${import.meta.dirname}/cli.ts`, WORKER_ENTRY, `${packageRoot}/test.config.ts`],
-				(file) => Effect.flatMap(fs.realPath(file), (real) => underRepository(repository, real))
-			)
-			const modules = yield* Effect.forEach(
-				Arr.dedupe(Arr.map(discovered, (found) => found.module)),
-				(module) => Effect.map(packageFile(module), (path) => [module, path] as const)
-			)
-			const closures = yield* closuresOf({
-				tree,
-				conditions: config.conditions,
-				runtime: process.version,
-				roots: [...runner, ...Arr.map(modules, ([, path]) => path)]
-			}).pipe(Effect.provide(hashing))
-			const closureOf = (path: RepoPath) =>
-				Effect.mapError(Effect.fromOption(Option.fromUndefinedOr(closures.get(path))), () =>
-					AffectedRefused.make({ message: `${path} has no closure` })
-				)
-			const shared = yield* Effect.forEach(runner, closureOf)
-			const paths = new Map(modules)
-			const weighed = yield* Effect.forEach(discovered, (found) =>
-				Effect.gen(function* () {
-					const path = yield* Effect.mapError(
-						Effect.fromOption(Option.fromUndefinedOr(paths.get(found.module))),
-						() => AffectedRefused.make({ message: `${found.module} was not hashed` })
-					)
-					const own = yield* closureOf(path)
-					const closure = yield* jointClosureOf([own, ...shared]).pipe(Effect.provide(hashing))
-					const kills = yield* Effect.forEach(found.property.kills, (kill) =>
-						killContentOf(tree, kill)
-					).pipe(Effect.provide(hashing))
-					const key = Option.map(Option.all(kills), (contents): VerdictKey => ({
-						property: found.id,
-						closure: closure.hash,
-						seeds: RUN_SEEDS,
-						kills: contents
-					}))
-					return { found, closure, key } satisfies Weighed
-				})
-			)
-			const repositoryKey = yield* repositoryKeyOf(identity).pipe(Effect.provide(hashing))
-			const cache = yield* verdictCacheAt(
-				`${cacheHome}/toolchain-test/${repositoryKey}/verdicts`
-			).pipe(Effect.provide(hashing))
-			const answered = yield* Effect.forEach(weighed, (one) =>
+			const answered = yield* Effect.forEach(weighing.weighed, (one) =>
 				Option.match(one.key, {
 					onNone: () => Effect.succeed({ one, cached: false }),
 					onSome: (key) =>
-						cache.passed(key).pipe(
+						weighing.cache.passed(key).pipe(
 							Effect.map((cached) => ({ one, cached })),
 							Effect.catchTag("VerdictCorrupt", (corrupt) =>
 								Effect.as(
@@ -296,7 +390,7 @@ export const affected = (root: string, args: ReadonlyArray<string>) =>
 				yield* Console.log(`${answered.length} properties, every one a cached pass`)
 				return 0
 			}
-			const changed = yield* changedSince(repository, base)
+			const changed = yield* changedSince(weighing.repository, base)
 			const changedCount = Arr.filter(
 				due,
 				(one) =>
@@ -314,58 +408,15 @@ export const affected = (root: string, args: ReadonlyArray<string>) =>
 				reach: "full",
 				selected: Arr.map(due, (one) => one.found.id)
 			})
-			const searched = new Map(Arr.map(outcome.properties, (ran) => [ran.id, ran] as const))
-			const passedSearch = Arr.filter(due, (one) =>
-				Option.exists(
-					Option.fromUndefinedOr(searched.get(one.found.id)),
-					(ran) => ran.verdict.kind !== "failed"
-				)
-			)
-			const killed = Arr.filter(passedSearch, (one) =>
-				Arr.isReadonlyArrayNonEmpty(one.found.property.kills)
-			)
-			const checkout = yield* realPathOf(repository)
-			const killedRoot = yield* realPathOf(packageRoot)
-			const judged = Arr.isReadonlyArrayNonEmpty(killed)
-				? yield* Effect.flatMap(
-						Effect.flatMap(treesOf(checkout), (trees) => imagesOf(checkout, trees)),
-						(images) =>
-							killsOf(
-								mutantPoolOf(checkout, killedRoot),
-								{ seed: 0, limits: runnerLimits },
-								checkout,
-								images,
-								Arr.map(killed, ({ found }) => ({
-									id: found.id,
-									property: found.property,
-									loading: loadingOf(found.property.needs)
-								}))
-							)
-					)
-				: []
-			const passing = Arr.filter(
-				passedSearch,
-				(one) =>
-					!Arr.some(
-						judged,
-						(verdict) => verdict.property === one.found.id && verdict.verdict.kind !== "killed"
-					)
-			)
-			const passingIds = new Set(Arr.map(passing, (one) => one.found.id))
-			yield* Effect.forEach(due, (one) =>
-				Option.match(one.key, {
-					onNone: () => Effect.void,
-					onSome: (key) => cache.record(key, passingIds.has(one.found.id) ? "passed" : "failed")
-				})
-			)
+			const { judged, passing } = yield* settledOf(weighing, due, outcome)
 			const failed = Arr.filter(outcome.properties, (ran) => ran.verdict.kind === "failed")
-			const failing = due.length - passing.length
+			const failing = due.length - passing.size
 			yield* Console.log(
 				Arr.join(
 					[
-						...Arr.map(outcome.properties, (ran) => lineOf(ran.id, ran.oracle, ran.verdict)),
+						...Arr.map(outcome.properties, (ran) => lineOf(ran.label, ran.oracle, ran.verdict)),
 						...Arr.map(judged, killLine),
-						...Arr.flatMap(failed, (ran) => ["", `${ran.id}:`, ...failureLines(ran.verdict)]),
+						...Arr.flatMap(failed, (ran) => ["", `${ran.label}:`, ...failureLines(ran.verdict)]),
 						"",
 						`${answered.length} properties: ${cachedCount} cached passes; ${due.length} run (${changedCount} changed since ${ref}, ${due.length - changedCount} not verified at this content), ${failing} failed, in ${Math.round(outcome.millis)} ms on ${outcome.workers.length} workers`
 					],

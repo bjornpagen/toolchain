@@ -11,7 +11,8 @@ import { testWorkers } from "#workers.ts"
 /**
  * `toolchain-test fuzz <fuzztime> [paths | property ids]`, the scheduled fuzz budget: the package's sampled properties
  * (every kind but an exhaustion, whose every case a run already checks), or those named, searched round after round at
- * full reach, each round under a fresh run seed, so each round's rotating stream is new cases, until a case fails or
+ * reach `rotating`, each round under a fresh run seed, so each round is new cases alone (a property's kept tokens, floor
+ * and steered phase are the same on every seed, and every run and push already checks them), until a case fails or
  * the budget is spent. The budget is Go's `-fuzztime`, which the scheduler that runs the command states: `30m` or `2h`
  * of wall time, or `100000x` cases, checked after each round. It never reads or writes the verdict cache and never runs
  * in the push gate: a failure prints the round's TEST_SEED, which `toolchain-test run` reproduces, and each failing
@@ -96,7 +97,7 @@ export const fuzz = (root: string, args: ReadonlyArray<string>) =>
 								seed,
 								limits: runnerLimits,
 								evaluator: pool.evaluator,
-								reach: "full"
+								reach: "rotating"
 							}),
 							(verdict) => ({ found, verdict })
 						),

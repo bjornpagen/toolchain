@@ -220,10 +220,11 @@ export type Evaluator = Readonly<{
 }>
 
 /**
- * Which cases a search runs: every phase (`full`), or its witnesses alone (the floor and steered phase, an
- * exhaustion's every case), as a kill's verdict reads them.
+ * Which cases a search runs: every phase (`full`); its witnesses alone (kept tokens, the floor and steered phase, an
+ * exhaustion's every case), as a kill's verdict reads them; or its rotating stream alone, as a fuzz round runs one, its
+ * witnesses being the same on every seed. An exhaustion has no rotating stream and runs its every case at any reach.
  */
-export type Reach = "full" | "witnesses"
+export type Reach = "full" | "witnesses" | "rotating"
 
 /** What a search runs with: its property's identity, the run's seed, the runner's limits, its evaluator and reach. */
 export type SearchRun = Readonly<{

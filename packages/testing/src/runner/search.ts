@@ -26,6 +26,7 @@ import {
 	type CasePhase,
 	type CaseResult,
 	type Measures,
+	type Reach,
 	type Sense,
 	stops,
 	type Trace,
@@ -194,6 +195,7 @@ const shrinkOf = (run: SearchRun, budget: ShrinkBudget): Shrink => {
 		case "witnesses":
 			return { kind: "unshrunk" }
 		case "full":
+		case "rotating":
 			return { kind: "shrunk", budget }
 	}
 }
@@ -459,6 +461,13 @@ const unreachedOf = (
 const indicesOf = (start: number, size: number, end: number): ReadonlyArray<number> =>
 	Array.from({ length: Math.max(0, Math.min(size, end - start)) }, (_, offset) => start + offset)
 
+/** The phases of an exploration each reach runs: its witnesses (kept tokens, floor, steered phase), its rotating stream. */
+const PHASES: Readonly<Record<Reach, Readonly<{ witnesses: boolean; rotating: boolean }>>> = {
+	full: { witnesses: true, rotating: true },
+	witnesses: { witnesses: true, rotating: false },
+	rotating: { witnesses: false, rotating: true }
+}
+
 /** A random case of a stream: its case seed, nothing skipped. */
 const randomOf = (stream: Stream, index: number): ChooserSpec => ({
 	kind: "random",
@@ -481,12 +490,14 @@ export const exploreSearch =
 	(searched: Searched, group: number) =>
 	(run: SearchRun): Effect.Effect<Verdict> =>
 		Effect.gen(function* () {
-			const kept = yield* keptFinding(run, searched)
+			const phases = PHASES[run.reach]
+			const kept = phases.witnesses ? yield* keptFinding(run, searched) : Option.none()
 			if (Option.isSome(kept)) {
 				return failed(kept.value)
 			}
 			const { situations } = searched
 			const { limits } = run
+			const floorCases = phases.witnesses ? limits.floor : 0
 			const window = Math.max(limits.window, group)
 			const required = Arr.isReadonlyArrayNonEmpty(situations)
 			const keep = required ? "tape" : "nothing"
@@ -500,8 +511,8 @@ export const exploreSearch =
 			let cases = 0
 
 			const floorTurns = turnsOf()
-			for (let start = 0; start < limits.floor; start += window) {
-				const indices = indicesOf(start, window, limits.floor)
+			for (let start = 0; start < floorCases; start += window) {
+				const indices = indicesOf(start, window, floorCases)
 				const turnAt = floorTurns.window(
 					pendingOf(situations, [floorTally.tally()]),
 					indices.length
@@ -531,7 +542,7 @@ export const exploreSearch =
 				}
 			}
 
-			if (required) {
+			if (required && phases.witnesses) {
 				const stream = steeredSeed(floor)
 				const turns = turnsOf()
 				for (
@@ -603,7 +614,7 @@ export const exploreSearch =
 				}
 			}
 
-			if (run.reach === "full") {
+			if (phases.rotating) {
 				const rotating = rotatingSeed(run.seed, floor)
 				for (let start = 0; start < limits.runs; start += window) {
 					const draws = Arr.map(indicesOf(start, window, limits.runs), (index): Draw => ({

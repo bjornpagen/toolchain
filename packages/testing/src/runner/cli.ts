@@ -20,7 +20,7 @@ import { type Judged, killsOf } from "#mutate/kills.ts"
 import { realPathOf } from "#mutate/mutated.ts"
 import { treesOf } from "#mutate/tree.ts"
 import { replayOf, replayTokenOf } from "#replay.ts"
-import { affected } from "#runner/affected.ts"
+import { affected, recordedRun } from "#runner/affected.ts"
 import { HARDENED_FLAGS } from "#runner/config.ts"
 import { fuzz } from "#runner/fuzz.ts"
 import { mutantPoolOf } from "#runner/lease.ts"
@@ -32,7 +32,8 @@ import { loadPackage, replayToken, runPackage } from "#runner/run.ts"
 /**
  * `toolchain-test`, the runner's command, run from a package's root (its test.config.ts):
  *
- *   toolchain-test run [paths | property ids]   every property (or those named), at full width; exit 1 on any failure
+ *   toolchain-test run [paths | property ids]   every property (or those named), at full width, and the kills of each
+ *                                               that passed, every verdict cached; exit 1 on any failure or survivor
  *   toolchain-test replay <token>               the one case a failure printed, as it ran
  *   toolchain-test kills [paths | property ids] each property's kills turn its witnesses red; exit 1 on any survivor
  *   toolchain-test affected <ref>               the push gate: every property with no cached pass, and its kills
@@ -63,7 +64,11 @@ const seedOf = Effect.gen(function* () {
 /** The package root a command runs in: the directory it was started from. */
 const root = process.cwd()
 
-/** `run [paths | ids]`: every property named, its line, then every failure; 1 when any failed. */
+/**
+ * `run [paths | ids]`, the full run per production version: every property named, reading no cached pass; then the
+ * kills of each whose searches passed, and every verdict recorded in the verdict cache (affected.ts recordedRun); each
+ * run's line, every judged kill, then every failure; 1 when any search failed or any kill did not turn its property red.
+ */
 const run = (selected: ReadonlyArray<string>) =>
 	Effect.scoped(
 		Effect.gen(function* () {
@@ -72,19 +77,25 @@ const run = (selected: ReadonlyArray<string>) =>
 				`TEST_SEED=${seed}${drawn ? " (drawn by this run; set it to reproduce the run)" : ""}`
 			)
 			const outcome = yield* runPackage({ root, seed, reach: "full", selected })
+			const { judged, passing } = yield* recordedRun(root, selected, outcome)
 			const failed = Arr.filter(outcome.properties, (ran) => ran.verdict.kind === "failed")
+			const failing = Arr.filter(
+				Arr.dedupe(Arr.map(outcome.properties, (ran) => ran.id)),
+				(id) => !passing.has(id)
+			).length
 			yield* Console.log(
 				Arr.join(
 					[
 						...Arr.map(outcome.properties, (ran) => lineOf(ran.label, ran.oracle, ran.verdict)),
+						...Arr.map(judged, judgedLine),
 						...Arr.flatMap(failed, (ran) => ["", `${ran.label}:`, ...failureLines(ran.verdict)]),
 						"",
-						`${outcome.properties.length} properties, ${failed.length} failed, in ${Math.round(outcome.millis)} ms on ${outcome.workers.length} workers`
+						`${outcome.properties.length} properties, ${failing} failed, in ${Math.round(outcome.millis)} ms on ${outcome.workers.length} workers`
 					],
 					"\n"
 				)
 			)
-			return Arr.isReadonlyArrayNonEmpty(failed) ? 1 : 0
+			return failing > 0 ? 1 : 0
 		})
 	)
 

@@ -1,4 +1,13 @@
-import { Array as Arr, Brand, Effect, FileSystem, Order, Schema, String as Str } from "effect"
+import {
+	Array as Arr,
+	Brand,
+	Effect,
+	FileSystem,
+	Option,
+	Order,
+	Schema,
+	String as Str
+} from "effect"
 import { Digest } from "effect/crypto"
 import type { PropertyId } from "#property.ts"
 import type { ClosureHash, ContentHash } from "#runner/closure.ts"
@@ -7,13 +16,17 @@ import type { ClosureHash, ContentHash } from "#runner/closure.ts"
  * The verdict cache: which properties passed, keyed by everything their verdict depends on, so a pass is a known answer
  * for as long as its key stands and is never recomputed. A key is a property's identity, the closure hash of its module
  * (closure.ts), how the run seeded its cases, and its kills, each with the bytes of the file it mutates. Only passes are
- * stored, as files named by the hash of their key: a failure removes the pass its key held and writes nothing, so a
- * failure is never read as a pass.
+ * stored, as files named by the hash of their key: a failure writes nothing, so a failure is never read as a pass.
  *
- * Layout: `<directory>/<first two hex digits of the key's hash>/<the other 62>.json`, each file the key itself as JSON.
- * A write goes to a temporary file in the same directory and is renamed into place, so a reader sees a whole record or
- * none; writers of distinct keys touch distinct files and take no lock. A record whose text is not its key's is refused
- * (VerdictCorrupt), never read as a pass.
+ * A property keeps one record at most: its newest verdict's. Every write collects its property's other records, so a
+ * pass leaves its own record alone and a failure leaves none; what goes is decided by the key a verdict was recorded
+ * under, never by an age.
+ *
+ * Layout: `<directory>/<SHA-256 of the property id>/<SHA-256 of the key>.json`, each file the key itself as JSON, so a
+ * property's records are one directory. A write goes to a temporary file in that directory and is renamed into place, so
+ * a reader sees a whole record or none, and takes no lock: a record a concurrent writer's collection removes costs its
+ * property one run, never a pass it did not earn. A record whose text is not its key's is refused (VerdictCorrupt),
+ * never read as a pass.
  */
 
 /**
@@ -101,17 +114,18 @@ const recordOf = (key: VerdictKey): Effect.Effect<string> =>
 		})
 	)
 
-/** The file a key's record is stored in under `directory`, and its record's text. */
+/** The directory of a key's property under `directory`, the file its record is stored in, and the record's text. */
 export const verdictFileOf = Effect.fn("verdictFileOf")(function* (
 	directory: string,
 	key: VerdictKey
 ) {
 	const record = yield* recordOf(key)
 	const digest = yield* Digest.Digest
+	const property = yield* digest.digestHex(Digest.sha256, new TextEncoder().encode(key.property))
 	const hash = yield* digest.digestHex(Digest.sha256, new TextEncoder().encode(record))
 	return {
-		shard: `${directory}/${Str.slice(0, 2)(hash)}`,
-		file: `${directory}/${Str.slice(0, 2)(hash)}/${Str.slice(2)(hash)}.json`,
+		shard: `${directory}/${property}`,
+		file: `${directory}/${property}/${hash}.json`,
 		record
 	}
 })
@@ -144,21 +158,30 @@ export const verdictCacheAt = (
 			record: (key, verdict) =>
 				Effect.gen(function* () {
 					const { shard, file, record } = yield* placed(key)
-					switch (verdict) {
-						case "passed": {
-							yield* Effect.mapError(fs.makeDirectory(shard, { recursive: true }), unusable(shard))
-							const temporary = yield* Effect.mapError(
-								fs.makeTempFile({ directory: shard, prefix: ".verdict-" }),
-								unusable(shard)
-							)
-							yield* Effect.mapError(fs.writeFileString(temporary, record), unusable(temporary))
-							yield* Effect.mapError(fs.rename(temporary, file), unusable(file))
-							return
-						}
-						case "failed":
-							yield* Effect.mapError(fs.remove(file, { force: true }), unusable(file))
-							return
+					if (verdict === "passed") {
+						yield* Effect.mapError(fs.makeDirectory(shard, { recursive: true }), unusable(shard))
+						const temporary = yield* Effect.mapError(
+							fs.makeTempFile({ directory: shard, prefix: ".verdict-" }),
+							unusable(shard)
+						)
+						yield* Effect.mapError(fs.writeFileString(temporary, record), unusable(temporary))
+						yield* Effect.mapError(fs.rename(temporary, file), unusable(file))
 					}
+					const kept =
+						verdict === "passed" ? Option.some(Str.slice(shard.length + 1)(file)) : Option.none()
+					const names = yield* fs.readDirectory(shard).pipe(
+						Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed([])),
+						Effect.mapError(unusable(shard))
+					)
+					yield* Effect.forEach(
+						Arr.filter(
+							names,
+							(name) => Str.endsWith(".json")(name) && !Option.contains(kept, name)
+						),
+						(name) =>
+							Effect.mapError(fs.remove(`${shard}/${name}`, { force: true }), unusable(shard)),
+						{ discard: true }
+					)
 				})
 		}
 	})
