@@ -133,6 +133,12 @@ type Stated<S, F extends string, N extends Needs, E> = Readonly<{
 	 * short for its honest work: a Limit, with the evidence that its cases take that long. Without one, the runner's.
 	 */
 	caseDeadline?: Limit
+	/**
+	 * How many steered cases its search may run while a required situation is unreached, when the runner's
+	 * (steeredCases) is too few for its situations (a property that requires more situations than the runner's witnesses
+	 * can reach one each): a Limit, with the evidence that its situations need that many. Without one, the runner's.
+	 */
+	steeredCases?: Limit
 }>
 
 /**
@@ -333,27 +339,34 @@ const exploredAs =
 			guide: searched.guide,
 			oracle: spec.oracle,
 			kills: spec.kills,
-			...boundedBy(spec.caseDeadline, exploreSearch(searched, 1), replay(searched)),
+			...boundedBy(spec, exploreSearch(searched, 1), replay(searched)),
 			keep: keepingOf(drawing, aimPlacesOf(spec.space, spec.situations)),
 			evaluate: (batch) => Effect.forEach(batch, evaluate)
 		})
 	}
 
-/** A search run under a property's own case deadline when it cites one, under the runner's otherwise. */
-const deadlineOf =
-	(caseDeadline: Limit | undefined) =>
-	(run: SearchRun): SearchRun =>
-		caseDeadline === undefined
-			? run
-			: { ...run, limits: { ...run.limits, deadline: caseDeadline.value } }
+/** The runner's limits a property may replace with a Limit it cites, each the runner's where it cites none. */
+type Cited = Readonly<{ caseDeadline?: Limit; steeredCases?: Limit }>
 
-/** A property's search and replay, each run under its own case deadline when it cites one. */
+/** A search run under the limits a property cites in place of the runner's, and the runner's otherwise. */
+const citedIn =
+	(cited: Cited) =>
+	(run: SearchRun): SearchRun => ({
+		...run,
+		limits: {
+			...run.limits,
+			deadline: cited.caseDeadline?.value ?? run.limits.deadline,
+			steered: cited.steeredCases?.value ?? run.limits.steered
+		}
+	})
+
+/** A property's search and replay, each run under the limits it cites. */
 const boundedBy = (
-	caseDeadline: Limit | undefined,
+	cited: Cited,
 	search: Made["search"],
 	replaying: Made["replay"]
 ): Pick<Made, "search" | "replay"> => {
-	const under = deadlineOf(caseDeadline)
+	const under = citedIn(cited)
 	return {
 		search: (run) => search(under(run)),
 		replay: (run, token) => replaying(under(run), token)
@@ -385,25 +398,21 @@ export const property = {
 			guide: searched.guide,
 			oracle: spec.oracle,
 			kills: spec.kills,
-			...boundedBy(
-				spec.caseDeadline,
-				exhaustSearch(searched, space, spec.box, 1),
-				replay(searched)
-			),
+			...boundedBy(spec, exhaustSearch(searched, space, spec.box, 1), replay(searched)),
 			keep: keepingOf(drawing, []),
 			evaluate: (batch) => Effect.forEach(batch, evaluate)
 		})
 	},
 	/** Cases checked a batch at a time in one evaluation, still drawn and shrunk one by one. */
 	batched: <S, const F extends string, N extends Needs, E>(
-		space: Space<S>,
+		space: Space<S> | Aimed<S, F>,
 		spec: BatchedSpec<S, F, N, E>
 	): Property => {
 		const searched = searchedOf(spec.situations, spec.kept, { kind: "notes" })
 		const checkAll: BatchCheck<S, F, N, E> = spec.checkAll
 		const drawing: Drawing<S, F> = {
 			situations: spec.situations,
-			spaceUnder: () => space,
+			spaceUnder: spaceUnderOf(space),
 			print: printOf(spec.show)
 		}
 		return new Property({
@@ -412,8 +421,8 @@ export const property = {
 			guide: searched.guide,
 			oracle: spec.oracle,
 			kills: spec.kills,
-			...boundedBy(spec.caseDeadline, exploreSearch(searched, spec.size), replay(searched)),
-			keep: keepingOf(drawing, []),
+			...boundedBy(spec, exploreSearch(searched, spec.size), replay(searched)),
+			keep: keepingOf(drawing, aimPlacesOf(space, spec.situations)),
 			evaluate: evaluateBatch(drawing, spec.needs, checkAll)
 		})
 	},
@@ -439,11 +448,7 @@ export const property = {
 			guide: searched.guide,
 			oracle: spec.oracle,
 			kills: spec.kills,
-			...boundedBy(
-				spec.caseDeadline,
-				exhaustSearch(searched, space, spec.box, spec.size),
-				replay(searched)
-			),
+			...boundedBy(spec, exhaustSearch(searched, space, spec.box, spec.size), replay(searched)),
 			keep: keepingOf(drawing, []),
 			evaluate: evaluateBatch(drawing, spec.needs, checkAll)
 		})
