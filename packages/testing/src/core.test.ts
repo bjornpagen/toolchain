@@ -7,10 +7,13 @@
  * leaning magnitude from the same words; every case of a generator once, in its order, all of them counted; a stream's
  * cases from its seed alone.
  */
-import { Array as Arr, Effect, Order } from "effect"
+import { Array as Arr, Effect, Option, Order } from "effect"
 import { deepStrictEqual } from "#assert.ts"
 import { everyCase, everyValue, fraction, shareOf } from "#chance.fixtures.ts"
 import {
+	busyCounts,
+	busyFor,
+	COUNT_BUDGET_MILLIS,
 	composite,
 	cutTapes,
 	enumerationOf,
@@ -26,7 +29,7 @@ import {
 	tokenFeaturesOf,
 	weightLists
 } from "#core.fixtures.ts"
-import { sizeOf } from "#enumerate.ts"
+import { countWithin, sizeOf } from "#enumerate.ts"
 import { array, constant, int, type Weighted, weighted } from "#gen.ts"
 import { property } from "#property.ts"
 import { between, biased, caseSeed, floorSeed, rotatingSeed, wordsOf } from "#random.ts"
@@ -302,6 +305,41 @@ export const enumerationOrder = property.explore(shapeOf(2), {
 			original: "\t\tvalues[at] = value + 1",
 			replacement: "\t\tvalues[at] = Math.min(value + 2, tape.hi[at] ?? 0)",
 			why: "Enumeration counts each decision up by two, skipping every other value below its highest; the enumeration property fails."
+		}
+	]
+})
+
+/**
+ * An exhaustion's count is bounded by the CPU it spends itself, never by what other fibers of its process spend while it
+ * yields: beside a fiber that spends more than the count's whole budget at once, a space of 2,049 to 20,000 cases, which
+ * takes a few milliseconds to count, is counted, all of it (grizzle's GZ-UNIT-A: under load, every exhaustion of
+ * test/unit/allen and a dozen more were refused as uncountable within a case deadline that the parent's other searches
+ * and the machine's load ran out, not the count).
+ */
+export const countedBesideBusyFibers = property.explore(busyCounts, {
+	needs: {},
+	situations: [],
+	check: () => (busy) =>
+		Effect.gen(function* () {
+			const [counted] = yield* Effect.all(
+				[countWithin(int(0, busy.cases - 1), COUNT_BUDGET_MILLIS), busyFor(busy.busyMillis)],
+				{ concurrency: "unbounded" }
+			)
+			deepStrictEqual(counted, Option.some(busy.cases))
+		}),
+	oracle: {
+		kind: "specification",
+		name: "a space whose count spends little CPU is counted whole, whatever its process's other fibers spend meanwhile"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/enumerate.ts",
+			original:
+				"\t\t\tspent += cpuMillisOf(process.threadCpuUsage(began))\n\t\t\tif (spent > cpuMillis) {\n\t\t\t\treturn Option.none()\n\t\t\t}\n\t\t\tyield* Effect.yieldNow",
+			replacement:
+				"\t\t\tyield* Effect.yieldNow\n\t\t\tspent += cpuMillisOf(process.threadCpuUsage(began))\n\t\t\tif (spent > cpuMillis) {\n\t\t\t\treturn Option.none()\n\t\t\t}",
+			why: "The count is charged with what ran while it yielded, as a deadline on the time that passes charges it: a busy fiber beside it makes a small space uncountable; this property fails."
 		}
 	]
 })

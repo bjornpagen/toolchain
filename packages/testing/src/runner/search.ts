@@ -1,5 +1,5 @@
-import { Array as Arr, Duration, Effect, Option, String as Str } from "effect"
-import { type Branch, enumerated, firstBranch, sizeOf } from "#enumerate.ts"
+import { Array as Arr, Effect, Option, String as Str } from "effect"
+import { type Branch, countWithin, enumerated, firstBranch } from "#enumerate.ts"
 import { residualOf, type SteeringPhase, type Tally, tallyOf, turnsOf } from "#features.ts"
 import type { Gen } from "#gen.ts"
 import { mutate } from "#mutate.ts"
@@ -670,8 +670,9 @@ export const exploreSearch =
 		})
 
 /**
- * An exhaustion's search: kept tokens first; then its space counted before any case runs, within the case deadline,
- * since a space too large to count is too large to exhaust; then every case in enumeration order. The space is run by
+ * An exhaustion's search: kept tokens first; then its space counted before any case runs, within the case deadline of
+ * CPU (enumerate.ts countWithin: the count's own CPU, which no load or other search stretches), since a space too large
+ * to count is too large to exhaust; then every case in enumeration order. The space is run by
  * sketches, one case of the space alone with every case its property's draws enumerate from it, in windows of as many
  * series of sketches as the evaluator has room for, each series the steering window's count of sketches (a batch's
  * worth at least) sent to one process as one unit (runner/series.ts): the process enumerates them from the series'
@@ -688,10 +689,7 @@ export const exhaustSearch =
 			if (Option.isSome(kept)) {
 				return failed(kept.value)
 			}
-			const counted = yield* Effect.timeoutOption(
-				sizeOf(space),
-				Duration.millis(run.limits.deadline)
-			)
+			const counted = yield* countWithin(space, run.limits.deadline)
 			if (Option.isNone(counted)) {
 				return failed({ kind: "uncountable", box, deadline: run.limits.deadline })
 			}

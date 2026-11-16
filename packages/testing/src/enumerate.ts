@@ -54,6 +54,41 @@ export const enumerated = <A>(
 	return { generated, next: nextBranch(generated.tape) }
 }
 
+/** Milliseconds of a reading of a thread's CPU, user and system. */
+const cpuMillisOf = (spent: NodeJS.CpuUsage): number => (spent.user + spent.system) / 1000
+
+/**
+ * How many cases a generator's space holds, counted as sizeOf counts it, unless the count itself takes more than
+ * `cpuMillis` of CPU: none then, for a space too large to count, and so to exhaust. The count is bounded by the CPU it
+ * spends, its thread's alone (no collector or other thread of the process), read around each run of cases it counts
+ * between two yields, never by the time that passes, so a busy machine,
+ * or a busy process whose other fibers run between those runs, never makes a countable space uncountable.
+ */
+export const countWithin = (
+	generator: Gen<unknown>,
+	cpuMillis: number
+): Effect.Effect<Option.Option<number>> =>
+	Effect.gen(function* () {
+		const yieldEvery = yield* Scheduler.MaxOpsBeforeYield
+		const recorded = recorder()
+		let cases = 0
+		let spent = 0
+		let branch: Option.Option<Branch> = Option.some(firstBranch)
+		while (Option.isSome(branch)) {
+			const began = process.threadCpuUsage()
+			for (let run = 0; run < yieldEvery && Option.isSome(branch); run += 1) {
+				branch = enumerated(recorded, generator, branch.value).next
+				cases += 1
+			}
+			spent += cpuMillisOf(process.threadCpuUsage(began))
+			if (spent > cpuMillis) {
+				return Option.none()
+			}
+			yield* Effect.yieldNow
+		}
+		return Option.some(cases)
+	})
+
 /**
  * How many cases a generator's space holds, counted by generating alone before any property runs, every case on one
  * recorder's buffers. The count yields to the event loop as often as the runtime yields a fiber, once every

@@ -1,4 +1,4 @@
-import { Array as Arr, Option, Order, String as Str } from "effect"
+import { Array as Arr, Effect, Option, Order, String as Str } from "effect"
 import {
 	array,
 	boolean,
@@ -273,3 +273,33 @@ export const shapeFeaturesOf = (
 			]
 	}
 }
+
+/**
+ * The CPU (ms) a count of a space may spend in the count-beside-a-busy-fiber property: well past what counting its
+ * largest space (20,000 cases of one decision) takes, about 2 to 4 ms on cassowary.
+ */
+export const COUNT_BUDGET_MILLIS = 40
+
+/**
+ * A count beside a busy fiber: how many cases its space holds, past the 2,048 a count runs between two yields so the
+ * busy fiber runs while it yields, and how much CPU the busy fiber then spends at once, past the count's whole budget.
+ */
+export type BusyCount = Readonly<{ cases: number; busyMillis: number }>
+
+/** Counts of 2,049 to 20,000 cases beside a fiber that spends 41 to 80 ms of CPU at once. */
+export const busyCounts: Gen<BusyCount> = (source) => ({
+	cases: source.draw(int(2049, 20_000)),
+	busyMillis: source.draw(int(COUNT_BUDGET_MILLIS + 1, 2 * COUNT_BUDGET_MILLIS))
+})
+
+/** Spends `millis` of this process's CPU at once, holding its thread: a fiber busy with other work. */
+export const busyFor = (millis: number) =>
+	Effect.sync(() => {
+		const began = process.cpuUsage()
+		let spins = 0
+		for (let spent = process.cpuUsage(began); (spent.user + spent.system) / 1000 < millis;) {
+			spins += 1
+			spent = process.cpuUsage(began)
+		}
+		return spins
+	})

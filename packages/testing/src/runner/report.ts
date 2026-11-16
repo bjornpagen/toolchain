@@ -107,7 +107,7 @@ const headlineOf = (finding: Finding): string => {
 		case "unreached":
 			return `no witness reached ${Arr.join(finding.missing, ", ")}`
 		case "uncountable":
-			return `its space could not be counted within the case deadline of ${Duration.format(Duration.millis(finding.deadline))}`
+			return `its space could not be counted within the case deadline of ${Duration.format(Duration.millis(finding.deadline))} of CPU`
 	}
 }
 
