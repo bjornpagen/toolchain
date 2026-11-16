@@ -1,4 +1,4 @@
-import { type Effect, Schema, type Scope } from "effect"
+import { type Effect, Schema, type Scope, String as Str } from "effect"
 import type { RealPath } from "#mutate/mutated.ts"
 import type { Evaluator } from "#runner/protocol.ts"
 
@@ -21,6 +21,22 @@ export type WorkerImage = Readonly<{
 	execArgv: ReadonlyArray<string>
 	env: Readonly<Record<string, string>>
 }>
+
+/**
+ * Where a file the runner knows in the checkout stands for a worker whose image's root is `root`: `<root>/<path>` for
+ * the file at `<checkout>/<path>`, the root itself for the checkout (a package whose root is the repository's), and the
+ * file as it is when it lies outside the checkout (an installed package, Node's own).
+ */
+export const rebasedTo =
+	(checkout: string, root: string) =>
+	(file: string): string => {
+		if (file === checkout) {
+			return root
+		}
+		return Str.startsWith(`${checkout}/`)(file)
+			? `${root}/${Str.slice(checkout.length + 1)(file)}`
+			: file
+	}
 
 /**
  * No worker of a lease started from its image: each ended before it was ready, as one does when a mutant (or a probe)
