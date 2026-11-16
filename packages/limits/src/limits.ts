@@ -331,3 +331,27 @@ export const gateFullCheckDays = provisional({
 	origin: 'Bjorn\'s decision of 2026-11-15, "once a day", written with db83729, with no evidence',
 	recorded: RECORDED
 })
+
+/**
+ * How much work the runner's pool puts in one message to a worker: it fills each message with cases until their
+ * expected run time reaches this, so the round trip that carries them stays a small part of the work they do. Below it,
+ * the pool spends its time messaging; far above it, one slow message leaves the other workers idle at a run's end.
+ */
+export const messageWorkMillis = measured({
+	value: 12,
+	owner: "the choice-stream testing library's runner (its worker pool, the work per message)",
+	unit: "milliseconds of expected case run time",
+	scope: "one message the runner's pool sends one worker",
+	evidence:
+		"packages/testing/out/message-target/rtt-20261116.txt in grizzle's TESTSYS lane CORE's toolchain clone, the uncommitted record of its round-trip probe: a one-case message from the pool to a worker and the worker's answer, timed on the pool's side",
+	observed: "2026-11-16 07:32 UTC",
+	environment:
+		"cassowary, Ubuntu 26.04.1 (Linux 7.0.0-1016-aws) on an AWS Graviton3 (Neoverse-V1, arm64) instance with 64 logical CPUs and 247 GiB, Node 26.13.1; load average 22 to 49 from other sessions",
+	workload:
+		"one-case messages round-tripped between the runner's pool and one worker, the runner at toolchain 995e385",
+	result: "every round trip took 0.41 to 0.55 ms",
+	decision:
+		"the round trip stays under 5% of a message's work when the work is at least 20 times the slowest round trip: 0.55 ms / 0.05 is 11 ms, and 12 ms, the next whole millisecond, leaves 4.6%. Until this limit existed the pool sent each property a fair share of the queue per message, with no number",
+	revalidate:
+		"a Node upgrade; a different machine; a change to the message's format or the worker transport; a run whose workers sit idle at its end while one message's cases finish"
+})
