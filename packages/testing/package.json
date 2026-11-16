@@ -36,6 +36,7 @@
 		"./vitest/reporter": "./src/vitest/reporter.ts",
 		"./vitest/run": "./src/vitest/run.ts",
 		"./pattern": "./src/pattern.ts",
+		"./property": "./src/property.ts",
 		"./oxlint": "./src/oxlint/plugin.ts",
 		"./workers": "./src/workers.ts"
 	},
