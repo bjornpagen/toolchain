@@ -1,5 +1,7 @@
 import { Array as Arr, Effect, Exit, Fiber, Formatter, Option, Order, Schema, Struct } from "effect"
+import type { Case } from "#explore.ts"
 import { array, type Gen, int, shuffled } from "#gen.ts"
+import type { CheckContext, ExploreSpec, Needs, Resources } from "#property.ts"
 import { searchStarted } from "#searches.ts"
 import type { Observed } from "#source.ts"
 
@@ -15,10 +17,9 @@ export type Sessions<S extends string, M> = {
 /**
  * What an interleaving explores: its sessions; groups of sessions that share one lane and so never have moves in
  * flight at once (a pooled connection, a wait no lock shows); and the query that reads the system's final state, if
- * the judgment needs one.
+ * the judgment needs one. It has no name of its own: what names it is the property whose case it is.
  */
 export type Interleave<S extends string, M, Q> = Readonly<{
-	name: string
 	sessions: Sessions<S, M>
 	exclusive: ReadonlyArray<Arr.NonEmptyReadonlyArray<S>>
 	state: Option.Option<Q>
@@ -94,14 +95,14 @@ export type Reduction = "sleep-sets" | "none"
  * How decisions are made:
  * - `every` runs every distinct order, as a stateless depth-first search whose tree branches on what the system showed
  *   after each decision, so nature's choices are explored rather than replayed; sleep sets prune orders that differ
- *   only in commuting moves; `limit` is a runaway guard, past which the search is refused;
+ *   only in commuting moves; the runner's case deadline is its one runaway guard;
  * - `pct` runs the highest-priority session that can move, with priorities and change points drawn on the case's tape;
  * - `drawn` draws each decision from the case's tape, so a schedule replays from its token, shrinks like any value and
  *   is mutated by a fuzz run;
  * - `script` makes the decisions it lists.
  */
 export type Strategy<S extends string, Q> =
-	| Readonly<{ kind: "every"; limit: number; reduction: Reduction }>
+	| Readonly<{ kind: "every"; reduction: Reduction }>
 	| Readonly<{ kind: "pct"; schedule: PctSchedule<S>; nature: Nature }>
 	| Readonly<{ kind: "drawn"; nature: Nature }>
 	| Readonly<{ kind: "script"; choices: ReadonlyArray<Choice<S, Q>> }>
@@ -178,7 +179,6 @@ export type SessionEnd =
 
 /** One run of an interleaving, everything a judgment reads. */
 export type Interleaving<S extends string, M, O, Q, A, W> = Readonly<{
-	name: string
 	order: ReadonlyArray<MoveRecord<S, M, O, W>>
 	sessions: ReadonlyMap<S, SessionEnd>
 	state: Option.Option<A>
@@ -205,15 +205,15 @@ export type InterleavingReport = Readonly<{
 /** Sessions whose `after`s form a cycle, so none of them could ever start. */
 export class AfterCycle extends Schema.TaggedError<AfterCycle, { readonly brand: unique symbol }>()(
 	"AfterCycle",
-	{ interleaving: Schema.String, cycle: Schema.Array(Schema.String), message: Schema.String }
+	{ cycle: Schema.Array(Schema.String), message: Schema.String }
 ) {}
 
-/** A run that stalled with every session waiting on no cycle, or a search past its limit: the engine's own failures. A
- * run the judgment refuses fails with the judge's refusal instead (interleave). */
+/** A run that stalled with every session waiting on no cycle: the engine's own failure. A run the judgment refuses fails
+ * with the judge's refusal instead (interleave). */
 export class InterleavingFailed extends Schema.TaggedError<
 	InterleavingFailed,
 	{ readonly brand: unique symbol }
->()("InterleavingFailed", { interleaving: Schema.String, message: Schema.String }) {}
+>()("InterleavingFailed", { message: Schema.String }) {}
 
 /**
  * A PCT schedule over `sessions`: a priority order and up to `depth - 1` change points among `moves` moves, each drawn
@@ -340,7 +340,7 @@ export const describeRun = <S extends string, M, O, Q, A, W>(
 ): string =>
 	Arr.join(
 		[
-			`${run.name}: ${describeEnding(run.ending)}`,
+			`run ${describeEnding(run.ending)}`,
 			`sessions: ${Arr.join(
 				Arr.map([...run.sessions], ([session, end]) => `${session} ${describeEnd(end)}`),
 				", "
@@ -385,7 +385,7 @@ type Live<S extends string, M, O, W> = Readonly<{
  * system decide every wait it will decide, breaks any deadlock the waits form, and makes the next decision among the
  * sessions that can move. A session can move when it is not done, has no move in flight, the session it waits `after`
  * is done, and no session of its lane has a move in flight. Nothing sleeps and nothing is judged by time: the driver's
- * observations of waits and its quiescence are the only clocks, and a run is bounded by the case's hang guard. A
+ * observations of waits and its quiescence are the only clocks, and a run is bounded by the runner's case deadline. A
  * session seen waiting is not moved again until its move ends, so orders that differ only in where its later moves go
  * are one execution and run once. A defect or an interruption of a move ends the run as a defect, never as an outcome.
  * However a run ends, every session it started is released before the next run's reset (Driver's `release`). Its start
@@ -403,16 +403,13 @@ export const interleave = <S extends string, M, O, Q, A, W, E, R, F, RJ>(
 		const cyclic = afterCycleOf(spec.sessions)
 		if (Option.isSome(cyclic)) {
 			return yield* AfterCycle.make({
-				interleaving: spec.name,
 				cycle: cyclic.value,
-				message: `${spec.name}: ${Arr.join(cyclic.value, ", ")} each start after another of them, so none can start`
+				message: `${Arr.join(cyclic.value, ", ")} each start after another of them, so none can start`
 			})
 		}
 		const movesAt = (session: S, index: number): M =>
 			Arr.getUnsafe(spec.sessions[session].moves, index)
 		const lastIndexOf = (session: S): number => spec.sessions[session].moves.length - 1
-		const failed = (message: string) =>
-			InterleavingFailed.make({ interleaving: spec.name, message })
 
 		const root = nodeOf<S>(new Set())
 		const sights = new Map<string, number>()
@@ -840,9 +837,9 @@ export const interleave = <S extends string, M, O, Q, A, W, E, R, F, RJ>(
 						}
 						choice = { kind: "move", session: decided.value }
 					} else if (pending.size > 0) {
-						return yield* failed(
-							`${spec.name}: every unfinished session waits, on no cycle (${seen})`
-						)
+						return yield* InterleavingFailed.make({
+							message: `every unfinished session waits, on no cycle (${seen})`
+						})
 					} else {
 						break
 					}
@@ -875,7 +872,6 @@ export const interleave = <S extends string, M, O, Q, A, W, E, R, F, RJ>(
 					onSome: (query) => Effect.asSome(driver.read(query))
 				})
 				const run: Interleaving<S, M, O, Q, A, W> = {
-					name: spec.name,
 					order,
 					sessions: new Map(
 						Arr.map(names, (name) => [name, ends.get(name) ?? { kind: "unfinished" }] as const)
@@ -947,11 +943,6 @@ export const interleave = <S extends string, M, O, Q, A, W, E, R, F, RJ>(
 
 		let plan: Option.Option<Plan<S>> = Option.some({ prefix: [], target: Option.none() })
 		while (Option.isSome(plan)) {
-			if (report.interleavings + report.pruned >= strategy.limit) {
-				return yield* failed(
-					`${spec.name}: more than ${strategy.limit} interleavings; the search is refused rather than cut short`
-				)
-			}
 			const path = yield* runJudged(plan.value)
 			plan = Option.none()
 			for (let at = path.length - 1; at >= 0 && Option.isNone(plan); at -= 1) {
@@ -970,3 +961,147 @@ export const interleave = <S extends string, M, O, Q, A, W, E, R, F, RJ>(
 		}
 		return report
 	})
+
+/**
+ * How a property's case schedules its interleaving: a strategy of the engine's, with the case itself as its nature, so
+ * whatever a schedule draws is on the case's tape: it replays from the case's token, shrinks with the case and is
+ * mutated by a fuzz run.
+ * - `every` runs every distinct order;
+ * - `pct` draws a PCT schedule of up to `depth - 1` change points over the case's own sessions and the moves they make
+ *   (`pctSchedule`, `movesOf`), so the moves it is drawn among are the moves the run makes;
+ * - `pct-stated` follows a PCT schedule the case states (a pinned history, a preemption);
+ * - `drawn` draws each decision;
+ * - `script` makes the decisions it lists.
+ */
+export type Scheduling<S extends string, Q> =
+	| Readonly<{ kind: "every"; reduction: Reduction }>
+	| Readonly<{ kind: "pct"; depth: number }>
+	| Readonly<{ kind: "pct-stated"; schedule: PctSchedule<S> }>
+	| Readonly<{ kind: "drawn" }>
+	| Readonly<{ kind: "script"; choices: ReadonlyArray<Choice<S, Q>> }>
+
+/**
+ * The engine's strategy for a case's scheduling, its nature the case. Sessions that are none make one run of no
+ * decisions whatever its strategy, so a PCT schedule over none is the empty script.
+ */
+const strategyOf = <S extends string, M, Q>(
+	scheduling: Scheduling<S, Q>,
+	spec: Interleave<S, M, Q>,
+	nature: Nature
+): Strategy<S, Q> => {
+	switch (scheduling.kind) {
+		case "every":
+		case "script":
+			return scheduling
+		case "pct": {
+			const names: ReadonlyArray<S> = Struct.keys(spec.sessions)
+			return Arr.isReadonlyArrayNonEmpty(names)
+				? {
+						kind: "pct",
+						schedule: nature.draw(pctSchedule(names, scheduling.depth, movesOf(spec.sessions))),
+						nature
+					}
+				: { kind: "script", choices: [] }
+		}
+		case "pct-stated":
+			return { kind: "pct", schedule: scheduling.schedule, nature }
+		case "drawn":
+			return { kind: "drawn", nature }
+	}
+}
+
+/**
+ * What a case of `property.interleave` notes of its runs, beside its judge's own notes, by the report's count that
+ * notes it: a run where a move was seen waiting, a deadlock the system broke, an order pruned as one already judged,
+ * nature branching from `every`'s planned order, and a replay that met another sight than its tape's. A property may
+ * require any of them among its situations.
+ */
+const INTERLEAVED = {
+	blocked: "a move waited",
+	deadlocked: "a deadlock broken",
+	pruned: "an order pruned",
+	branched: "nature branched",
+	diverged: "nature diverged"
+} as const satisfies Readonly<Record<Exclude<keyof InterleavingReport, "interleavings">, string>>
+
+/** A situation the engine notes of a case's runs. */
+export type Interleaved = (typeof INTERLEAVED)[keyof typeof INTERLEAVED]
+
+/** The situations a case's report reached. */
+const interleavedOf = (report: InterleavingReport): ReadonlyArray<Interleaved> =>
+	Arr.flatMap(Struct.keys(INTERLEAVED), (count) => (report[count] > 0 ? [INTERLEAVED[count]] : []))
+
+/**
+ * An interleaving property: each case draws its value from `space`, gets its resources from `needs` (its database, the
+ * connections its sessions hold: its own, for the case alone), and runs the engine (interleave) over the case's
+ * sessions, on the driver built for it, as its strategy schedules them, judging every run; the case fails with the
+ * judge's first refusal or the engine's own failure, and notes what its runs reached (Interleaved). The concurrency
+ * of a case's sessions is the system under test: it is the case's, and nothing in the property asks for more.
+ * - `sessions` is the case's interleaving: its sessions and their moves as data, its lanes and the query of its final
+ *   state;
+ * - `driver` builds the system under test on the case's resources, in the case's scope, and runs those moves;
+ * - `strategy` is how its decisions are made (Scheduling), given the interleaving, so a case of few moves may run every
+ *   order and one of many a PCT schedule;
+ * - `judge` reads each run, on the case's resources, noting what it reached.
+ */
+export type InterleaveSpec<
+	C,
+	S extends string,
+	M,
+	O,
+	Q,
+	A,
+	W,
+	N extends Needs,
+	F extends string,
+	E,
+	J
+> = Omit<ExploreSpec<C, F | Interleaved, N, never>, "check"> &
+	Readonly<{
+		sessions: (value: C) => Interleave<S, M, Q>
+		driver: (
+			resources: Resources<N>
+		) => (value: C) => Effect.Effect<Driver<S, M, O, Q, A, W, E, CheckContext>, E, CheckContext>
+		strategy: (value: C, interleaving: Interleave<S, M, Q>) => Scheduling<S, Q>
+		judge: (
+			resources: Resources<N>,
+			c: Case<F>
+		) => (value: C) => (run: Interleaving<S, M, O, Q, A, W>) => Effect.Effect<void, J, CheckContext>
+	}>
+
+/**
+ * The exploration an interleaving property is: its space, needs, situations, oracle, kept cases and kills as stated,
+ * and a check that runs the engine over the case and notes what its runs reached.
+ */
+export const interleaveExplore = <
+	C,
+	S extends string,
+	M,
+	O,
+	Q,
+	A,
+	W,
+	N extends Needs,
+	F extends string,
+	E,
+	J
+>(
+	spec: InterleaveSpec<C, S, M, O, Q, A, W, N, F, E, J>
+): ExploreSpec<C, F | Interleaved, N, E | J | AfterCycle | InterleavingFailed> => {
+	const { sessions, driver, strategy, judge, ...stated } = spec
+	return {
+		...stated,
+		check: (resources, c) => (value) =>
+			Effect.gen(function* () {
+				const interleaving = sessions(value)
+				const system = yield* driver(resources)(value)
+				const report = yield* interleave(
+					system,
+					interleaving,
+					strategyOf(strategy(value, interleaving), interleaving, c),
+					judge(resources, c)(value)
+				)
+				c.noteAll(interleavedOf(report))
+			})
+	}
+}

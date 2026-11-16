@@ -229,8 +229,8 @@ const resultsOf = <S extends string>(sessions: Sessions<S, Move>, reduction: Red
 		const results = new Set<string>()
 		const report = yield* interleave(
 			lockManager<S>(),
-			{ name: "locks", sessions, exclusive: [], state: Option.some("state") },
-			{ kind: "every", limit: 20_000, reduction },
+			{ sessions, exclusive: [], state: Option.some("state") },
+			{ kind: "every", reduction },
 			(run) => Effect.sync(() => results.add(decidedBy(run)))
 		)
 		return { results, report }
@@ -498,8 +498,8 @@ describe("interleaving", () => {
 						Effect.asVoid(
 							interleave(
 								lockManager<Named>(),
-								{ name: "locks", sessions, exclusive: [], state: Option.some("state") },
-								{ kind: "every", limit: 20_000, reduction: "sleep-sets" },
+								{ sessions, exclusive: [], state: Option.some("state") },
+								{ kind: "every", reduction: "sleep-sets" },
 								(run) =>
 									Effect.sync(() => {
 										const aborted = Arr.flatMap([...run.sessions], ([session, end]) =>
@@ -555,7 +555,6 @@ describe("interleaving", () => {
 								interleave(
 									lockManager<Named>(),
 									{
-										name: "afters",
 										sessions: {
 											a: { moves: [{ kind: "commit" }], after: afters.a },
 											b: { moves: [{ kind: "commit" }], after: afters.b },
@@ -564,7 +563,7 @@ describe("interleaving", () => {
 										exclusive: [],
 										state: Option.none()
 									},
-									{ kind: "every", limit: 100, reduction: "sleep-sets" },
+									{ kind: "every", reduction: "sleep-sets" },
 									() =>
 										Effect.sync(() => {
 											ran += 1
@@ -604,7 +603,7 @@ describe("interleaving", () => {
 			const runs: Array<Interleaving<"a" | "b", Move, Outcome, "state", Snapshot, Resource>> = []
 			yield* interleave(
 				lockManager<"a" | "b">(),
-				{ name: "scripted", sessions: crossing, exclusive: [], state: Option.some("state") },
+				{ sessions: crossing, exclusive: [], state: Option.some("state") },
 				{
 					kind: "script",
 					choices: [
@@ -783,7 +782,6 @@ describe("releasing sessions", () => {
 									return Effect.void
 								})
 							const spec: Interleave<Named, Move, "state"> = {
-								name: "released",
 								sessions,
 								exclusive: [],
 								state: Option.some("state")
@@ -796,7 +794,7 @@ describe("releasing sessions", () => {
 										}
 									: ending.how === "drawn decisions"
 										? { kind: "drawn", nature: c }
-										: { kind: "every", limit: 20_000, reduction: "sleep-sets" }
+										: { kind: "every", reduction: "sleep-sets" }
 							const report = yield* interleave(driver, spec, strategy, judge).pipe(
 								Effect.asSome,
 								Effect.catch(() => Effect.succeedNone)
@@ -831,7 +829,6 @@ const oneDrawnRun = <S extends string>(sessions: Sessions<S, Move>, nature: Natu
 	Effect.gen(function* () {
 		const runs: Array<Interleaving<S, Move, Outcome, "state", Snapshot, Resource>> = []
 		const spec: Interleave<S, Move, "state"> = {
-			name: "drawn",
 			sessions,
 			exclusive: [],
 			state: Option.some("state")

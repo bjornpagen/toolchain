@@ -1,5 +1,7 @@
 import { Array as Arr, Effect, Schema, Struct } from "effect"
+import type { Case } from "#explore.ts"
 import type { Gen, Size, Weight } from "#gen.ts"
+import type { CheckContext, ExploreSpec, Needs, Resources, Space } from "#property.ts"
 import type { Source } from "#source.ts"
 import { type Swarm, weightOf } from "#swarm.ts"
 
@@ -55,11 +57,14 @@ export type Command<M, P, V extends string> = Readonly<{
 }>
 
 /**
- * A state machine: the model's initial state and its commands, each named, with the parameters each takes and the
- * closed vocabulary `V` its refusals are named from (`never` for a machine that refuses nothing).
+ * A state machine: the model's initial state, the closed vocabulary its refusals are named from, as its roster (`[]`
+ * for a machine that refuses nothing), and its commands, each named, with the parameters each takes. The roster is
+ * where the vocabulary's type is read from: a command's verdicts sit under its name in a record, where they never
+ * name it, so a machine's step features (StepFeature) are as closed as the roster says.
  */
 export type Machine<M, P, V extends string> = Readonly<{
 	initial: M
+	refusals: ReadonlyArray<V>
 	commands: { readonly [K in keyof P]: Command<M, P[K], V> }
 }>
 
@@ -299,3 +304,60 @@ export const runProgram = Effect.fn("testing.commands.run")(function* <
 	const ran: Ran<M, P, V> = { model, verdicts }
 	return ran
 })
+
+/**
+ * The programs of a machine, of between `size.min` and `size.max` steps, over the commands a swarm drawn from `mix`
+ * turns on: `swarm(commands)` gives each case its own lopsided mix, `constant(fullSwarm(commands))` every command at
+ * its weight, and any other generator of swarms a mix of its own (one that keeps a command on). The swarm is drawn on
+ * the case's tape before its program, so it replays and shrinks with it.
+ */
+export const programs =
+	<M, P, V extends string>(
+		machine: Machine<M, P, V>,
+		size: Size,
+		mix: Gen<Swarm<CommandName<P>>>
+	): Space<Program<P>> =>
+	(source) =>
+		source.draw(program(machine, size, source.draw(mix)))
+
+/**
+ * A stateful property: each case is a program of `machine`, of `size` steps, over a swarm drawn from `mix`
+ * (`programs`), and its check runs the program (runProgram) on the real system `real` builds for the case, on the
+ * case's resources and in its scope, noting every step's feature (StepFeature), so a property requires the verdicts it
+ * must meet among its situations; `real` may note situations of its own and draw from the case. The case fails at the
+ * first step the system answers otherwise than the model, or whose real run fails.
+ */
+export type StatefulSpec<M, P, V extends string, N extends Needs, F extends string, E> = Omit<
+	ExploreSpec<Program<NoInfer<P>>, StepFeature<NoInfer<P>, NoInfer<V>> | F, N, never>,
+	"check" | "space"
+> &
+	Readonly<{
+		machine: Machine<M, P, V>
+		size: Size
+		mix: Gen<Swarm<CommandName<NoInfer<P>>>>
+		real: (
+			resources: Resources<N>,
+			c: Case<F>
+		) => Effect.Effect<Real<NoInfer<M>, NoInfer<P>, NoInfer<V>, E, CheckContext>, E, CheckContext>
+	}>
+
+/**
+ * The exploration a stateful property is: the machine's programs as its space, its needs, situations, oracle, kept
+ * cases and kills as stated, and a check that runs the case's program on its real system and notes each step's
+ * feature.
+ */
+export const statefulExplore = <M, P, V extends string, N extends Needs, F extends string, E>(
+	spec: StatefulSpec<M, P, V, N, F, E>
+): ExploreSpec<Program<P>, StepFeature<P, V> | F, N, E | StepInapplicable | VerdictDiverged> => {
+	const { machine, size, mix, real, ...stated } = spec
+	return {
+		...stated,
+		space: programs(machine, size, mix),
+		check: (resources, c) => (steps) =>
+			Effect.gen(function* () {
+				const system = yield* real(resources, c)
+				const ran = yield* runProgram(machine, system, steps)
+				c.noteAll(ran.verdicts)
+			})
+	}
+}
