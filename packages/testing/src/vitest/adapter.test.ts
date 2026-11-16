@@ -1,8 +1,8 @@
 /**
  * The Vitest adapter (vitest/run.ts, vitest/config.ts): a search runs on the run global setup chose, under its test's
  * deadline; the test process runs under every hardened flag, the __proto__ accessor gone; and the config's every
- * project runs natively on forks under those flags, one worker a core, with the timeouts and lists it states. Oracles
- * are stated per search.
+ * project runs natively on forks under those flags, one worker a core, with the timeouts and lists it states, every
+ * project whose coverage is never read keeping its compiled code in Node's compile cache. Oracles are stated per search.
  */
 import { describe, it } from "@effect/vitest"
 import { deepStrictEqual, strictEqual } from "@effect/vitest/utils"
@@ -78,7 +78,11 @@ type ConfigFacts = Readonly<{
 	testTimeout: Option.Option<number>
 	hookTimeout: Option.Option<number>
 	projects: ReadonlyArray<Option.Option<string>>
+	setups: ReadonlyArray<Option.Option<ReadonlyArray<string>>>
 }>
+
+/** A setup file of the library's, as the config names it: beside the config, in this directory. */
+const setupOf = (file: string): string => `${import.meta.dirname}/${file}`
 
 type ConfigFeature =
 	| "a guided project"
@@ -162,7 +166,7 @@ describe("the Vitest adapter", () => {
 						suite: "test config",
 						oracle: {
 							kind: "specification",
-							name: "defineTestConfig's contract: native forks, the hardened flags and conditions, one worker a core, one project per non-empty list, the timeouts as stated"
+							name: "defineTestConfig's contract: native forks, the hardened flags and conditions, one worker a core, one project per non-empty list, the compile cache in every project whose coverage is never read, the timeouts as stated"
 						},
 						draw: drawn(testConfig),
 						literal: Formatter.format,
@@ -186,12 +190,21 @@ describe("the Vitest adapter", () => {
 							const fuzz = yield* Config.option(Config.String("TEST_FUZZ"))
 							const fuzzing = Option.isSome(fuzz)
 							const built = defineTestConfig(config).test
+							const coverage = yield* Config.option(Config.String("NODE_V8_COVERAGE"))
+							const covered = Option.isSome(coverage)
 							const projects = Arr.map(built?.projects ?? [], (project) =>
 								typeof project === "object" && "test" in project
 									? Option.map(Option.fromUndefinedOr(project.test.name), (name) =>
 											typeof name === "string" ? name : name.label
 										)
 									: Option.none<string>()
+							)
+							const setups = Arr.map(built?.projects ?? [], (project) =>
+								typeof project === "object" && "test" in project
+									? Option.map(Option.fromUndefinedOr(project.test.setupFiles), (setupFiles) =>
+											typeof setupFiles === "string" ? [setupFiles] : setupFiles
+										)
+									: Option.none<ReadonlyArray<string>>()
 							)
 							if (Arr.isReadonlyArrayNonEmpty(config.guided)) {
 								c.note("a guided project")
@@ -221,8 +234,12 @@ describe("the Vitest adapter", () => {
 								maxWorkers: Option.fromUndefinedOr(built?.maxWorkers),
 								testTimeout: Option.fromUndefinedOr(built?.testTimeout),
 								hookTimeout: Option.fromUndefinedOr(built?.hookTimeout),
-								projects
+								projects,
+								setups
 							}
+							const uncovered = covered
+								? [setupOf("searches-setup.ts")]
+								: [setupOf("compile-cache.ts"), setupOf("searches-setup.ts")]
 							const expected: ConfigFacts = {
 								pool: Option.some("forks"),
 								isolate: Option.some(true),
@@ -237,6 +254,16 @@ describe("the Vitest adapter", () => {
 										"parallel",
 										...(Arr.isReadonlyArrayNonEmpty(config.guided) ? ["guided"] : []),
 										...(Arr.isReadonlyArrayNonEmpty(config.smallStack) ? ["small-stack"] : [])
+									],
+									Option.some
+								),
+								setups: Arr.map(
+									[
+										uncovered,
+										...(Arr.isReadonlyArrayNonEmpty(config.guided)
+											? [[setupOf("coverage.ts"), setupOf("searches-setup.ts")]]
+											: []),
+										...(Arr.isReadonlyArrayNonEmpty(config.smallStack) ? [uncovered] : [])
 									],
 									Option.some
 								)

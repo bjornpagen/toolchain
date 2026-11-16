@@ -18,6 +18,9 @@ export type Timeout =
  * that fails an example where the package bans them. */
 const SEARCHES_SETUP = `${import.meta.dirname}/searches-setup.ts`
 
+/** The setup that keeps a test process's compiled code in Node's compile cache (compile-cache.ts). */
+const COMPILE_CACHE_SETUP = `${import.meta.dirname}/compile-cache.ts`
+
 /** Vitest's form of a timeout, where zero means none. */
 const millisOf = (timeout: Timeout) => (timeout.kind === "unbounded" ? 0 : timeout.millis)
 
@@ -46,13 +49,17 @@ export type TestConfig = Readonly<{
  * A package's Vitest config. Tests run as Node runs the code: native ESM by type stripping, never through Vite's
  * module runner or loader, so no transform changes what a module means; one process per file, as many at once as
  * testWorkers holds (one a core, where Vitest's own default leaves one idle); the
- * hardened flags; the run seed chosen once by global setup; and the residual table at the end, whose reporter fails
+ * hardened flags; Node's compile cache in every process whose coverage is never read (compile-cache.ts: not the guided
+ * project's, and none of a run under NODE_V8_COVERAGE); the run seed chosen once by global setup; and the residual table
+ * at the end, whose reporter fails
  * the run for every passing test case that ran no search where the package bans examples, as each project's setup
  * records the searches every test ran. A fuzz run lifts every
  * timeout: its budget is its own, and each case's hang guard still catches a case that stops.
  */
 export const defineTestConfig = (config: TestConfig) => {
 	const fuzzing = Option.isSome(Effect.runSync(Config.option(Config.String("TEST_FUZZ"))))
+	const covered = Option.isSome(Effect.runSync(Config.option(Config.String("NODE_V8_COVERAGE"))))
+	const uncoveredSetup = covered ? [SEARCHES_SETUP] : [COMPILE_CACHE_SETUP, SEARCHES_SETUP]
 	const timeoutOf = (timeout: Timeout) => millisOf(fuzzing ? { kind: "unbounded" } : timeout)
 	const execArgv = [
 		...HARDENED_FLAGS,
@@ -72,7 +79,7 @@ export const defineTestConfig = (config: TestConfig) => {
 						name: "parallel",
 						include: Arr.copy(config.include),
 						exclude: Arr.copy(config.guided),
-						setupFiles: [SEARCHES_SETUP]
+						setupFiles: uncoveredSetup
 					}
 				},
 				...(Arr.isReadonlyArrayNonEmpty(config.guided)
@@ -95,7 +102,7 @@ export const defineTestConfig = (config: TestConfig) => {
 									name: "small-stack",
 									include: Arr.copy(config.smallStack),
 									execArgv: Arr.append(execArgv, SMALL_STACK),
-									setupFiles: [SEARCHES_SETUP]
+									setupFiles: uncoveredSetup
 								}
 							}
 						]
