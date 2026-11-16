@@ -45,25 +45,27 @@ import {
 	submoduleClones,
 	treeOf,
 	versionFile,
-	versionFilesOf
+	versionFilesOf,
+	workspaceLockfile
 } from "#gate.fixtures.ts"
 
 export const sharedSnapshot = property.exhaust(finite(sharings), {
 	box: "every way three runs fall among up to three clones of one repository, each leaving a stamp",
-	needs: { dir: Scratch.dir, checkout: Checkout.dir },
+	needs: { dir: Scratch.dir, checkout: Checkout.dir, lockfile: workspaceLockfile },
 	situations: [
 		"a second clone's first run finds what a first run left under .gitignore",
 		"a clone runs again after another clone's run",
 		"three clones share one snapshot"
 	],
 	check:
-		({ dir, checkout }, c) =>
+		({ dir, checkout, lockfile }, c) =>
 		(sharing) =>
 			Effect.gen(function* () {
 				c.noteAll(sharingFeatures(sharing))
 				const scratch = yield* dir
 				const gateCheckout = yield* checkout
-				const sandbox = sandboxOf(scratch, gateCheckout)
+				const workspace = yield* lockfile
+				const sandbox = sandboxOf(scratch, gateCheckout, workspace)
 				const { clones } = yield* clonedRepository(sandbox, sharing.clones)
 				yield* Effect.forEach(sharing.runs, (run, index) =>
 					Effect.gen(function* () {
@@ -98,7 +100,7 @@ export const sharedSnapshot = property.exhaust(finite(sharings), {
 
 export const checkedCommit = property.exhaust(finite(checkings), {
 	box: "two clones of every shape (a commit of its own or none, uncommitted edits or none), checked by three runs in turn",
-	needs: { dir: Scratch.dir, checkout: Checkout.dir },
+	needs: { dir: Scratch.dir, checkout: Checkout.dir, lockfile: workspaceLockfile },
 	situations: [
 		"a commit checked after another clone's different commit",
 		"a commit lacking a file the commit checked before held",
@@ -106,13 +108,14 @@ export const checkedCommit = property.exhaust(finite(checkings), {
 		"a stray file an earlier run left"
 	],
 	check:
-		({ dir, checkout }, c) =>
+		({ dir, checkout, lockfile }, c) =>
 		(checking) =>
 			Effect.gen(function* () {
 				c.noteAll(checkingFeatures(checking))
 				const scratch = yield* dir
 				const gateCheckout = yield* checkout
-				const sandbox = sandboxOf(scratch, gateCheckout)
+				const workspace = yield* lockfile
+				const sandbox = sandboxOf(scratch, gateCheckout, workspace)
 				const { clones } = yield* checkedClones(sandbox, checking.clones)
 				yield* Effect.forEach(checking.runs, (run, index) =>
 					Effect.gen(function* () {
@@ -150,7 +153,7 @@ export const checkedCommit = property.exhaust(finite(checkings), {
 
 export const filledSubmodule = property.exhaust(finite(fillings), {
 	box: "a submodule of two versions recorded at either, and two clones of every committed and checked-out version, run in turn",
-	needs: { dir: Scratch.dir, checkout: Checkout.dir },
+	needs: { dir: Scratch.dir, checkout: Checkout.dir, lockfile: workspaceLockfile },
 	situations: [
 		"a submodule at the commit the repository recorded",
 		"a submodule its clone's own commit moved",
@@ -159,13 +162,14 @@ export const filledSubmodule = property.exhaust(finite(fillings), {
 		"a submodule filled at another commit by the run before"
 	],
 	check:
-		({ dir, checkout }, c) =>
+		({ dir, checkout, lockfile }, c) =>
 		(filling) =>
 			Effect.gen(function* () {
 				c.noteAll(fillingFeatures(filling))
 				const scratch = yield* dir
 				const gateCheckout = yield* checkout
-				const sandbox = sandboxOf(scratch, gateCheckout)
+				const workspace = yield* lockfile
+				const sandbox = sandboxOf(scratch, gateCheckout, workspace)
 				const { clones } = yield* submoduleClones(sandbox, filling)
 				yield* Effect.forEach(filling.runs, (at, index) =>
 					Effect.gen(function* () {
@@ -196,7 +200,7 @@ export const filledSubmodule = property.exhaust(finite(fillings), {
 
 export const collectedSnapshots = property.exhaust(finite(collectings), {
 	box: "one key directory of every kind, fate and lock beside the one the run checks",
-	needs: { dir: Scratch.dir, checkout: Checkout.dir },
+	needs: { dir: Scratch.dir, checkout: Checkout.dir, lockfile: workspaceLockfile },
 	situations: [
 		"a key directory whose clones are all gone is collected",
 		"a key directory kept by a clone still there among gone ones",
@@ -208,13 +212,14 @@ export const collectedSnapshots = property.exhaust(finite(collectings), {
 		"a held old-layout directory left alone"
 	],
 	check:
-		({ dir, checkout }, c) =>
+		({ dir, checkout, lockfile }, c) =>
 		(entries) =>
 			Effect.gen(function* () {
 				c.noteAll(collectingFeatures(entries))
 				const scratch = yield* dir
 				const gateCheckout = yield* checkout
-				const sandbox = sandboxOf(scratch, gateCheckout)
+				const workspace = yield* lockfile
+				const sandbox = sandboxOf(scratch, gateCheckout, workspace)
 				const made = yield* Effect.forEach(entries, (entry, index) =>
 					registered(sandbox, entry, index)
 				)

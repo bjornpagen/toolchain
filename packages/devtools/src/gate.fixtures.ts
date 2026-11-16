@@ -2,6 +2,7 @@ import { pid } from "node:process"
 import { deepStrictEqual, fail } from "@bjornpagen/testing/assert"
 import type { CheckoutDir } from "@bjornpagen/testing/checkout"
 import { boolean, element, type Gen, int } from "@bjornpagen/testing/gen"
+import { type Need, NeedFailed } from "@bjornpagen/testing/property"
 import {
 	Array as Arr,
 	Effect,
@@ -34,17 +35,75 @@ const IDENTITY: Readonly<Record<string, string>> = Object.freeze({
 })
 
 /** A case's sandbox, in its scratch directory: the directory its repositories are made in, its gate cache
- * (XDG_CACHE_HOME), the cache's root, where the key directories are, and the gate it runs: the checkout's bin/gate.sh,
- * so a mutant of the gate in a worker tree is the gate the case runs. */
-type Sandbox = Readonly<{ dir: string; cache: string; root: string; gate: string }>
+ * (XDG_CACHE_HOME), the cache's root, where the key directories are, the gate it runs (the checkout's bin/gate.sh, so a
+ * mutant of the gate in a worker tree is the gate the case runs), and the lockfile its repositories commit. */
+type Sandbox = Readonly<{
+	dir: string
+	cache: string
+	root: string
+	gate: string
+	lockfile: string
+}>
 
 /** The sandbox in a case's scratch directory, running the gate of the dev tools' directory in the checkout. */
-export const sandboxOf = (dir: string, checkout: CheckoutDir): Sandbox => ({
+export const sandboxOf = (dir: string, checkout: CheckoutDir, lockfile: string): Sandbox => ({
 	dir,
 	cache: `${dir}/xdg`,
 	root: `${dir}/xdg/toolchain-gate`,
-	gate: `${checkout}/bin/gate.sh`
+	gate: `${checkout}/bin/gate.sh`,
+	lockfile
 })
+
+/** The files of a pnpm workspace with no package of its own, as every scenario's repository holds them. */
+const WORKSPACE: ReadonlyArray<readonly [path: string, text: string]> = [
+	[".gitignore", "node_modules\n"],
+	["pnpm-workspace.yaml", "packages: []\n"]
+]
+
+/**
+ * The lockfile of an empty pnpm workspace, which pnpm writes once a worker: every scenario's repository commits this
+ * text, so a case runs no pnpm of its own beside the gate's install, the one the gate is checked on. Its importers name
+ * no package, so it fits every repository whatever its name.
+ */
+export const workspaceLockfile: Need<string> = {
+	key: "bjornpagen.devtools.gate.workspace-lockfile",
+	open: Effect.scoped(
+		Effect.gen(function* () {
+			const fs = yield* FileSystem.FileSystem
+			const directory = yield* fs.makeTempDirectoryScoped({ prefix: "gate-lockfile-" })
+			yield* Effect.forEach(
+				[...WORKSPACE, ["package.json", `{"name":"workspace","private":true}\n`] as const],
+				([path, text]) => fs.writeFileString(`${directory}/${path}`, text),
+				{ discard: true }
+			)
+			const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+			const status = yield* Effect.scoped(
+				Effect.flatMap(
+					spawner.spawn(
+						ChildProcess.make("pnpm", ["install", "--lockfile-only", "--reporter=silent"], {
+							cwd: directory,
+							stdin: "ignore"
+						})
+					),
+					(handle) => handle.exitCode
+				)
+			)
+			if (status !== 0) {
+				return yield* NeedFailed.make({
+					need: "workspaceLockfile",
+					message: `pnpm install --lockfile-only exited ${String(status)}`
+				})
+			}
+			return yield* fs.readFileString(`${directory}/pnpm-lock.yaml`)
+		})
+	).pipe(
+		Effect.map((text) => Effect.succeed(text)),
+		Effect.catchTags({
+			PlatformError: (cause) =>
+				NeedFailed.make({ need: "workspaceLockfile", message: String(cause) })
+		})
+	)
+}
 
 /** A command's exit status and its output. */
 type Ran = Readonly<{ status: number; stdout: string; stderr: string }>
@@ -125,14 +184,16 @@ const repository = Effect.fn("repository")(function* (sandbox: Sandbox, name: st
 	const directory = path.join(sandbox.dir, name)
 	yield* fs.makeDirectory(directory)
 	yield* sh(sandbox, directory, "git", "init", "-q", "-b", "main")
-	yield* fs.writeFileString(path.join(directory, ".gitignore"), "node_modules\n")
-	yield* fs.writeFileString(
-		path.join(directory, "package.json"),
-		`{"name":"${name}","private":true}\n`
+	yield* Effect.forEach(
+		[
+			...WORKSPACE,
+			["package.json", `{"name":"${name}","private":true}\n`] as const,
+			["pnpm-lock.yaml", sandbox.lockfile] as const,
+			["README.txt", `${name}\n`] as const
+		],
+		([file, text]) => fs.writeFileString(path.join(directory, file), text),
+		{ discard: true }
 	)
-	yield* fs.writeFileString(path.join(directory, "pnpm-workspace.yaml"), "packages: []\n")
-	yield* fs.writeFileString(path.join(directory, "README.txt"), `${name}\n`)
-	yield* sh(sandbox, directory, "pnpm", "install", "--lockfile-only", "--reporter=silent")
 	yield* committed(sandbox, directory, name)
 	return directory
 })
