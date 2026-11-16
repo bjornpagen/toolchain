@@ -1,7 +1,8 @@
 import { Array as Arr, Config, Effect, FileSystem, Option } from "effect"
 import { boolean, finite, type Gen, int } from "#gen.ts"
 import { liveMillis, liveSleep } from "#live.ts"
-import { property } from "#property.ts"
+import { type Need, property } from "#property.ts"
+import { Scratch } from "#resources/scratch.ts"
 import type { Batch } from "#runner/protocol.ts"
 
 /**
@@ -119,3 +120,88 @@ export const ended = (pid: number) =>
 			process.kill(pid, "SIGKILL")
 		}
 	})
+
+/** The identity of a property of loops.fixtures.ts, whose module's load never ends: one with needs, or one without. */
+export const loopingProperty = (needs: boolean): string =>
+	needs ? "src/runner/loops.fixtures.ts#withNeeds" : "src/runner/loops.fixtures.ts#withoutNeeds"
+
+/**
+ * The one case of a property `id` ordered at a short case deadline and open bound, so a worker that never reports on it
+ * is ended within those and the silence grace.
+ */
+export const shortCase = (id: string, deadline: number, open: number): Batch => [
+	{
+		property: id,
+		chooser: { kind: "simplest" },
+		drawn: { kind: "unsteered" },
+		keep: "nothing",
+		sense: { kind: "notes" },
+		deadline,
+		open,
+		print: "failing"
+	}
+]
+
+/** The identities of the planted properties of a worker silenced between two units: the one that silences it, then the next. */
+export const silencing = (nextNeeds: boolean) =>
+	({
+		silences: "src/runner/pool.fixtures.ts#silencesItsWorker",
+		next: nextNeeds
+			? "src/runner/pool.fixtures.ts#passesWithANeed"
+			: "src/runner/pool.fixtures.ts#passesAtOnce"
+	}) as const
+
+/**
+ * A need whose release holds its worker's main thread forever, outside any case (so no watchdog sees it), as a load
+ * that never ends holds it: once its property retires, the worker never gets a word out about the next unit it is sent.
+ */
+const blocksOnRelease: Need<void> = {
+	key: "pool.fixtures.ts blocks on release",
+	open: Effect.as(
+		Effect.addFinalizer(() =>
+			Effect.sync(() => {
+				const cell = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT))
+				while (Atomics.load(cell, 0) === 0) {
+					Atomics.add(cell, 0, 0)
+				}
+			})
+		),
+		Effect.void
+	)
+}
+
+/** A property planted to silence its worker once it retires: its cases pass, holding a need whose release never ends. */
+export const silencesItsWorker = property.exhaust(finite(int(0, 1)), {
+	box: "two values",
+	needs: { blocker: blocksOnRelease },
+	situations: [],
+	check: () => () => Effect.void,
+	oracle: {
+		kind: "specification",
+		name: "a property planted to silence its worker once it retires"
+	},
+	kept: [],
+	kills: []
+})
+
+/** A property planted to pass at once, with no need: the next unit a silenced worker is sent. */
+export const passesAtOnce = property.exhaust(finite(int(0, 1)), {
+	box: "two values",
+	needs: {},
+	situations: [],
+	check: () => () => Effect.void,
+	oracle: { kind: "specification", name: "a property planted to pass at once" },
+	kept: [],
+	kills: []
+})
+
+/** A property planted to pass at once, with a need: the next unit a silenced worker is sent. */
+export const passesWithANeed = property.exhaust(finite(int(0, 1)), {
+	box: "two values",
+	needs: { directory: Scratch.dir },
+	situations: [],
+	check: () => () => Effect.void,
+	oracle: { kind: "specification", name: "a property planted to pass at once, with a need" },
+	kept: [],
+	kills: []
+})

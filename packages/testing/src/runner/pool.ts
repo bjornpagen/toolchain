@@ -55,9 +55,11 @@ import type { ChildrenStated, PoolUsage, PropertyUsage } from "#runner/usage.ts"
  * worker reports how long it spent readying each property, which is what the scheduling measures a module's readying
  * by. Which worker runs a case never reaches its result. A worker runs a unit in
  * phases it tells the parent of: readying the unit's property, the first unit of it the worker took (its module
- * imported, its needs opened), then evaluating its cases; a worker silent past its phase's bound (the needs' open bound,
- * or the cases' deadlines added up) and the silence grace is killed, its unit reported lost with the phase it was in,
- * and a new worker forked in its place. Which worker ran a case never reaches a result, so a search finds the same at
+ * imported, its needs opened), then evaluating its cases; the parent watches a unit from the moment it sends it, in the
+ * readying phase until the worker says otherwise, since a worker whose module's load never ends (a top-level loop, a
+ * mutant's) may never get a word out; a worker silent past its phase's bound (the needs' open bound, or the cases'
+ * deadlines added up) and the silence grace is killed, its unit reported lost with the phase it was in, and a new
+ * worker forked in its place. Which worker ran a case never reaches a result, so a search finds the same at
  * any width.
  */
 
@@ -170,9 +172,10 @@ const endGroup = (child: ChildProcess): Effect.Effect<void> =>
 			)
 	})
 
-/** What happens to a worker, as the pool's one fiber handles it, in order: a message, its exit, or its silence past a
- * phase of a unit's bound and grace. */
+/** What happens to a worker, as the pool's one fiber handles it, in order: units sent to it, a message, its exit, or
+ * its silence past a phase of a unit's bound and grace. */
 type Event =
+	| Readonly<{ kind: "sent"; worker: Worker; unit: number }>
 	| Readonly<{ kind: "message"; worker: Worker; message: unknown }>
 	| Readonly<{ kind: "exit"; worker: Worker; code: number | null; signal: string | null }>
 	| Readonly<{ kind: "silent"; worker: Worker; unit: number; phase: Phase }>
@@ -324,13 +327,17 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 			}
 		}
 
-		/** Sends a worker units to evaluate. */
+		/**
+		 * Sends a worker units to evaluate, and has the first watched from now, in the readying phase until the worker says
+		 * otherwise (Event "sent").
+		 */
 		const give = (worker: Worker, units: ReadonlyArray<Unit>) => {
 			worker.sent = [...units]
 			worker.occupiedSince = now
 			const sent = Arr.map(units, (unit) => ({ unit: unit.id, work: unit.work }))
 			if (Arr.isReadonlyArrayNonEmpty(sent)) {
 				send(worker, { kind: "evaluate", units: sent })
+				Queue.offerUnsafe(events, { kind: "sent", worker, unit: Arr.headNonEmpty(sent).unit })
 			}
 		}
 
@@ -517,6 +524,11 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 				now = yield* liveMillis
 				const worker = event.worker
 				switch (event.kind) {
+					case "sent":
+						if (Option.isNone(worker.running)) {
+							yield* watch(worker, event.unit, "readying")
+						}
+						return
 					case "silent":
 						if (
 							Option.exists(

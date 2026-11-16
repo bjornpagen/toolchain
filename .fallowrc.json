@@ -6,6 +6,7 @@
 		"packages/devtools/src/style/classes.config.ts",
 		"packages/testing/src/mutate/hook.ts",
 		"packages/testing/src/runner/cli.ts",
+		"packages/testing/src/runner/loops.fixtures.ts",
 		"packages/testing/src/runner/pool.fixtures.ts",
 		"packages/testing/src/runner/worker.ts",
 		"packages/testing/src/vitest/compile-cache.ts",
