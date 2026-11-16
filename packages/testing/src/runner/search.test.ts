@@ -5,6 +5,8 @@
  *
  * - Streams: over drawn limits (rotating runs of 0 to 48, floors of 1 to 12, windows of 1 to 16), the floor runs its
  *   limit's cases and the rotating stream its runs, the residual counting the rotating cases alone.
+ * - A property's own budget replaces the runner's: its rotating stream runs its `runs`, its floor a quarter of them
+ *   rounded up, and its steered phase stops at its `steered`.
  * - Shrinking: a property failing at every draw of at least a drawn threshold shrinks to the threshold, its own draw
  *   edited with the case.
  * - Tokens: a replayed token that no longer runs as it says (steered by a requirement the property does not declare,
@@ -712,3 +714,80 @@ export const replayFidelity = property.explore(fidelitySketches, {
 		}
 	]
 })
+
+export const ownBudget = property.explore(
+	(source) => ({
+		runs: source.draw(int(0, 60)),
+		steered: source.draw(int(0, 40)),
+		seed: source.draw(seeds),
+		width: source.draw(widths)
+	}),
+	{
+		needs: {},
+		situations: [],
+		check: () => (shape) =>
+			Effect.gen(function* () {
+				const inner = property.explore(int(0, 9), {
+					needs: {},
+					situations: ["never noted"],
+					check: () => () => Effect.void,
+					oracle: { kind: "specification", name: "a property that states its own budget" },
+					kept: [],
+					kills: [],
+					budget: { runs: shape.runs, steered: shape.steered }
+				})
+				const passingInner = property.explore(int(0, 9), {
+					needs: {},
+					situations: [],
+					check: () => () => Effect.void,
+					oracle: { kind: "specification", name: "a property that states its own budget" },
+					kept: [],
+					kills: [],
+					budget: { runs: shape.runs, steered: shape.steered }
+				})
+				const run = { ...fullRun("own budget/inner", shape.seed), width: shape.width }
+				const unreached = yield* searchedAt(inner, run)
+				const passed = yield* searchedAt(passingInner, run)
+				deepStrictEqual(
+					{
+						witnessed: Option.map(findingOf(unreached), (finding) =>
+							finding.kind === "unreached" && finding.witnessed.kind === "streams"
+								? { floor: finding.witnessed.floor, steered: finding.witnessed.steered }
+								: { floor: -1, steered: -1 }
+						),
+						rotating: passed.kind === "explored" ? passed.residual.cases : -1
+					},
+					{
+						witnessed: Option.some({ floor: Math.ceil(shape.runs / 4), steered: shape.steered }),
+						rotating: shape.runs
+					}
+				)
+			}),
+		oracle: {
+			kind: "specification",
+			name: "a property's own budget replaces the runner's: its floor a quarter of its runs rounded up, its steered phase its own count"
+		},
+		kept: [],
+		kills: [
+			{
+				file: "packages/testing/src/property.ts",
+				original:
+					"\t\t\tfloor: cited.budget === undefined ? run.limits.floor : floorOf(cited.budget.runs),",
+				replacement: "\t\t\tfloor: run.limits.floor,",
+				why: "A property's own runs leave its floor at the runner's, so a property that restores its suite's old count of cases still runs the runner's floor of witnesses; this property fails."
+			},
+			{
+				file: "packages/testing/src/property.ts",
+				original: "\t\t\truns: cited.budget?.runs ?? run.limits.runs,",
+				replacement: "\t\t\truns: run.limits.runs,",
+				why: "A property's own runs are ignored, so its rotating stream runs the runner's count, however many cases its suite stated before; this property fails."
+			},
+			{
+				file: "packages/testing/src/property.ts",
+				original: "\t\t\tsteered: cited.budget?.steered ?? run.limits.steered",
+				replacement: "\t\t\tsteered: run.limits.steered",
+				why: "A property's own steered count is ignored, so its steered phase runs the runner's budget; this property fails."
+			}
+		]
+	}
+)

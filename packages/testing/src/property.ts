@@ -135,12 +135,22 @@ type Stated<S, F extends string, N extends Needs, E> = Readonly<{
 	 */
 	caseDeadline?: number
 	/**
-	 * How many steered cases its search may run while a required situation is unreached, when the runner's
-	 * (steeredCases) is too few for its situations (a property that requires more situations than the runner's witnesses
-	 * can reach one each): a Limit, with the evidence that its situations need that many. Without one, the runner's.
+	 * Its own search budget, when the runner's (searchRuns, steeredCases) is wrong for it. Without one, the runner's.
 	 */
-	steeredCases?: number
+	budget?: Budget
 }>
+
+/**
+ * A property's own search budget, plain counts: how many independent cases its rotating stream runs (`runs`; its floor
+ * stream runs a quarter of them, rounded up, as the runner's floor is derived from the runner's runs), and how many
+ * steered cases its search may run while a required situation is unreached (`steered`). An override cites its
+ * evidence in the property's JSDoc: the count its suite stated before it was converted to a property, or a
+ * measurement of what its situations or its failures need.
+ */
+export type Budget = Readonly<{ runs: number; steered: number }>
+
+/** A floor stream's cases for a rotating stream of `runs`: a quarter of them, rounded up, as floorCases derives. */
+const floorOf = (runs: number) => Math.ceil(runs / 4)
 
 /**
  * What a sampled search's steered phase perceives beyond its notes: V8's block coverage of the files whose path ends
@@ -349,10 +359,10 @@ const exploredAs =
 		})
 	}
 
-/** The runner's limits a property may replace with a Limit it cites, each the runner's where it cites none. */
-type Cited = Readonly<{ caseDeadline?: number; steeredCases?: number }>
+/** The runner's limits a property may replace with its own, each the runner's where it states none. */
+type Cited = Readonly<{ caseDeadline?: number; budget?: Budget }>
 
-/** A search run under the limits a property cites in place of the runner's, and the runner's otherwise. */
+/** A search run under the limits a property states in place of the runner's, and the runner's otherwise. */
 const citedIn =
 	(cited: Cited) =>
 	(run: SearchRun): SearchRun => ({
@@ -360,7 +370,9 @@ const citedIn =
 		limits: {
 			...run.limits,
 			deadline: cited.caseDeadline ?? run.limits.deadline,
-			steered: cited.steeredCases ?? run.limits.steered
+			runs: cited.budget?.runs ?? run.limits.runs,
+			floor: cited.budget === undefined ? run.limits.floor : floorOf(cited.budget.runs),
+			steered: cited.budget?.steered ?? run.limits.steered
 		}
 	})
 
