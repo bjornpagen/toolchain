@@ -36,13 +36,20 @@ import { tsconfigFindings, workspaceFixtureMismatches } from "#workspace/tsconfi
  * tsconfig gate against its fixture workspaces instead. Exit status 1 means findings, 2 that the gate itself failed.
  */
 
+/** A path with its `.` segments dropped, so a root package's `<root>/./package.json` is `<root>/package.json`. */
+const withoutDots = (path: string): string =>
+	Arr.join(
+		Arr.filter(Str.split("/")(path), (segment) => segment !== "."),
+		"/"
+	)
+
 /** Whether an exception's path, relative to `root`, names the file or a directory above it: a path that ends in "/"
  * names a directory, any other one file, compared case-insensitively. */
 const isAt =
 	(root: string, file: string) =>
 	(path: string): boolean => {
-		const folded = Str.toLowerCase(file)
-		const named = Str.toLowerCase(`${root}/${path}`)
+		const folded = Str.toLowerCase(withoutDots(file))
+		const named = Str.toLowerCase(withoutDots(`${root}/${path}`))
 		return Str.endsWith("/")(path) ? Str.startsWith(named)(folded) : folded === named
 	}
 
