@@ -17,6 +17,7 @@ export default defineRunner({
 		"src/commands.test.ts",
 		"src/runner/closure.test.ts",
 		"src/runner/cache.test.ts",
+		"src/runner/consumer.test.ts",
 		"src/resources/scratch.test.ts",
 		"src/core.test.ts",
 		"src/idioms.test.ts",

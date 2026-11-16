@@ -399,7 +399,8 @@ export const recordedRun = (root: string, selected: ReadonlyArray<string>, outco
 		const weighing = yield* Effect.result(weighingOf(grounds.packageRoot, repository, selected))
 		yield* Result.match(weighing, {
 			onSuccess: (weighed) => recorded(weighed.cache, weighed.weighed, passing),
-			onFailure: (why) => Console.log(`verdicts not recorded: ${Inspectable.toStringUnknown(why)}`)
+			onFailure: (why) =>
+				Console.log(`verdicts not recorded: ${Inspectable.toStringUnknown(why, 0)}`)
 		})
 		return { judged, passing } satisfies Settled
 	})
