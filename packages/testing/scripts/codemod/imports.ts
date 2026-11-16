@@ -54,14 +54,13 @@ const moduleOf = (d: ts.ImportDeclaration): string =>
 
 /** An import declaration's text, with only the specifiers kept and the wanted ones added, sorted by name. */
 const importTextOf = (
-	parsed: Parsed,
 	statement: ts.ImportDeclaration,
 	keep: (local: string) => boolean,
 	added: ReadonlyArray<Wanted>
 ): Option.Option<string> => {
 	const clause = statement.importClause
 	if (clause === undefined) {
-		return Option.some(textOf(parsed, statement))
+		return Option.some(textOf(statement))
 	}
 	const typeOnly = clause.phaseModifier === ts.SyntaxKind.TypeKeyword
 	const named = clause.namedBindings
@@ -76,7 +75,7 @@ const importTextOf = (
 				...(named !== undefined && ts.isNamedImports(named)
 					? Arr.filterMap(named.elements, (e) =>
 							keep(e.name.text)
-								? Result.succeed([e.name.text, textOf(parsed, e)] as const)
+								? Result.succeed([e.name.text, textOf(e)] as const)
 								: Result.failVoid
 						)
 					: []),
@@ -91,11 +90,10 @@ const importTextOf = (
 		...Option.toArray(namespace),
 		...(Arr.isReadonlyArrayNonEmpty(specifiers) ? [`{ ${Arr.join(specifiers, ", ")} }`] : [])
 	]
-	const attributes =
-		statement.attributes === undefined ? "" : ` ${textOf(parsed, statement.attributes)}`
+	const attributes = statement.attributes === undefined ? "" : ` ${textOf(statement.attributes)}`
 	return Arr.isReadonlyArrayNonEmpty(parts)
 		? Option.some(
-				`import ${typeOnly ? "type " : ""}${Arr.join(parts, ", ")} from ${textOf(parsed, statement.moduleSpecifier)}${attributes}`
+				`import ${typeOnly ? "type " : ""}${Arr.join(parts, ", ")} from ${textOf(statement.moduleSpecifier)}${attributes}`
 			)
 		: Option.none()
 }
@@ -200,7 +198,7 @@ export const importsFor = (
 			onNone: () => [],
 			onSome: (h) => (h === d ? Arr.filter(hosted, (w) => w.module === module) : [])
 		})
-		return Option.match(importTextOf(parsed, d, keep, added), {
+		return Option.match(importTextOf(d, keep, added), {
 			onNone: () => Result.failVoid,
 			onSome: Result.succeed
 		})

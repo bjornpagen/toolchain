@@ -23,8 +23,10 @@ export const openParser = (cwd: string): Parser => {
 }
 
 /** A node's own text, without the comments and blank lines before it. */
-export const textOf = (parsed: Parsed, node: ts.Node): string =>
-	Str.slice(node.getStart(parsed.tree), node.end)(parsed.text)
+export const textOf = (node: ts.Node): string => {
+	const tree = node.getSourceFile()
+	return Str.slice(node.getStart(tree), node.end)(tree.text)
+}
 
 /** A node's text with the comments that lead it (its JSDoc), from their first character. */
 export const withCommentsOf = (parsed: Parsed, node: ts.Node): string =>
@@ -39,10 +41,10 @@ export const unparenthesized = (expression: ts.Expression): ts.Expression =>
 	ts.isParenthesizedExpression(expression) ? unparenthesized(expression.expression) : expression
 
 /** What a call calls, as written: `explore`, `it.effect`, `Effect.gen`; a callee of another shape is its kind. */
-export const calleeOf = (parsed: Parsed, call: ts.CallExpression): string => {
+export const calleeOf = (call: ts.CallExpression): string => {
 	const callee = unparenthesized(call.expression)
 	return ts.isIdentifier(callee) || ts.isPropertyAccessExpression(callee)
-		? textOf(parsed, callee)
+		? textOf(callee)
 		: ts.SyntaxKind[callee.kind]
 }
 
@@ -198,8 +200,26 @@ const scopeOf = (node: ts.Node): ReadonlyArray<string> => {
  * Every name read under a node from outside it, each as often as it is read: an identifier in a reference, not a
  * declared name or a property's, that no scope inside the node binds. A module's own declarations are reads of it.
  */
-export const identifiersUnder = (node: ts.Node): ReadonlyArray<string> => {
+export const identifiersUnder = (node: ts.Node): ReadonlyArray<string> =>
+	Arr.map(referencesUnder(node), (identifier) => identifier.text)
+
+/** The names declared anywhere under a node: its variables', parameters', functions' and types'. */
+export const declaredUnder = (node: ts.Node): ReadonlyArray<string> => {
 	const found: Array<string> = []
+	const visit = (child: ts.Node): undefined => {
+		if (ts.isIdentifier(child) && isDeclared(child)) {
+			found.push(child.text)
+		}
+		child.forEachChild(visit)
+		return undefined
+	}
+	visit(node)
+	return found
+}
+
+/** The identifiers under a node that read a name from outside it, in source order (identifiersUnder's, as nodes). */
+export const referencesUnder = (node: ts.Node): ReadonlyArray<ts.Identifier> => {
+	const found: Array<ts.Identifier> = []
 	const visit =
 		(bound: ReadonlySet<string>) =>
 		(child: ts.Node): undefined => {
@@ -209,7 +229,7 @@ export const identifiersUnder = (node: ts.Node): ReadonlyArray<string> => {
 				!isDeclared(child) &&
 				!bound.has(child.text)
 			) {
-				found.push(child.text)
+				found.push(child)
 			}
 			const scope = scopeOf(child)
 			child.forEachChild(

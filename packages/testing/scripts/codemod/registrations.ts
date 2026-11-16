@@ -220,7 +220,7 @@ const testServicesOf = (walk: Walk, options: ts.Expression | undefined): Step<bo
 		fields.length !== named.length ||
 		!Arr.every(fields, ([name]) => Arr.contains(LAYER_OPTIONS, name))
 	) {
-		return shapeOf(walk, options, `layer options ${textOf(walk.parsed, options)}`)
+		return shapeOf(walk, options, `layer options ${textOf(options)}`)
 	}
 	return Result.succeed(
 		!Arr.some(
@@ -235,7 +235,7 @@ const nameOf = (walk: Walk, name: ts.Expression | undefined, at: ts.Node): Step<
 	name === undefined
 		? shapeOf(walk, at, "a registration without a name")
 		: Option.match(stringValueOf(name), {
-				onNone: () => shapeOf(walk, name, `a computed name ${textOf(walk.parsed, name)}`),
+				onNone: () => shapeOf(walk, name, `a computed name ${textOf(name)}`),
 				onSome: Result.succeed
 			})
 
@@ -267,11 +267,7 @@ const registration = (
 	otherwise: Reason
 ): Step<ReadonlyArray<Piece>> => {
 	const { parsed, imports } = walk
-	const other = refuse(
-		otherwise,
-		lineOf(parsed, statement),
-		Str.slice(0, 80)(textOf(parsed, statement))
-	)
+	const other = refuse(otherwise, lineOf(parsed, statement), Str.slice(0, 80)(textOf(statement)))
 	if (!ts.isExpressionStatement(statement)) {
 		return other
 	}
@@ -355,7 +351,7 @@ const registration = (
 			)
 		)
 	}
-	return refuse(otherwise, lineOf(parsed, statement), calleeOf(parsed, call))
+	return refuse(otherwise, lineOf(parsed, statement), calleeOf(call))
 }
 
 /** A module's top level as pieces: its imports aside, every statement a declaration or a registration. */

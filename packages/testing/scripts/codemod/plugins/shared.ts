@@ -1,7 +1,6 @@
 import { Array as Arr, Option } from "effect"
 import type * as ts from "typescript/ast"
 import type { Provision } from "#codemod/plugin.ts"
-import type { Parsed } from "#codemod/syntax.ts"
 
 /** The platform's layers, which every check already has (CheckContext's NodeServices): each goes. */
 const PLATFORM: ReadonlyArray<string> = [
@@ -27,7 +26,4 @@ export const ambient: ReadonlyArray<readonly [string, Provision]> = Arr.map(
 )
 
 /** A plugin that unwraps nothing: its tests' bodies are searched(...) calls themselves. */
-export const unwrapsNothing = (
-	_parsed: Parsed,
-	_body: ts.Expression
-): Option.Option<ts.Expression> => Option.none()
+export const unwrapsNothing = (_body: ts.Expression): Option.Option<ts.Expression> => Option.none()

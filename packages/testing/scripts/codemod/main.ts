@@ -3,6 +3,7 @@ import { regex } from "arkregex"
 import {
 	Array as Arr,
 	Console,
+	DateTime,
 	Effect,
 	FileSystem,
 	Option,
@@ -79,9 +80,16 @@ const specifierIn = (
 		([, specifier]) => specifier
 	)
 
-const convertOne = (parser: Parser, plugin: PluginName, file: string, text: string, place: Place) =>
+const convertOne = (
+	parser: Parser,
+	plugin: PluginName,
+	file: string,
+	text: string,
+	place: Place,
+	since: string
+) =>
 	Effect.try({
-		try: (): Outcome => convert(parser, PLUGINS[plugin], parser.parse(file, text), place),
+		try: (): Outcome => convert(parser, PLUGINS[plugin], parser.parse(file, text), place, since),
 		catch: () => ModuleUnread.make({ file })
 	})
 
@@ -131,9 +139,11 @@ const run = Effect.fn("codemod.run")(function* (input: {
 				Result.fail(
 					`no import map entry of ${directory === "" ? "." : directory} names ${fixtures}`
 				),
-			onSome: (specifier): Place => Result.succeed({ file: fixtures, specifier })
+			onSome: (specifier): Place => Result.succeed({ file: fixtures, specifier, root: directory })
 		})
 	})
+	const now = yield* DateTime.now
+	const since = DateTime.formatIsoDateUtc(now)
 	const parser = yield* Effect.acquireRelease(
 		Effect.sync(() => openParser(repo)),
 		(opened) => Effect.sync(() => opened.close())
@@ -142,7 +152,7 @@ const run = Effect.fn("codemod.run")(function* (input: {
 		Effect.gen(function* () {
 			const text = yield* fs.readFileString(path.join(repo, file))
 			const place = yield* placeOf(file)
-			return yield* convertOne(parser, input.plugin, file, text, place)
+			return yield* convertOne(parser, input.plugin, file, text, place, since)
 		})
 	)
 	const written = yield* Effect.forEach(outcomes, (o) =>
@@ -150,15 +160,22 @@ const run = Effect.fn("codemod.run")(function* (input: {
 			onNone: () => Effect.succeed(Arr.empty<ReadonlyArray<string>>()),
 			onSome: (output) =>
 				Effect.as(
-					Effect.andThen(
-						fs.writeFileString(path.join(repo, o.file), output.test),
-						Option.match(output.fixtures, {
-							onNone: () => Effect.void,
-							onSome: (fixtures) =>
-								fs.writeFileString(path.join(repo, fixtures.file), fixtures.text)
-						})
+					Effect.forEach(
+						[
+							{ file: o.file, text: output.test },
+							...Option.toArray(output.fixtures),
+							...output.kept
+						],
+						(module) => fs.writeFileString(path.join(repo, module.file), module.text),
+						{ discard: true }
 					),
-					[[o.file, ...Option.toArray(Option.map(output.fixtures, (f) => f.file))]]
+					[
+						[
+							o.file,
+							...Option.toArray(Option.map(output.fixtures, (f) => f.file)),
+							...Arr.map(output.kept, (k) => k.file)
+						]
+					]
 				)
 		})
 	)

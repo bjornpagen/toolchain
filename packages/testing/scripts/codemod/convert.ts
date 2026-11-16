@@ -1,3 +1,4 @@
+import { regex } from "arkregex"
 import { Array as Arr, Option, Result, String as Str } from "effect"
 import * as ts from "typescript/ast"
 import { headerOf, withoutPlantsIn } from "#codemod/header.ts"
@@ -32,12 +33,16 @@ import {
  * helpers, types), since a test module holds properties only; its path from the repository root and the specifier the
  * test module imports it by. A place the repository's import maps cannot name is a reason, given as text.
  */
-export type Place = Result.Result<Readonly<{ file: string; specifier: string }>, string>
+export type Place = Result.Result<
+	Readonly<{ file: string; specifier: string; root: string }>,
+	string
+>
 
 /** A converted module's text, and its fixtures module's when it has one. */
 export type Output = Readonly<{
 	test: string
 	fixtures: Option.Option<Readonly<{ file: string; text: string }>>
+	kept: ReadonlyArray<Readonly<{ file: string; text: string }>>
 }>
 
 /** A module's report and, when it converted, what it converted to. */
@@ -284,7 +289,7 @@ const lazyExportsOf = (fixtures: Parsed): ReadonlyArray<Finding> =>
 						ts.isArrowFunction(init) &&
 						init.parameters.length === 0 &&
 						!ts.isBlock(init.body) &&
-						Str.startsWith("Effect.")(textOf(fixtures, init.body))
+						Str.startsWith("Effect.")(textOf(init.body))
 						? Result.succeed<Finding>({
 								code: "lazy-effect-export",
 								line: 1,
@@ -294,6 +299,53 @@ const lazyExportsOf = (fixtures: Parsed): ReadonlyArray<Finding> =>
 				})
 			: []
 	)
+
+/**
+ * The value file of a property's cases kept by value, beside its test module: a module whose default export lists each
+ * case's value (the old kept sketch) with its reason (the old note) and since, for `toolchain-test keep <id> <file>`,
+ * which prints the replay token each value draws as; the property's `kept` stays empty until a lane pastes them.
+ */
+const keptFileOf = (
+	parsed: Parsed,
+	imports: ReadonlyMap<string, Binding>,
+	api: ReturnType<typeof apiOf>,
+	place: Readonly<{ file: string; specifier: string }>,
+	built: Built,
+	index: number,
+	fixtures: ReadonlyArray<readonly [string, boolean]>,
+	since: string
+): Readonly<{ file: string; text: string; property: string }> => {
+	const property = built.name
+	const cases = built.kept
+	const reads = new Set(Arr.flatMap(cases, (k) => identifiersUnder(k.value)))
+	const fromFixtures = Arr.filterMap(fixtures, ([name, type]) =>
+		reads.has(name)
+			? Result.succeed<Wanted>({ module: place.specifier, name, local: name, type })
+			: Result.failVoid
+	)
+	const file = Str.replace(TEST_SUFFIX, `.kept-${index}.ts`)(parsed.file)
+	return {
+		file,
+		property,
+		text: `/** The cases ${property} kept by value, for toolchain-test keep: each one's value, reason and since. */\n\n${importsFor(
+			parsed,
+			imports,
+			reads,
+			fromFixtures,
+			api,
+			false
+		)}\n\nexport default [\n${Arr.join(
+			Arr.map(
+				cases,
+				(k) => `{ value: ${textOf(k.value)}, reason: ${textOf(k.reason)}, since: "${since}" }`
+			),
+			",\n"
+		)}\n]\n`
+	}
+}
+
+/** A test module's name, which a value file's replaces. */
+const TEST_SUFFIX = regex("\\.test\\.ts$")
 
 /** The failures of a result, none for a success. */
 const failuresOf = <A>(result: Result.Result<A, ReadonlyArray<Finding>>): ReadonlyArray<Finding> =>
@@ -306,7 +358,13 @@ const failuresOf = <A>(result: Result.Result<A, ReadonlyArray<Finding>>): Readon
  * rebuilt; and the declarations only the dropped fields read go. A module with no search is not one this codemod
  * converts.
  */
-export const convert = (parser: Parser, plugin: Plugin, parsed: Parsed, place: Place): Outcome => {
+export const convert = (
+	parser: Parser,
+	plugin: Plugin,
+	parsed: Parsed,
+	place: Place,
+	since: string
+): Outcome => {
 	const imports: ReadonlyMap<string, Binding> = importsOf(parsed)
 	const api = apiOf(imports)
 	const pieces = piecesOf(parsed, plugin, imports)
@@ -319,6 +377,7 @@ export const convert = (parser: Parser, plugin: Plugin, parsed: Parsed, place: P
 	}
 	const locals = localsOf(parsed, pieces.success, imports)
 	const module: Module = {
+		parser,
 		parsed,
 		plugin,
 		imports,
@@ -410,14 +469,17 @@ export const convert = (parser: Parser, plugin: Plugin, parsed: Parsed, place: P
 		onFailure: () => parsed.file,
 		onSuccess: (p) => p.file
 	})
+	const keptReads = new Set(
+		Arr.flatMap(properties, (p) => Arr.flatMap(p.kept, (k) => identifiersUnder(k.value)))
+	)
 	const pruned = withoutDead(
 		parser,
 		fixturesFile,
 		Arr.join([...written.fixtures, ...written.lifted], "\n\n"),
-		testReads,
+		new Set([...testReads, ...keptReads]),
 		(name) => (original.get(name) ?? 0) > 0 || liftedNames.has(name)
 	)
-	const shared = exported(parser, fixturesFile, pruned.body, testReads)
+	const shared = exported(parser, fixturesFile, pruned.body, new Set([...testReads, ...keptReads]))
 	const fixturesReads = new Set(identifiersUnder(parser.parse(fixturesFile, shared.body).tree))
 	const hasFixtures = Str.isNonEmpty(Str.trim(shared.body))
 	const testDoor = doorOf(imports, testReads, api)
@@ -441,12 +503,11 @@ export const convert = (parser: Parser, plugin: Plugin, parsed: Parsed, place: P
 	const fromFixtures: ReadonlyArray<Wanted> = Result.match(place, {
 		onFailure: () => [],
 		onSuccess: (p) =>
-			Arr.map(shared.names, ([name, type]) => ({
-				module: p.specifier,
-				name,
-				local: name,
-				type
-			}))
+			Arr.filterMap(shared.names, ([name, type]) =>
+				testReads.has(name)
+					? Result.succeed<Wanted>({ module: p.specifier, name, local: name, type })
+					: Result.failVoid
+			)
 	})
 	const header = headerOf(parsed)
 	const testImports = importsFor(
@@ -500,11 +561,30 @@ export const convert = (parser: Parser, plugin: Plugin, parsed: Parsed, place: P
 			: [])
 	]
 
+	const kept = Result.match(place, {
+		onFailure: () => [],
+		onSuccess: (p) =>
+			Arr.map(
+				Arr.filter(properties, (property) => Arr.isReadonlyArrayNonEmpty(property.kept)),
+				(property, index) =>
+					keptFileOf(parsed, imports, api, p, property, index + 1, shared.names, since)
+			)
+	})
+	const keptNotes: ReadonlyArray<Finding> = Result.match(place, {
+		onFailure: () => [],
+		onSuccess: (p) =>
+			Arr.map(kept, (k) => ({
+				code: "kept-values",
+				line: 1,
+				detail: `toolchain-test keep ${Str.isEmpty(p.root) ? parsed.file : Str.slice(p.root.length + 1)(parsed.file)}#${k.property} ${k.file}`
+			}))
+	})
 	return {
 		file: parsed.file,
 		status: "converted",
-		findings: notes,
+		findings: [...notes, ...keptNotes],
 		output: Option.some({
+			kept: Arr.map(kept, (k) => ({ file: k.file, text: k.text })),
 			test: test.text,
 			fixtures: Result.match(place, {
 				onFailure: () => Option.none(),

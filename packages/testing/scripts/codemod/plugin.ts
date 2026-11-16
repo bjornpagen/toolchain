@@ -1,6 +1,5 @@
 import type { Option } from "effect"
 import type * as ts from "typescript/ast"
-import type { Parsed } from "#codemod/syntax.ts"
 
 /** An import a converted module needs: a name from a module, under a local name, as a value or as a type. */
 export type Wanted = Readonly<{ module: string; name: string; local: string; type: boolean }>
@@ -46,5 +45,5 @@ export type Plugin = Readonly<{
 	 * A test body that wraps its search in checks of the search's result (a counted space, a report on the test), which
 	 * the runner now owns: the wrapped `searched(...)` call, or none for a body this plugin does not unwrap.
 	 */
-	unwrap: (parsed: Parsed, body: ts.Expression) => Option.Option<ts.Expression>
+	unwrap: (body: ts.Expression) => Option.Option<ts.Expression>
 }>

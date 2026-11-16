@@ -17,12 +17,16 @@ import {
 	boundNamesOf,
 	calleeOf,
 	declaredNamesOf,
+	declaredUnder,
 	holds,
 	identifiersUnder,
 	isDeclaration,
 	lineOf,
 	namesUnder,
+	referencesUnder,
+	stringValueOf,
 	type Parsed,
+	type Parser,
 	textOf,
 	unparenthesized,
 	withCommentsOf
@@ -42,6 +46,7 @@ export type Locals = Readonly<{
  * from and under which local names.
  */
 export type Module = Readonly<{
+	parser: Parser
 	parsed: Parsed
 	plugin: Plugin
 	imports: ReadonlyMap<string, Binding>
@@ -54,6 +59,7 @@ export type Module = Readonly<{
 export type Built = Readonly<{
 	name: string
 	lifted: ReadonlyArray<ts.Statement>
+	kept: ReadonlyArray<KeptCase>
 	text: string
 	wanted: ReadonlyArray<Wanted>
 	notes: ReadonlyArray<Finding>
@@ -140,7 +146,7 @@ const definitionOf = (module: Module, expression: ts.Expression): ts.Expression 
 	}
 	if (
 		ts.isCallExpression(bare) &&
-		calleeOf(module.parsed, bare) === "Object.freeze" &&
+		calleeOf(bare) === "Object.freeze" &&
 		bare.arguments.length === 1 &&
 		bare.arguments[0] !== undefined
 	) {
@@ -171,7 +177,7 @@ const peeled = (module: Module, expression: ts.Expression, around: Peeled): Step
 		})
 	}
 	const first = bare.arguments[0]
-	const name = calleeOf(parsed, bare)
+	const name = calleeOf(bare)
 	if (name === "Effect.suspend" && first !== undefined && bare.arguments.length === 1) {
 		const thunk = unparenthesized(first)
 		return ts.isArrowFunction(thunk) && thunk.parameters.length === 0
@@ -227,9 +233,7 @@ const peeled = (module: Module, expression: ts.Expression, around: Peeled): Step
  */
 const isProvision = (module: Module, stage: ts.Expression): boolean => {
 	const bare = unparenthesized(stage)
-	const name = ts.isCallExpression(bare)
-		? calleeOf(module.parsed, bare)
-		: textOf(module.parsed, bare)
+	const name = ts.isCallExpression(bare) ? calleeOf(bare) : textOf(bare)
 	return (
 		name === "Effect.scoped" ||
 		Str.startsWith("Effect.provide")(name) ||
@@ -299,7 +303,7 @@ const searchOf = (module: Module, test: Test, ctx: Option.Option<string>): Step<
 	const written = callback.body
 	const body: ts.ConciseBody = ts.isBlock(written)
 		? written
-		: Option.getOrElse(plugin.unwrap(parsed, written), () => written)
+		: Option.getOrElse(plugin.unwrap(written), () => written)
 	return Result.flatMap(peeledBody(module, body, { core: test.call, wrappers: [] }), (outer) => {
 		const searched = outer.core
 		if (
@@ -308,7 +312,7 @@ const searchOf = (module: Module, test: Test, ctx: Option.Option<string>): Step<
 			searched.arguments.length !== 2
 		) {
 			return refuse(
-				Str.includes("searched(")(textOf(parsed, body)) ? "test-shape" : "not-searched",
+				Str.includes("searched(")(textOf(body)) ? "test-shape" : "not-searched",
 				lineOf(parsed, test.call),
 				test.name
 			)
@@ -339,8 +343,8 @@ const searchOf = (module: Module, test: Test, ctx: Option.Option<string>): Step<
 						ts.isCallExpression(whole.core) ? "search-helper" : "setup-shape",
 						lineOf(parsed, whole.core),
 						ts.isCallExpression(whole.core)
-							? calleeOf(parsed, whole.core)
-							: Str.slice(0, 60)(textOf(parsed, whole.core))
+							? calleeOf(whole.core)
+							: Str.slice(0, 60)(textOf(whole.core))
 					),
 				onSome: (kind) => {
 					const foreign = Arr.filter(
@@ -351,7 +355,7 @@ const searchOf = (module: Module, test: Test, ctx: Option.Option<string>): Step<
 						? refuse(
 								"setup-shape",
 								lineOf(parsed, foreign[0]),
-								`a stage on the search's result: ${Str.slice(0, 60)(textOf(parsed, foreign[0]))}`
+								`a stage on the search's result: ${Str.slice(0, 60)(textOf(foreign[0]))}`
 							)
 						: ts.isCallExpression(whole.core)
 							? Result.succeed({ kind, call: whole.core, wrappers: whole.wrappers })
@@ -375,6 +379,67 @@ const returnsOf = (statement: ts.Node): boolean => {
 	return visit(statement) === true
 }
 
+/**
+ * A call of a builder the module declares (`const searchOf = (suite, draw, oracle) => ({ ... })`) read as the object
+ * literal it returns, each parameter it reads replaced by its argument, parsed on its own: the spec the call builds,
+ * field by field. None for a builder of another shape, or one whose arguments read a name its body declares.
+ */
+const expandedOf = (module: Module, call: ts.CallExpression): Option.Option<ts.Expression> => {
+	const callee = unparenthesized(call.expression)
+	const declared = ts.isIdentifier(callee) ? module.constants.get(callee.text) : undefined
+	const fn = declared === undefined ? undefined : unparenthesized(declared)
+	if (
+		fn === undefined ||
+		!ts.isArrowFunction(fn) ||
+		ts.isBlock(fn.body) ||
+		fn.parameters.length !== call.arguments.length ||
+		!Arr.every(
+			fn.parameters,
+			(p) =>
+				ts.isIdentifier(p.name) && p.initializer === undefined && p.dotDotDotToken === undefined
+		) ||
+		!ts.isObjectLiteralExpression(definitionOf(module, fn.body))
+	) {
+		return Option.none()
+	}
+	const body = fn.body
+	const parameters = new Map(
+		Arr.flatMap(fn.parameters, (p, i) => {
+			const argument = call.arguments[i]
+			return ts.isIdentifier(p.name) && argument !== undefined
+				? [[p.name.text, argument] as const]
+				: []
+		})
+	)
+	const inside = new Set(declaredUnder(body))
+	if (Arr.some(call.arguments, (a) => Arr.some(identifiersUnder(a), (name) => inside.has(name)))) {
+		return Option.none()
+	}
+	const tree = body.getSourceFile()
+	const start = body.getStart(tree)
+	const text = Arr.reduceRight(
+		Arr.filter(referencesUnder(body), (r) => parameters.has(r.text)),
+		Str.slice(start, body.end)(tree.text),
+		(acc, reference) => {
+			const argument = parameters.get(reference.text)
+			const at = reference.getStart(tree) - start
+			const replacement =
+				argument === undefined
+					? reference.text
+					: ts.isShorthandPropertyAssignment(reference.parent)
+						? `${reference.text}: (${textOf(argument)})`
+						: `(${textOf(argument)})`
+			return `${Str.slice(0, at)(acc)}${replacement}${Str.slice(at + reference.text.length)(acc)}`
+		}
+	)
+	const expanded = module.parser.parse(module.parsed.file, `const spec = ${text}\n`)
+	return Option.flatMap(Arr.head(expanded.tree.statements), (statement) =>
+		ts.isVariableStatement(statement)
+			? Option.fromNullishOr(statement.declarationList.declarations[0]?.initializer)
+			: Option.none()
+	)
+}
+
 /** A spec's fields by name: an object literal's, or a plugin builder's argument's. */
 const fieldsOf = (
 	module: Module,
@@ -394,8 +459,12 @@ const fieldsOf = (
 			? refuse("spec-shape", lineAt(module, bare), "a builder with no argument")
 			: fieldsOf(module, kind, argument)
 	}
+	const expanded = ts.isCallExpression(bare) ? expandedOf(module, bare) : Option.none()
+	if (Option.isSome(expanded)) {
+		return fieldsOf(module, kind, expanded.value)
+	}
 	if (!ts.isObjectLiteralExpression(bare)) {
-		return refuse("spec-shape", lineAt(module, bare), Str.slice(0, 60)(textOf(module.parsed, bare)))
+		return refuse("spec-shape", lineAt(module, bare), Str.slice(0, 60)(textOf(bare)))
 	}
 	const fields = Arr.map(
 		bare.properties,
@@ -409,7 +478,7 @@ const fieldsOf = (
 			if (ts.isSpreadAssignment(p)) {
 				return Result.map(fieldsOf(module, kind, p.expression), (spread) => [...spread.entries()])
 			}
-			return refuse("spec-shape", lineAt(module, p), Str.slice(0, 60)(textOf(module.parsed, p)))
+			return refuse("spec-shape", lineAt(module, p), Str.slice(0, 60)(textOf(p)))
 		}
 	)
 	return Result.flatMap(Result.map(gathered(fields), Arr.flatten), (entries) => {
@@ -443,11 +512,7 @@ const required = (
 /** What an exploration's draw becomes: drawn(g) is g, aimed(g, aims) stays aimed, sketched(g, resolve) is g resolved. */
 const spaceOfDraw = (module: Module, draw: ts.Expression): Step<Space> => {
 	const bare = definitionOf(module, draw)
-	const refused = refuse(
-		"draw-shape",
-		lineAt(module, bare),
-		Str.slice(0, 60)(textOf(module.parsed, bare))
-	)
+	const refused = refuse("draw-shape", lineAt(module, bare), Str.slice(0, 60)(textOf(bare)))
 	if (!ts.isCallExpression(bare)) {
 		return refused
 	}
@@ -456,14 +521,14 @@ const spaceOfDraw = (module: Module, draw: ts.Expression): Step<Space> => {
 	if (generator === undefined) {
 		return refused
 	}
-	const text = textOf(module.parsed, generator)
+	const text = textOf(generator)
 	const reads = identifiersUnder(bare)
 	if (is("drawn") && bare.arguments.length === 1) {
 		return Result.succeed({ text, reads, resolve: Option.none(), wanted: [] })
 	}
 	if (is("aimed") && second !== undefined && bare.arguments.length === 2) {
 		return Result.succeed({
-			text: `${module.locals.aimed}(${text}, ${textOf(module.parsed, second)})`,
+			text: `${module.locals.aimed}(${text}, ${textOf(second)})`,
 			reads,
 			resolve: Option.none(),
 			wanted: [{ module: module.api.gen, name: "aimed", local: module.locals.aimed, type: false }]
@@ -473,7 +538,7 @@ const spaceOfDraw = (module: Module, draw: ts.Expression): Step<Space> => {
 		return Result.succeed({
 			text,
 			reads: identifiersUnder(generator),
-			resolve: Option.some(textOf(module.parsed, second)),
+			resolve: Option.some(textOf(second)),
 			wanted: []
 		})
 	}
@@ -502,7 +567,7 @@ const senseOf = (module: Module, steered: ts.Expression | undefined): Step<void>
 		return refuse(
 			"coverage-shape",
 			lineAt(module, phase),
-			`a steered phase ${Str.slice(0, 60)(textOf(module.parsed, phase))}`
+			`a steered phase ${Str.slice(0, 60)(textOf(phase))}`
 		)
 	}
 	if (isImported(module.imports, value.value, OLD.sense, "notesOnly")) {
@@ -511,18 +576,14 @@ const senseOf = (module: Module, steered: ts.Expression | undefined): Step<void>
 	return refuse(
 		"coverage-shape",
 		lineAt(module, value.value),
-		`a sense ${Str.slice(0, 60)(textOf(module.parsed, value.value))}`
+		`a sense ${Str.slice(0, 60)(textOf(value.value))}`
 	)
 }
 
 /** What a coverage becomes: required's and requiredInSpace's list with its type argument; none's empty list. */
 const situationsOf = (module: Module, coverage: ts.Expression): Step<Situations> => {
 	const bare = definitionOf(module, coverage)
-	const refused = refuse(
-		"coverage-shape",
-		lineAt(module, bare),
-		Str.slice(0, 60)(textOf(module.parsed, bare))
-	)
+	const refused = refuse("coverage-shape", lineAt(module, bare), Str.slice(0, 60)(textOf(bare)))
 	const none = Result.succeed({
 		text: "[]",
 		reads: [],
@@ -532,9 +593,7 @@ const situationsOf = (module: Module, coverage: ts.Expression): Step<Situations>
 		return none
 	}
 	if (ts.isObjectLiteralExpression(bare)) {
-		return Str.replaceAll(WHITESPACE, "")(textOf(module.parsed, bare)) === '{kind:"none"}'
-			? none
-			: refused
+		return Str.replaceAll(WHITESPACE, "")(textOf(bare)) === '{kind:"none"}' ? none : refused
 	}
 	if (
 		!ts.isCallExpression(bare) ||
@@ -551,13 +610,12 @@ const situationsOf = (module: Module, coverage: ts.Expression): Step<Situations>
 		return refused
 	}
 	return Result.map(senseOf(module, steered), () => ({
-		text: textOf(module.parsed, list),
+		text: textOf(list),
 		reads: [
 			...identifiersUnder(list),
 			...(vocabulary === undefined ? [] : identifiersUnder(vocabulary))
 		],
-		vocabulary:
-			vocabulary === undefined ? Option.none() : Option.some(textOf(module.parsed, vocabulary))
+		vocabulary: vocabulary === undefined ? Option.none() : Option.some(textOf(vocabulary))
 	}))
 }
 
@@ -588,11 +646,7 @@ const callbackOf = (module: Module, property: ts.Expression): Step<Callback> => 
 		) ||
 		holds(body, ts.SyntaxKind.ThisKeyword)
 	) {
-		return refuse(
-			"property-shape",
-			lineAt(module, bare),
-			Str.slice(0, 60)(textOf(module.parsed, bare))
-		)
+		return refuse("property-shape", lineAt(module, bare), Str.slice(0, 60)(textOf(bare)))
 	}
 	return Result.succeed({
 		kind: "literal",
@@ -698,10 +752,10 @@ const camelOf = (test: Test): string => {
 /** A layer's parts: a merge's layers, each read on its own when the plugin does not map the merge whole. */
 const layerPartsOf = (module: Module, layer: ts.Expression): ReadonlyArray<ts.Expression> => {
 	const bare = unparenthesized(layer)
-	if (Option.isSome(module.plugin.provision(textOf(module.parsed, bare)))) {
+	if (Option.isSome(module.plugin.provision(textOf(bare)))) {
 		return [bare]
 	}
-	const callee = ts.isCallExpression(bare) ? calleeOf(module.parsed, bare) : ""
+	const callee = ts.isCallExpression(bare) ? calleeOf(bare) : ""
 	return ts.isCallExpression(bare) && (callee === "Layer.merge" || callee === "Layer.mergeAll")
 		? Arr.flatMap(bare.arguments, (a) => layerPartsOf(module, a))
 		: [bare]
@@ -713,8 +767,8 @@ const provisionsOf = (module: Module, test: Test): Step<ReadonlyArray<Provision>
 		Arr.map(
 			Arr.flatMap(test.frame.layers, (layer) => layerPartsOf(module, layer)),
 			(part): Step<Provision> =>
-				Option.match(module.plugin.provision(textOf(module.parsed, part)), {
-					onNone: () => refuse("layer", lineAt(module, part), textOf(module.parsed, part)),
+				Option.match(module.plugin.provision(textOf(part)), {
+					onNone: () => refuse("layer", lineAt(module, part), textOf(part)),
 					onSome: Result.succeed
 				})
 		)
@@ -729,28 +783,60 @@ const boxOf = (
 	Result.flatMap(required(module, fields, "box", at), (box) => {
 		const bare = definitionOf(module, box)
 		return ts.isObjectLiteralExpression(bare)
-			? refuse("box-unstated", lineAt(module, bare), textOf(module.parsed, bare))
-			: Result.succeed({ text: textOf(module.parsed, box), reads: identifiersUnder(box) })
+			? refuse("box-unstated", lineAt(module, bare), textOf(bare))
+			: Result.succeed({ text: textOf(box), reads: identifiersUnder(box) })
 	})
 
 /** Kept cases by value: none, or a refusal, since a kept case is a token only once it has run. */
-const keptOf = (module: Module, fields: ReadonlyMap<string, ts.Expression>): Step<void> => {
+const keptOf = (
+	module: Module,
+	fields: ReadonlyMap<string, ts.Expression>
+): Step<ReadonlyArray<KeptCase>> => {
 	const kept = fields.get("kept")
 	if (kept === undefined) {
-		return Result.void
+		return Result.succeed([])
 	}
 	const bare = definitionOf(module, kept)
-	return ts.isArrayLiteralExpression(bare) && bare.elements.length === 0
-		? Result.void
-		: refuse("kept-by-value", lineAt(module, bare), Str.slice(0, 60)(textOf(module.parsed, bare)))
+	if (!ts.isArrayLiteralExpression(bare)) {
+		return refuse("kept-by-value", lineAt(module, bare), Str.slice(0, 60)(textOf(bare)))
+	}
+	return gathered(
+		Arr.map(bare.elements, (element): Step<KeptCase> => {
+			const literal = definitionOf(module, element)
+			const field = (name: string) =>
+				ts.isObjectLiteralExpression(literal)
+					? Arr.findFirst(literal.properties, (p) =>
+							ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) && p.name.text === name
+								? Option.some(p.initializer)
+								: Option.none()
+						)
+					: Option.none()
+			const note = Option.filter(field("note"), (n) => Option.isSome(stringValueOf(n)))
+			const draws = Option.flatMap(field("draws"), stringValueOf)
+			const sketch = field("sketch")
+			return Option.isSome(note) && Option.isSome(sketch) && Option.contains(draws, "")
+				? Result.succeed({ value: sketch.value, reason: note.value })
+				: refuse(
+						"kept-by-value",
+						lineAt(module, literal),
+						`a kept case that is not { note, sketch, draws: "" }: ${Str.slice(0, 50)(textOf(literal))}`
+					)
+		})
+	)
 }
+
+/**
+ * A case kept by value: its sketch, which `toolchain-test keep` finds in the property's space and turns into a replay
+ * token, and why it is kept.
+ */
+export type KeptCase = Readonly<{ value: ts.Expression; reason: ts.Expression }>
 
 /** Whether a space is a case list: element over a list, which no property's space may be. */
 const caseListOf = (module: Module, generator: ts.Expression): Step<void> => {
 	const bare = definitionOf(module, generator)
 	return ts.isCallExpression(bare) &&
 		isImported(module.imports, bare.expression, OLD.gen, "element")
-		? refuse("space-case-list", lineAt(module, bare), Str.slice(0, 60)(textOf(module.parsed, bare)))
+		? refuse("space-case-list", lineAt(module, bare), Str.slice(0, 60)(textOf(bare)))
 		: Result.void
 }
 
@@ -830,15 +916,12 @@ const splitOf = (setup: ReadonlyArray<ts.Statement>, taken: ReadonlySet<string>)
 }
 
 /** The yields a per-case setup makes, by what each yields: what a Template or a need would take over. */
-const yieldsOf = (
-	parsed: Parsed,
-	statements: ReadonlyArray<ts.Statement>
-): ReadonlyArray<string> => {
+const yieldsOf = (statements: ReadonlyArray<ts.Statement>): ReadonlyArray<string> => {
 	const found: Array<string> = []
 	const visit = (node: ts.Node): undefined => {
 		if (ts.isYieldExpression(node) && node.expression !== undefined) {
 			const yielded = unparenthesized(node.expression)
-			found.push(ts.isCallExpression(yielded) ? calleeOf(parsed, yielded) : textOf(parsed, yielded))
+			found.push(ts.isCallExpression(yielded) ? calleeOf(yielded) : textOf(yielded))
 		}
 		node.forEachChild(visit)
 		return undefined
@@ -888,9 +971,7 @@ const generatorBodyOf = (
 ): Option.Option<Readonly<{ text: string; names: ReadonlyArray<string> }>> => {
 	const bare = unparenthesized(body)
 	const fn =
-		ts.isCallExpression(bare) &&
-		calleeOf(parsed, bare) === "Effect.gen" &&
-		bare.arguments.length === 1
+		ts.isCallExpression(bare) && calleeOf(bare) === "Effect.gen" && bare.arguments.length === 1
 			? bare.arguments[0]
 			: undefined
 	const generator = fn === undefined ? undefined : unparenthesized(fn)
@@ -916,6 +997,7 @@ type Parts = Readonly<{
 	box: Option.Option<Readonly<{ text: string; reads: ReadonlyArray<string> }>>
 	callback: Callback
 	provisions: ReadonlyArray<Provision>
+	kept: ReadonlyArray<KeptCase>
 }>
 
 /**
@@ -948,7 +1030,7 @@ export const propertyOf = (module: Module, test: Test, taken: ReadonlySet<string
 						)
 					: Result.flatMap(required(module, fields, "generator", spec), (generator) =>
 							Result.map(caseListOf(module, generator), (): Space => ({
-								text: `finite(${textOf(module.parsed, generator)})`,
+								text: `finite(${textOf(generator)})`,
 								reads: identifiersUnder(generator),
 								resolve: Option.none(),
 								wanted: [
@@ -1008,7 +1090,8 @@ const builtOf = (
 			...parts.space.reads,
 			...parts.situations.reads,
 			...identifiersUnder(parts.oracle),
-			...Option.match(parts.box, { onNone: () => [], onSome: (box) => box.reads })
+			...Option.match(parts.box, { onNone: () => [], onSome: (box) => box.reads }),
+			...Arr.flatMap(parts.kept, (k) => identifiersUnder(k.value))
 		],
 		(name) => split.perCase.has(name)
 	)
@@ -1064,29 +1147,27 @@ const builtOf = (
 	const caseName = freshName("c", used)
 	const value: Option.Option<string> =
 		callback.kind === "literal"
-			? Option.map(callback.value, (p) => textOf(parsed, p))
+			? Option.map(callback.value, (p) => textOf(p))
 			: Option.some(valueName)
 	const caseParameter: Option.Option<string> =
 		callback.kind === "literal"
 			? Option.map(callback.c, (p) =>
-					typed(
-						textOf(parsed, p.name),
-						p.type === undefined ? caseType : Option.some(textOf(parsed, p.type))
-					)
+					typed(textOf(p.name), p.type === undefined ? caseType : Option.some(textOf(p.type)))
 				)
 			: Option.some(typed(caseName, caseType))
+	const resolved = freshName("resolved", used)
 	const resolveStatement = Option.map(parts.space.resolve, (resolve) =>
 		Option.match(value, {
 			onNone: () => `;(${resolve})(${sketch})`,
-			onSome: (v) => `const ${v} = (${resolve})(${sketch})`
+			onSome: (v) => `const ${resolved} = (${resolve})(${sketch})\nconst ${v} = ${resolved}`
 		})
 	)
 	const valueParameter = Option.isSome(parts.space.resolve) ? Option.some(sketch) : value
 	const bodyIsBlock = callback.kind === "literal" && ts.isBlock(callback.body)
 	const bodyText =
 		callback.kind === "literal"
-			? textOf(parsed, callback.body)
-			: `(${textOf(parsed, callback.expression)})(${valueName}, ${caseName})`
+			? textOf(callback.body)
+			: `(${textOf(callback.expression)})(${valueName}, ${caseName})`
 	const lifted = new Set<ts.Statement>(split.lifted)
 	const resolveNames = Option.match(callback.kind === "literal" ? callback.value : Option.none(), {
 		onNone: () => [],
@@ -1103,7 +1184,7 @@ const builtOf = (
 							names: Arr.flatMap(kept, declaredNamesOf)
 						}
 					})()
-				: { kind: "stages", stages: Arr.map(w.stages, (st) => textOf(parsed, st)) }
+				: { kind: "stages", stages: Arr.map(w.stages, (st) => textOf(st)) }
 		),
 		{ kind: "setup", lines: Option.toArray(resolveStatement), names: resolveNames }
 	]
@@ -1220,16 +1301,17 @@ const builtOf = (
 				`${parts.situations.text} satisfies ReadonlyArray<${module.locals.Reached}<${v}>>`
 		})}`,
 		`check: ${check}`,
-		`oracle: ${textOf(parsed, parts.oracle)}`,
+		`oracle: ${textOf(parts.oracle)}`,
 		...Option.toArray(Option.map(parts.box, (box) => `box: ${box.text}`)),
 		"kept: []",
 		"kills: []"
 	]
-	const effects = yieldsOf(parsed, split.prefix)
-	const clocked = test.frame.testServices && !test.live && CLOCKED.test(textOf(parsed, test.call))
+	const effects = yieldsOf(split.prefix)
+	const clocked = test.frame.testServices && !test.live && CLOCKED.test(textOf(test.call))
 	return Result.succeed({
 		name,
 		lifted: split.lifted,
+		kept: parts.kept,
 		text: `/** ${sentenceOf(test)} */\nexport const ${name} = ${module.locals.property}.${search.kind}(${parts.space.text}, {\n${Arr.join(fields, ",\n")}\n})`,
 		wanted: [
 			{ module: module.api.property, name: "property", local: module.locals.property, type: false },

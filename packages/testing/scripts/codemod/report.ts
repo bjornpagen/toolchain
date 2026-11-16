@@ -59,7 +59,9 @@ const NOTES = {
 	"plant-citations": "plant citations removed from the header: its kills come from them",
 	"test-services":
 		"ran under it.effect's TestClock and TestConsole, now under the runner's services",
-	"dead-declarations": "module declarations only the dropped fields read are removed"
+	"dead-declarations": "module declarations only the dropped fields read are removed",
+	"kept-values":
+		"cases kept by value wait in a value file beside the module: the command prints their replay tokens for kept"
 } as const
 
 export type Note = keyof typeof NOTES
