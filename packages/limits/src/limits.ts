@@ -217,21 +217,6 @@ export const caseDeadlineMillis = provisional({
 	recorded: RECORDED
 })
 
-/** How many times the unmutated suite's run a mutant's run may take before it times out (scripts/mutate.ts). */
-export const mutantDeadlineFactor = provisional({
-	value: 10,
-	owner: "the mutation tester (packages/testing/scripts/mutate.ts)",
-	unit: "times the unmutated run's time",
-	scope:
-		"each mutant's run, against the time the unmutated suite's run of the same test files took",
-	breaks:
-		"without a deadline a mutant that makes the suite loop forever holds its worker for ever, and the mutation run never ends",
-	measure:
-		"over mutation runs of the library's and the consumers' packages on cassowary, record each killed or surviving mutant's run time against its unmutated run's, and choose the factor above the slowest mutant that did end, with its headroom stated, so no mutant that would have ended times out",
-	origin: LIBRARY_ORIGIN,
-	recorded: RECORDED
-})
-
 /** The longest string a `json` value holds (values.ts): printable ASCII, so a value stays readable when printed. */
 export const jsonStringMax = provisional({
 	value: 8,

@@ -15,7 +15,8 @@ export default defineTestConfig({
 		"!src/runner/**",
 		"!src/resources/**",
 		"!src/features.test.ts",
-		"!src/agree.test.ts"
+		"!src/agree.test.ts",
+		"!src/mutate/**"
 	],
 	guided: ["src/sense.test.ts"],
 	setup: [],

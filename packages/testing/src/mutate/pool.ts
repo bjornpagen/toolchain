@@ -1,4 +1,4 @@
-import type { Effect, Scope } from "effect"
+import { type Effect, Schema, type Scope } from "effect"
 import type { RealPath } from "#mutate/mutated.ts"
 import type { Evaluator } from "#runner/protocol.ts"
 
@@ -23,13 +23,26 @@ export type WorkerImage = Readonly<{
 }>
 
 /**
+ * No worker of a lease started from its image: each ended before it was ready, as one does when a mutant (or a probe)
+ * throws while the worker loads its own modules. Under a mutant's image this is a verdict, the program no longer
+ * starts, which turns the property red; it is never the run's failure.
+ */
+export class Unstarted extends Schema.TaggedError<Unstarted, { readonly brand: unique symbol }>()(
+	"Unstarted",
+	{ message: Schema.String }
+) {}
+
+/**
  * The runner's pool as the mutator schedules it: its width (one worker a core, the Limit the runner reads), and a
  * lease: an evaluator over `workers` workers started fresh from `image` for the enclosing scope, which every batch it is
  * given runs on and no other lease's batch ever does (no stealing across leases); a worker the case deadline ends is
- * started again from the same image, and closing the scope ends them all. The mutator never leases more workers at
- * once than the width (schedule.ts).
+ * started again from the same image, and closing the scope ends them all; or Unstarted, when no worker starts. The
+ * mutator never leases more workers at once than the width (schedule.ts).
  */
 export type MutantPool<E> = Readonly<{
 	width: number
-	lease: (image: WorkerImage, workers: number) => Effect.Effect<Evaluator, E, Scope.Scope>
+	lease: (
+		image: WorkerImage,
+		workers: number
+	) => Effect.Effect<Evaluator, E | Unstarted, Scope.Scope>
 }>

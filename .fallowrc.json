@@ -8,7 +8,6 @@
 		"packages/testing/src/runner/cli.ts",
 		"packages/testing/src/runner/worker.ts",
 		"packages/testing/src/vitest/coverage.ts",
-		"packages/testing/src/vitest/mutated-setup.ts",
 		"packages/testing/src/vitest/searches-setup.ts",
 		"packages/testing/src/witness.fixtures.ts",
 		"packages/testing/test.config.ts"

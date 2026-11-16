@@ -48,7 +48,6 @@
 		"./workers": "./src/workers.ts"
 	},
 	"bin": {
-		"bjornpagen-mutate": "./scripts/mutate.sh",
 		"toolchain-test": "./scripts/toolchain-test.sh"
 	},
 	"scripts": {
@@ -57,7 +56,7 @@
 		"oxlint": "toolchain-oxlint",
 		"test": "vitest run",
 		"bench": "vitest bench --run",
-		"mutate": "node scripts/mutate.ts",
+		"mutate": "toolchain-test mutate",
 		"codemod": "node scripts/codemod/main.ts"
 	},
 	"dependencies": {

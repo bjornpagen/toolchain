@@ -1,6 +1,6 @@
-import { Array as Arr, Effect, type Scope } from "effect"
+import { Array as Arr, Effect, Schema, type Scope } from "effect"
 import type { Loading } from "#mutate/checkout.ts"
-import type { MutantPool, WorkerImage } from "#mutate/pool.ts"
+import { type MutantPool, Unstarted, type WorkerImage } from "#mutate/pool.ts"
 import type { Property, PropertyId } from "#property.ts"
 import type { Limits } from "#runner/limits.ts"
 import type { Evaluator, Finding } from "#runner/protocol.ts"
@@ -35,12 +35,17 @@ export type Stage<E, L> = Readonly<{
 export type Trial<E, L> = Arr.NonEmptyReadonlyArray<Stage<E, L>>
 
 /**
- * What a trial found: the first property that went red, in which stage, and its witnesses' finding (a witness case that
- * failed, hung, misused its case or was lost, a required situation no witness reached, a kept token that no longer runs
- * as it says, or an exhaustion past counting), or none.
+ * How a property went red: its witnesses' finding (a witness case that failed, hung, misused its case or was lost, a
+ * required situation no witness reached, a kept token that no longer runs as it says, or an exhaustion past counting),
+ * or its workers would not start from the stage's image at all.
  */
+export type Red =
+	| Readonly<{ kind: "found"; finding: Finding }>
+	| Readonly<{ kind: "unstarted"; message: string }>
+
+/** What a trial found: the first property that went red, in which stage, and how, or none. */
 export type TrialVerdict<L> =
-	| Readonly<{ kind: "red"; stage: L; property: PropertyId; red: Finding }>
+	| Readonly<{ kind: "red"; stage: L; property: PropertyId; red: Red }>
 	| Readonly<{ kind: "green" }>
 
 /**
@@ -60,7 +65,12 @@ const firstRed = <L>(
 				subject.property.search({ ...run, id: subject.id, evaluator, reach: "witnesses" }),
 				(verdict): Effect.Effect<TrialVerdict<L>> =>
 					verdict.kind === "failed"
-						? Effect.succeed({ kind: "red", stage, property: subject.id, red: verdict.finding })
+						? Effect.succeed({
+								kind: "red",
+								stage,
+								property: subject.id,
+								red: { kind: "found", finding: verdict.finding }
+							})
 						: firstRed(run, evaluator, stage, rest)
 			)
 }
@@ -76,9 +86,18 @@ const trialOn = <E, L>(
 	return stage === undefined
 		? Effect.succeed({ kind: "green" })
 		: Effect.scoped(
-				Effect.flatMap(
-					Effect.flatMap(stage.image, (image) => pool.lease(image, workers)),
-					(evaluator) => firstRed(run, evaluator, stage.label, stage.properties)
+				Effect.flatMap(stage.image, (image) =>
+					pool.lease(image, workers).pipe(
+						Effect.flatMap((evaluator) => firstRed(run, evaluator, stage.label, stage.properties)),
+						Effect.catchIf(Schema.is(Unstarted), (unstarted): Effect.Effect<TrialVerdict<L>> =>
+							Effect.succeed({
+								kind: "red",
+								stage: stage.label,
+								property: Arr.headNonEmpty(stage.properties).id,
+								red: { kind: "unstarted", message: unstarted.message }
+							})
+						)
+					)
 				)
 			).pipe(
 				Effect.filterOrElse(

@@ -5,7 +5,7 @@ Items move here from the repositories that take the toolchain; each names who as
 ## The testing library
 
 - **Mutation testing on TypeScript 7.0.2** (from grizzle's TODO, pantry's test survey, 2026-11-14): `src/mutants.ts`
-  and `scripts/mutate.ts` import `typescript/ast`, `typescript/fs` and `typescript/sync`, which TypeScript 7.0.2
+  and `src/mutate/typecheck.ts` import `typescript/ast`, `typescript/fs` and `typescript/sync`, which TypeScript 7.0.2
   (qti-pie's override) exports only under `./unstable/`, so no one can mutation-test qti-pie. Stable import paths fix
   it, or qti-pie moves to TypeScript 7.1.
 - **A repetition cap for `pattern`'s `matching`** (pantry's ask): it refuses unbounded `*`, `+` and `{n,}`, so pantry

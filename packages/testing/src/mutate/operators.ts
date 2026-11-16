@@ -22,12 +22,11 @@ import { type CoverageMap, coverageMapOf, type DumpUnread, ranIn } from "#mutate
 import type { Images } from "#mutate/image.ts"
 import { type MutatedFile, probeOf, type RealPath, realPathOf } from "#mutate/mutated.ts"
 import type { MutantPool } from "#mutate/pool.ts"
-import { type Subject, type Trial, trialsOn, type WitnessRun } from "#mutate/schedule.ts"
+import { type Red, type Subject, type Trial, trialsOn, type WitnessRun } from "#mutate/schedule.ts"
 import type { TreeFailed } from "#mutate/tree.ts"
 import { type TypecheckRefused, typecheckerOf } from "#mutate/typecheck.ts"
 import type { PropertyId } from "#property.ts"
 import { fnv1a32, mix } from "#random.ts"
-import type { Finding } from "#runner/protocol.ts"
 
 /**
  * A mutation run refused to measure: a property is red with no mutant, or a file's probe survived a property that ran
@@ -40,7 +39,7 @@ export class MutationRefused extends Schema.TaggedError<
 
 /** What one operator mutant's trial decided; operator mutation is a measurement, so no verdict fails anything. */
 export type MutantVerdict =
-	| Readonly<{ kind: "killed"; property: PropertyId; red: Finding }>
+	| Readonly<{ kind: "killed"; property: PropertyId; red: Red }>
 	| Readonly<{ kind: "survived"; faced: Arr.NonEmptyReadonlyArray<PropertyId> }>
 	| Readonly<{ kind: "invalid" }>
 	| Readonly<{ kind: "uncovered" }>
@@ -49,9 +48,17 @@ export type MutantVerdict =
 export type MutantJudged<O extends string> = Readonly<{ mutant: Mutant<O>; verdict: MutantVerdict }>
 
 /**
+ * Which of the chosen operators' mutants a run judges: every one, `count` drawn by `seed`, or those whose ids are named
+ * (a survivor rechecked).
+ */
+export type Choice =
+	| Readonly<{ kind: "every" }>
+	| Readonly<{ kind: "sample"; count: number; seed: number }>
+	| Readonly<{ kind: "named"; ids: ReadonlySet<string> }>
+
+/**
  * What a mutation run measures: `files` (paths from the checkout) by the library's operators and `families`, those of
- * `operators`, against `subjects`; `sample` mutants drawn by `seed` when it is some, every one otherwise. `pkg` is the
- * package whose tsconfig types a mutant.
+ * `operators`, as `choice` chooses among them, against `subjects`. `pkg` is the package whose tsconfig types a mutant.
  */
 export type MutationRun<O extends string> = Readonly<{
 	witnesses: WitnessRun
@@ -61,8 +68,7 @@ export type MutationRun<O extends string> = Readonly<{
 	files: Arr.NonEmptyReadonlyArray<string>
 	families: ReadonlyArray<Family<O>>
 	operators: ReadonlySet<Operator | O>
-	sample: Option.Option<number>
-	seed: number
+	choice: Choice
 }>
 
 /** A file a run mutates: its path from the checkout, its canonical path, and its text. */
@@ -196,25 +202,29 @@ const probed = <E>(
 /** A mutant of a file a run mutates, with that file. */
 type Sourced<O extends string> = Readonly<{ source: Source; mutant: Mutant<Operator | O> }>
 
-/** The mutants a run judges: those of its operators, all of them or a sample drawn by its seed. */
+/** The mutants a run judges: those of its operators, as its choice chooses among them. */
 const chosenOf = <O extends string>(
 	run: MutationRun<O>,
 	every: ReadonlyArray<Sourced<O>>
 ): ReadonlyArray<Sourced<O>> => {
 	const wanted = Arr.filter(every, ({ mutant }) => run.operators.has(mutant.operator))
-	return Option.match(run.sample, {
-		onNone: () => wanted,
-		onSome: (n) =>
-			Arr.take(
+	const { choice } = run
+	switch (choice.kind) {
+		case "every":
+			return wanted
+		case "sample":
+			return Arr.take(
 				Arr.sort(
 					wanted,
 					Order.mapInput(Order.Number, ({ mutant }: Sourced<O>) =>
-						mix(run.seed ^ fnv1a32(mutant.id))
+						mix(choice.seed ^ fnv1a32(mutant.id))
 					)
 				),
-				n
+				choice.count
 			)
-	})
+		case "named":
+			return Arr.filter(wanted, ({ mutant }) => choice.ids.has(mutant.id))
+	}
 }
 
 /** What a typed mutant goes on to: a trial against the properties that ran its place, or no trial and why. */

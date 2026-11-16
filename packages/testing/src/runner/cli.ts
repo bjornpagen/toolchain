@@ -6,25 +6,17 @@ import {
 	Config,
 	Console,
 	Effect,
-	FileSystem,
 	Formatter,
 	Option,
 	Random,
 	Record as Rec,
-	Schema,
-	String as Str
+	Schema
 } from "effect"
-import { loadingOf } from "#mutate/checkout.ts"
-import { imagesOf } from "#mutate/image.ts"
-import { type Judged, killsOf } from "#mutate/kills.ts"
-import { realPathOf } from "#mutate/mutated.ts"
-import { treesOf } from "#mutate/tree.ts"
+import { judgedLine, killsCommand, mutateCommand } from "#mutate/commands.ts"
 import { replayOf, replayTokenOf } from "#replay.ts"
 import { affected, recordedRun } from "#runner/affected.ts"
 import { HARDENED_FLAGS } from "#runner/config.ts"
 import { fuzz } from "#runner/fuzz.ts"
-import { mutantPoolOf } from "#runner/lease.ts"
-import { runnerLimits } from "#runner/limits.ts"
 import { configOf, keptValuesAt } from "#runner/load.ts"
 import { failureLines, lineOf } from "#runner/report.ts"
 import { loadPackage, replayToken, runPackage } from "#runner/run.ts"
@@ -36,6 +28,8 @@ import { loadPackage, replayToken, runPackage } from "#runner/run.ts"
  *                                               that passed, every verdict cached; exit 1 on any failure or survivor
  *   toolchain-test replay <token>               the one case a failure printed, as it ran
  *   toolchain-test kills [paths | property ids] each property's kills turn its witnesses red; exit 1 on any survivor
+ *                                               or stale kill (mutate/commands.ts)
+ *   toolchain-test mutate <file>... [options]  operator mutation of the files, a measurement (mutate/commands.ts)
  *   toolchain-test affected <ref>               the push gate: every property with no cached pass, and its kills
  *   toolchain-test fuzz <fuzztime> [paths | ids] the scheduled fuzz budget: fresh seeds round after round
  *   toolchain-test keep <id> <value file>       kept values as replay tokens, to paste into the property's kept
@@ -143,66 +137,6 @@ const failing = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, Comm
 		Effect.fail(CommandFailed.make({ message: Cause.pretty(cause) }))
 	)
 
-/** The repository a package root lies in: the nearest directory at or above it that holds `.git`. */
-const repositoryOf = (start: string): Effect.Effect<string, CommandFailed, FileSystem.FileSystem> =>
-	Effect.gen(function* () {
-		const fs = yield* FileSystem.FileSystem
-		let at = start
-		for (;;) {
-			const found = yield* Effect.orElseSucceed(fs.exists(`${at}/.git`), () => false)
-			if (found) {
-				return at
-			}
-			const parent = Option.map(Str.lastIndexOf("/")(at), (slash) => Str.slice(0, slash)(at))
-			if (Option.isNone(parent) || !Str.isNonEmpty(parent.value)) {
-				return yield* CommandFailed.make({ message: `${start} lies in no git repository` })
-			}
-			at = parent.value
-		}
-	})
-
-/** A judged kill as the gate reports it: killed, or why it fails the gate. */
-const judgedLine = (judged: Judged): string => {
-	const verdict = judged.verdict
-	switch (verdict.kind) {
-		case "killed":
-			return `${judged.property}: killed: ${judged.kill.why}`
-		case "survived":
-			return `${judged.property}: SURVIVED${verdict.loaded ? "" : ", its workers never loaded the file"}: ${judged.kill.why} (${judged.kill.file})`
-		case "stale":
-			return `${judged.property}: STALE: ${verdict.stale.message}`
-	}
-}
-
-/**
- * `kills [paths | ids]`: every kill of every property named applied in the checkout, each property's witnesses run on
- * workers leased for that kill alone (mutate/kills.ts); 1 when any kill survives or is stale.
- */
-const kills = (selected: ReadonlyArray<string>) =>
-	Effect.scoped(
-		Effect.gen(function* () {
-			const repository = yield* repositoryOf(root)
-			const checkout = yield* realPathOf(repository)
-			const packageRoot = yield* realPathOf(root)
-			const { discovered } = yield* loadPackage(root, selected)
-			const trees = yield* treesOf(checkout)
-			const images = yield* imagesOf(checkout, trees)
-			const judged = yield* killsOf(
-				mutantPoolOf(checkout, packageRoot),
-				{ seed: 0, limits: runnerLimits },
-				checkout,
-				images,
-				Arr.map(discovered, (found) => ({
-					id: found.id,
-					property: found.property,
-					loading: loadingOf(found.property.needs)
-				}))
-			)
-			yield* Console.log(Arr.join(Arr.map(judged, judgedLine), "\n"))
-			return Arr.some(judged, (one) => one.verdict.kind !== "killed") ? 1 : 0
-		})
-	)
-
 /**
  * `keep <id> <value file>`: each value the file keeps (its default export, an array of { value, reason, since }) as the
  * replay token of the case the property's space draws it from (keep.ts), printed as a kept entry to paste into the
@@ -249,7 +183,8 @@ const keep = (args: ReadonlyArray<string>) =>
 const commands: Readonly<Record<string, Command>> = {
 	run: (args) => failing(run(args)),
 	replay: (args) => failing(replay(args)),
-	kills: (args) => failing(kills(args)),
+	kills: (args) => failing(killsCommand(root, args)),
+	mutate: (args) => failing(mutateCommand(root, args)),
 	affected: (args) => failing(affected(root, args)),
 	fuzz: (args) => failing(fuzz(root, args)),
 	keep: (args) => failing(keep(args))

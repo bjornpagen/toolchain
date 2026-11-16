@@ -14,6 +14,7 @@ import type { Images } from "#mutate/image.ts"
 import { type MutatedFile, probeOf, type RealPath, realPathOf } from "#mutate/mutated.ts"
 import type { MutantPool } from "#mutate/pool.ts"
 import {
+	type Red,
 	type Subject,
 	type Trial,
 	type TrialVerdict,
@@ -22,7 +23,6 @@ import {
 } from "#mutate/schedule.ts"
 import type { TreeFailed } from "#mutate/tree.ts"
 import type { Kill, PropertyId } from "#property.ts"
-import type { Finding } from "#runner/protocol.ts"
 
 /**
  * What a kill's trial decided. Killed: the property's witnesses went red with the kill applied, and the gate passes it.
@@ -32,7 +32,7 @@ import type { Finding } from "#runner/protocol.ts"
  * Stale: the kill's original no longer stands once in its file, which fails the gate.
  */
 export type KillVerdict =
-	| Readonly<{ kind: "killed"; red: Finding }>
+	| Readonly<{ kind: "killed"; red: Red }>
 	| Readonly<{ kind: "survived"; loaded: boolean }>
 	| Readonly<{ kind: "stale"; stale: KillStale }>
 

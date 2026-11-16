@@ -1,7 +1,7 @@
 /**
  * The library as a consumer installs it: a package with this library copied into its node_modules runs its tests as
- * Vitest does by default, and bjornpagen-mutate's verdicts, the residual table and the watchdog's replay report are what
- * the library's contract says of the consumer's test files. Oracle: stated in the search.
+ * Vitest does by default, and the residual table and the watchdog's replay report are what the library's contract says
+ * of the consumer's test files. Oracle: stated in the search.
  */
 import * as NodeServices from "@effect/platform-node/NodeServices"
 import { layer } from "@effect/vitest"
@@ -24,7 +24,7 @@ import {
 import { ChildProcess } from "effect/process"
 import { aimed, explore } from "#explore.ts"
 import { required } from "#features.ts"
-import { boolean, constant, element, type Gen, int, map, oneOf, subarray } from "#gen.ts"
+import { constant, type Gen, int, oneOf } from "#gen.ts"
 import manifest from "#package.json" with { type: "json" }
 import { replayOf } from "#replay.ts"
 import { notesOnly } from "#sense.ts"
@@ -53,8 +53,8 @@ const installedPackage = (name: string) =>
 /**
  * A package that has this library in its node_modules, as a copy of the files its tarball ships, and runs its tests as
  * Vitest does by default, through Vite's module runner: its manifest, its tsconfig, its default config, which names the
- * library's global setup and its residual reporter, a config of its own for a search that loops, and the function the
- * mutation runs measure. Each case writes its own test files beside them.
+ * library's global setup and its residual reporter, and a config of its own for a search that loops. Each case writes
+ * its own test files beside them.
  */
 const CONSUMER: ReadonlyArray<readonly [path: string, text: string]> = [
 	["package.json", `{ "name": "consumer", "private": true, "type": "module" }\n`],
@@ -69,43 +69,8 @@ const CONSUMER: ReadonlyArray<readonly [path: string, text: string]> = [
 	[
 		"vitest.loops.config.ts",
 		`import { defineConfig } from "vitest/config"\nexport default defineConfig({ test: { include: ["src/loops.check.ts"], globalSetup: ["@bjornpagen/testing/vitest/global-setup"] } })\n`
-	],
-	["src/below.ts", `export const below = (a: number, b: number): boolean => a < b\n`]
+	]
 ]
-
-/**
- * What a consumer's test file does with src/below.ts: pins its comparison, so its one comparison mutant fails it; loads
- * it and asserts nothing of what it answers, so that mutant survives; never loads it; or fails for a reason of its own.
- */
-const ROLES = ["pins", "loads", "apart", "red"] as const
-
-type Role = (typeof ROLES)[number]
-
-/** A test file of each role, at its path in the consumer. */
-const testFileOf = (role: Role): readonly [path: string, text: string] => {
-	switch (role) {
-		case "pins":
-			return [
-				"src/pins.test.ts",
-				`import { expect, it } from "vitest"\nimport { below } from "./below.ts"\nit("orders two numbers", () => {\n\texpect(below(1, 2)).toBe(true)\n\texpect(below(2, 1)).toBe(false)\n\texpect(below(1, 1)).toBe(false)\n})\n`
-			]
-		case "loads":
-			return [
-				"src/loads.test.ts",
-				`import { expect, it } from "vitest"\nimport { below } from "./below.ts"\nit("has the function", () => {\n\texpect(typeof below).toBe("function")\n})\n`
-			]
-		case "apart":
-			return [
-				"src/apart.test.ts",
-				`import { expect, it } from "vitest"\nit("loads nothing of the package", () => {\n\texpect(1).toBe(1)\n})\n`
-			]
-		case "red":
-			return [
-				"src/red.test.ts",
-				`import { expect, it } from "vitest"\nit("fails for a reason of its own", () => {\n\texpect(1).toBe(2)\n})\n`
-			]
-	}
-}
 
 /** The consumer's search, which passes, as the default config's run finds it. */
 const SEARCHED: readonly [path: string, text: string] = [
@@ -142,7 +107,6 @@ const consumerLayer = Layer.effect(
 		yield* fs.makeDirectory(`${directory}/src`, { recursive: true })
 		yield* fs.makeDirectory(installed, { recursive: true })
 		yield* fs.makeDirectory(`${directory}/node_modules/@effect`, { recursive: true })
-		yield* fs.makeDirectory(`${directory}/node_modules/.bin`, { recursive: true })
 		yield* Effect.forEach(
 			CONSUMER,
 			([path, text]) => fs.writeFileString(`${directory}/${path}`, text),
@@ -170,10 +134,6 @@ const consumerLayer = Layer.effect(
 					fs.symlink(real, `${directory}/node_modules/${name}`)
 				),
 			{ discard: true }
-		)
-		yield* fs.symlink(
-			"../@bjornpagen/testing/scripts/mutate.sh",
-			`${directory}/node_modules/.bin/bjornpagen-mutate`
 		)
 		return { directory }
 	})
@@ -205,74 +165,16 @@ const ranInConsumer = (command: string, args: ReadonlyArray<string>) =>
 		})
 	)
 
-/** `bjornpagen-mutate` in the consumer, as its bin: comparison mutants of src/below.ts, with `args` after. */
-const mutated = (args: ReadonlyArray<string>) =>
-	Effect.flatMap(Consumer, ({ directory }) =>
-		ranInConsumer(`${directory}/node_modules/.bin/bjornpagen-mutate`, [
-			"--package",
-			directory,
-			"--file",
-			"src/below.ts",
-			"--operator",
-			"comparison",
-			...args
-		])
-	)
-
-/** The summary line of a mutation run. */
-const SUMMARY = regex(
-	"mutate: (?<killed>[0-9]+) killed, (?<survived>[0-9]+) survived, (?<timeout>[0-9]+) timed out, (?<invalid>[0-9]+) invalid"
-)
-
-/** A refused run's last line: the refusal's tag, before its reason. */
-const REFUSAL = regex("(?<tag>[A-Za-z]+): [^\n]*\n?$")
-
-/** A run's verdict counts, from its summary line. */
-const countsOf = (stdout: string) =>
-	Option.map(Option.fromNullishOr(SUMMARY.exec(stdout)?.groups), (counts) => ({
-		killed: Number(counts.killed),
-		survived: Number(counts.survived),
-		timeout: Number(counts.timeout),
-		invalid: Number(counts.invalid)
-	}))
-
-/** How a refused run says it was refused: the tag of its last line. */
-const refusalOf = (stderr: string) => Option.fromNullishOr(REFUSAL.exec(stderr)?.groups.tag)
-
 /** A replay token as the watchdog's report prints it. */
 const REPLAY_LINE = regex("TEST_REPLAY='(?<token>[^']*)'")
 
 /** The residual table's line for the consumer's search, indented under the table's heading. */
 const CONSUMER_RESIDUAL = regex("^  consumer search: [0-9]+ independent cases", "m")
 
-/**
- * What a case runs in the consumer: bjornpagen-mutate over the test files of some roles, scoped to one of them or the
- * whole suite (none); or Vitest over the consumer's search, which passes, or loops on its values from a threshold up.
- */
+/** What a case runs in the consumer: Vitest over the consumer's search, which passes, or loops on its values from a threshold up. */
 type Run =
-	| Readonly<{ kind: "mutate"; roles: Arr.NonEmptyReadonlyArray<Role>; scope: Option.Option<Role> }>
 	| Readonly<{ kind: "search" }>
 	| Readonly<{ kind: "looping search"; from: number; hangMillis: number }>
-
-/** The roles of a mutation run's test files, in roster order, `first` among them. */
-const rolesWith = (first: Role): Gen<Arr.NonEmptyReadonlyArray<Role>> =>
-	map(subarray(ROLES), (others) =>
-		Arr.prepend(
-			Arr.filter(others, (role) => role !== first),
-			first
-		)
-	)
-
-const mutateRun =
-	(first: Role, scoped: boolean): Gen<Run> =>
-	(source) => {
-		const roles = source.draw(rolesWith(first))
-		return {
-			kind: "mutate",
-			roles,
-			scope: scoped ? Option.some(source.draw(element(roles))) : Option.none()
-		}
-	}
 
 const loopingRun: Gen<Run> = (source) => ({
 	kind: "looping search",
@@ -280,64 +182,21 @@ const loopingRun: Gen<Run> = (source) => ({
 	hangMillis: source.draw(int(100, 400))
 })
 
-const anyRun: Gen<Run> = oneOf<Run>([
-	(source) => source.draw(mutateRun(source.draw(element(ROLES)), source.draw(boolean))),
-	constant<Run>({ kind: "search" }),
-	loopingRun
-])
+const anyRun: Gen<Run> = oneOf<Run>([constant<Run>({ kind: "search" }), loopingRun])
 
-/** What a case reaches: a mutation run's verdict, or how a search ended. */
-const FEATURES = [
-	"a mutant killed",
-	"a mutant survived",
-	"refused for a red test",
-	"refused by the probe",
-	"a search tabled",
-	"a search that loops"
-] as const
+/** What a case reaches: how a search ended. */
+const FEATURES = ["a search tabled", "a search that loops"] as const
 
 type Feature = (typeof FEATURES)[number]
 
 /** A run aimed at a feature, its other choices drawn, for a steered case to reach what is still pending. */
 const aimedAt = (feature: Feature): Gen<Run> => {
 	switch (feature) {
-		case "a mutant killed":
-			return mutateRun("pins", true)
-		case "a mutant survived":
-			return mutateRun("loads", true)
-		case "refused for a red test":
-			return mutateRun("red", false)
-		case "refused by the probe":
-			return mutateRun("apart", true)
 		case "a search tabled":
 			return constant<Run>({ kind: "search" })
 		case "a search that loops":
 			return loopingRun
 	}
-}
-
-/** The test files a mutation run sees: its scope, or all of its roles. */
-const seenBy = (
-	run: Readonly<{ roles: Arr.NonEmptyReadonlyArray<Role>; scope: Option.Option<Role> }>
-) =>
-	Option.match(run.scope, {
-		onNone: () => run.roles,
-		onSome: (role): ReadonlyArray<Role> => [role]
-	})
-
-/**
- * How a mutation run ends, from bjornpagen-mutate's contract: refused when a test it runs fails unmutated, refused by
- * its probe when none of them loads the file, and otherwise the one comparison mutant killed when one of them pins
- * it, survived when none does.
- */
-const mutateVerdictOf = (seen: ReadonlyArray<Role>): Feature => {
-	if (Arr.contains(seen, "red")) {
-		return "refused for a red test"
-	}
-	if (!Arr.contains(seen, "pins") && !Arr.contains(seen, "loads")) {
-		return "refused by the probe"
-	}
-	return Arr.contains(seen, "pins") ? "a mutant killed" : "a mutant survived"
 }
 
 /** Writes a case's files into the consumer's src, after removing every test file an earlier case left. */
@@ -346,11 +205,7 @@ const written = (files: ReadonlyArray<readonly [path: string, text: string]>) =>
 		const fs = yield* FileSystem.FileSystem
 		const { directory } = yield* Consumer
 		const left = yield* fs.readDirectory(`${directory}/src`)
-		yield* Effect.forEach(
-			Arr.filter(left, (file) => file !== "below.ts"),
-			(file) => fs.remove(`${directory}/src/${file}`),
-			{ discard: true }
-		)
+		yield* Effect.forEach(left, (file) => fs.remove(`${directory}/src/${file}`), { discard: true })
 		yield* Effect.forEach(
 			files,
 			([path, text]) => fs.writeFileString(`${directory}/${path}`, text),
@@ -358,27 +213,11 @@ const written = (files: ReadonlyArray<readonly [path: string, text: string]>) =>
 		)
 	})
 
-/** What a case observes of its run, in the model's terms: a mutation verdict, or how a search's Vitest run ended. */
+/** What a case observes of its run, in the model's terms: how a search's Vitest run ended. */
 const observed = (run: Run) =>
 	Effect.gen(function* () {
 		const { directory } = yield* Consumer
 		switch (run.kind) {
-			case "mutate": {
-				yield* written(Arr.map(run.roles, testFileOf))
-				const ran = yield* mutated(
-					Option.match(run.scope, {
-						onNone: () => [],
-						onSome: (role) => ["--test", testFileOf(role)[0]]
-					})
-				)
-				return {
-					refusal: refusalOf(ran.stderr),
-					counts: countsOf(ran.stdout),
-					exitCode: ran.exitCode,
-					tabled: false,
-					replay: Option.none<string>()
-				}
-			}
 			case "search":
 			case "looping search": {
 				yield* written(run.kind === "search" ? [SEARCHED] : [looping(run.from, run.hangMillis)])
@@ -390,8 +229,6 @@ const observed = (run: Run) =>
 						: ["--config", "vitest.loops.config.ts"])
 				])
 				return {
-					refusal: Option.none<string>(),
-					counts: Option.none<Counts>(),
 					exitCode: ran.exitCode,
 					tabled: Option.isSome(Option.fromNullishOr(CONSUMER_RESIDUAL.exec(ran.stdout))),
 					replay: Option.fromNullishOr(REPLAY_LINE.exec(ran.stderr)?.groups.token)
@@ -400,14 +237,11 @@ const observed = (run: Run) =>
 		}
 	})
 
-/** A mutation run's counts, as its summary line prints them. */
-type Counts = Readonly<{ killed: number; survived: number; timeout: number; invalid: number }>
-
 layer(Layer.provideMerge(consumerLayer, NodeServices.layer))(
 	"a package that has the library in its node_modules, its tests on Vite's module runner",
 	(it) => {
 		it.effect(
-			"measures its files with bjornpagen-mutate as its scope's tests decide, tables its searches' residual, and has a looping search's process ended with its replay token",
+			"tables its searches' residual, and has a looping search's process ended with its replay token",
 			(ctx) =>
 				searched(
 					ctx,
@@ -416,7 +250,7 @@ layer(Layer.provideMerge(consumerLayer, NodeServices.layer))(
 							suite: "consumer",
 							oracle: {
 								kind: "specification",
-								name: "bjornpagen-mutate's contract over the scope's test files, the reporter's table, and the watchdog's report"
+								name: "the reporter's table and the watchdog's report"
 							},
 							draw: aimed(
 								anyRun,
@@ -434,32 +268,6 @@ layer(Layer.provideMerge(consumerLayer, NodeServices.layer))(
 							Effect.gen(function* () {
 								const seen = yield* observed(run)
 								switch (run.kind) {
-									case "mutate": {
-										const verdict = mutateVerdictOf(seenBy(run))
-										c.note(verdict)
-										const refused =
-											verdict === "refused for a red test"
-												? Option.some("MutationRunRefused")
-												: verdict === "refused by the probe"
-													? Option.some("MutationProbeSurvived")
-													: Option.none()
-										deepStrictEqual(
-											{ refusal: seen.refusal, counts: seen.counts, exitCode: seen.exitCode },
-											{
-												refusal: refused,
-												counts: Option.isSome(refused)
-													? Option.none()
-													: Option.some({
-															killed: verdict === "a mutant killed" ? 1 : 0,
-															survived: verdict === "a mutant survived" ? 1 : 0,
-															timeout: 0,
-															invalid: 0
-														}),
-												exitCode: Option.some(Option.isSome(refused) ? 1 : 0)
-											}
-										)
-										return
-									}
 									case "search":
 										c.note("a search tabled")
 										deepStrictEqual(

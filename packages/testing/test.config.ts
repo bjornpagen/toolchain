@@ -23,7 +23,8 @@ export default defineRunner({
 		"src/agree.test.ts",
 		"src/runner/search.test.ts",
 		"src/runner/case.test.ts",
-		"src/runner/steer.test.ts"
+		"src/runner/steer.test.ts",
+		"src/mutate/*.test.ts"
 	],
 	smallStack: [],
 	conditions: [],
