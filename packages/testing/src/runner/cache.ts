@@ -18,7 +18,8 @@ import type { ContentHash } from "#runner/closure.ts"
  * again.
  *
  * Layout: `<directory>/<SHA-256 of the property id>/<SHA-256 of the key>.json`, each file the key itself as JSON. A write
- * goes to a temporary file in its directory and is renamed into place, so a reader sees a whole record or none, and
+ * goes to a temporary file in a directory of its own beside the record (removed when the write ends) and is renamed into
+ * place, so a reader sees a whole record or none, and
  * writers of distinct keys touch distinct files and take no lock. A record whose text is not its key's is refused
  * (VerdictCorrupt), never read as a pass.
  */
@@ -153,16 +154,19 @@ export const verdictCacheAt = (
 				Effect.gen(function* () {
 					const { shard, file, record } = yield* placed(key)
 					switch (verdict) {
-						case "passed": {
+						case "passed":
 							yield* Effect.mapError(fs.makeDirectory(shard, { recursive: true }), unusable(shard))
-							const temporary = yield* Effect.mapError(
-								fs.makeTempFile({ directory: shard, prefix: ".verdict-" }),
-								unusable(shard)
+							yield* Effect.scoped(
+								Effect.gen(function* () {
+									const temporary = yield* Effect.mapError(
+										fs.makeTempFileScoped({ directory: shard, prefix: ".verdict-" }),
+										unusable(shard)
+									)
+									yield* Effect.mapError(fs.writeFileString(temporary, record), unusable(temporary))
+									yield* Effect.mapError(fs.rename(temporary, file), unusable(file))
+								})
 							)
-							yield* Effect.mapError(fs.writeFileString(temporary, record), unusable(temporary))
-							yield* Effect.mapError(fs.rename(temporary, file), unusable(file))
 							return
-						}
 						case "failed":
 							yield* Effect.mapError(fs.remove(file, { force: true }), unusable(file))
 							return
