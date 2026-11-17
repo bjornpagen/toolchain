@@ -16,8 +16,8 @@ export type TestSystemRule = (typeof TEST_SYSTEM_RULES)[number]
 /**
  * The rules the workspace gate runs over the repository as a whole: the tsconfig gate's (the Effect diagnostics every
  * tsconfig sets, the shared base's roster, the one plugin block, the Effect-free packages' tsconfigs and manifests),
- * the TypeScript-only extensions, the test system's gates, and the dead paths (an oxlint override's glob or an
- * exception's path that names no file). They are the only rules toolchain.config.ts's exceptions name: a lint rule's
+ * the TypeScript-only extensions, the test system's gates, the dead paths (an oxlint override's glob or an
+ * exception's path that names no file), and the root's tasks (a root script turbo would pass over). They are the only rules toolchain.config.ts's exceptions name: a lint rule's
  * exception is an override block in oxlint.config.ts, and a style rule's is the web pack app's.
  */
 const WORKSPACE_RULES = [
@@ -27,6 +27,7 @@ const WORKSPACE_RULES = [
 	"effect-free-packages",
 	"ts-only-extensions",
 	"dead-paths",
+	"root-tasks",
 	...TEST_SYSTEM_RULES
 ] as const
 

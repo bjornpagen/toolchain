@@ -17,6 +17,7 @@ import { runDevtool } from "#shared/run.ts"
 import { deadPathFindings } from "#workspace/dead-paths.ts"
 import { tsOnlyExtensionFindings } from "#workspace/extensions.ts"
 import { parentSnapshot } from "#workspace/parent.ts"
+import { ROOT_MANIFEST, rootTaskFindings, TURBO_CONFIG } from "#workspace/root-tasks.ts"
 import type { Exceptions } from "#workspace/rules.ts"
 import { readsText, testSystemFindings } from "#workspace/test-system.ts"
 import { tsconfigFindings, workspaceFixtureMismatches } from "#workspace/tsconfigs.ts"
@@ -28,9 +29,10 @@ import { tsconfigFindings, workspaceFixtureMismatches } from "#workspace/tsconfi
  * the shared base to the installed @effect/tsgo's roster (diagnostic-roster), the root tsconfig to the one Effect
  * plugin block every package inherits (effect-plugin-block), each Effect-free package's tsconfig and manifest to
  * carrying no Effect (effect-free-packages), every file git shows to a TypeScript extension (ts-only-extensions), every
- * oxlint override glob and exception path to naming a file (dead-paths), and the test system's gates
- * (workspace/test-system.ts): no worker flag in a script, and, in a repository that runs the properties pack, no
- * Vitest configuration, no plant and no numbered shard of a test module.
+ * oxlint override glob and exception path to naming a file (dead-paths), every root script named as a generic turbo
+ * task to a root task turbo.json registers, so no `turbo run` passes over the root's own files (root-tasks), and the
+ * test system's gates (workspace/test-system.ts): no worker flag in a script, and, in a repository that runs the
+ * properties pack, no Vitest configuration, no plant and no numbered shard of a test module.
  * The repository's decisions come from its toolchain.config.ts: its rejected diagnostics, its Effect-free packages, and
  * its exceptions, which excuse the files they list from one of these rules and name no other. `--fixtures` runs the
  * tsconfig gate against its fixture workspaces instead. Exit status 1 means findings, 2 that the gate itself failed.
@@ -142,8 +144,13 @@ const checkRepository = Effect.gen(function* () {
 		toolchain: { path: CONFIG_FILE, text: toolchainText, exceptions: config.exceptions },
 		standard: STANDARD_GLOBS
 	})
+	const rootTasks = yield* rootTaskFindings({
+		root,
+		manifest: yield* read(ROOT_MANIFEST),
+		turbo: yield* read(TURBO_CONFIG)
+	})
 	const findings = Arr.filter(
-		[...tsconfigs, ...extensions, ...testSystem, ...deadPaths],
+		[...tsconfigs, ...extensions, ...testSystem, ...deadPaths, ...rootTasks],
 		(finding) => !isExcepted(config.exceptions, root, finding)
 	)
 	yield* Console.log(renderFindings({ tool: "workspace-gate", root, findings }))

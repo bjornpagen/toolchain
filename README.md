@@ -67,8 +67,11 @@ are properties is the properties pack, which that repository's conversion turns 
 - The workspace gate, for every repository: `no-plants` (a patch under a `plants/` directory, any file under
   `test/plants/`, a `plants` or `plants:*` script; pnpm's `patches/` are no plants), `no-worker-flags`
   (`--maxWorkers`, `--minWorkers`, `--pool*`, `--no-file-parallelism`, `--runInBand`, `--threads` and their kin in a
-  package script, lefthook's configuration or a shell script), and `dead-paths` (an oxlint override's glob, or a
-  `toolchain.config.ts` exception's path, that names no tracked file; the preset's own test globs excepted).
+  package script, lefthook's configuration or a shell script), `dead-paths` (an oxlint override's glob, or a
+  `toolchain.config.ts` exception's path, that names no tracked file; the preset's own test globs excepted), and
+  `root-tasks` (a root script named as a turbo task every package runs, such as `typecheck`, `typecheck:full` or
+  `oxlint`, that turbo.json registers as no `//#<name>` task: turbo never runs the root's script for the generic task,
+  so every `turbo run` of it passes over the root's own files; a root script that runs turbo itself is left alone).
 - The properties pack, `packs: [..., properties()]` (`@bjornpagen/devtools/config`), which a repository's conversion
   adds once its test modules are properties: `testing/test-module-shape` on test modules, and the workspace gate's
   `no-vitest-config` (any `vitest.config.*`, `vitest.workspace.*`, or Vite configuration with a test block) and

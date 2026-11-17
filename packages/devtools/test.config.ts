@@ -16,6 +16,7 @@ export default defineRunner({
 		"src/oxlint/rules/single-permit-owners.test.ts",
 		"src/workspace/dead-paths.test.ts",
 		"src/workspace/quarantine.test.ts",
+		"src/workspace/root-tasks.test.ts",
 		"src/workspace/test-system.test.ts"
 	],
 	smallStack: [],
