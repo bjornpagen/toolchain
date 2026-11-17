@@ -6,6 +6,7 @@ import {
 	Fiber,
 	Option,
 	Queue,
+	Record as Rec,
 	Result,
 	Schema,
 	Scope,
@@ -219,8 +220,13 @@ const lostIn = (unit: Unit, phase: Phase): string => {
 /**
  * What a worker's environment adds for Node's compile cache (runner/compile-cache.ts): its directory, for workers that
  * read no coverage (their guide is notes and neither their image nor this process names NODE_V8_COVERAGE), and nothing
- * for the others.
+ * for the others, whose environment drops the cache this process may have been started with (the launcher sets it).
  */
+/** This process's environment without the compile cache it may have been started with, which a worker gets anew. */
+const inherited = Rec.fromEntries(
+	Arr.filter(Rec.toEntries(process.env), ([key]) => key !== "NODE_COMPILE_CACHE")
+)
+
 const compilingOf = (spec: PoolSpec) =>
 	Effect.gen(function* () {
 		const coverage = (yield* readsCoverage) || "NODE_V8_COVERAGE" in spec.env
@@ -441,7 +447,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 				[spec.root, String(index), String(spec.workers), spec.guide, String(process.pid)],
 				{
 					cwd: spec.cwd,
-					env: { ...process.env, ...spec.env, ...compiling },
+					env: { ...inherited, ...spec.env, ...compiling },
 					execArgv: Arr.copy(spec.execArgv),
 					serialization: "advanced",
 					stdio: ["ignore", "pipe", "pipe", "ipc"],
