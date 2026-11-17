@@ -5,8 +5,9 @@
 #   toolchain-gate commit           the commit gate (lefthook's pre-commit): on what the index holds, `pnpm types`,
 #                                   oxfmt's check of the staged files and the AST-only oxlint (oxlint.ast.config.ts)
 #                                   on the staged files it reads, side by side
-#   toolchain-gate push             the push gate (lefthook's pre-push, with use_stdin): `pnpm check` on each commit the
-#                                   push sends, read from git's pre-push lines on stdin (HEAD when there are none);
+#   toolchain-gate push             the push gate (lefthook's pre-push, with use_stdin): `pnpm check` on the tip of each
+#                                   ref the push updates, read from git's pre-push lines on stdin (HEAD when there are
+#                                   none): a push lands its commits together, so the tip is the commit that matters;
 #                                   once a day `pnpm check:full` instead, where the repository has one; then, in each
 #                                   package with a test.config.ts, `toolchain-test affected <what the remote held>`:
 #                                   every property with no cached pass, and its kills, at full width
