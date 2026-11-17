@@ -11,11 +11,12 @@ export type Edge = (typeof EDGES)[number]
  *
  * - declaration: `n` becomes a string, so its type, f0's surface, changes, and a file that uses `N` as a number no
  *   longer typechecks;
+ * - literal: `n` becomes another number, so its type, `1` or `2`, and f0's surface change, but no file's use breaks;
  * - body: the body of `k`, whose return type is annotated, becomes a string, a type error in f0 alone, its surface
  *   kept;
  * - value: the body of `k` becomes another number, no type error anywhere, its surface kept.
  */
-const MUTATIONS = ["declaration", "body", "value"] as const
+const MUTATIONS = ["declaration", "literal", "body", "value"] as const
 
 export type Mutation = (typeof MUTATIONS)[number]
 
@@ -63,6 +64,8 @@ export const mutantText = (pkg: Package) => {
 	switch (pkg.mutation) {
 		case "declaration":
 			return rootOf(pkg, '"one"', "1")
+		case "literal":
+			return rootOf(pkg, "2", "1")
 		case "body":
 			return rootOf(pkg, "1", '"one"')
 		case "value":
@@ -98,25 +101,18 @@ export const edgesTo = (pkg: Package): ReadonlyArray<Edge> => {
 }
 
 /**
- * What typing the mutant must answer: refused when a file its verdict reads holds a type error unmutated (f0 always;
- * the user when the mutant changes f0's surface and the user reads f0), else invalid exactly when the mutant puts a type
- * error in a file that reads it.
+ * What typing the mutant must answer, the same whether the user's file holds an error of its own unmutated or not:
+ * invalid exactly when the mutant puts a type error in a file that reads it.
  */
-export type Expected =
-	| Readonly<{ kind: "refused" }>
-	| Readonly<{ kind: "judged"; invalid: boolean }>
-
-export const expectedOf = (pkg: Package): Expected => {
-	const reads = pkg.user !== -1
-	if (pkg.broken && (pkg.user === 0 || (pkg.mutation === "declaration" && reads))) {
-		return { kind: "refused" }
-	}
+export const invalidOf = (pkg: Package): boolean => {
 	switch (pkg.mutation) {
 		case "declaration":
-			return { kind: "judged", invalid: reads }
+			return pkg.user !== -1
+		case "literal":
+			return false
 		case "body":
-			return { kind: "judged", invalid: true }
+			return true
 		case "value":
-			return { kind: "judged", invalid: false }
+			return false
 	}
 }

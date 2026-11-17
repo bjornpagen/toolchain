@@ -21,8 +21,8 @@ import {
 import type { MutatedFile, RealPath } from "#mutate/mutated.ts"
 
 /**
- * The native compiler refused to type a package: it did not start or open the package's project, the project holds no
- * file a mutant replaces, or a file a verdict reads does not typecheck unmutated, so no mutant of it can be told valid.
+ * The native compiler refused to type a package: it did not start or open the package's project, or the project holds
+ * no file a mutant replaces, so no mutant of it can be told valid.
  */
 export class TypecheckRefused extends Schema.TaggedError<
 	TypecheckRefused,
@@ -46,9 +46,6 @@ const readOnlyHost: FileSystemCallbacks = {
 	writeFile: serverFS.noop,
 	removeFile: serverFS.noop
 }
-
-const diagnosticText = (diagnostic: Diagnostic) =>
-	`${diagnostic.fileName ?? "(program)"}:${String((diagnostic.startPosition?.line ?? 0) + 1)}: TS${String(diagnostic.code)} ${diagnostic.text}`
 
 /** A snapshot's program of the package; a snapshot that holds no such program refuses. */
 const programOf = (snapshot: Snapshot, config: string) =>
@@ -85,6 +82,29 @@ const errorsOf = (program: Program, file: RealPath, files: ReadonlyArray<string>
 /** The type errors among a mutant's errors: those it raises by more than leaving code unused or unreachable. */
 const typeErrorsIn = (errors: ReadonlyArray<Diagnostic>) =>
 	Arr.filter(errors, (error) => !UNUSED.has(error.code))
+
+/**
+ * Errors as a program finds them, counted by what each says: its file, its code and its text, never its place, which a
+ * mutant's edit moves in its own file.
+ */
+type Counted = ReadonlyMap<string, number>
+
+const countedOf = (errors: ReadonlyArray<Diagnostic>): Counted => {
+	const counts = new Map<string, number>()
+	for (const error of errors) {
+		const key = Arr.join([error.fileName ?? "", String(error.code), error.text], "\u0000")
+		counts.set(key, (counts.get(key) ?? 0) + 1)
+	}
+	return counts
+}
+
+/**
+ * Whether `errors` hold one the unmutated program's `before` does not: some error said more often than before. A
+ * repository whose unmutated program carries errors (a ratchet of known findings) has each mutant judged by what it
+ * adds; a clean one by whether it has any.
+ */
+const adds = (before: Counted, errors: ReadonlyArray<Diagnostic>) =>
+	Arr.some(Arr.fromIterable(countedOf(errors)), ([key, count]) => count > (before.get(key) ?? 0))
 
 /** Whether a file is the repository's own, not an installed package's: only the repository's files are mutated. */
 const isOwn = (file: string) => !Str.includes("/node_modules/")(file)
@@ -187,8 +207,8 @@ const readersIn = (program: Program, file: RealPath, known: Imports) =>
 		catch: refused("the native compiler did not resolve the program's imports")
 	})
 
-/** What the unmutated program says of a file a run mutates: its text and its surface. */
-type Unmutated = Readonly<{ text: string; surface: Surface }>
+/** What the unmutated program says of a file a run mutates: its text, its surface and its own errors. */
+type Unmutated = Readonly<{ text: string; surface: Surface; errors: Counted }>
 
 /**
  * A session's state: the live snapshot, the package as it is; what the unmutated program said of each file a mutant
@@ -201,8 +221,9 @@ type Session = Readonly<{
 }>
 
 /**
- * What a mutant's program finds: a type error in the mutant's own file; type errors in readers its changed surface
- * reaches, which only the unmutated program can tell the mutant's or the package's; or no type error.
+ * What a mutant's program finds: a type error in the mutant's own file that the unmutated file does not have; type
+ * errors in readers its changed surface reaches, which only the unmutated program can tell the mutant's or the
+ * package's; or no type error of its own.
  */
 type Found =
 	| Readonly<{ kind: "own" }>
@@ -217,7 +238,7 @@ type Found =
 const foundIn = (program: Program, file: RealPath, unmutated: Unmutated, known: Imports) =>
 	Effect.gen(function* () {
 		const errors = yield* errorsOf(program, file, [file])
-		if (Arr.isReadonlyArrayNonEmpty(typeErrorsIn(errors))) {
+		if (adds(unmutated.errors, typeErrorsIn(errors))) {
 			const own: Found = { kind: "own" }
 			return { found: own, imports: known }
 		}
@@ -304,7 +325,35 @@ export const typecheckerOf = Effect.fn("testing.mutate.typecheckerOf")(function*
 			},
 			catch: refused("the native compiler did not update the package")
 		})
-	/** What the unmutated program says of `file`, read once: the program must hold it, with no error in it. */
+	/**
+	 * Whether what the program of a mutant of `file` found makes it invalid: an error of its own, or readers' errors the
+	 * unmutated program (`restored`) does not have in the same files.
+	 */
+	const invalidOf = (
+		found: Found,
+		restored: Snapshot,
+		file: RealPath
+	): Effect.Effect<boolean, TypecheckRefused> => {
+		switch (found.kind) {
+			case "own":
+				return Effect.succeed(true)
+			case "none":
+				return Effect.succeed(false)
+			case "readers": {
+				const files = Arr.dedupe(
+					Arr.flatMap(found.errors, (error) =>
+						Option.toArray(Option.fromUndefinedOr(error.fileName))
+					)
+				)
+				return Effect.flatMap(programOf(restored, config), (program) =>
+					Effect.map(errorsOf(program, file, files), (before) =>
+						adds(countedOf(before), found.errors)
+					)
+				)
+			}
+		}
+	}
+	/** What the unmutated program says of `file`, read once: the program must hold it. */
 	const unmutatedOf = (state: Session, file: RealPath) =>
 		Option.match(Option.fromUndefinedOr(state.files.get(file)), {
 			onSome: Effect.succeed,
@@ -321,16 +370,11 @@ export const typecheckerOf = Effect.fn("testing.mutate.typecheckerOf")(function*
 						})
 					}
 					const errors = yield* errorsOf(program, file, [file])
-					if (Arr.isReadonlyArrayNonEmpty(errors)) {
-						return yield* TypecheckRefused.make({
-							message: `the unmutated package does not typecheck:\n${Arr.join(Arr.map(errors, diagnosticText), "\n")}`
-						})
-					}
 					const text = yield* fs
 						.readFileString(file)
 						.pipe(Effect.mapError(refused(`reading ${file}`)))
 					const surface = yield* surfaceOf(program, file)
-					const unmutated: Unmutated = { text, surface }
+					const unmutated: Unmutated = { text, surface, errors: countedOf(errors) }
 					return unmutated
 				})
 		})
@@ -343,27 +387,13 @@ export const typecheckerOf = Effect.fn("testing.mutate.typecheckerOf")(function*
 					const typed = yield* programOf(mutant, config)
 					const { found, imports } = yield* foundIn(typed, mutated.target, unmutated, state.imports)
 					const restored = yield* succeeded(mutant, mutated.target, unmutated.text)
-					if (found.kind === "readers") {
-						const files = Arr.dedupe(
-							Arr.flatMap(found.errors, (error) =>
-								Option.toArray(Option.fromUndefinedOr(error.fileName))
-							)
-						)
-						const unmutatedErrors = yield* Effect.flatMap(programOf(restored, config), (program) =>
-							errorsOf(program, mutated.target, files)
-						)
-						if (Arr.isReadonlyArrayNonEmpty(unmutatedErrors)) {
-							return yield* TypecheckRefused.make({
-								message: `the unmutated package does not typecheck:\n${Arr.join(Arr.map(unmutatedErrors, diagnosticText), "\n")}`
-							})
-						}
-					}
+					const invalid = yield* invalidOf(found, restored, mutated.target)
 					const next: Session = {
 						live: restored,
 						files: new Map([...state.files, [mutated.target, unmutated]]),
 						imports
 					}
-					return [found.kind !== "none", next] as const
+					return [invalid, next] as const
 				})
 			)
 		)
