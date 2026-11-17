@@ -155,11 +155,15 @@ type Sum = { count: number; millis: number }
 /** Units by id, oldest first. */
 const byId = Order.mapInput(Order.Number, (unit: Scheduled) => unit.id)
 
-/** One module's queue: its units by property, each oldest first, its queued cases by property, and its unit count. */
+/**
+ * One module's queue: its units by property, each oldest first, its queued cases by property, its unit count, and its
+ * oldest unit (`head`), kept as the queue changes, since every choice reads it for every module.
+ */
 type ModuleQueue<U> = {
 	readonly byProperty: Map<string, Array<U>>
 	readonly cases: Map<string, number>
 	units: number
+	head: Option.Option<U>
 }
 
 /** Inserts a unit into units ordered by id, at its place. */
@@ -214,7 +218,12 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 		if (known !== undefined) {
 			return known
 		}
-		const made: ModuleQueue<U> = { byProperty: new Map(), cases: new Map(), units: 0 }
+		const made: ModuleQueue<U> = {
+			byProperty: new Map(),
+			cases: new Map(),
+			units: 0,
+			head: Option.none()
+		}
 		queue.set(module, made)
 		return made
 	}
@@ -227,6 +236,9 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 		queued.cases.set(unit.property, (queued.cases.get(unit.property) ?? 0) + unit.cases)
 		queued.units += 1
 		total += 1
+		if (Option.match(queued.head, { onNone: () => true, onSome: (head) => unit.id < head.id })) {
+			queued.head = Option.some(unit)
+		}
 	}
 
 	/** Takes a module's queue out of the scheduling once it holds no unit. */
@@ -236,7 +248,7 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 		}
 	}
 
-	/** The oldest queued unit's id of a module, and its property. */
+	/** A module's oldest queued unit, found again after units were taken out of its queue. */
 	const headOf = (queued: ModuleQueue<U>): Option.Option<U> => {
 		let head: Option.Option<U> = Option.none()
 		for (const units of queued.byProperty.values()) {
@@ -347,11 +359,20 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 		return Option.some(readying)
 	}
 
-	/** The module whose oldest queued unit is the oldest of those `admits`. */
-	const oldestOf = (admits: (module: string) => boolean): Option.Option<string> => {
+	/**
+	 * The queued module among `candidates` whose oldest queued unit is the oldest of those `admits`, asked only of a
+	 * module older than the best so far.
+	 */
+	const oldestOf = (
+		candidates: Iterable<string>,
+		admits: (module: string) => boolean
+	): Option.Option<string> => {
 		let best: Option.Option<readonly [string, number]> = Option.none()
-		for (const [module, queued] of queue) {
-			const head = headOf(queued)
+		for (const module of candidates) {
+			const head = Option.flatMap(
+				Option.fromUndefinedOr(queue.get(module)),
+				(queued) => queued.head
+			)
 			if (
 				Option.isSome(head) &&
 				Option.match(best, { onNone: () => true, onSome: ([, id]) => head.value.id < id }) &&
@@ -393,7 +414,7 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 		if (queued === undefined) {
 			return Option.none()
 		}
-		return Option.flatMap(headOf(queued), (head) => {
+		return Option.flatMap(queued.head, (head) => {
 			const units = queued.byProperty.get(head.property) ?? []
 			const taken = units.splice(0, perMessage(head.property, units))
 			for (const unit of taken) {
@@ -405,6 +426,7 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 				queued.byProperty.delete(head.property)
 				queued.cases.delete(head.property)
 			}
+			queued.head = headOf(queued)
 			settled(module, queued)
 			hold(worker, module)
 			return Arr.isReadonlyArrayNonEmpty(taken) ? Option.some(taken) : Option.none()
@@ -512,6 +534,7 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 						queued.byProperty.set(property, kept)
 					}
 				}
+				queued.head = headOf(queued)
 				settled(module, queued)
 			}
 		},
@@ -533,10 +556,10 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 			const held = holds[worker]
 			const module = Option.orElse(
 				Option.orElse(
-					oldestOf((candidate) => held?.has(candidate) ?? false),
-					() => oldestOf((candidate) => (holders.get(candidate)?.size ?? 0) === 0)
+					oldestOf(held ?? [], () => true),
+					() => oldestOf(queue.keys(), (candidate) => (holders.get(candidate)?.size ?? 0) === 0)
 				),
-				() => oldestOf((candidate) => outgrowsAfter(candidate, view, 0))
+				() => oldestOf(queue.keys(), (candidate) => outgrowsAfter(candidate, view, 0))
 			)
 			return Option.match(
 				Option.flatMap(module, (chosen) => take(worker, chosen)),
@@ -630,20 +653,22 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 
 /**
  * How many workers to fork now, for a pool sized to its work: the workers the queue wants (Scheduler.wanted) that no
- * worker idle or starting will take, never past `most` (one a core) in all.
+ * worker idle or starting will take, never past `most` (one a core) in all; a pool already that wide asks the queue
+ * nothing, since reckoning what it wants reads every queued module and runs after every unit a worker answers.
  */
 export const forksOf = <U extends Scheduled>(
 	scheduler: Scheduler<U>,
 	view: View<U>,
 	pool: Readonly<{ idling: number; starting: number; most: number; started: Option.Option<number> }>
-): number =>
-	Math.max(
-		0,
-		Math.min(
-			pool.most - view.workers,
-			scheduler.wanted(view, pool.started) - pool.idling - pool.starting
-		)
-	)
+): number => {
+	const room = pool.most - view.workers
+	return room > 0
+		? Math.max(
+				0,
+				Math.min(room, scheduler.wanted(view, pool.started) - pool.idling - pool.starting)
+			)
+		: 0
+}
 
 /** Gives every idle worker, in index order, what the scheduling chooses for it: after units queued or put back, a
  * worker ready, or a revocation answered, any worker's choice may have changed. */

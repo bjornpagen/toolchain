@@ -108,8 +108,8 @@ export const cheapReadiedOnce = property.explore(cheap, {
 		{
 			file: "packages/testing/src/runner/schedule.ts",
 			original:
-				"\t\t\t\t\t() => oldestOf((candidate) => (holders.get(candidate)?.size ?? 0) === 0)",
-			replacement: "\t\t\t\t\t() => oldestOf(() => true)",
+				"\t\t\t\t\t() => oldestOf(queue.keys(), (candidate) => (holders.get(candidate)?.size ?? 0) === 0)",
+			replacement: "\t\t\t\t\t() => oldestOf(queue.keys(), () => true)",
 			why: "An idle worker takes the oldest queued unit whoever holds its module, as the pool did before it kept to its modules: every idle worker imports and readies a module whose work it cannot pay for (GZ-UNIT-A's runner at about twice Vitest's CPU); a cheap module is readied by more than one worker, and this property fails."
 		},
 		{
@@ -302,8 +302,9 @@ export const sizedToWork = property.explore(cheap, {
 	kills: [
 		{
 			file: "packages/testing/src/runner/schedule.ts",
-			original: "\t\t\tscheduler.wanted(view, pool.started) - pool.idling - pool.starting",
-			replacement: "\t\t\tpool.most",
+			original:
+				"\t\t\t\tMath.min(room, scheduler.wanted(view, pool.started) - pool.idling - pool.starting)",
+			replacement: "\t\t\t\tMath.min(room, pool.most)",
 			why: "The pool forks every worker it may have as soon as it can, whatever its queue wants, so a run of one small module starts one worker a core (PERF: a one-kill run spent 139 of its 180 CPU-s booting workers); this property fails."
 		}
 	]
