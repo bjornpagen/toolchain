@@ -1,8 +1,8 @@
 import { Array as Arr, Effect, Option, Ref } from "effect"
-import { array, boolean, element, type Gen, shuffled } from "#gen.ts"
+import { array, boolean, element, type Gen, int, shuffled } from "#gen.ts"
 import type { MutantPool, WorkerImage } from "#mutate/pool.ts"
 import { lost, oneCase, passed } from "#mutate/processes.fixtures.ts"
-import type { TrialVerdict } from "#mutate/schedule.ts"
+import { SHARINGS, type Sharing, type TrialVerdict } from "#mutate/schedule.ts"
 import { Property, PropertyId } from "#property.ts"
 import type { Batch, Reach } from "#runner/protocol.ts"
 
@@ -14,10 +14,11 @@ export type DrawnStage = Readonly<{
 	properties: Arr.NonEmptyReadonlyArray<Readonly<{ name: string; red: boolean }>>
 }>
 
-/** A case: the pool's width and the trials, each its stages. */
+/** A case: the pool's width, the trials, each its stages, and how they share the pool. */
 export type Schedule = Readonly<{
 	width: number
 	trials: ReadonlyArray<Arr.NonEmptyReadonlyArray<DrawnStage>>
+	sharing: Sharing
 }>
 
 /** What the fake pool saw over a run. */
@@ -166,3 +167,10 @@ const stageGen: Gen<DrawnStage> = (source) => {
 /** A trial: one or two stages. */
 export const trialGen: Gen<Arr.NonEmptyReadonlyArray<DrawnStage>> = (source) =>
 	Arr.prepend(source.draw(array(stageGen, { min: 0, max: 1 })), source.draw(stageGen))
+
+/** A case: a pool one to eight wide, up to twelve trials, and either way of sharing the pool. */
+export const scheduleGen: Gen<Schedule> = (source) => ({
+	width: source.draw(int(1, 8)),
+	trials: source.draw(array(trialGen, { min: 0, max: 12 })),
+	sharing: source.draw(element(SHARINGS))
+})

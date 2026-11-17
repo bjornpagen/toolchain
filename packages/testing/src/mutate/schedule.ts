@@ -116,18 +116,35 @@ export const shareOf = (width: number, trials: number): number =>
 	Math.max(1, Math.floor(width / Math.max(1, trials)))
 
 /**
+ * How a run's trials share the pool: spread, each leasing an even split of the width (shareOf), so that a few trials
+ * still fill it; or one each, a worker a trial, for a coverage pass, whose workers start dearly (no compile cache,
+ * V8's coverage on, a dump to write) for witnesses that gain little from being spread. Either way as many trials run
+ * at once as the width allows, and the workers leased at once never pass it.
+ */
+export const SHARINGS = ["spread", "one each"] as const
+
+export type Sharing = (typeof SHARINGS)[number]
+
+/** How many workers each trial of `trials` leases from a pool `width` wide, as `sharing` shares it. */
+const LEASED: Readonly<Record<Sharing, (width: number, trials: number) => number>> = {
+	spread: shareOf,
+	"one each": () => 1
+}
+
+/**
  * The verdicts of `trials` on `pool`, in the trials' order: each property of each stage searched under its witnesses
  * alone (reach "witnesses": kept tokens, the floor stream and the steered phase, or an exhaustion's every case, never
- * the rotating stream, so a verdict is the same on every run seed), on workers of the trial's own, started fresh from
- * the stage's image, which no other trial's case ever runs on; never more workers leased at once than the pool's width
- * (shareOf). A worker never outlives its stage.
+ * the rotating stream, so a verdict is the same on every run seed), on workers of the trial's own, as many as
+ * `sharing` gives it, started fresh from the stage's image, which no other trial's case ever runs on; never more
+ * workers leased at once than the pool's width. A worker never outlives its stage.
  */
 export const trialsOn = <E, L>(
 	pool: MutantPool<E>,
 	run: WitnessRun,
-	trials: ReadonlyArray<Trial<E, L>>
+	trials: ReadonlyArray<Trial<E, L>>,
+	sharing: Sharing
 ): Effect.Effect<ReadonlyArray<TrialVerdict<L>>, E> => {
-	const workers = shareOf(pool.width, trials.length)
+	const workers = LEASED[sharing](pool.width, trials.length)
 	return Effect.forEach(trials, (stages) => trialOn(pool, run, workers, stages), {
 		concurrency: pool.width
 	})

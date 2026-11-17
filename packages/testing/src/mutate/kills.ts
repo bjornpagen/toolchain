@@ -130,7 +130,8 @@ export const killsOf = <E>(
 					properties: [subject],
 					label: "probe"
 				}
-			])
+			]),
+			"spread"
 		)
 		const tried = Arr.map(
 			Arr.zip(live, trials),

@@ -110,9 +110,9 @@ const trialOf = (
 	)
 
 /**
- * The coverage pass: each subject's witnesses once, unmutated, on a worker of its own whose dumps go to a directory of
- * the subject's, and the map of what each ran of the run's files. A subject red with no mutant refuses the run, and so
- * does one whose coverage a worker lost (coverage.ts CoverageLost).
+ * The coverage pass: each subject's witnesses once, unmutated, on a worker of its own ("one each") whose dumps go to a
+ * directory of the subject's, every subject at once, and the map of what each ran of the run's files. A subject red
+ * with no mutant refuses the run, and so does one whose coverage a worker lost (coverage.ts CoverageLost).
  */
 const coverageOf = <E>(
 	pool: MutantPool<E>,
@@ -142,7 +142,8 @@ const coverageOf = <E>(
 					properties: [subject],
 					label: "coverage"
 				}
-			])
+			]),
+			"one each"
 		)
 		const red = Arr.flatMap(verdicts, (verdict) =>
 			verdict.kind === "red" ? [verdict.property] : []
@@ -191,7 +192,8 @@ const probed = <E>(
 			run,
 			Arr.map(pairs, ({ source, subject }) =>
 				trialOf(images, [subject], probeOf(source.target, source.text))
-			)
+			),
+			"spread"
 		)
 		const survived = Arr.map(
 			Arr.filter(Arr.zip(pairs, verdicts), ([, verdict]) => verdict.kind === "green"),
@@ -371,7 +373,8 @@ export const mutationOf = <E, O extends string>(
 		const verdicts = yield* trialsOn<E | TreeFailed, Loading>(
 			pool,
 			run.witnesses,
-			Arr.map(tried, ({ mutated, covering }) => trialOf(images, covering, mutated))
+			Arr.map(tried, ({ mutated, covering }) => trialOf(images, covering, mutated)),
+			"spread"
 		)
 		const judged = Arr.map(
 			Arr.zip(tried, verdicts),
