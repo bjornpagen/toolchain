@@ -261,13 +261,13 @@ const staleOf = <O extends string>(
 
 /**
  * Operator mutation, a measurement: every chosen mutant of the run's files, typed by the package's own tsconfig
- * through TypeScript 7's native compiler (a mutant with a type error is invalid and runs nowhere), and each valid one
- * run against the properties whose witnesses ran its place (the coverage map), in order until one goes red, each
- * mutant on workers of its own and every mutant at once across the pool. A mutant no property ran is uncovered; a
- * mutant the run's judgments call equivalent is neither typed nor run. Before any mutant, a judgment of a file the run
- * mutates must name one of its current mutants, the coverage pass refuses a property red with no mutant, and each
- * file's probe must go red against every property that ran the file. The verdicts are in the files' and their mutants'
- * order.
+ * through TypeScript 7's native compiler in one session that ends before any trial starts (a mutant with a type error
+ * is invalid and runs nowhere), and each valid one run against the properties whose witnesses ran its place (the
+ * coverage map), in order until one goes red, each mutant on workers of its own and every mutant at once across the
+ * pool. A mutant no property ran is uncovered; a mutant the run's judgments call equivalent is neither typed nor run.
+ * Before any mutant, a judgment of a file the run mutates must name one of its current mutants, the coverage pass
+ * refuses a property red with no mutant, and each file's probe must go red against every property that ran the file.
+ * The verdicts are in the files' and their mutants' order.
  */
 export const mutationOf = <E, O extends string>(
 	pool: MutantPool<E>,
@@ -327,23 +327,26 @@ export const mutationOf = <E, O extends string>(
 			Arr.map(sources, (source) => source.target)
 		)
 		yield* probed(pool, run.witnesses, images, map, sources)
-		const mistyped = yield* typecheckerOf(run.pkg)
-		const plans = yield* Effect.forEach(chosen, ({ source, mutant }) => {
-			const why = equivalentWhy.get(judgedKey(source.file, mutant.id))
-			if (why !== undefined) {
-				return Effect.succeed<Plan>({ kind: "equivalent", why })
-			}
-			const mutated: MutatedFile = { target: source.target, text: applied(mutant) }
-			return Effect.map(mistyped(mutated), (invalid): Plan => {
-				const covering = map.covering(source.target, mutant.start)
-				if (invalid) {
-					return { kind: "invalid" }
-				}
-				return Arr.isReadonlyArrayNonEmpty(covering)
-					? { kind: "trial", mutated, covering }
-					: { kind: "uncovered" }
-			})
-		})
+		const plans = yield* Effect.scoped(
+			Effect.flatMap(typecheckerOf(run.pkg), (mistyped) =>
+				Effect.forEach(chosen, ({ source, mutant }) => {
+					const why = equivalentWhy.get(judgedKey(source.file, mutant.id))
+					if (why !== undefined) {
+						return Effect.succeed<Plan>({ kind: "equivalent", why })
+					}
+					const mutated: MutatedFile = { target: source.target, text: applied(mutant) }
+					return Effect.map(mistyped(mutated), (invalid): Plan => {
+						const covering = map.covering(source.target, mutant.start)
+						if (invalid) {
+							return { kind: "invalid" }
+						}
+						return Arr.isReadonlyArrayNonEmpty(covering)
+							? { kind: "trial", mutated, covering }
+							: { kind: "uncovered" }
+					})
+				})
+			)
+		)
 		const planned = Arr.map(
 			Arr.zip(chosen, plans),
 			(
