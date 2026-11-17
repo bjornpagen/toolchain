@@ -194,7 +194,10 @@ SELECT ((SELECT datacl::text FROM pg_catalog.pg_database WHERE datname = $1::nam
 		IS NOT DISTINCT FROM (SELECT datacl::text FROM pg_catalog.pg_database WHERE datname = $2::name)
 	AND (SELECT settings FROM s WHERE datname = $1::name) = (SELECT settings FROM s WHERE datname = $2::name))::text`
 
-/** The replay of `template`'s privileges and settings, read on `session`. */
+/**
+ * The replay of a template's privileges and settings, read on the owner's session: for its clones, and for a template
+ * built from it.
+ */
 const replayOf = (owner: Owner, template: DatabaseName): Effect.Effect<Replay, NeedFailed> =>
 	Effect.gen(function* () {
 		const [acl, settings, unset] = yield* Effect.all([
@@ -305,7 +308,11 @@ export const identify = (
  * digest, in the owner's database, on a session of its own: the one gate, so concurrent builders of one template on one
  * member, in any worker of any run, build it once and the rest find it built once the lock is theirs. Holding the lock,
  * a database of the name that is not a built template is a builder's that ended mid-build, and is dropped. The build
- * copies the origin (built first, the same way), runs the template's build on it in a scope of its own, whose close
+ * copies the origin (built first, the same way), gives a copy of a template the template's settings and privileges,
+ * which CREATE DATABASE does not copy (replayOf, as a clone is given its template's), so a template built from another
+ * keeps what its origin's build set (GZ-PG-RUNTIME: grizzle's installTemplate over its base lost the base's
+ * default_transaction_isolation and deadlock_timeout, and a build that writes failed), runs the template's build on it
+ * in a scope of its own, whose close
  * ends the build's sessions, and marks it a template that refuses connections, which is what built means. A session
  * the build left open fails the first clone, once PostgreSQL's own wait for it ends (CREATE DATABASE refuses a template
  * other sessions use, dbcommands.c CountOtherDBBackends).
@@ -352,6 +359,15 @@ const ensureBuilt = (
 					`COMMENT ON DATABASE ${quoteIdent(name)} IS ${quoteLiteral(canonicalText({ template: template.name, declaredIn: template.declaredIn, closure }))}`,
 					[]
 				)
+				yield* Option.match(identified.origin, {
+					onNone: () => Effect.void,
+					onSome: (origin) =>
+						Effect.flatMap(replayOf(owner, origin.name), (inherited) =>
+							Effect.forEach(inherited(quoteIdent(name)), (statement) => run(gate, statement, []), {
+								discard: true
+							})
+						)
+				})
 				yield* Effect.scoped(template.build({ member, name }))
 				yield* run(gate, `ALTER DATABASE ${quoteIdent(name)} ALLOW_CONNECTIONS false`, [])
 				yield* run(gate, `ALTER DATABASE ${quoteIdent(name)} IS_TEMPLATE true`, [])

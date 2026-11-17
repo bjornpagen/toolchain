@@ -266,6 +266,20 @@ export const marksTemplate = Template.database({
 })
 
 /**
+ * A template built from the marks template (its origin, not the cluster's base), whose identity is `token`, unique to
+ * the case that declares it, so the case builds it: one table more, and nothing of the settings or privileges its
+ * origin's build gave its database, which it must keep.
+ */
+export const derivedMarksTemplate = (token: string) =>
+	Template.database({
+		declaredIn: import.meta,
+		name: `derived marks ${token}`,
+		content: { token },
+		from: marksTemplate,
+		build: building(["CREATE TABLE public.derived (value int4 NOT NULL)"])
+	})
+
+/**
  * The statements of the seat template: items with an identity, which the seat's reset truncates, and a ledger it does
  * not, holding one seed row, and a sequence of its own advanced once.
  */

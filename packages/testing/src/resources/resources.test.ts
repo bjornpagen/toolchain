@@ -20,13 +20,14 @@ import {
 import { assertTrue, deepStrictEqual, strictEqual } from "#assert.ts"
 import { array, boolean, int } from "#gen.ts"
 import { property } from "#property.ts"
-import { PgCluster, single } from "#resources/cluster.ts"
+import { PgCluster, run as runIn, single } from "#resources/cluster.ts"
 import { collect } from "#resources/collect.ts"
 import { Database } from "#resources/database.ts"
 import {
 	countedConnections,
 	dropTemplate,
 	exists,
+	derivedMarksTemplate,
 	inDatabase,
 	marksTemplate,
 	ownCluster,
@@ -124,6 +125,69 @@ export const freshIsolation = property.explore(array(int(-5, 5), { min: 0, max: 
 			original: "return { member, name: made, template: name }",
 			replacement: "return { member, name: made, template: made }",
 			why: "A clone names itself as its template, so what a template's build made outside the database (roles named from its digest) cannot be found from a clone; the property fails."
+		}
+	]
+})
+
+export const derivedKeepsItsOrigin = property.explore(int(0, 3), {
+	needs: { services },
+	situations: [],
+	check:
+		({ services: context }) =>
+		() =>
+			Effect.gen(function* () {
+				const ctx = yield* context
+				const seen = yield* Effect.provideContext(
+					Effect.gen(function* () {
+						const cluster = yield* PgCluster
+						const member = yield* Effect.map(cluster.members, Arr.headNonEmpty)
+						const token = yield* Effect.scoped(
+							Effect.flatMap(cluster.connect(member, cluster.maintenance), (session) =>
+								single(session, "SELECT pg_catalog.gen_random_uuid()::text", [])
+							)
+						)
+						const template = derivedMarksTemplate(token ?? "")
+						const read = yield* Effect.scoped(
+							Effect.gen(function* () {
+								const opened = yield* template.open
+								const clone = yield* opened.clone
+								const session = yield* cluster.connect(clone.member, clone.name)
+								const settings = yield* runIn(
+									session,
+									"SELECT pg_catalog.current_setting('default_transaction_isolation'), pg_catalog.current_setting('search_path'), pg_catalog.has_database_privilege('pg_monitor', pg_catalog.current_database(), 'TEMPORARY')::text, pg_catalog.has_database_privilege('public', pg_catalog.current_database(), 'TEMPORARY')::text",
+									[]
+								)
+								const tables = yield* single(
+									session,
+									"SELECT pg_catalog.count(*)::text FROM pg_catalog.pg_tables WHERE schemaname = 'public' AND tablename IN ('marks', 'derived')",
+									[]
+								)
+								return { settings, tables, template: clone.template }
+							})
+						)
+						yield* dropTemplate({ member, name: read.template })
+						return { settings: read.settings, tables: read.tables }
+					}),
+					ctx
+				)
+				deepStrictEqual(seen, {
+					settings: [["serializable", '"$user", public, pg_catalog', "true", "false"]],
+					tables: "2"
+				})
+			}),
+	oracle: {
+		kind: "specification",
+		name: "a template built from another keeps its origin's database settings and privileges, which CREATE DATABASE does not copy, and so does every clone of it"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/resources/template.ts",
+			original:
+				"\t\t\t\t\tonSome: (origin) =>\n\t\t\t\t\t\tEffect.flatMap(replayOf(owner, origin.name), (inherited) =>",
+			replacement:
+				"\t\t\t\t\tonSome: (origin) =>\n\t\t\t\t\t\tEffect.flatMap(replayOf(owner, origin.name), () =>",
+			why: "A template built from another is copied without its origin's settings and privileges, as before: grizzle's installTemplate over its base lost default_transaction_isolation and deadlock_timeout, and a build that writes failed (GZ-PG-RUNTIME); this property fails."
 		}
 	]
 })
