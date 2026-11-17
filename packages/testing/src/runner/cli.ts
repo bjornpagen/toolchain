@@ -171,7 +171,7 @@ const replay = (args: ReadonlyArray<string>) =>
  * A command: its arguments in, its exit status out (0 passed, 1 found something), every failure of its own a
  * CommandFailed, which prints and exits 2. It runs in the package root with the platform's services.
  */
-export type Command = (
+type Command = (
 	args: ReadonlyArray<string>
 ) => Effect.Effect<number, CommandFailed, NodeServices.NodeServices>
 

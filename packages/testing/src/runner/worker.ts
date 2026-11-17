@@ -45,7 +45,7 @@ import { startProcessCoverage } from "#sense.ts"
  * ended), after the units of it sent before, the needs no other property readied here uses are released. When its run guides a search by blocks, it starts
  * V8's precise coverage before it loads any module.
  *
- *   node runner/worker.ts <package root> <index> <workers> <notes | blocks>
+ *   node runner/worker-entry.ts <package root> <index> <workers> <notes | blocks>
  */
 
 /** One unit the parent sent: its id, and the batch it evaluates. */

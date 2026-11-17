@@ -239,8 +239,9 @@ type Weighing = Readonly<{
 const runnerRootsOf = (repository: string) =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem
-		const entries = yield* Effect.forEach([`${import.meta.dirname}/cli.ts`, WORKER_ENTRY], (file) =>
-			fs.realPath(file)
+		const entries = yield* Effect.forEach(
+			[`${import.meta.dirname}/cli-entry.ts`, WORKER_ENTRY],
+			(file) => fs.realPath(file)
 		)
 		const own = Arr.every(
 			entries,

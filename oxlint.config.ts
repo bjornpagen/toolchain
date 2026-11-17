@@ -139,6 +139,34 @@ export default defineConfig(
 				})
 			},
 			{
+				files: [
+					"packages/testing/src/runner/cli-entry.ts",
+					"packages/testing/src/runner/worker-entry.ts"
+				],
+				rules: active({
+					/** A runner process's entries, which load the process's own modules only once the resolutions their loads
+					 * read are installed (runner/resolutions.ts): a static import would resolve them first (CORE-3, 2026-11-17). */
+					"devtools/no-dynamic-imports": "off"
+				})
+			},
+			{
+				files: ["packages/testing/src/runner/resolutions.fixtures.ts"],
+				rules: active({
+					/** The resolutions property's program, which loads a module graph the property writes at run time, after it
+					 * installs the resolutions it was handed (CORE-3, 2026-11-17). */
+					"devtools/no-dynamic-imports": "off"
+				})
+			},
+			{
+				files: ["packages/testing/src/runner/resolutions.ts"],
+				rules: active({
+					/** A process's resolutions, which Node's resolve hook reads for every module the process loads: the
+					 * process's own by Node's design, as its module cache is, and filled before any runtime exists to hold a Ref
+					 * (CORE-3, 2026-11-17). */
+					"devtools/no-module-state": "off"
+				})
+			},
+			{
 				files: ["packages/testing/src/runner/load.ts"],
 				rules: active({
 					/** The runner's one load of a package's test.config.ts and test modules, whose paths it learns only at run

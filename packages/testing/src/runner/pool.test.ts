@@ -125,8 +125,8 @@ export const workersLeaveNoChild = property.exhaust(finite(leavings), {
 		},
 		{
 			file: "packages/testing/src/runner/pool.ts",
-			original: '\t\t\t\tstdio: ["ignore", "pipe", "pipe", "ipc", "pipe"],\n\t\t\t\tdetached: true',
-			replacement: '\t\t\t\tstdio: ["ignore", "pipe", "pipe", "ipc", "pipe"]',
+			original: '\t\t\t\tstdio: ["pipe", "pipe", "pipe", "ipc", "pipe"],\n\t\t\t\tdetached: true',
+			replacement: '\t\t\t\tstdio: ["pipe", "pipe", "pipe", "ipc", "pipe"]',
 			why: "A worker is forked into the run's own process group, so it leads none, and ending its group ends nothing of it: its children run on; this property fails."
 		}
 	]

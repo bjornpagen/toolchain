@@ -75,8 +75,8 @@ export type RunRequest = Readonly<{
 	selected: ReadonlyArray<string>
 }>
 
-/** The worker's entry module, beside this one. */
-export const WORKER_ENTRY = `${import.meta.dirname}/worker.ts`
+/** The worker's entry module, beside this one (runner/worker-entry.ts, which runs runner/worker.ts). */
+export const WORKER_ENTRY = `${import.meta.dirname}/worker-entry.ts`
 
 /**
  * Which workers a run's cases go to: its stack, and whether they start V8's precise coverage before loading any module

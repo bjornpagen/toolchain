@@ -35,6 +35,7 @@ import {
 	type Work,
 	workOf
 } from "#runner/protocol.ts"
+import { resolutionsPayload } from "#runner/resolutions.ts"
 import {
 	afterFinished,
 	afterQueued,
@@ -308,6 +309,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 		const compiling = yield* Effect.mapError(compilingOf(spec), (missing) =>
 			PoolFailed.make({ message: `the compile cache has no directory: ${missing.message}` })
 		)
+		const resolutions = resolutionsPayload()
 		const workers: Array<Worker> = []
 		const counts: Array<number> = Array.from({ length: most }, () => 0)
 		const lateUses = new Map<number, Map<number, Printed>>()
@@ -513,9 +515,11 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 				cwd: spec.cwd,
 				env: { ...inherited, ...spec.env, ...compiling },
 				serialization: "advanced",
-				stdio: ["ignore", "pipe", "pipe", "ipc", "pipe"],
+				stdio: ["pipe", "pipe", "pipe", "ipc", "pipe"],
 				detached: true
 			})
+			child.stdin?.on("error", () => undefined)
+			child.stdin?.end(resolutions)
 			const worker: Worker = {
 				index,
 				child,

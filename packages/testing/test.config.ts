@@ -33,6 +33,7 @@ export default defineRunner({
 		"src/runner/case.test.ts",
 		"src/runner/pool.test.ts",
 		"src/runner/launcher.test.ts",
+		"src/runner/resolutions.test.ts",
 		"src/runner/schedule.test.ts",
 		"src/runner/steer.test.ts",
 		"src/mutate/*.test.ts",
