@@ -212,7 +212,9 @@ indexed() {
 }
 
 # enter <snapshot> <commit>: the snapshot is a checkout of <commit>, its dependencies are installed, and the shell is in
-# it.
+# it. The install reads pnpm's store and metadata cache and fetches only what they lack (--prefer-offline): under pnpm's
+# supply-chain policy a changed lockfile has every package's metadata checked again, and --offline failed
+# (ERR_PNPM_NO_OFFLINE_META) whenever the metadata cache lacked one of them.
 enter() {
 	unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
 	collect
@@ -220,7 +222,7 @@ enter() {
 	fill "$git_dir" "$2" "$cache/$1" "$cache/$1.git" "$root"
 	export TURBO_CACHE_DIR="${TURBO_CACHE_DIR:-$root/.turbo/cache}"
 	cd "$cache/$1"
-	pnpm install --frozen-lockfile --offline --reporter=silent
+	pnpm install --frozen-lockfile --prefer-offline --reporter=silent
 }
 
 # started <name> <command> [arguments]: runs the command in the background, its output kept for report.

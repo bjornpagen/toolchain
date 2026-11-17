@@ -132,8 +132,8 @@ working tree, so lanes that share one checkout never fail or pass each other's w
   is below) that git keeps in
   step with an index of its own (`read-tree --reset -u`): a run rewrites only the files that changed, deletes the ones
   that went, and keeps what `.gitignore` names (node_modules, the build info, the tools' caches), so the install and
-  the incremental typecheck stay warm. It installs with `pnpm install --frozen-lockfile --offline`, so a lockfile
-  change must be installed in the working tree first, which fills the store.
+  the incremental typecheck stay warm. It installs with `pnpm install --frozen-lockfile --prefer-offline`, from
+  pnpm's store and metadata cache, fetching only what they lack (the cache layout below).
 - git leaves a submodule's gitlink an empty directory; the gate fills each from the submodule's own repository at the
   commit the snapshot records, and leaves a submodule the working tree never checked out empty, as it is there.
 - The commit gate and the push gate keep separate snapshots, so a commit, which holds `.git/index.lock` for its whole
@@ -156,6 +156,12 @@ first 12 hex digits of the git hash of the repository's identity, its origin rem
 absolute common git directory. Every clone of one repository (grizzle's lanes clone it under
 `~/.cache/grizzle-release/<LANE>/`) shares one commit snapshot and one push snapshot and takes turns under the lock, so
 a clone's first run is warm: the install and the typecheck's build info are already there.
+
+A snapshot's install reads pnpm's own caches, the store and the package metadata, which every clone and snapshot on the
+machine shares, and fetches only what they lack (`--prefer-offline`), never `--offline`: under pnpm 12's supply-chain
+policy (`minimumReleaseAge`, the trust policy) any lockfile change has pnpm check the metadata of its packages again, so
+an offline install failed with `ERR_PNPM_NO_OFFLINE_META` whenever the metadata cache lacked one of them, until someone
+installed in the snapshot online by hand.
 
 | Path under `<key>/`        | What it is                                                                                                                 |
 | -------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
