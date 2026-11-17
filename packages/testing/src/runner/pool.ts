@@ -113,19 +113,37 @@ const OUTPUT_TAIL = 16_384
 const uncounted = "the pool gave back no answer for a count it was sent"
 
 /**
+ * Where a pool's workers stand among the processes that run at once: the place of each worker the pool may fork, by its
+ * index in the pool (one place a worker, so how many workers it may have), and how many places there are. A worker
+ * reports its place as its WorkerIndex, which a repository's services read (grizzle's: worker i of a run takes its
+ * lease on member i mod K of the cluster family), so workers that run at once take distinct places: a run's pool holds
+ * every place, and each lease of the mutator's pool holds places no other lease holds.
+ */
+export type Places = Readonly<{ at: Arr.NonEmptyReadonlyArray<number>; of: number }>
+
+/** Every place of `workers` processes, a pool's own, the first worker at the first. */
+export const placesOf = (workers: number): Places => ({
+	at: Arr.prepend(
+		Array.from({ length: Math.max(0, workers - 1) }, (_, place) => place + 1),
+		0
+	),
+	of: Math.max(1, workers)
+})
+
+/**
  * What the pool's workers start from: the worker's entry module, the package root its test modules load from, the
- * directory it runs in, its Node flags and what its environment adds to this process's; how many workers (one a core
- * for a run); and whether any search guides by blocks (each worker then starts V8's coverage before it loads a module).
- * A worker the parent kills is forked again from the same spec. `open` is the run's open bound: within it and the
- * silence grace a worker must be ready (its runner config loaded, its services declared), or it is ended as one that
- * cannot start.
+ * directory it runs in, its Node flags and what its environment adds to this process's; the places its workers take
+ * (one a core for a run); and whether any search guides by blocks (each worker then starts V8's coverage before it
+ * loads a module). A worker the parent kills is forked again from the same spec, in the same place. `open` is the run's
+ * open bound: within it and the silence grace a worker must be ready (its runner config loaded, its services
+ * declared), or it is ended as one that cannot start.
  */
 export type PoolSpec = Readonly<{
 	entry: string
 	root: string
 	cwd: string
 	env: Readonly<Record<string, string>>
-	workers: number
+	places: Places
 	execArgv: ReadonlyArray<string>
 	guide: "notes" | "blocks"
 	open: number
@@ -253,13 +271,14 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 		const scope = yield* Scope.Scope
 		const closures = yield* moduleClosureAt(spec.root)
 		const events = yield* Queue.unbounded<Event>()
-		const scheduler = schedulerOf<Unit>(spec.workers)
+		const most = spec.places.at.length
+		const scheduler = schedulerOf<Unit>(most)
 		let now = yield* liveMillis
 		const compiling = yield* Effect.mapError(compilingOf(spec), (missing) =>
 			PoolFailed.make({ message: `the compile cache has no directory: ${missing.message}` })
 		)
 		const workers: Array<Worker> = []
-		const counts: Array<number> = Array.from({ length: spec.workers }, () => 0)
+		const counts: Array<number> = Array.from({ length: most }, () => 0)
 		const lateUses = new Map<number, Map<number, Printed>>()
 		const properties = new Map<string, PropertyUsage>()
 		const processes: Array<Worker["usage"]> = []
@@ -396,7 +415,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 			const forks = forksOf(scheduler, view, {
 				idling: Arr.filter(workers, idle).length,
 				starting: Arr.filter(workers, (worker) => !worker.ready).length,
-				most: spec.workers,
+				most,
 				started: starts.count === 0 ? Option.none() : Option.some(starts.millis / starts.count)
 			})
 			for (let more = forks; more > 0; more -= 1) {
@@ -449,7 +468,13 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 		const spawn = (index: number): Worker => {
 			const child = childProcesses.fork(
 				spec.entry,
-				[spec.root, String(index), String(spec.workers), spec.guide, String(process.pid)],
+				[
+					spec.root,
+					String(Arr.get(spec.places.at, index).pipe(Option.getOrElse(() => index))),
+					String(spec.places.of),
+					spec.guide,
+					String(process.pid)
+				],
 				{
 					cwd: spec.cwd,
 					env: { ...inherited, ...spec.env, ...compiling },
@@ -843,7 +868,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 						})
 				),
 			width: Effect.sync(() => Math.max(1, Arr.filter(workers, idle).length - scheduler.queued())),
-			workers: spec.workers
+			workers: most
 		}
 		return {
 			evaluator,

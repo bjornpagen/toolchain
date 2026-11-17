@@ -2,7 +2,7 @@ import { Array as Arr, Console, Duration, Effect, Random, Schema } from "effect"
 import { budgetOf, type FuzzBudget, FuzzTime } from "#fuzz.ts"
 import { liveMillis } from "#live.ts"
 import { runnerLimits } from "#runner/limits.ts"
-import { poolOf } from "#runner/pool.ts"
+import { placesOf, poolOf } from "#runner/pool.ts"
 import type { Verdict } from "#runner/protocol.ts"
 import { failureLines, lineOf } from "#runner/report.ts"
 import { loadPackage, WORKER_ENTRY } from "#runner/run.ts"
@@ -77,7 +77,7 @@ export const fuzz = (root: string, args: ReadonlyArray<string>) =>
 				root,
 				cwd: root,
 				env: {},
-				workers: testWorkers,
+				places: placesOf(testWorkers),
 				execArgv: process.execArgv,
 				guide: Arr.some(sampled, (found) => found.property.guide.kind === "blocks")
 					? "blocks"

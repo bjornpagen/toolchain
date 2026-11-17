@@ -13,11 +13,12 @@
 import { Array as Arr, Effect, FileSystem, Option, String as Str } from "effect"
 import { deepStrictEqual } from "#assert.ts"
 import { countWithin } from "#enumerate.ts"
-import { boolean, finite } from "#gen.ts"
+import { array, boolean, finite, int } from "#gen.ts"
 import { WATCHDOG_GRACE_MILLIS } from "#live.ts"
 import { Checkout } from "#mutate/checkout.ts"
 import { property } from "#property.ts"
 import { Scratch } from "#resources/scratch.ts"
+import { placesLeased } from "#runner/lease.ts"
 import { runnerLimits } from "#runner/limits.ts"
 import { heldProgram, orphansProgram } from "#runner/orphans.fixtures.ts"
 import {
@@ -25,6 +26,7 @@ import {
 	countsEvery,
 	CHILD_FILE,
 	countedValues,
+	placedCase,
 	RELEASED,
 	releasingRoot,
 	DIED_OPENING,
@@ -38,7 +40,7 @@ import {
 	silencing,
 	unreadyRoot
 } from "#runner/pool.fixtures.ts"
-import { poolOf } from "#runner/pool.ts"
+import { placesOf, poolOf } from "#runner/pool.ts"
 import { runPackage, WORKER_ENTRY } from "#runner/run.ts"
 
 export const workersLeaveNoChild = property.exhaust(finite(leavings), {
@@ -59,7 +61,7 @@ export const workersLeaveNoChild = property.exhaust(finite(leavings), {
 							root,
 							cwd: root,
 							env: { [CHILD_FILE]: file },
-							workers: 1,
+							places: placesOf(1),
 							execArgv: process.execArgv,
 							guide: "notes",
 							open: runnerLimits.open
@@ -144,7 +146,7 @@ export const loadsNever = property.exhaust(finite(boolean), {
 							root,
 							cwd: root,
 							env: {},
-							workers: 1,
+							places: placesOf(1),
 							execArgv: process.execArgv,
 							guide: "notes",
 							open: runnerLimits.open
@@ -194,7 +196,7 @@ export const silentBeforeReadying = property.exhaust(finite(boolean), {
 							root,
 							cwd: root,
 							env: {},
-							workers: 1,
+							places: placesOf(1),
 							execArgv: process.execArgv,
 							guide: "notes",
 							open: runnerLimits.open
@@ -247,7 +249,7 @@ export const countedOnAWorker = property.exhaust(finite(countsEvery), {
 							root,
 							cwd: root,
 							env: {},
-							workers: 1,
+							places: placesOf(1),
 							execArgv: process.execArgv,
 							guide: "notes",
 							open: runnerLimits.open
@@ -316,7 +318,7 @@ export const openDiesUnopened = property.exhaust(finite(boolean), {
 							root,
 							cwd: root,
 							env: {},
-							workers: 1,
+							places: placesOf(1),
 							execArgv: process.execArgv,
 							guide: "notes",
 							open: runnerLimits.open
@@ -396,6 +398,126 @@ export const closedOnReturn = property.exhaust(finite(boolean), {
 	]
 })
 
+export const workersTakeTheirPlaces = property.exhaust(
+	finite((source) => {
+		const of = source.draw(int(2, 8))
+		return { at: source.draw(int(1, of - 1)), of }
+	}),
+	{
+		box: "a place past the first among two to eight",
+		needs: { checkout: Checkout.dir },
+		situations: [],
+		check:
+			({ checkout }) =>
+			({ at, of }) =>
+				Effect.gen(function* () {
+					const root = yield* checkout
+					const results = yield* Effect.scoped(
+						Effect.flatMap(
+							poolOf({
+								entry: WORKER_ENTRY,
+								root,
+								cwd: root,
+								env: {},
+								places: { at: [at], of },
+								execArgv: process.execArgv,
+								guide: "notes",
+								open: runnerLimits.open
+							}),
+							(pool) =>
+								pool.evaluator.evaluate(
+									[placedCase(at, of, runnerLimits.deadline, runnerLimits.open)],
+									() => false
+								)
+						)
+					)
+					deepStrictEqual(
+						Arr.map(Arr.flatten(results), (result) => result.outcome.kind),
+						["passed"]
+					)
+				}),
+		oracle: {
+			kind: "specification",
+			name: "a pool's worker reports the place its pool gives it, among as many places as the pool says there are"
+		},
+		kept: [],
+		kills: [
+			{
+				file: "packages/testing/src/runner/pool.ts",
+				original: "String(Arr.get(spec.places.at, index).pipe(Option.getOrElse(() => index)))",
+				replacement: "String(index)",
+				why: "A worker reports its index in its own pool as its place, as before: every lease's workers report place 0 and take their leases on one member of the family (GZ-NETWORK: kill trials waiting 300 s at substrate_lease_gate); this property fails."
+			}
+		]
+	}
+)
+
+export const leasesTakeDistinctPlaces = property.explore(
+	(source) => {
+		const width = source.draw(int(1, 8))
+		return { width, leases: source.draw(array(int(1, width), { min: 1, max: 12 })) }
+	},
+	{
+		needs: {},
+		situations: ["more places asked at once than the width holds", "all at once within the width"],
+		check:
+			(_resources, c) =>
+			({ width, leases }) =>
+				Effect.gen(function* () {
+					c.note(
+						Arr.reduce(leases, 0, (sum, workers) => sum + workers) > width
+							? "more places asked at once than the width holds"
+							: "all at once within the width"
+					)
+					const { placesFor } = placesLeased(width)
+					const held = new Set<number>()
+					const clashes: Array<number> = []
+					let most = 0
+					yield* Effect.forEach(
+						leases,
+						(workers) =>
+							Effect.scoped(
+								Effect.gen(function* () {
+									const taken = yield* placesFor(workers)
+									for (const place of taken) {
+										if (held.has(place) || place < 0 || place >= width) {
+											clashes.push(place)
+										}
+										held.add(place)
+									}
+									most = Math.max(most, held.size)
+									yield* Effect.yieldNow
+									for (const place of taken) {
+										held.delete(place)
+									}
+								})
+							),
+						{ concurrency: "unbounded", discard: true }
+					)
+					deepStrictEqual({ clashes, within: most <= width }, { clashes: [], within: true })
+				}),
+		oracle: {
+			kind: "specification",
+			name: "the places leases hold at once are distinct and within the pool's width, a lease waiting while too few are free"
+		},
+		kept: [],
+		kills: [
+			{
+				file: "packages/testing/src/runner/lease.ts",
+				original: "\t\t\t\t\t\tEffect.sync(() => free.splice(0, workers)),",
+				replacement: "\t\t\t\t\t\tEffect.sync(() => free.slice(0, workers)),",
+				why: "A lease takes the first free places without taking them out, so leases open at once share places, as every lease's place 0 did before; this property fails."
+			},
+			{
+				file: "packages/testing/src/runner/lease.ts",
+				original: "\t\t\t\tEffect.andThen(leasing.take(workers), () =>",
+				replacement: "\t\t\t\tEffect.andThen(Effect.void, () =>",
+				why: "A lease takes its places without waiting for them to be free, so more workers are leased at once than the width holds; this property fails."
+			}
+		]
+	}
+)
+
 export const startsNever = property.exhaust(finite(boolean), {
 	box: "a unit of a property with needs and one without",
 	needs: { directory: Scratch.dir },
@@ -413,7 +535,7 @@ export const startsNever = property.exhaust(finite(boolean), {
 							root,
 							cwd: root,
 							env: {},
-							workers: 1,
+							places: placesOf(1),
 							execArgv: process.execArgv,
 							guide: "notes",
 							open: 1000

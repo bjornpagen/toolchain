@@ -21,7 +21,7 @@ import { type RunnerConfig, SMALL_STACK } from "#runner/config.ts"
 import { runnerLimits } from "#runner/limits.ts"
 import { configOf, type Discovered, discover, type LoadFailed, matchedBy } from "#runner/load.ts"
 import { moduleClosureAt } from "#runner/module-closure.ts"
-import { type Pool, PoolFailed, poolOf } from "#runner/pool.ts"
+import { type Pool, PoolFailed, placesOf, poolOf } from "#runner/pool.ts"
 import type { Reach, Verdict } from "#runner/protocol.ts"
 import { ModuleClosure, WorkerIndex } from "#runner/services.ts"
 import { labelOf, runOfLabel, type Stack } from "#runner/stack.ts"
@@ -242,7 +242,7 @@ export const runPackage = (
 					root: request.root,
 					cwd: request.root,
 					env: {},
-					workers: testWorkers,
+					places: placesOf(testWorkers),
 					execArgv: flagsOf(stack),
 					guide,
 					open: runnerLimits.open
@@ -328,7 +328,7 @@ export const replayToken = (
 			root,
 			cwd: root,
 			env: {},
-			workers: 1,
+			places: placesOf(1),
 			execArgv: flagsOf(named.stack),
 			guide: "notes",
 			open: runnerLimits.open

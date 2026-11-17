@@ -4,7 +4,7 @@ import { ChildProcess } from "effect/process"
 import { liveMillis, liveSleep } from "#live.ts"
 import type { CheckoutDir } from "#mutate/checkout.ts"
 import { HARDENED_FLAGS } from "#runner/config.ts"
-import { poolOf } from "#runner/pool.ts"
+import { placesOf, poolOf } from "#runner/pool.ts"
 import { WORKER_ENTRY } from "#runner/run.ts"
 
 /**
@@ -37,7 +37,7 @@ const heldAsProgram = (root: string, pidFile: string) =>
 				root,
 				cwd: root,
 				env: {},
-				workers: 1,
+				places: placesOf(1),
 				execArgv: process.execArgv,
 				guide: "notes",
 				open: 3_600_000

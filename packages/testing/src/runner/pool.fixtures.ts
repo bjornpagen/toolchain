@@ -4,6 +4,7 @@ import { liveMillis, liveSleep } from "#live.ts"
 import { type Need, property } from "#property.ts"
 import { Scratch } from "#resources/scratch.ts"
 import type { Batch } from "#runner/protocol.ts"
+import { WorkerIndex } from "#runner/services.ts"
 
 /**
  * The pool's teardown property (pool.test.ts) runs a planted property on a pool of its own: this module is that
@@ -356,3 +357,58 @@ export const releasingRoot = (directory: string) =>
 		)
 		return directory
 	})
+
+/** The identity of the planted property whose case checks the place its worker reports. */
+const PLACED = "src/runner/pool.fixtures.ts#reportsItsPlace"
+
+/** A need that gives its case the place its worker reports (WorkerIndex), read as the worker opens it. */
+const placeOf: Need<Readonly<{ index: number; workers: number }>> = {
+	key: "pool.fixtures.ts place",
+	open: Effect.map(Effect.service(WorkerIndex), (place) => Effect.succeed(place))
+}
+
+/**
+ * A property planted to check its worker's place: its case's value is the place and the count of places its worker
+ * should report, and it fails when the worker reports another.
+ */
+export const reportsItsPlace = property.exhaust(
+	finite((source) => ({ index: source.draw(int(0, 7)), workers: source.draw(int(1, 8)) })),
+	{
+		box: "a place among up to eight",
+		needs: { place: placeOf },
+		situations: [],
+		check:
+			({ place }) =>
+			(expected) =>
+				Effect.gen(function* () {
+					const reported = yield* place
+					if (reported.index !== expected.index || reported.workers !== expected.workers) {
+						return yield* Effect.fail(
+							`its worker reported place ${reported.index} of ${reported.workers}, not ${expected.index} of ${expected.workers}`
+						)
+					}
+				}),
+		oracle: { kind: "specification", name: "a property planted to check its worker's place" },
+		kept: [],
+		kills: []
+	}
+)
+
+/** The case of the planted place property that expects place `index` of `workers`, at a deadline and open bound. */
+export const placedCase = (
+	index: number,
+	workers: number,
+	deadline: number,
+	open: number
+): Batch => [
+	{
+		property: PLACED,
+		chooser: { kind: "forced", values: Float64Array.of(index, workers - 1) },
+		drawn: { kind: "unsteered" },
+		keep: "nothing",
+		sense: { kind: "notes" },
+		deadline,
+		open,
+		print: "failing"
+	}
+]
