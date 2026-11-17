@@ -1,4 +1,5 @@
-import { NodeRuntime, NodeServices } from "@effect/platform-node"
+import * as NodeRuntime from "@effect/platform-node/NodeRuntime"
+import * as NodeServices from "@effect/platform-node/NodeServices"
 import { Cause, Console, Effect, Inspectable, Layer, Option, Predicate, Schema } from "effect"
 import { DevtoolFailure } from "#shared/devtool.ts"
 import { type Repository, RepositoryLive } from "#shared/repository.ts"

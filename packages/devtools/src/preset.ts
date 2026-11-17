@@ -242,12 +242,27 @@ export type RestrictedImports = Readonly<{
 const EFFECT_METRICS_MESSAGE =
 	"Effect metrics are exported nowhere: put the fact on its span (Effect.annotateCurrentSpan); counts and rates are queries over spans."
 
-/** eslint/no-restricted-imports with a project's lists and the shared relative-import ban. A project's exception
- * block that narrows the lists for some files calls it too, so the relative ban stays on there. */
+/**
+ * `@effect/platform-node`'s index loads every platform module, NodeRedis's client among them, before the importer runs a
+ * line. Measured on Node 26.13.1 (lane SYNC-EOCG, 2026-11-16): a generated CLI's start loaded 1,425 modules through the
+ * index and 625 through its platform modules' own paths, 647 of the difference @redis/client's; a process importing
+ * effect, NodeServices and NodeCrypto took 0.74 s of CPU through the index and 0.35 s through their own paths, with a
+ * warm compile cache (median of 8 runs). Every process that imports it pays that: each test worker, each CLI.
+ */
+const PLATFORM_INDEX_MESSAGE =
+	'Import each platform module from its own path (`import * as NodeServices from "@effect/platform-node/NodeServices"`): the index loads every platform module, its Redis client\'s 647 among them, about 0.39 s of CPU in every process that imports it.'
+
+/** eslint/no-restricted-imports with a project's lists and the shared bans: the relative-import ban, Effect's metrics
+ * and the platform's index. A project's exception block that narrows the lists for some files calls it too, so the
+ * shared bans stay on there. */
 export const restrictedImports = (lists: RestrictedImports): DummyRule => [
 	"error",
 	{
-		paths: [...lists.paths, { name: "effect/Metric", message: EFFECT_METRICS_MESSAGE }],
+		paths: [
+			...lists.paths,
+			{ name: "effect/Metric", message: EFFECT_METRICS_MESSAGE },
+			{ name: "@effect/platform-node", message: PLATFORM_INDEX_MESSAGE }
+		],
 		patterns: [...lists.patterns, RELATIVE_IMPORTS]
 	}
 ]

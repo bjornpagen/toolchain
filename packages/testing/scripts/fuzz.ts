@@ -1,4 +1,5 @@
-import { NodeRuntime, NodeServices } from "@effect/platform-node"
+import * as NodeRuntime from "@effect/platform-node/NodeRuntime"
+import * as NodeServices from "@effect/platform-node/NodeServices"
 import { Effect, Schema, Stdio } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { FuzzTime } from "#fuzz.ts"
