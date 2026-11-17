@@ -1,5 +1,17 @@
-import { Deferred, Effect, Exit, Queue, Record as Rec, Ref, Result, Scope } from "effect"
-import type { Need } from "#property.ts"
+import {
+	Cause,
+	Deferred,
+	Effect,
+	Exit,
+	Option,
+	Queue,
+	Record as Rec,
+	Ref,
+	Result,
+	Scope
+} from "effect"
+import { failureText } from "#failure.ts"
+import type { Need, NeedContext } from "#property.ts"
 import {
 	type DatabaseName,
 	PgCluster,
@@ -450,14 +462,54 @@ const transaction = (template: DatabaseTemplate): DatabaseNeed<Transaction> =>
 	)
 
 /**
- * A case's choice among a closed set of templates: one need per key, each of the form `form` over its template, to
- * spread into a property's needs; a case takes only the one it draws (`yield* resources[key]`), since a case takes a
- * resource the first time its check yields it.
+ * `need` as a choice's member: opened on a process the first time a case there takes it, never when its property is
+ * readied, since a case may never take it. Readying gives only the taker; the first take runs `need`'s open (its
+ * template's build, the clone it holds) once, with the services and in the need's own scope that readying gave it, on a
+ * fiber of its own, so the case that first takes it cannot cut it short and a later take reuses what it opened. Every
+ * take awaits that open: one that fails, or dies (its defect's text the failure's message), fails every take with
+ * NeedFailed, as a need that does not open when readied fails its property once, never a case. Opened when readied,
+ * every member of a choice built its template at once on the worker's one connection lease: grizzle's
+ * test/pg/fin/capacity-table.test.ts, whose nine seat templates are one choice, died LeaseBudgetExhausted while its
+ * needs opened, before any case, though each of its cases takes one (lane LAND-GZ-B, at width 11 under an 8-core quota
+ * and 35 under a 32-core one).
+ */
+const chosen = <A>(need: DatabaseNeed<A>): DatabaseNeed<A> => ({
+	key: need.key,
+	template: need.template,
+	open: Effect.map(Effect.context<NeedContext>(), (context) => {
+		const opened = Deferred.makeUnsafe<Effect.Effect<A, NeedFailed, Scope.Scope>, NeedFailed>()
+		let started = false
+		const open = Effect.catchCauseIf(
+			Effect.provideContext(need.open, context),
+			(cause) => !Cause.hasInterruptsOnly(cause),
+			(cause) =>
+				Effect.fail(
+					Option.getOrElse(Cause.findErrorOption(cause), () =>
+						NeedFailed.make({ need: need.key, message: failureText(cause) })
+					)
+				)
+		)
+		return Effect.suspend(() => {
+			const awaited = Effect.flatten(Deferred.await(opened))
+			if (started) {
+				return awaited
+			}
+			started = true
+			return Effect.andThen(Effect.forkDetach(Deferred.into(open, opened)), awaited)
+		})
+	})
+})
+
+/**
+ * A case's choice among a closed set of templates: one need per key, each of the form `form` over its template and
+ * opened the first time a case takes it (chosen), to spread into a property's needs; a case takes only the one it draws
+ * (`yield* resources[key]`), since a case takes a resource the first time its check yields it, so a process opens only
+ * the members its cases drew.
  */
 const oneOf = <K extends string, A>(
 	templates: Readonly<Record<K, DatabaseTemplate>>,
 	form: (template: DatabaseTemplate) => DatabaseNeed<A>
-): Readonly<Record<K, DatabaseNeed<A>>> => Rec.map(templates, form)
+): Readonly<Record<K, DatabaseNeed<A>>> => Rec.map(templates, (template) => chosen(form(template)))
 
 /**
  * A database a case reaches: the member it lives on, its name there, and the template it was cloned from, by that
@@ -470,5 +522,8 @@ export type Database = Readonly<{ member: PgMember; name: DatabaseName; template
 /** A template's database while its build runs: the member it is built on and its name there (names.ts templateName). */
 export type TemplateDatabase = Readonly<{ member: PgMember; name: DatabaseName }>
 
-/** The database forms a case's needs take: fresh (a clone a case), seat, transaction and oneOf. */
-export const Database = { fresh, seat, transaction, oneOf } as const
+/**
+ * The database forms a case's needs take: fresh (a clone a case), seat, transaction, oneOf, and chosen, the form of a
+ * choice's member that a repository's own choice of needs over templates gives each member.
+ */
+export const Database = { fresh, seat, transaction, oneOf, chosen } as const

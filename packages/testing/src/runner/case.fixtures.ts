@@ -1,7 +1,7 @@
 import { createHook } from "node:async_hooks"
 import type { NodeServices } from "@effect/platform-node/NodeServices"
 import { Array as Arr, Context, Duration, Effect, Option, Record as Rec, Scope } from "effect"
-import { element, finite, type Gen, int, map } from "#gen.ts"
+import { element, finite, type Gen, int, map, subarray } from "#gen.ts"
 import { HUNG_CLEANUP_GRACE, liveSleep } from "#live.ts"
 import {
 	type Case,
@@ -11,6 +11,8 @@ import {
 	property,
 	type Resources
 } from "#property.ts"
+import { Database } from "#resources/database.ts"
+import { type DatabaseTemplate, Template } from "#resources/template.ts"
 import { needCacheOf } from "#runner/case.ts"
 import { runnerLimits } from "#runner/limits.ts"
 import { moduleClosureAt } from "#runner/module-closure.ts"
@@ -580,3 +582,60 @@ export const cycledReleases = (cycles: number, kept: number) =>
 		}
 		return { after, kept: Option.some(others.opens) }
 	})
+
+/** The members of the choice an inner search of `choosing` needs. */
+export const CHOICE_MEMBERS = ["first", "second", "third"] as const
+
+export type ChoiceMember = (typeof CHOICE_MEMBERS)[number]
+
+/** The members every case of a `choosing` search takes: any of them, none among them, all three. */
+export const takenMembers: Gen<ReadonlyArray<ChoiceMember>> = subarray(CHOICE_MEMBERS)
+
+/** A choice member's template: never built, as its need (choosing) counts its open and touches no cluster. */
+const unbuilt = (member: ChoiceMember): DatabaseTemplate =>
+	Template.database({
+		declaredIn: import.meta,
+		name: `choice ${member}`,
+		content: { member },
+		from: Template.cluster,
+		build: () => Effect.void
+	})
+
+/**
+ * An inner search over 0..9 whose property's needs are one choice (resources/database.ts Database.oneOf) over three
+ * templates, each member's need counting its opens under the member's name and taking nothing of a cluster, and whose
+ * every case takes the members `taken` names, each twice; and the opens of each member.
+ */
+export const choosing = (
+	taken: ReadonlyArray<ChoiceMember>
+): Readonly<{ opens: Record<ChoiceMember, number>; property: Property }> => {
+	const opens: Record<ChoiceMember, number> = { first: 0, second: 0, third: 0 }
+	const templates: Readonly<Record<ChoiceMember, DatabaseTemplate>> = {
+		first: unbuilt("first"),
+		second: unbuilt("second"),
+		third: unbuilt("third")
+	}
+	const needs = Database.oneOf(templates, (template) => ({
+		key: `choosing ${template.name}`,
+		template,
+		open: Effect.sync(() => {
+			const member = Arr.findFirst(CHOICE_MEMBERS, (name) => templates[name] === template)
+			if (Option.isSome(member)) {
+				opens[member.value] += 1
+			}
+			return Effect.void
+		})
+	}))
+	return {
+		opens,
+		property: property.explore(int(0, 9), {
+			needs,
+			situations: [],
+			check: (resources) => () =>
+				Effect.forEach([...taken, ...taken], (member) => resources[member], { discard: true }),
+			oracle: planted,
+			kept: [],
+			kills: []
+		})
+	}
+}

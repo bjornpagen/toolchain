@@ -24,17 +24,21 @@
  * - A process holds a need open while a property readied there that uses it has not retired: a retirement releases
  *   exactly the keys no other live property uses, and a released need's scope is closed (what it acquired released)
  *   and opens again when asked.
+ * - A choice's member (resources/database.ts Database.oneOf) opens on a process only when a case there takes it, and
+ *   once however often its cases take it: a member no case takes never opens.
  *
  * Oracles are stated per property.
  */
 import { Array as Arr, Clock, Effect, Option, Order, String as Str } from "effect"
 import { TestClock } from "effect/testing"
 import { deepStrictEqual, strictEqual } from "#assert.ts"
-import { aimed, int } from "#gen.ts"
+import { aimed, finite, int } from "#gen.ts"
 import { property } from "#property.ts"
 import {
 	CASE_NEED_FAILURES,
 	CHECKINGS,
+	CHOICE_MEMBERS,
+	choosing,
 	caseNeedFailures,
 	checkings,
 	cycledReleases,
@@ -59,6 +63,7 @@ import {
 	slowOpens,
 	syncExhaustion,
 	syncProperties,
+	takenMembers,
 	UNOPENED_ENDINGS,
 	unopenedEndings,
 	usingLate
@@ -503,3 +508,45 @@ export const shrinkStopsAtNeed = property.explore(
 		]
 	}
 )
+
+export const choiceOpensWhenTaken = property.exhaust(finite(takenMembers), {
+	box: "every set of a choice's members its cases take: none, each one, each two and all three",
+	needs: {},
+	situations: ["a member no case takes", "a member every case takes"],
+	check: (_resources, c) => (taken) =>
+		Effect.gen(function* () {
+			if (taken.length < CHOICE_MEMBERS.length) {
+				c.note("a member no case takes")
+			}
+			if (taken.length > 0) {
+				c.note("a member every case takes")
+			}
+			const inner = choosing(taken)
+			yield* searchedAt(inner.property, fullRun("choice opens when taken/inner", 0))
+			deepStrictEqual(inner.opens, {
+				first: taken.includes("first") ? 1 : 0,
+				second: taken.includes("second") ? 1 : 0,
+				third: taken.includes("third") ? 1 : 0
+			})
+		}),
+	oracle: {
+		kind: "specification",
+		name: "a choice's member opens once on a process where a case takes it, and never where none does"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/resources/database.ts",
+			original:
+				"): Readonly<Record<K, DatabaseNeed<A>>> => Rec.map(templates, (template) => chosen(form(template)))",
+			replacement: "): Readonly<Record<K, DatabaseNeed<A>>> => Rec.map(templates, form)",
+			why: "A choice's members open all at once when their property is readied, a member no case takes among them, so grizzle's nine-template choice (test/pg/fin/capacity-table.test.ts) builds every template on one lease before any case and dies LeaseBudgetExhausted; the members no case takes open, and this property fails."
+		},
+		{
+			file: "packages/testing/src/resources/database.ts",
+			original: "\t\t\tif (started) {\n\t\t\t\treturn awaited\n\t\t\t}\n",
+			replacement: "",
+			why: "Every take of a choice's member opens it again, so a member a case takes twice holds two clones and builds its template twice; the member's opens count past one, and this property fails."
+		}
+	]
+})
