@@ -1,4 +1,4 @@
-import { Array as Arr, Config, Effect, Option } from "effect"
+import { Array as Arr, Config, Effect, Option, Result, String as Str } from "effect"
 import { defineConfig } from "vitest/config"
 import { HARDENED_FLAGS, SMALL_STACK } from "#runner/config.ts"
 import { type Examples, residualReporter } from "#vitest/reporter.ts"
@@ -28,9 +28,10 @@ const millisOf = (timeout: Timeout) => (timeout.kind === "unbounded" ? 0 : timeo
  * What a package states about its tests: which files they are; which of them steer by V8's block coverage, so their
  * processes count blocks from the start, before the code under test loads; its own global setup files, which run after
  * the library's, beside the run seed; the export conditions its code resolves with; how long a test and a hook may
- * take; and `smallStack`, the files whose suites run a second time under SMALL_STACK, about a sixth of Node's default
- * stack, so a per-element use of the stack (a spread argument, a recursion over a list) fails at the widths ordinary
- * generators reach; and `examples`, whether every test case must run a search, and the files exempt from it, each set
+ * take; and `smallStack`, the files whose suites run under SMALL_STACK, about a sixth of Node's default stack, instead
+ * of on the default stack, so a per-element use of the stack (a spread argument, a recursion over a list) fails at the
+ * widths ordinary generators reach (a case that passes on the small stack passes on the default one, and both draw the
+ * same cases, so a second run on the default stack would only repeat it); and `examples`, whether every test case must run a search, and the files exempt from it, each set
  * with its reason, relative to the Vitest root (the config's directory). A package with none of a list states it empty.
  * The guided and small-stack lists are projects of their own, so each names its files outright: a glob there reaches
  * every file it matches, inside `include` or not.
@@ -61,6 +62,10 @@ export const defineTestConfig = (config: TestConfig) => {
 	const covered = Option.isSome(Effect.runSync(Config.option(Config.String("NODE_V8_COVERAGE"))))
 	const uncoveredSetup = covered ? [SEARCHES_SETUP] : [COMPILE_CACHE_SETUP, SEARCHES_SETUP]
 	const timeoutOf = (timeout: Timeout) => millisOf(fuzzing ? { kind: "unbounded" } : timeout)
+	/** The default project leaves out every file the small-stack project runs: a file runs on exactly one stack. */
+	const smallStackOnly = Arr.filterMap(config.smallStack, (glob) =>
+		Str.startsWith("!")(glob) ? Result.failVoid : Result.succeed(`!${glob}`)
+	)
 	const execArgv = [
 		...HARDENED_FLAGS,
 		...Arr.map(config.conditions, (condition) => `--conditions=${condition}`)
@@ -77,7 +82,7 @@ export const defineTestConfig = (config: TestConfig) => {
 					extends: true,
 					test: {
 						name: "parallel",
-						include: Arr.copy(config.include),
+						include: [...config.include, ...smallStackOnly],
 						exclude: Arr.copy(config.guided),
 						setupFiles: uncoveredSetup
 					}
