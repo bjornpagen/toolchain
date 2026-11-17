@@ -13,6 +13,29 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: a runner config's mutation is loaded by mutate alone (2026-11-17)
+
+`defineRunner`'s `families` is gone: a runner config states `mutation`, a load that only `toolchain-test mutate` calls,
+so the launcher, a run's parent and every worker, which import `test.config.ts`, never import what a repository's
+operator families read (grizzle's import `typescript/ast`, about 30 ms of CPU in every process). What it loads is a
+`Mutation` (`@bjornpagen/testing/runner`): the repository's operator families and the mutants it judged equivalent.
+Before you move `vendor/toolchain` past this section:
+
+1. **No families of your own** (den, eocg, superstarter, edullm, the toolchain's own packages): in each
+   `test.config.ts`, replace `families: []` with `mutation: noMutation`, imported from `@bjornpagen/testing/runner`
+   beside `defineRunner`.
+2. **Families of your own** (grizzle): move them into a module that exports `families` and `equivalent`, and state
+   `mutation: () => import("<that module>")`, which `no-dynamic-imports` takes on its allowed list
+   (`{ file: "test.config.ts", specifier: "<that module>" }` in `oxlint.config.ts`): the runner requires the dynamic
+   import. A module whose top level throws refuses mutate, never a run.
+3. **Equivalent mutants.** `equivalent` lists `{ file, mutant, why }` (mutants.ts `Equivalent`): a mutant a person
+   judged unkillable, by its file (its path from the checkout, as mutate names it) and its id, with the argument. mutate
+   gives it the verdict `equivalent`, no trial, outside the score and the survivors, and refuses to run while an entry
+   names a file the run mutates and an id none of that file's current mutants has (its code moved or changed: judge it
+   again or delete it). A repository with none states `equivalent: []`.
+4. **Reading a run.** mutate's summary counts the equivalent mutants, and a second line counts the mutants of each
+   operator the run chose, so a family operator aimed at code that moved reads 0.
+
 ## Consumer migration: limits retired (2026-11-16)
 
 The limits packages, `@bjornpagen/limit`, the `limits()` pack and its two rules (`no-bare-limit`, `limits-sole-mint`)

@@ -163,6 +163,14 @@ export type Family<O extends string> = Readonly<{
 /** No family: the library's operators alone. */
 export const noFamilies: ReadonlyArray<Family<never>> = []
 
+/**
+ * A mutant a person judged equivalent, by its file (its path from the checkout, as a run names its mutants) and its id:
+ * it changes nothing any caller can observe, so no property can kill it, and `why` is the argument. A mutation run gives
+ * it no trial and leaves it out of its score and its survivors, and refuses to run while an entry names a file the run
+ * mutates and an id none of that file's current mutants has: its code moved or changed, so the judgment is stale.
+ */
+export type Equivalent = Readonly<{ file: string; mutant: string; why: string }>
+
 type LibraryRule = Rule<Operator>
 
 const without = (items: ReadonlyArray<string>, index: number) => Arr.remove(items, index)

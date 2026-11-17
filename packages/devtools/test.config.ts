@@ -1,4 +1,4 @@
-import { defineRunner } from "@bjornpagen/testing/runner"
+import { defineRunner, noMutation } from "@bjornpagen/testing/runner"
 import { Layer } from "effect"
 
 /**
@@ -22,5 +22,5 @@ export default defineRunner({
 	smallStack: [],
 	conditions: [],
 	layer: Layer.empty,
-	families: []
+	mutation: noMutation
 })

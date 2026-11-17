@@ -1,5 +1,5 @@
 import { fixtureServices } from "#resources/resources.fixtures.ts"
-import { defineRunner } from "#runner/config.ts"
+import { defineRunner, noMutation } from "#runner/config.ts"
 
 /**
  * The testing library's runner config: the test modules toolchain-test runs, every property module of the package; no
@@ -43,5 +43,5 @@ export default defineRunner({
 	smallStack: [],
 	conditions: [],
 	layer: fixtureServices,
-	families: []
+	mutation: noMutation
 })

@@ -223,9 +223,9 @@ export const unreadyRoot = (directory: string) =>
 			Arr.join(
 				[
 					`import { Layer } from "${import.meta.resolve("effect")}"`,
-					`import { defineRunner } from "${import.meta.resolve("#runner/config.ts")}"`,
+					`import { defineRunner, noMutation } from "${import.meta.resolve("#runner/config.ts")}"`,
 					`import { withNeeds } from "${import.meta.resolve("#runner/loops.fixtures.ts")}"`,
-					"export default defineRunner({ include: [], smallStack: [], conditions: [], layer: Layer.empty, families: [] })",
+					"export default defineRunner({ include: [], smallStack: [], conditions: [], layer: Layer.empty, mutation: noMutation })",
 					"export const looping = withNeeds",
 					""
 				],
@@ -320,14 +320,14 @@ export const releasingRoot = (directory: string) =>
 			Arr.join(
 				[
 					`import { Effect, Layer } from "${import.meta.resolve("effect")}"`,
-					`import { defineRunner } from "${import.meta.resolve("#runner/config.ts")}"`,
+					`import { defineRunner, noMutation } from "${import.meta.resolve("#runner/config.ts")}"`,
 					'const { writeFileSync } = process.getBuiltinModule("node:fs")',
 					"export default defineRunner({",
 					'\tinclude: ["held.test.ts"],',
 					"\tsmallStack: [],",
 					"\tconditions: [],",
 					`\tlayer: Layer.effectDiscard(Effect.addFinalizer(() => Effect.sync(() => writeFileSync(\`\${import.meta.dirname}/${RELEASED}\${process.pid}\`, "")))),`,
-					"\tfamilies: []",
+					"\tmutation: noMutation",
 					"})",
 					""
 				],

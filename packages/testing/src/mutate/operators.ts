@@ -11,6 +11,7 @@ import {
 } from "effect"
 import {
 	applied,
+	type Equivalent,
 	type Family,
 	type Mutant,
 	type MutationSourceRefused,
@@ -29,8 +30,9 @@ import type { PropertyId } from "#property.ts"
 import { fnv1a32, mix } from "#random.ts"
 
 /**
- * A mutation run refused to measure: a property is red with no mutant, or a file's probe survived a property that ran
- * the file, so its workers never load the mutants the run gives them and every mutant would survive it unseen.
+ * A mutation run refused to measure: an equivalent judgment names a mutant its file no longer has, a property is red
+ * with no mutant, or a file's probe survived a property that ran the file, so its workers never load the mutants the
+ * run gives them and every mutant would survive it unseen.
  */
 export class MutationRefused extends Schema.TaggedError<
 	MutationRefused,
@@ -43,6 +45,7 @@ export type MutantVerdict =
 	| Readonly<{ kind: "survived"; faced: Arr.NonEmptyReadonlyArray<PropertyId> }>
 	| Readonly<{ kind: "invalid" }>
 	| Readonly<{ kind: "uncovered" }>
+	| Readonly<{ kind: "equivalent"; why: string }>
 
 /** One mutant, judged. */
 export type MutantJudged<O extends string> = Readonly<{ mutant: Mutant<O>; verdict: MutantVerdict }>
@@ -58,7 +61,8 @@ export type Choice =
 
 /**
  * What a mutation run measures: `files` (paths from the checkout) by the library's operators and `families`, those of
- * `operators`, as `choice` chooses among them, against `subjects`. `pkg` is the package whose tsconfig types a mutant.
+ * `operators`, as `choice` chooses among them, against `subjects`, but for the mutants `equivalent` judges.
+ * `pkg` is the package whose tsconfig types a mutant.
  */
 export type MutationRun<O extends string> = Readonly<{
 	witnesses: WitnessRun
@@ -67,6 +71,7 @@ export type MutationRun<O extends string> = Readonly<{
 	subjects: Arr.NonEmptyReadonlyArray<Subject>
 	files: Arr.NonEmptyReadonlyArray<string>
 	families: ReadonlyArray<Family<O>>
+	equivalent: ReadonlyArray<Equivalent>
 	operators: ReadonlySet<Operator | O>
 	choice: Choice
 }>
@@ -227,19 +232,42 @@ const chosenOf = <O extends string>(
 	}
 }
 
-/** What a typed mutant goes on to: a trial against the properties that ran its place, or no trial and why. */
+/** What a chosen mutant goes on to: a trial against the properties that ran its place, or no trial and why. */
 type Plan =
 	| Readonly<{ kind: "trial"; mutated: MutatedFile; covering: Arr.NonEmptyReadonlyArray<Subject> }>
 	| Readonly<{ kind: "invalid" }>
 	| Readonly<{ kind: "uncovered" }>
+	| Readonly<{ kind: "equivalent"; why: string }>
+
+/** A mutant's place among the judgments: its file and its id. */
+const judgedKey = (file: string, mutant: string): string => `${file}\u0000${mutant}`
+
+/**
+ * The judgments a run's files hold no mutant for: each names a file the run mutates and an id none of that file's
+ * current mutants has, so its code moved or changed since the judgment. A file the run does not mutate is not read, so
+ * its judgments are not checked.
+ */
+const staleOf = <O extends string>(
+	run: MutationRun<O>,
+	every: ReadonlyArray<Sourced<O>>
+): ReadonlyArray<Equivalent> => {
+	const current = new Set(Arr.map(every, ({ source, mutant }) => judgedKey(source.file, mutant.id)))
+	return Arr.filter(
+		run.equivalent,
+		(entry) =>
+			Arr.contains(run.files, entry.file) && !current.has(judgedKey(entry.file, entry.mutant))
+	)
+}
 
 /**
  * Operator mutation, a measurement: every chosen mutant of the run's files, typed by the package's own tsconfig
  * through TypeScript 7's native compiler (a mutant with a type error is invalid and runs nowhere), and each valid one
  * run against the properties whose witnesses ran its place (the coverage map), in order until one goes red, each
- * mutant on workers of its own and every mutant at once across the pool. A mutant no property ran is uncovered. Before
- * any mutant, the coverage pass refuses a property red with no mutant, and each file's probe must go red against every
- * property that ran the file. The verdicts are in the files' and their mutants' order.
+ * mutant on workers of its own and every mutant at once across the pool. A mutant no property ran is uncovered; a
+ * mutant the run's judgments call equivalent is neither typed nor run. Before any mutant, a judgment of a file the run
+ * mutates must name one of its current mutants, the coverage pass refuses a property red with no mutant, and each
+ * file's probe must go red against every property that ran the file. The verdicts are in the files' and their mutants'
+ * order.
  */
 export const mutationOf = <E, O extends string>(
 	pool: MutantPool<E>,
@@ -273,7 +301,24 @@ export const mutationOf = <E, O extends string>(
 				Arr.map((mutant): Sourced<O> => ({ source, mutant }))
 			)
 		)
-		const chosen = chosenOf(run, Arr.flatten(every))
+		const population = Arr.flatten(every)
+		const stale = staleOf(run, population)
+		if (Arr.isReadonlyArrayNonEmpty(stale)) {
+			return yield* MutationRefused.make({
+				message: Arr.join(
+					Arr.map(
+						stale,
+						(entry) =>
+							`the equivalent mutant ${entry.mutant} of ${entry.file} is none of the file's current mutants: its code moved or changed, so judge it again or delete it (${entry.why})`
+					),
+					"\n"
+				)
+			})
+		}
+		const equivalentWhy = new Map(
+			Arr.map(run.equivalent, (entry) => [judgedKey(entry.file, entry.mutant), entry.why] as const)
+		)
+		const chosen = chosenOf(run, population)
 		const map = yield* coverageOf(
 			pool,
 			run.witnesses,
@@ -284,6 +329,10 @@ export const mutationOf = <E, O extends string>(
 		yield* probed(pool, run.witnesses, images, map, sources)
 		const mistyped = yield* typecheckerOf(run.pkg)
 		const plans = yield* Effect.forEach(chosen, ({ source, mutant }) => {
+			const why = equivalentWhy.get(judgedKey(source.file, mutant.id))
+			if (why !== undefined) {
+				return Effect.succeed<Plan>({ kind: "equivalent", why })
+			}
 			const mutated: MutatedFile = { target: source.target, text: applied(mutant) }
 			return Effect.map(mistyped(mutated), (invalid): Plan => {
 				const covering = map.covering(source.target, mutant.start)

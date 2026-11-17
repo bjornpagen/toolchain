@@ -167,7 +167,7 @@ const filesOf = (layout: Layout): ReadonlyArray<readonly [path: string, text: st
 		],
 		[
 			"test.config.ts",
-			`import { defineRunner } from "@bjornpagen/testing/runner"\nimport { Layer } from "effect"\n\nexport default defineRunner({ include: ["test/*.test.ts"], smallStack: [], conditions: [], layer: Layer.empty, families: [] })\n`
+			`import { defineRunner, noMutation } from "@bjornpagen/testing/runner"\nimport { Layer } from "effect"\n\nexport default defineRunner({ include: ["test/*.test.ts"], smallStack: [], conditions: [], layer: Layer.empty, mutation: noMutation })\n`
 		],
 		[
 			"test/sums.test.ts",

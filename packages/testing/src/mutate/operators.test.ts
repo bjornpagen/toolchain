@@ -3,9 +3,11 @@
  * library's operators, each mutant typed by the package's own tsconfig (the one with a type error invalid), each valid
  * one run against the properties whose coverage pass ran its function, in a process started from the mutant's image:
  * killed by a check that asserts what the function returns, survived when only checks that call it without asserting
- * ran it, uncovered when no check ran it; and the run refuses when a check runs the file in a child process without a
- * worker tree, where the file's probe never reaches. The checks start processes that load the hook (hook.ts), so the
- * property needs Checkout.dir.
+ * ran it, uncovered when no check ran it; a mutant the run's judgments call equivalent is neither typed nor run; and
+ * the run refuses when a check runs the file in a child process without a worker tree, where the file's probe never
+ * reaches, or when a judgment of the mutated file names none of its mutants, while a judgment of a file the run does
+ * not mutate is never read. The checks start processes that load the hook (hook.ts), so the property needs
+ * Checkout.dir.
  */
 import { Array as Arr, Effect, Order, Schema } from "effect"
 import { deepStrictEqual } from "#assert.ts"
@@ -16,7 +18,9 @@ import { imagesOf } from "#mutate/image.ts"
 import {
 	checkGen,
 	checkoutOf,
+	equivalentOf,
 	expectedOf,
+	judgedGen,
 	POPULATION,
 	refusesOf,
 	reportOf,
@@ -32,7 +36,8 @@ import { runnerLimits } from "#runner/limits.ts"
 export const operatorMutation = property.explore(
 	(source): Run => ({
 		checks: Arr.prepend(source.draw(array(checkGen, { min: 0, max: 1 })), source.draw(checkGen)),
-		loading: source.draw(element(["in-process", "tree"]))
+		loading: source.draw(element(["in-process", "tree"])),
+		judged: source.draw(judgedGen)
 	}),
 	{
 		needs: { checkout: Checkout.dir },
@@ -43,7 +48,10 @@ export const operatorMutation = property.explore(
 			"invalid",
 			"refused",
 			"a child in a tree",
-			"tree"
+			"tree",
+			"equivalent",
+			"a stale judgment refused",
+			"another file's judgment unread"
 		],
 		check: (_resources, c) => (run) =>
 			Effect.gen(function* () {
@@ -57,6 +65,7 @@ export const operatorMutation = property.explore(
 				const pool = yield* processPool
 				const trees = yield* treesOf(checkout)
 				const images = yield* imagesOf(checkout, trees)
+				const equivalent = yield* equivalentOf(run.judged)
 				const subjects = Arr.map(run.checks, (_, index): Subject => ({
 					id: PropertyId(`check${String(index)}`),
 					property: checkProperty([]),
@@ -70,6 +79,7 @@ export const operatorMutation = property.explore(
 						subjects,
 						files: ["src/f.ts"],
 						families: noFamilies,
+						equivalent,
 						operators: new Set(OPERATORS),
 						choice: { kind: "every" }
 					})
@@ -77,6 +87,9 @@ export const operatorMutation = property.explore(
 				const refuses = refusesOf(run)
 				if (measured._tag === "Failure") {
 					c.note("refused")
+					if (run.judged.stale === "this file") {
+						c.note("a stale judgment refused")
+					}
 					deepStrictEqual(
 						{ refused: Schema.is(MutationRefused)(measured.failure), expected: refuses },
 						{ refused: true, expected: true }
@@ -85,6 +98,9 @@ export const operatorMutation = property.explore(
 				}
 				const judged = measured.success
 				c.noteAll(Arr.map(judged, ({ verdict }) => verdict.kind))
+				if (run.judged.stale === "another file") {
+					c.note("another file's judgment unread")
+				}
 				deepStrictEqual(
 					{
 						refused: false,
@@ -103,7 +119,7 @@ export const operatorMutation = property.explore(
 			}),
 		oracle: {
 			kind: "specification",
-			name: "invalid when mistyped, uncovered when no check calls its function, killed when a strict one does, survived otherwise; refused when a check runs the file in a child without a tree"
+			name: "equivalent when judged so, else invalid when mistyped, uncovered when no check calls its function, killed when a strict one does, survived otherwise; refused when a check runs the file in a child without a tree or a judgment of the file names none of its mutants"
 		},
 		kept: [],
 		kills: [
@@ -118,6 +134,25 @@ export const operatorMutation = property.explore(
 				original: "yield* probed(pool, run.witnesses, images, map, sources)",
 				replacement: "yield* Effect.void",
 				why: "The probes are skipped, so a check that runs the file in a child process without a tree is never refused."
+			},
+			{
+				file: "packages/testing/src/mutate/operators.ts",
+				original: "\t\tconst stale = staleOf(run, population)",
+				replacement: "\t\tconst stale: ReadonlyArray<Equivalent> = []",
+				why: "A judgment that names none of its file's current mutants is never refused, so an equivalence argued for code that moved or changed outlives it."
+			},
+			{
+				file: "packages/testing/src/mutate/operators.ts",
+				original:
+					"\t\t\tArr.contains(run.files, entry.file) && !current.has(judgedKey(entry.file, entry.mutant))",
+				replacement: "\t\t\t!current.has(judgedKey(entry.file, entry.mutant))",
+				why: "A judgment of a file the run does not mutate, whose mutants it never reads, is called stale, so every run of one file refuses while any other file holds a judgment."
+			},
+			{
+				file: "packages/testing/src/mutate/operators.ts",
+				original: "\t\t\tconst why = equivalentWhy.get(judgedKey(source.file, mutant.id))",
+				replacement: "\t\t\tconst why = equivalentWhy.get(mutant.id)",
+				why: "A mutant's judgment is looked up by its id alone, never its file and id, so a mutant judged equivalent is typed and run like any other and reported killed, survived, invalid or uncovered instead of equivalent."
 			}
 		]
 	}

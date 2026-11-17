@@ -21,6 +21,7 @@ import { type Choice, type MutantJudged, mutationOf } from "#mutate/operators.ts
 import type { Subject } from "#mutate/schedule.ts"
 import { treesOf } from "#mutate/tree.ts"
 import { killVerdictsAt } from "#runner/affected.ts"
+import type { Mutation, RunnerConfig } from "#runner/config.ts"
 import { runnerLimits } from "#runner/limits.ts"
 import type { Discovered } from "#runner/load.ts"
 import { loadPackage } from "#runner/run.ts"
@@ -31,7 +32,7 @@ import { loadPackage } from "#runner/run.ts"
  */
 
 /** A command's own refusal: arguments it cannot read, or a package root in no checkout. */
-class MutatorRefused extends Schema.TaggedError<
+export class MutatorRefused extends Schema.TaggedError<
 	MutatorRefused,
 	{ readonly brand: unique symbol }
 >()("MutatorRefused", { message: Schema.String }) {}
@@ -237,6 +238,36 @@ const mutateArgsOf = (args: ReadonlyArray<string>) =>
 		return parsed
 	})
 
+/**
+ * What a package's mutation runs add to the library's operators, loaded here and only here: `toolchain-test mutate` is
+ * the one command that calls its config's load, so no run, worker or launcher imports what its families read.
+ */
+export const loadedMutation = (config: RunnerConfig): Effect.Effect<Mutation, MutatorRefused> =>
+	Effect.tryPromise({
+		try: config.mutation,
+		catch: (cause) =>
+			MutatorRefused.make({
+				message: `test.config.ts's mutation did not load: ${String(cause)}`
+			})
+	})
+
+/**
+ * The run's operators each with how many of its mutants the run judged, in the order the run names them, so an operator
+ * that found no site (a family aimed at code that moved) reads 0.
+ */
+const operatorsLine = (
+	operators: ReadonlyArray<string>,
+	judged: ReadonlyArray<MutantJudged<string>>
+): string =>
+	`by operator: ${Arr.join(
+		Arr.map(
+			operators,
+			(operator) =>
+				`${operator} ${String(Arr.filter(judged, ({ mutant }) => mutant.operator === operator).length)}`
+		),
+		", "
+	)}`
+
 /** A judged mutant as a survivor line prints it: its id, place, function, edit and the properties it faced. */
 const survivorLine = ({ mutant, verdict }: MutantJudged<string>): ReadonlyArray<string> =>
 	verdict.kind === "survived"
@@ -274,10 +305,11 @@ const survivorsReport = (judged: ReadonlyArray<MutantJudged<string>>): ReadonlyA
 /**
  * `mutate <file>... [--against <path | id>]... [--operator <name>]... [--sample <n> --seed <s> | --mutant <id>...]`:
  * operator mutation of the files (paths from the package root) by the library's operators and the runner config's
- * families, against the properties `--against` names (every property of the package when it names none), on the pool
- * (mutate/operators.ts). A measurement: it prints its counts, its score and its survivors by file and operator, and
- * answers 0 whatever it measured; a refusal (a property red with no mutant, a probe a property survived, a package that
- * does not typecheck) is the command's failure.
+ * families, but for the mutants it judges equivalent (its Mutation, loadedMutation), against the properties
+ * `--against` names (every property of the package when it names none), on the pool (mutate/operators.ts). A
+ * measurement: it prints its counts, its score, its mutants by operator and its survivors by file and operator, and
+ * answers 0 whatever it measured; a refusal (an equivalent judgment gone stale, a property red with no mutant, a probe a
+ * property survived, a package that does not typecheck) is the command's failure.
  */
 export const mutateCommand = (root: string, args: ReadonlyArray<string>) =>
 	Effect.scoped(
@@ -288,6 +320,7 @@ export const mutateCommand = (root: string, args: ReadonlyArray<string>) =>
 			const checkout = yield* checkoutOf(root)
 			const packageRoot = yield* realPathOf(root)
 			const { config, discovered } = yield* loadPackage(root, parsed.against)
+			const mutation = yield* loadedMutation(config)
 			const subjects = yield* Effect.mapError(
 				Effect.fromOption(
 					Option.liftPredicate(subjectsOf(discovered), Arr.isReadonlyArrayNonEmpty)
@@ -296,7 +329,7 @@ export const mutateCommand = (root: string, args: ReadonlyArray<string>) =>
 			)
 			const every: ReadonlyArray<string> = [
 				...OPERATORS,
-				...Arr.flatMap(config.families, (family) => family.operators)
+				...Arr.flatMap(mutation.families, (family) => family.operators)
 			]
 			const unknown = Arr.filter(parsed.operators, (operator) => !Arr.contains(every, operator))
 			if (Arr.isReadonlyArrayNonEmpty(unknown)) {
@@ -310,16 +343,16 @@ export const mutateCommand = (root: string, args: ReadonlyArray<string>) =>
 			const pool = mutatorPool(checkout, packageRoot)
 			const trees = yield* treesOf(checkout)
 			const images = yield* imagesOf(checkout, trees)
+			const operators = Arr.isReadonlyArrayNonEmpty(parsed.operators) ? parsed.operators : every
 			const judged = yield* mutationOf(pool, images, {
 				witnesses: { seed: 0, limits: runnerLimits },
 				checkout,
 				pkg: packageRoot,
 				subjects,
 				files,
-				families: config.families,
-				operators: new Set(
-					Arr.isReadonlyArrayNonEmpty(parsed.operators) ? parsed.operators : every
-				),
+				families: mutation.families,
+				equivalent: mutation.equivalent,
+				operators: new Set(operators),
 				choice: parsed.choice
 			})
 			const ended = yield* liveMillis
@@ -330,7 +363,8 @@ export const mutateCommand = (root: string, args: ReadonlyArray<string>) =>
 			yield* Console.log(
 				Arr.join(
 					[
-						`mutate: ${String(judged.length)} mutants of ${Arr.join(files, ", ")} against ${String(subjects.length)} properties: ${String(killed)} killed, ${String(survived)} survived, ${String(count("invalid"))} invalid, ${String(count("uncovered"))} uncovered; score ${String(killed)}/${String(killed + survived)}, in ${String(Math.round(ended - began))} ms on ${String(pool.width)} workers`,
+						`mutate: ${String(judged.length)} mutants of ${Arr.join(files, ", ")} against ${String(subjects.length)} properties: ${String(killed)} killed, ${String(survived)} survived, ${String(count("invalid"))} invalid, ${String(count("uncovered"))} uncovered, ${String(count("equivalent"))} equivalent; score ${String(killed)}/${String(killed + survived)}, in ${String(Math.round(ended - began))} ms on ${String(pool.width)} workers`,
+						operatorsLine(Arr.dedupe(operators), judged),
 						...(survived > 0
 							? ["survivors, by file and operator:", ...survivorsReport(judged)]
 							: [])
