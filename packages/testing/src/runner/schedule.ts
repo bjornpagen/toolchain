@@ -127,9 +127,12 @@ export type Scheduler<U extends Scheduled> = Readonly<{
 	/**
 	 * How long a unit of a property held its worker, as the pool saw it: from when it was sent (or the worker's last unit
 	 * finished, if later) to its answer, its readying taken out; with how many cases it held. A unit's work is reckoned
-	 * by this, a case's round trip and the worker's turn included, not by its cases' own time alone.
+	 * by this, a case's round trip and the worker's turn included, not by its cases' own time alone. A worker's first
+	 * unit of a property (`worker` is its index) runs cold, its code not yet compiled, and measures nothing: judged by
+	 * it, a cheap module looks dear and spreads to workers whose start and readying cost more than its whole work
+	 * (SYNC-SS: superstarter's action-wire on four workers for under a second of cases).
 	 */
-	occupied: (property: string, cases: number, millis: number) => void
+	occupied: (worker: number, property: string, cases: number, millis: number) => void
 	/**
 	 * Worker `worker` readied `property` of `module`: it took `importing` milliseconds to import the module (none when it
 	 * had imported it before) and `opening` to open the property's needs.
@@ -180,6 +183,7 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 	const holds: Array<Set<string>> = Array.from({ length: workers }, () => new Set())
 	const holders = new Map<string, Set<number>>()
 	const importedOn: Array<Set<string>> = Array.from({ length: workers }, () => new Set())
+	const warmOn: Array<Set<string>> = Array.from({ length: workers }, () => new Set())
 	const openedOn: Array<Set<string>> = Array.from({ length: workers }, () => new Set())
 	const cases = new Map<string, Sum>()
 	const occupancies = new Map<string, Sum>()
@@ -587,7 +591,12 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 			sum.millis += millis
 			cases.set(property, sum)
 		},
-		occupied: (property, count, millis) => {
+		occupied: (worker, property, count, millis) => {
+			const warm = warmOn[worker]
+			if (!(warm?.has(property) ?? false)) {
+				warm?.add(property)
+				return
+			}
 			const sum = occupancies.get(property) ?? { count: 0, millis: 0 }
 			sum.count += count
 			sum.millis += millis
@@ -613,6 +622,7 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 			holds[worker] = new Set()
 			importedOn[worker] = new Set()
 			openedOn[worker] = new Set()
+			warmOn[worker] = new Set()
 		},
 		held: () => Arr.map(holds, (modules) => modules.size)
 	}

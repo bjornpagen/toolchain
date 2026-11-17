@@ -24,6 +24,7 @@ import { element, int } from "#gen.ts"
 import { property } from "#property.ts"
 import {
 	cheap,
+	coldCheap,
 	FORKINGS,
 	messageStates,
 	messageTaken,
@@ -235,6 +236,28 @@ export const messageFillsItsWork = property.explore(messageStates, {
 			original: "\t\t\tconst next = work + unit.cases * mean\n",
 			replacement: "\t\t\tconst next = work + mean\n",
 			why: "A message is filled at one case a unit, as before series: a series of sixteen cheap cases counts as one case, so one worker takes a whole round of a property's series while the others idle, and the property's rounds run one worker at a time (the unit tier's quarter at 420 s against 262); this property fails."
+		}
+	]
+})
+
+export const coldStaysPut = property.explore(coldCheap, {
+	needs: {},
+	situations: [],
+	check: () => (workload) =>
+		Effect.sync(() => {
+			strictEqual(simulate(workload, "lazily").readiedBy.get("m0")?.size ?? 0, 1)
+		}),
+	oracle: {
+		kind: "specification",
+		name: "on a pool forked as its work wants, a module whose warm work is less than a worker's start stays on one worker, however cold its first units run"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/runner/schedule.ts",
+			original: "\t\t\tif (!(warm?.has(property) ?? false)) {",
+			replacement: "\t\t\tif (false) {",
+			why: "A worker's cold first unit of a property counts in its occupancy, as before: a cheap module looks dear and spreads to workers whose start costs more than its whole work (SYNC-SS: action-wire on four workers); this property fails."
 		}
 	]
 })

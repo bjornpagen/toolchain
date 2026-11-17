@@ -25,6 +25,7 @@ export type DrawnProperty = Readonly<{
 	caseMillis: number
 	windows: ReadonlyArray<number>
 	opening: number
+	coldMillis: number
 }>
 
 /** A module of a drawn workload: what a worker spends importing it, once, and its properties. */
@@ -44,7 +45,8 @@ export type Workload = Readonly<{
 const properties: Gen<DrawnProperty> = (source) => ({
 	caseMillis: source.draw(int(1, 20)),
 	windows: source.draw(array(int(1, 16), { min: 1, max: 6 })),
-	opening: source.draw(int(0, 30))
+	opening: source.draw(int(0, 30)),
+	coldMillis: source.draw(int(0, 30))
 })
 
 const modules: Gen<DrawnModule> = (source) => ({
@@ -80,6 +82,36 @@ export const cheap: Gen<Workload> = (source) => {
 }
 
 /**
+ * Workloads of one module whose cases are cheap and few, all of them together less than a worker's start, but whose
+ * first unit on a worker runs cold by far longer than they do (superstarter's action-wire: six properties of a few
+ * hundred sub-millisecond cases on four workers): no further worker pays for itself, judged warm.
+ */
+export const coldCheap: Gen<Workload> = (source) => {
+	const starting = source.draw(int(20, 40))
+	return {
+		workers: source.draw(int(2, 8)),
+		starting,
+		trip: 0,
+		modules: [
+			{
+				importing: source.draw(int(1, 5)),
+				properties: source.draw(
+					array(
+						(inner): DrawnProperty => ({
+							caseMillis: 1,
+							windows: [inner.draw(int(2, 6))],
+							opening: 0,
+							coldMillis: inner.draw(int(50, 200))
+						}),
+						{ min: 1, max: 3 }
+					)
+				)
+			}
+		]
+	}
+}
+
+/**
  * Workloads of one module whose single property's one window holds at least four cases a worker and whose cases take
  * at least what readying the module takes: a module that outgrows any one worker.
  */
@@ -97,7 +129,8 @@ export const outgrowing: Gen<Workload> = (source) => {
 					{
 						caseMillis: source.draw(int(readying, 3 * readying)),
 						windows: [source.draw(int(4 * workers, 8 * workers))],
-						opening: 0
+						opening: 0,
+						coldMillis: 0
 					}
 				]
 			}
@@ -121,7 +154,12 @@ export const tripBound: Gen<Workload> = (source) => {
 			{
 				importing: readying,
 				properties: [
-					{ caseMillis: 1, windows: [source.draw(int(4 * workers, 8 * workers))], opening: 0 }
+					{
+						caseMillis: 1,
+						windows: [source.draw(int(4 * workers, 8 * workers))],
+						opening: 0,
+						coldMillis: 0
+					}
 				]
 			}
 		]
@@ -129,7 +167,8 @@ export const tripBound: Gen<Workload> = (source) => {
 }
 
 /** A unit of the simulated pool: one case of a property of a module. */
-type SimUnit = Scheduled & Readonly<{ caseMillis: number; importing: number; opening: number }>
+type SimUnit = Scheduled &
+	Readonly<{ caseMillis: number; importing: number; opening: number; coldMillis: number }>
 
 /**
  * A simulated worker: what it was sent, which modules it imported and which properties it opened, and when its running
@@ -141,6 +180,8 @@ type SimWorker = {
 	sent: Array<SimUnit>
 	imported: Set<string>
 	opened: Set<string>
+	warm: Set<string>
+	cold: boolean
 	busyUntil: Option.Option<number>
 }
 
@@ -163,7 +204,8 @@ export type Ran = Readonly<{
  * worker and forks more as the queue wants them (forksOf), each starting for the workload's start time; every
  * property's search queues its first window at once and each next window when the last's every case has finished; an
  * idle worker is given what the scheduler chooses (a steal's tail handed to it at once), as the pool's events decide
- * (feedAll, afterQueued, afterFinished); a worker runs its units in order, readying a module the first time it runs a unit of it
+ * (feedAll, afterQueued, afterFinished); a worker runs its units in order, its first unit of a property cold by the
+ * property's cold time, every unit's time told as the pool tells it, readying a module the first time it runs a unit of it
  * (the module's readying, reported to the scheduler), then the case. The run ends when every window has run, or, with
  * work left and no worker running, stalled.
  */
@@ -188,6 +230,7 @@ export const simulate = (workload: Workload, forking: Forking): Ran => {
 			property: `m${moduleAt}#p${propertyAt}`,
 			importing: module.importing,
 			opening: drawn.opening,
+			coldMillis: drawn.coldMillis,
 			caseMillis: drawn.caseMillis,
 			windows: drawn.windows,
 			next: 0,
@@ -212,7 +255,8 @@ export const simulate = (workload: Workload, forking: Forking): Ran => {
 					cases: 1,
 					caseMillis: search.caseMillis,
 					importing: search.importing,
-					opening: search.opening
+					opening: search.opening,
+					coldMillis: search.coldMillis
 				})
 			}
 		})
@@ -234,13 +278,15 @@ export const simulate = (workload: Workload, forking: Forking): Ran => {
 
 	const start = (worker: SimWorker) => {
 		Option.map(Arr.head(worker.sent), (unit) => {
+			worker.cold = !worker.warm.has(unit.property)
+			const cold = worker.cold ? unit.coldMillis : 0
 			if (worker.opened.has(unit.property)) {
-				worker.busyUntil = Option.some(now + unit.caseMillis + workload.trip)
+				worker.busyUntil = Option.some(now + cold + unit.caseMillis + workload.trip)
 				return
 			}
 			const importing = worker.imported.has(unit.module) ? 0 : unit.importing
 			worker.busyUntil = Option.some(
-				now + importing + unit.opening + unit.caseMillis + workload.trip
+				now + importing + unit.opening + cold + unit.caseMillis + workload.trip
 			)
 			worker.imported.add(unit.module)
 			worker.opened.add(unit.property)
@@ -292,6 +338,8 @@ export const simulate = (workload: Workload, forking: Forking): Ran => {
 				sent: [],
 				imported: new Set(),
 				opened: new Set(),
+				warm: new Set(),
+				cold: false,
 				busyUntil: Option.some(now + workload.starting)
 			})
 		}
@@ -314,6 +362,8 @@ export const simulate = (workload: Workload, forking: Forking): Ran => {
 			sent: [],
 			imported: new Set(),
 			opened: new Set(),
+			warm: new Set(),
+			cold: false,
 			busyUntil: forking === "whole" ? Option.none() : Option.some(workload.starting)
 		})
 	}
@@ -346,7 +396,13 @@ export const simulate = (workload: Workload, forking: Forking): Ran => {
 			worker.sent = Arr.drop(worker.sent, 1)
 			runs.set(unit.id, (runs.get(unit.id) ?? 0) + 1)
 			scheduler.finished(unit.property, 1, unit.caseMillis)
-			scheduler.occupied(unit.property, 1, unit.caseMillis + workload.trip)
+			scheduler.occupied(
+				worker.index,
+				unit.property,
+				1,
+				unit.caseMillis + (worker.cold ? unit.coldMillis : 0) + workload.trip
+			)
+			worker.warm.add(unit.property)
 			start(worker)
 			Option.map(
 				Arr.findFirst(searches, (search) => search.property === unit.property),
@@ -441,7 +497,8 @@ export const spreadIn = (
 				importing: at === 0 ? state.importing : 0,
 				opening: drawn.opening
 			})
-			scheduler.occupied(property, 1, drawn.caseMillis)
+			scheduler.occupied(0, property, 1, drawn.caseMillis)
+			scheduler.occupied(0, property, 1, drawn.caseMillis)
 		}
 		for (let unit = 0; unit < drawn.sent; unit += 1) {
 			ids += 1

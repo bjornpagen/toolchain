@@ -647,6 +647,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 								if (Option.isSome(unit)) {
 									yield* settle(worker)
 									scheduler.occupied(
+										worker.index,
 										unit.value.property,
 										ranOf(received.done).cases,
 										Math.max(0, now - worker.occupiedSince - worker.readyingMillis)
