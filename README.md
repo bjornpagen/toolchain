@@ -190,7 +190,9 @@ whole section, and do every part: the parts are one migration, in the order a re
         use_stdin: true
   ```
 
-  with the push gate in `.lefthook/pre-push/gate.sh`:
+  with the push gate in `.lefthook/pre-push/gate.sh`, committed executable (`git add --chmod=+x`), since lefthook
+  makes a script job's file executable each time it runs it, which leaves a file committed without the bit as a mode
+  change in every clone after its first push:
 
   ```sh
   exec sh vendor/toolchain/packages/devtools/bin/gate.sh push
