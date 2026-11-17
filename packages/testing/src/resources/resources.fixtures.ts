@@ -303,6 +303,26 @@ export const seatTemplate = Template.database({
 	build: building(seatSchema)
 })
 
+/**
+ * A template a seat runs on whose materialized view is created WITH NO DATA, so reading it fails until a REFRESH: items,
+ * and their tally.
+ */
+export const unpopulatedViewTemplate = Template.database({
+	declaredIn: import.meta,
+	name: "unpopulated view",
+	content: {
+		statements: [
+			"CREATE TABLE public.items (id int8 GENERATED ALWAYS AS IDENTITY PRIMARY KEY, value int4 NOT NULL)",
+			"CREATE MATERIALIZED VIEW public.tallies AS SELECT pg_catalog.count(*) AS n FROM public.items WITH NO DATA"
+		]
+	},
+	from: Template.cluster,
+	build: building([
+		"CREATE TABLE public.items (id int8 GENERATED ALWAYS AS IDENTITY PRIMARY KEY, value int4 NOT NULL)",
+		"CREATE MATERIALIZED VIEW public.tallies AS SELECT pg_catalog.count(*) AS n FROM public.items WITH NO DATA"
+	])
+})
+
 /** The seat's reset: the items, and their identity, as the template has them. */
 export const seatReset = ["TRUNCATE public.items RESTART IDENTITY"] as const
 

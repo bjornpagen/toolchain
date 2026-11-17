@@ -39,7 +39,8 @@ import {
 	services,
 	fixturesModule,
 	templateNameOf,
-	tokenTemplate
+	tokenTemplate,
+	unpopulatedViewTemplate
 } from "#resources/resources.fixtures.ts"
 import { ModuleClosure, WorkerIndex } from "#runner/services.ts"
 
@@ -512,6 +513,58 @@ export const inUseKept = property.exhaust(
 		]
 	}
 )
+
+export const seatOverUnpopulatedView = property.exhaust(finite(boolean), {
+	box: "a case that refreshes the view and one that leaves it",
+	needs: { services },
+	situations: [],
+	check:
+		({ services: context }) =>
+		(refreshes) =>
+			Effect.gen(function* () {
+				const ctx = yield* context
+				const seen = yield* Effect.provideContext(
+					Effect.scoped(
+						Effect.gen(function* () {
+							const take = yield* Database.seat(unpopulatedViewTemplate, seatReset).open
+							const first = yield* Scope.make()
+							const database = yield* Scope.provide(take, first)
+							yield* inDatabase(database, "INSERT INTO public.items (value) VALUES (1)", [])
+							if (refreshes) {
+								yield* inDatabase(database, "REFRESH MATERIALIZED VIEW public.tallies", [])
+							}
+							const closed = yield* Effect.exit(Scope.close(first, Exit.void))
+							const populated = yield* Effect.scoped(
+								Effect.gen(function* () {
+									const next = yield* take
+									return yield* inDatabase(
+										next,
+										"SELECT relispopulated::text FROM pg_catalog.pg_class WHERE oid = 'public.tallies'::regclass",
+										[]
+									)
+								})
+							)
+							return { left: Exit.isFailure(closed), populated }
+						})
+					),
+					ctx
+				)
+				deepStrictEqual(seen, { left: refreshes, populated: [["false"]] })
+			}),
+	oracle: {
+		kind: "specification",
+		name: "a seat opens on a template whose materialized view holds no data; a case's REFRESH of it leaves the seat unlike its template, which fails that case, and never reaches the next"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/resources/database.ts",
+			original: "\t\tWHEN c.relkind = 'm' AND NOT c.relispopulated\n",
+			replacement: "\t\tWHEN false\n",
+			why: "A seat's fingerprint reads every materialized view's rows, as before, and an unpopulated one refuses the read (55000), so a seat over grizzle's docs world or rule-seeding's viewed shape cannot open; this property fails."
+		}
+	]
+})
 
 export const seatSettles = property.explore(
 	(source) => ({

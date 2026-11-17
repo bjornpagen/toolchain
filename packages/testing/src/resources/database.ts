@@ -198,12 +198,16 @@ WHERE c.relkind = 'S' AND c.relnamespace IN (SELECT oid FROM pg_catalog.pg_names
 /**
  * The statement that digests a database's rows as they stand: every table's and materialized view's rows, and every
  * sequence's state, each a line of the relation's name and the digest of its rows' text, read in one statement the
- * database's catalog writes (none when it has no relation to read). Written once, from the clone as cloned: a relation
- * a case adds is in the catalog half, and one it drops fails the statement.
+ * database's catalog writes (none when it has no relation to read). A materialized view created WITH NO DATA refuses
+ * to be read (55000), so its line is whether it is populated, which a case's REFRESH changes (GZ-PG-WRITE, GZ-LAWS:
+ * a seat over grizzle's docs world and rule-seeding's viewed shape failed to open). Written once, from the clone as
+ * cloned: a relation a case adds is in the catalog half, and one it drops fails the statement.
  */
 const contentsQuery = `SELECT 'SELECT pg_catalog.md5(pg_catalog.string_agg(line, E''\\n'' ORDER BY line)) FROM (' || pg_catalog.string_agg(
 	CASE WHEN c.relkind = 'S'
 		THEN pg_catalog.format('SELECT %L || '' '' || last_value::text || '' '' || is_called::text FROM %s', c.oid::regclass::text, c.oid::regclass)
+		WHEN c.relkind = 'm' AND NOT c.relispopulated
+		THEN pg_catalog.format('SELECT %L || '' '' || (SELECT CASE WHEN relispopulated THEN ''populated'' ELSE ''unpopulated'' END FROM pg_catalog.pg_class WHERE oid = %s)', c.oid::regclass::text, c.oid)
 		ELSE pg_catalog.format('SELECT %L || '' '' || (SELECT pg_catalog.md5(COALESCE(pg_catalog.string_agg(t::text, E''\\n'' ORDER BY t::text), '''')) FROM %s AS t)', c.oid::regclass::text, c.oid::regclass)
 	END, ' UNION ALL ') || ') AS lines(line)'
 FROM pg_catalog.pg_class AS c
