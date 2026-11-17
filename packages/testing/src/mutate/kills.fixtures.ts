@@ -40,8 +40,11 @@ export const KILLS: Readonly<Record<KillName, Kill>> = {
 	}
 }
 
-/** How a property's check runs the file: in its own process, or in a child process it starts. */
-export const CHECKS = ["direct", "child"] as const
+/**
+ * How a property's check runs the file: in its own process, or in a child process it starts; or a check that goes red
+ * with no mutant at all (a property the run cannot judge, as one whose need the run's width cannot serve).
+ */
+export const CHECKS = ["direct", "child", "broken"] as const
 
 export type CheckKind = (typeof CHECKS)[number]
 
@@ -58,6 +61,7 @@ const CHECKOUT: ReadonlyArray<readonly [string, string]> = [
 	[TARGET, TARGET_TEXT],
 	["src/run-f.ts", `import { f } from "./f.ts"\nconsole.log(f(1))\n`],
 	["direct.ts", `import { f } from "./src/f.ts"\nconsole.log(f(1) === 2 ? "green" : "red")\n`],
+	["broken.ts", `import { f } from "./src/f.ts"\nconsole.log(f(1) === 3 ? "green" : "red")\n`],
 	[
 		"child.ts",
 		`import { spawnSync } from "node:child_process"\nconst ran = spawnSync(process.execPath, ["src/run-f.ts"], { encoding: "utf8" })\nconsole.log(ran.status === 0 && ran.stdout.trim() === "2" ? "green" : "red")\n`
@@ -73,6 +77,8 @@ export const reportOf = (judged: Judged) => {
 			return `${judged.kill.why}: survived, ${judged.verdict.loaded ? "loaded" : "never loaded"}`
 		case "stale":
 			return `${judged.kill.why}: stale, found ${String(judged.verdict.stale.found)}`
+		case "unjudged":
+			return `${judged.kill.why}: unjudged`
 	}
 }
 
@@ -82,6 +88,9 @@ export const expectedOf = (gate: Gate, name: KillName) => {
 	const found = kill.file === TARGET ? Str.split(kill.original)(TARGET_TEXT).length - 1 : 0
 	if (found !== 1) {
 		return `${kill.why}: stale, found ${String(found)}`
+	}
+	if (gate.check === "broken") {
+		return `${kill.why}: unjudged`
 	}
 	const reaches = gate.check === "direct" || gate.loading === "tree"
 	if (name === "a bug" && reaches) {

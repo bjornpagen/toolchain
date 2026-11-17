@@ -2,7 +2,8 @@
  * The kill gate (mutate/kills.ts), on real worker images: each kill is applied to its file in a checkout and its
  * property's check runs on a process started from the kill's image, the module hook for a property that loads the code
  * in process, a worker tree for one that needs Checkout.dir; a kill whose original stands anywhere but once is stale; a
- * kill the check catches is killed, whether the check runs the file in its own process or, from a tree, in a child; a
+ * kill of a check that goes red with no mutant is unjudged, whatever its own trial would show; a kill the check catches
+ * is killed, whether the check runs the file in its own process or, from a tree, in a child; a
  * kill it misses survives, its probe saying whether the property's process loaded the mutant at all, which a check
  * that runs the file in a child without a tree never does. The check starts processes that load the hook (hook.ts),
  * so the property needs Checkout.dir.
@@ -62,10 +63,16 @@ export const killGate = property.explore(
 			}),
 		oracle: {
 			kind: "specification",
-			name: "stale unless the original stands once; killed when the check catches it where it runs the file; a survivor loaded exactly when the check runs the file in its process or from a tree"
+			name: "stale unless the original stands once; unjudged when the check goes red with no mutant; killed when the check catches it where it runs the file; a survivor loaded exactly when the check runs the file in its process or from a tree"
 		},
 		kept: [],
 		kills: [
+			{
+				file: "packages/testing/src/mutate/kills.ts",
+				original: "return red === undefined ? Result.succeed(one) : Result.fail({ ...one, red })",
+				replacement: "return Result.succeed(one)",
+				why: "A property red with no mutant has its kills tried anyway, so any red it shows reads as the kill's, and a kill of nothing is killed."
+			},
 			{
 				file: "packages/testing/src/mutate/kills.ts",
 				original: 'return { kind: "survived", loaded: true }',

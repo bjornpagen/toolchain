@@ -18,7 +18,7 @@ import {
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { loadingOf } from "#mutate/checkout.ts"
 import { imagesOf } from "#mutate/image.ts"
-import { type Judged, killsOf } from "#mutate/kills.ts"
+import { type Judged, killsOf, redText } from "#mutate/kills.ts"
 import { mutatorPool } from "#mutate/lease.ts"
 import { realPathOf } from "#mutate/mutated.ts"
 import { treesOf } from "#mutate/tree.ts"
@@ -186,6 +186,8 @@ export const killLine = (judged: Judged): string => {
 			return `${judged.property}: SURVIVED${verdict.loaded ? "" : ", its workers never loaded the file"}: ${judged.kill.why} (${judged.kill.file})`
 		case "stale":
 			return `${judged.property}: STALE: ${verdict.stale.message}`
+		case "unjudged":
+			return `${judged.property}: UNJUDGED: ${judged.kill.why}, since the property goes red with no mutant (${redText(verdict.red)})`
 	}
 }
 

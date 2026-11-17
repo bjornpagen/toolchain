@@ -14,7 +14,7 @@ import { liveMillis } from "#live.ts"
 import { OPERATORS } from "#mutants.ts"
 import { loadingOf } from "#mutate/checkout.ts"
 import { imagesOf } from "#mutate/image.ts"
-import { type Judged, killsOf } from "#mutate/kills.ts"
+import { type Judged, killsOf, redText } from "#mutate/kills.ts"
 import { mutatorPool } from "#mutate/lease.ts"
 import { realPathOf } from "#mutate/mutated.ts"
 import { type Choice, type MutantJudged, mutationOf } from "#mutate/operators.ts"
@@ -74,6 +74,8 @@ export const judgedLine = (judged: Judged): string => {
 			return `${property}: SURVIVED: ${kill.why} (${kill.file}), ${verdict.loaded ? "every witness passed with it applied" : "its workers never loaded the file: a check that runs it in a child process needs Checkout.dir"}`
 		case "stale":
 			return `${property}: STALE: ${verdict.stale.message}`
+		case "unjudged":
+			return `${property}: UNJUDGED: ${kill.why}, since the property goes red with no mutant (${redText(verdict.red)})`
 	}
 }
 
@@ -92,6 +94,11 @@ const failingLine = (judged: Judged): ReadonlyArray<string> => {
 			]
 		case "stale":
 			return [`  STALE ${verdict.stale.message}`]
+		case "unjudged":
+			return [
+				`  UNJUDGED ${kill.file}: ${kill.why}`,
+				`    the property goes red with no mutant: ${redText(verdict.red)}`
+			]
 	}
 }
 
@@ -144,7 +151,7 @@ export const killsCommand = (root: string, selected: ReadonlyArray<string>) =>
 							(one) => `${one.property}: killed (a cached verdict): ${one.kill.why}`
 						),
 						"",
-						`${String(judged.length)} kills of ${String(subjects.length)} properties: ${String(count("killed"))} killed, ${String(count("survived"))} survived, ${String(count("stale"))} stale, in ${String(Math.round(ended - began))} ms on ${String(pool.width)} workers; ${String(cached.length)} kills a cached verdict answered`
+						`${String(judged.length)} kills of ${String(subjects.length)} properties: ${String(count("killed"))} killed, ${String(count("survived"))} survived, ${String(count("stale"))} stale, ${String(count("unjudged"))} unjudged, in ${String(Math.round(ended - began))} ms on ${String(pool.width)} workers; ${String(cached.length)} kills a cached verdict answered`
 					],
 					"\n"
 				)
