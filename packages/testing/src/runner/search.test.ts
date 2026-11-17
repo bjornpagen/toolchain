@@ -247,7 +247,7 @@ export const seriesPerWorker = property.explore(
 			},
 			{
 				file: "packages/testing/src/runner/search.ts",
-				original: "\t\t\tconst windows = seriesSizeOf(run, counted.value.starts.length, 1)",
+				original: "\t\t\tconst windows = seriesSizeOf(run, counted.starts.length, 1)",
 				replacement: "\t\t\tconst windows = 1",
 				why: "A space is cut into series of one steering window whatever its size, as before, each a unit its parent answers apart; this property fails."
 			}

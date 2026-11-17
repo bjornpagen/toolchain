@@ -1,7 +1,5 @@
 import { Array as Arr, Effect, Fiber, Option, String as Str } from "effect"
-import { countWithin } from "#enumerate.ts"
 import { residualOf, type SteeringPhase, type Tally, tallyOf, turnsOf } from "#features.ts"
-import type { Gen } from "#gen.ts"
 import { mutate } from "#mutate.ts"
 import {
 	between,
@@ -802,7 +800,7 @@ export const exploreSearch =
  * witness, so every required situation must be reached by one of them.
  */
 export const exhaustSearch =
-	(searched: Searched, space: Gen<unknown>, box: string, group: number) =>
+	(searched: Searched, box: string, group: number) =>
 	(run: SearchRun): Effect.Effect<Verdict> =>
 		Effect.gen(function* () {
 			const kept = yield* keptFinding(run, searched)
@@ -810,13 +808,33 @@ export const exhaustSearch =
 				return failed(kept.value)
 			}
 			const perSeries = Math.max(run.limits.window, group)
-			const counted = yield* countWithin(space, run.limits.deadline, perSeries)
-			if (Option.isNone(counted)) {
+			const counted = yield* run.evaluator.count({
+				property: run.id,
+				every: perSeries,
+				cpu: run.limits.deadline,
+				open: run.limits.open
+			})
+			if (counted.kind === "uncountable") {
 				return failed({ kind: "uncountable", box, deadline: run.limits.deadline })
 			}
-			const size = counted.value.cases
-			const windows = seriesSizeOf(run, counted.value.starts.length, 1)
-			const starts = Arr.filter(counted.value.starts, (_, at) => at % windows === 0)
+			if (counted.kind === "stopped") {
+				const found = yield* findingOf(run, counted.result, {
+					phase: "exhaustive",
+					where: "the count of the exhaustive space",
+					drawn: { kind: "unsteered" },
+					shrink: shrinkOf(run, completeShrink)
+				})
+				return failed(
+					Option.getOrElse(found, (): Finding => ({
+						kind: "uncountable",
+						box,
+						deadline: run.limits.deadline
+					}))
+				)
+			}
+			const size = counted.cases
+			const windows = seriesSizeOf(run, counted.starts.length, 1)
+			const starts = Arr.filter(counted.starts, (_, at) => at % windows === 0)
 			const tally = tallyOf("exhaustive")
 			const measures = measuring()
 			let cases = 0

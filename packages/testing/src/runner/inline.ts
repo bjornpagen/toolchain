@@ -17,6 +17,7 @@ import { Perception, perceptionOf } from "#runner/perceive.ts"
 import {
 	type CaseOrder,
 	type CaseResult,
+	countAnswerOf,
 	type Evaluator,
 	type Printed,
 	type Reach,
@@ -122,6 +123,8 @@ export const inlineEvaluator = (
 					}
 					return ran
 				}).pipe(Effect.ensuring(stopped.drained), turn.withPermits(1)),
+			count: (order) =>
+				Effect.map(done({ kind: "count", count: order }), countAnswerOf).pipe(turn.withPermits(1)),
 			width: Effect.succeed(1),
 			workers: 1
 		}

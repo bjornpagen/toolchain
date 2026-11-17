@@ -17,6 +17,8 @@ import { withLateUses } from "#runner/case.ts"
 import { compileCacheDirectory, readsCoverage } from "#runner/compile-cache.ts"
 import { moduleClosureAt } from "#runner/module-closure.ts"
 import {
+	type CountAnswer,
+	countAnswerOf,
 	type Done,
 	deadlinesOf,
 	doneWith,
@@ -106,6 +108,9 @@ type Worker = {
 
 /** How much of what a worker wrote the parent keeps, to report a lost case with: the end of it. */
 const OUTPUT_TAIL = 16_384
+
+/** The report of a count the pool gave back no answer for, which ranInOrder never does with a unit queued. */
+const uncounted = "the pool gave back no answer for a count it was sent"
 
 /**
  * What the pool's workers start from: the worker's entry module, the package root its test modules load from, the
@@ -824,6 +829,15 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 						(ran) => ran.stopped.kind === "stopped"
 					),
 					Arr.map(([, ran]) => ran)
+				),
+			count: (order) =>
+				Effect.map(
+					ranInOrder([{ kind: "count", count: order }], countAnswerOf, () => false),
+					(given): CountAnswer =>
+						Option.match(Arr.head(given), {
+							onNone: () => ({ kind: "stopped", result: lostResult(uncounted) }),
+							onSome: ([, answer]) => answer
+						})
 				),
 			width: Effect.sync(() => Math.max(1, Arr.filter(workers, idle).length - scheduler.queued())),
 			workers: spec.workers

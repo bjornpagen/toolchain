@@ -15,6 +15,7 @@ import {
 	Scope,
 	Struct
 } from "effect"
+import { countWithin } from "#enumerate.ts"
 import { failureText } from "#failure.ts"
 import { keyOf, type Pending, pendingAt, type Reached } from "#features.ts"
 import type { Gen } from "#gen.ts"
@@ -30,6 +31,8 @@ import {
 	type CaseResult,
 	judgedLate,
 	chooserOf,
+	type CountAnswer,
+	type CountOrder,
 	type Done,
 	doneWith,
 	type Printed,
@@ -257,25 +260,40 @@ const resourcesOf = <N extends Needs>(
 
 /**
  * A property's evaluations on a process where its needs are open: of a batch of its cases (the results, one an order,
- * in the batch's order), and of a series of them, which the process draws itself, an exhaustion's sketches over the
- * property's space or a stream's cases from their seeds, and runs as the search's window (runner/series.ts).
+ * in the batch's order); of a series of them, which the process draws itself, an exhaustion's sketches over the
+ * property's space or a stream's cases from their seeds, and runs as the search's window (runner/series.ts); and the
+ * count of its unsteered space, every case of which an exhaustion runs.
  */
 export type Evaluation = Readonly<{
 	cases: (
 		batch: Arr.NonEmptyReadonlyArray<CaseOrder>
 	) => Effect.Effect<ReadonlyArray<CaseResult>, never, CaseEnv>
 	series: (series: SeriesOrder) => Effect.Effect<SeriesRan, never, CaseEnv>
+	count: (order: CountOrder) => Effect.Effect<CountAnswer>
 }>
 
 /**
  * A property's evaluations from its evaluation of a batch: a series' cases drawn over the unsteered space, each
- * evaluated as a batch's, a late use of one reported to the series itself, which marks the case misused.
+ * evaluated as a batch's, a late use of one reported to the series itself, which marks the case misused; and the count
+ * of that space, which the series of its sketches walk.
  */
 const evaluationOf = <S, F extends string>(
 	drawing: Drawing<S, F>,
 	cases: Evaluation["cases"]
 ): Evaluation => ({
 	cases,
+	count: (order) =>
+		Effect.map(
+			countWithin(drawing.spaceUnder(Option.none()), order.cpu, order.every),
+			Option.match({
+				onNone: (): CountAnswer => ({ kind: "uncountable" }),
+				onSome: (counted): CountAnswer => ({
+					kind: "counted",
+					cases: counted.cases,
+					starts: counted.starts
+				})
+			})
+		),
 	series: (series) =>
 		Effect.suspend(() => {
 			const late = new Map<CaseOrder, Printed>()
@@ -623,6 +641,14 @@ export const doneOf = (readied: Readied, work: Work): Effect.Effect<Done, never,
 						kind: "series",
 						ran
 					}))
+				case "count":
+					return Effect.suspend(() => {
+						const began = process.threadCpuUsage()
+						return Effect.map(readied.evaluate.count(work.count), (answer): Done => {
+							const spent = process.threadCpuUsage(began)
+							return { kind: "count", answer, cpu: (spent.user + spent.system) / 1000 }
+						})
+					})
 			}
 		case "refused":
 			return Effect.succeed(doneWith(work, readied.result))

@@ -1,5 +1,5 @@
 import { Array as Arr, Config, Effect, FileSystem, Option } from "effect"
-import { boolean, finite, type Gen, int } from "#gen.ts"
+import { boolean, finite, type Gen, int, map } from "#gen.ts"
 import { liveMillis, liveSleep } from "#live.ts"
 import { type Need, property } from "#property.ts"
 import { Scratch } from "#resources/scratch.ts"
@@ -233,3 +233,29 @@ export const unreadyRoot = (directory: string) =>
 		)
 		return directory
 	})
+
+/** The identity of the planted property whose space a count draws. */
+export const COUNTED = "src/runner/pool.fixtures.ts#countedSpace"
+
+/**
+ * Every how many cases the count property asks a worker for the branch of, over the planted space's 64 cases: four
+ * steps from each case (1) to more than the space holds (70), so one worker process serves each.
+ */
+export const countsEvery: Gen<number> = map(int(0, 3), (step) => 1 + 23 * step)
+
+/** The planted space: two values from 0 to 7, every pair once. */
+export const countedValues: Gen<readonly [number, number]> = (source) => [
+	source.draw(int(0, 7)),
+	source.draw(int(0, 7))
+]
+
+/** A property planted to be counted: an exhaustion of countedValues whose cases pass. */
+export const countedSpace = property.exhaust(finite(countedValues), {
+	box: "every pair of values from 0 to 7",
+	needs: {},
+	situations: [],
+	check: () => () => Effect.void,
+	oracle: { kind: "specification", name: "a property planted to be counted" },
+	kept: [],
+	kills: []
+})

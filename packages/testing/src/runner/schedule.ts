@@ -122,7 +122,7 @@ export type Scheduler<U extends Scheduled> = Readonly<{
 	holds: (worker: number, module: string) => boolean
 	/** Whether some worker holds `module`. */
 	holdsAny: (module: string) => boolean
-	/** A property's cases finished: how many, and their milliseconds. */
+	/** A property's cases finished: how many, and their milliseconds; a unit that ran none (a count) measures nothing. */
 	finished: (property: string, cases: number, millis: number) => void
 	/**
 	 * How long a unit of a property held its worker, as the pool saw it: from when it was sent (or the worker's last unit
@@ -130,7 +130,8 @@ export type Scheduler<U extends Scheduled> = Readonly<{
 	 * by this, a case's round trip and the worker's turn included, not by its cases' own time alone. A worker's first
 	 * unit of a property (`worker` is its index) runs cold, its code not yet compiled, and measures nothing: judged by
 	 * it, a cheap module looks dear and spreads to workers whose start and readying cost more than its whole work
-	 * (SYNC-SS: superstarter's action-wire on four workers for under a second of cases).
+	 * (SYNC-SS: superstarter's action-wire on four workers for under a second of cases). A unit that ran no case (a
+	 * count) measures nothing either.
 	 */
 	occupied: (worker: number, property: string, cases: number, millis: number) => void
 	/**
@@ -609,12 +610,18 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 		holds: (worker, module) => holds[worker]?.has(module) ?? false,
 		holdsAny: (module) => (holders.get(module)?.size ?? 0) > 0,
 		finished: (property, count, millis) => {
+			if (count === 0) {
+				return
+			}
 			const sum = cases.get(property) ?? { count: 0, millis: 0 }
 			sum.count += count
 			sum.millis += millis
 			cases.set(property, sum)
 		},
 		occupied: (worker, property, count, millis) => {
+			if (count === 0) {
+				return
+			}
 			const warm = warmOn[worker]
 			if (!(warm?.has(property) ?? false)) {
 				warm?.add(property)

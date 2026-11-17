@@ -431,7 +431,7 @@ export const property = {
 			guide: searched.guide,
 			oracle: spec.oracle,
 			kills: spec.kills,
-			...boundedBy(spec, exhaustSearch(searched, space, spec.box, 1), replay(searched)),
+			...boundedBy(spec, exhaustSearch(searched, spec.box, 1), replay(searched)),
 			keep: keepingOf(drawing, []),
 			ready: casesReadied(drawing, spec.needs, spec.check)
 		})
@@ -481,7 +481,7 @@ export const property = {
 			guide: searched.guide,
 			oracle: spec.oracle,
 			kills: spec.kills,
-			...boundedBy(spec, exhaustSearch(searched, space, spec.box, spec.size), replay(searched)),
+			...boundedBy(spec, exhaustSearch(searched, spec.box, spec.size), replay(searched)),
 			keep: keepingOf(drawing, []),
 			ready: batchesReadied(drawing, spec.needs, checkAll)
 		})

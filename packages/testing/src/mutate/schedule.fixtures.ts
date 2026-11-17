@@ -72,7 +72,8 @@ export const fakeProperty = (seen: Ref.Ref<Seen>): Property =>
 						millis: 0,
 						cpu: 0,
 						stopped: { kind: "none" }
-					} as const)
+					} as const),
+				count: () => Effect.succeed({ kind: "uncountable" } as const)
 			})
 	})
 
@@ -101,6 +102,7 @@ export const fakePool = (
 				})),
 				{
 					series: () => Effect.succeed([]),
+					count: () => Effect.succeed({ kind: "uncountable" } as const),
 					evaluate: (batches: ReadonlyArray<Batch>) =>
 						Effect.forEach(batches, (batch) =>
 							Effect.forEach(batch, (order) => {

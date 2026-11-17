@@ -131,6 +131,11 @@ const widthEvaluator = (
 					}
 					return summaries
 				}),
+			count: (order) =>
+				Option.match(Arr.get(lanes, 0), {
+					onNone: () => Effect.die(`no lane 0 of ${width}`),
+					onSome: (lane) => lane.count(order)
+				}),
 			width: Effect.succeed(width),
 			workers: width
 		}

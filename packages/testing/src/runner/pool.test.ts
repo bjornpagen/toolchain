@@ -12,6 +12,7 @@
  */
 import { Array as Arr, Effect, FileSystem, Option, String as Str } from "effect"
 import { deepStrictEqual } from "#assert.ts"
+import { countWithin } from "#enumerate.ts"
 import { boolean, finite } from "#gen.ts"
 import { WATCHDOG_GRACE_MILLIS } from "#live.ts"
 import { Checkout } from "#mutate/checkout.ts"
@@ -20,7 +21,10 @@ import { Scratch } from "#resources/scratch.ts"
 import { runnerLimits } from "#runner/limits.ts"
 import { heldProgram, orphansProgram } from "#runner/orphans.fixtures.ts"
 import {
+	COUNTED,
+	countsEvery,
 	CHILD_FILE,
+	countedValues,
 	ended,
 	goneWithin,
 	leavings,
@@ -218,6 +222,76 @@ export const silentBeforeReadying = property.exhaust(finite(boolean), {
 				'\t\t\t\tQueue.offerUnsafe(events, { kind: "sent", worker, unit: Arr.headNonEmpty(sent).unit })\n',
 			replacement: "",
 			why: "A unit is watched only once its worker says it is readying it, as before: a worker that cannot get that word out (its main thread held, a load that never ends, a full channel) is never ended, so its unit is never reported and its search never returns (CATCH: a mutant's lease silent past an hour); this property's case hangs past its deadline."
+		}
+	]
+})
+
+export const countedOnAWorker = property.exhaust(finite(countsEvery), {
+	box: "a count's every from one case to more than the space holds, four of them",
+	needs: { checkout: Checkout.dir },
+	situations: ["one series for the whole space", "several series"],
+	check:
+		({ checkout }, c) =>
+		(every) =>
+			Effect.gen(function* () {
+				c.note(every >= 64 ? "one series for the whole space" : "several series")
+				const root = yield* checkout
+				const answer = yield* Effect.scoped(
+					Effect.flatMap(
+						poolOf({
+							entry: WORKER_ENTRY,
+							root,
+							cwd: root,
+							env: {},
+							workers: 1,
+							execArgv: process.execArgv,
+							guide: "notes",
+							open: runnerLimits.open
+						}),
+						(pool) =>
+							pool.evaluator.count({
+								property: COUNTED,
+								every,
+								cpu: runnerLimits.deadline,
+								open: runnerLimits.open
+							})
+					)
+				)
+				const here = yield* countWithin(countedValues, runnerLimits.deadline, every)
+				deepStrictEqual(
+					{
+						answer:
+							answer.kind === "counted"
+								? Option.some({
+										cases: answer.cases,
+										starts: Arr.map(answer.starts, (start) =>
+											Array.from(start.values.subarray(0, start.length))
+										)
+									})
+								: Option.none()
+					},
+					{
+						answer: Option.map(here, (counted) => ({
+							cases: counted.cases,
+							starts: Arr.map(counted.starts, (start) =>
+								Array.from(start.values.subarray(0, start.length))
+							)
+						}))
+					}
+				)
+			}),
+	oracle: {
+		kind: "second-implementation",
+		name: "the space counted in this process (enumerate.ts countWithin), which a worker's count must match"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/runner/case.ts",
+			original: "\t\t\tcountWithin(drawing.spaceUnder(Option.none()), order.cpu, order.every),",
+			replacement:
+				"\t\t\tcountWithin(drawing.spaceUnder(Option.none()), order.cpu, order.every + 1),",
+			why: "A worker's count gives the branch of every case but the one its order asks for, so an exhaustion's series start where no window does and its sketches overlap or skip cases; this property fails."
 		}
 	]
 })

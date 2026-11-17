@@ -272,10 +272,49 @@ const SeriesRan = Schema.Struct({
 
 export type SeriesRan = typeof SeriesRan.Type
 
-/** What a unit holds: a batch of one property's cases, or a series of them its process draws. */
+/**
+ * An order to count an exhaustion's space on the process it is sent to, before any of its cases runs: its property,
+ * every how many cases to give the branch of (where the exhaustion's series start), the CPU the count may spend before
+ * the space is uncountable (enumerate.ts countWithin), and its needs' open bound, within which the process readies the
+ * property it counts the space of.
+ */
+const CountOrder = Schema.Struct({
+	property: Schema.String,
+	every: Schema.Finite,
+	cpu: Schema.Finite,
+	open: Schema.Finite
+})
+
+export type CountOrder = typeof CountOrder.Type
+
+/** A point in enumeration order, as a count gives it back (enumerate.ts Branch). */
+const Branch = Schema.Struct({ values: Float64s, length: Schema.Finite })
+
+/**
+ * What a count gave back: the space counted (how many cases, and the branch of every `every`-th from the first); a space
+ * whose count took more than its CPU, too large to exhaust; or the result that stopped it before it counted, its
+ * property not readied on its process (a need that did not open, a module that did not load) or its process lost.
+ */
+const CountAnswer = Schema.Union([
+	Schema.Struct({
+		kind: Schema.Literal("counted"),
+		cases: Schema.Finite,
+		starts: Schema.Array(Branch)
+	}),
+	Schema.Struct({ kind: Schema.Literal("uncountable") }),
+	Schema.Struct({ kind: Schema.Literal("stopped"), result: CaseResult })
+])
+
+export type CountAnswer = typeof CountAnswer.Type
+
+/**
+ * What a unit holds: a batch of one property's cases, a series of them its process draws, or the count of an
+ * exhaustion's space.
+ */
 const Work = Schema.Union([
 	Schema.Struct({ kind: Schema.Literal("cases"), batch: Batch }),
-	Schema.Struct({ kind: Schema.Literal("series"), series: SeriesOrder })
+	Schema.Struct({ kind: Schema.Literal("series"), series: SeriesOrder }),
+	Schema.Struct({ kind: Schema.Literal("count"), count: CountOrder })
 ])
 
 export type Work = typeof Work.Type
@@ -293,13 +332,16 @@ export const workOf = (work: Work): Readonly<{ property: string; open: number; c
 				open: work.series.open,
 				cases: seriesCases(work.series.from)
 			}
+		case "count":
+			return { property: work.count.property, open: work.count.open, cases: 0 }
 	}
 }
 
-/** What a unit gave back: its batch's results, one an order, or its series' summary. */
+/** What a unit gave back: its batch's results, one an order, its series' summary, or its count's answer. */
 const Done = Schema.Union([
 	Schema.Struct({ kind: Schema.Literal("cases"), results: Schema.Array(CaseResult) }),
-	Schema.Struct({ kind: Schema.Literal("series"), ran: SeriesRan })
+	Schema.Struct({ kind: Schema.Literal("series"), ran: SeriesRan }),
+	Schema.Struct({ kind: Schema.Literal("count"), answer: CountAnswer, cpu: Schema.Finite })
 ])
 
 export type Done = typeof Done.Type
@@ -319,7 +361,7 @@ const unranResult = (outcome: CaseOutcome): CaseResult => ({
 
 /**
  * What bounds a unit's evaluation on a worker: each of its cases' deadlines, added up; a series, one deadline a case of
- * its source (a sketch, a stream's case).
+ * its source (a sketch, a stream's case); a count, the CPU it may spend.
  */
 export const deadlinesOf = (work: Work): number => {
 	switch (work.kind) {
@@ -327,6 +369,8 @@ export const deadlinesOf = (work: Work): number => {
 			return Arr.reduce(work.batch, 0, (total, order) => total + order.deadline)
 		case "series":
 			return seriesCases(work.series.from) * work.series.deadline
+		case "count":
+			return work.count.cpu
 	}
 }
 
@@ -341,6 +385,8 @@ export const ranOf = (done: Done): Readonly<{ cases: number; millis: number; cpu
 			}
 		case "series":
 			return { cases: done.ran.ran, millis: done.ran.millis, cpu: done.ran.cpu }
+		case "count":
+			return { cases: 0, millis: 0, cpu: done.cpu }
 	}
 }
 
@@ -353,6 +399,7 @@ export const resultsOf = (done: Done): ReadonlyArray<CaseResult> => {
 		case "cases":
 			return done.results
 		case "series":
+		case "count":
 			return [lostResult(misanswered)]
 	}
 }
@@ -363,6 +410,7 @@ export const seriesRanOf = (done: Done): SeriesRan => {
 		case "series":
 			return done.ran
 		case "cases":
+		case "count":
 			return {
 				ran: 0,
 				passed: 0,
@@ -372,6 +420,17 @@ export const seriesRanOf = (done: Done): SeriesRan => {
 				cpu: 0,
 				stopped: { kind: "stopped", result: lostResult(misanswered) }
 			}
+	}
+}
+
+/** A count's answer, as its worker answered it; any other answer in its place stops it, lost. */
+export const countAnswerOf = (done: Done): CountAnswer => {
+	switch (done.kind) {
+		case "count":
+			return done.answer
+		case "cases":
+		case "series":
+			return { kind: "stopped", result: lostResult(misanswered) }
 	}
 }
 
@@ -409,6 +468,8 @@ export const doneWith = (work: Work, result: CaseResult): Done => {
 					stopped: { kind: "stopped", result }
 				}
 			}
+		case "count":
+			return { kind: "count", answer: { kind: "stopped", result }, cpu: 0 }
 	}
 }
 
@@ -424,7 +485,8 @@ export const unopenedResult = (need: string, message: string): CaseResult =>
  * first batch in order that holds a result `stop` holds of (a window whose case failed, a shrink whose candidate
  * failed); the batches after it that have not started are dropped, and those that have run to their end unread.
  * `series` runs series of cases their processes draw and gives back each one's summary in order, ending with the first
- * whose case stopped, the same way. `width` is how many batches could start at once now, at least one, what a shrink
+ * whose case stopped, the same way. `count` counts an exhaustion's space where its cases run (on a worker of the pool,
+ * so no count holds the pool's parent, which answers every worker). `width` is how many batches could start at once now, at least one, what a shrink
  * speculates over and a window of series counts them by. `workers` is how many processes may ever run its units at
  * once, the most a search's sample can spread over, which a search cuts its streams and spaces into no more series
  * than. Two exist: the pool (a worker a core) and inline (this process, one batch at a time), and a search finds the
@@ -436,6 +498,7 @@ export type Evaluator = Readonly<{
 		stop: (result: CaseResult) => boolean
 	) => Effect.Effect<ReadonlyArray<ReadonlyArray<CaseResult>>>
 	series: (orders: ReadonlyArray<SeriesOrder>) => Effect.Effect<ReadonlyArray<SeriesRan>>
+	count: (order: CountOrder) => Effect.Effect<CountAnswer>
 	width: Effect.Effect<number>
 	workers: number
 }>
