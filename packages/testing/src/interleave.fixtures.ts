@@ -14,10 +14,11 @@ import {
 	type Read,
 	type Reduction,
 	type Scheduling,
-	type Sessions
+	type Sessions,
+	type Wait
 } from "#interleave.ts"
 import { fnv1a32 } from "#random.ts"
-import { type Chooser, type Recording } from "#source.ts"
+import { type Chooser, type Recording, type Source } from "#source.ts"
 
 /** The resources the lock manager's sessions write. */
 const RESOURCES = ["x", "y", "z"] as const
@@ -80,6 +81,24 @@ export const lockManager = <S extends string>(): Driver<
 		Option.flatMap(Option.fromNullishOr(waiting.get(session)), (wait) =>
 			Option.fromNullishOr(holders.get(wait.resource))
 		)
+	/** What `session`'s move waits on now, if it waits: the lock's holder and the resource. */
+	const waitNow = (session: S): Option.Option<Wait<S, Resource>> =>
+		Option.flatMap(holderOf(session), (holder) =>
+			Option.map(Option.fromNullishOr(waiting.get(session)), (wait) => ({
+				on: Arr.of(holder),
+				detail: wait.resource
+			}))
+		)
+	/** The engine's listener for each session whose move it watches: told once the move waits (waitOf). */
+	const listeners = new Map<S, Deferred.Deferred<Wait<S, Resource>>>()
+	/** Tells `session`'s listener, if the engine listens, what its move waits on, if it waits. */
+	const tellListener = (session: S) => {
+		const listener = listeners.get(session)
+		const now = waitNow(session)
+		if (listener !== undefined && Option.isSome(now)) {
+			Deferred.doneUnsafe(listener, Effect.succeed(now.value))
+		}
+	}
 	const write = (session: S, resource: Resource, value: number): Effect.Effect<Outcome> =>
 		Effect.gen(function* () {
 			const holder = holders.get(resource)
@@ -91,6 +110,7 @@ export const lockManager = <S extends string>(): Driver<
 			const wake = yield* Deferred.make<"granted" | "victim">()
 			waits += 1
 			waiting.set(session, { resource, since: waits, wake })
+			tellListener(session)
 			const signal = yield* Deferred.await(wake)
 			waiting.delete(session)
 			if (signal === "victim") {
@@ -118,13 +138,18 @@ export const lockManager = <S extends string>(): Driver<
 						return "ok"
 					}),
 		waitOf: (session) =>
-			Effect.sync(() =>
-				Option.flatMap(holderOf(session), (holder) =>
-					Option.map(Option.fromNullishOr(waiting.get(session)), (wait) => ({
-						on: [holder] as const,
-						detail: wait.resource
-					}))
-				)
+			Effect.acquireUseRelease(
+				Effect.tap(Deferred.make<Wait<S, Resource>>(), (listener) =>
+					Effect.sync(() => {
+						listeners.set(session, listener)
+						tellListener(session)
+					})
+				),
+				Deferred.await,
+				() =>
+					Effect.sync(() => {
+						listeners.delete(session)
+					})
 			),
 		quiesce: (inFlight) =>
 			Effect.gen(function* () {
@@ -594,3 +619,58 @@ export const drawnScheduling: Gen<Scheduling<Named, "state">> = element([
 	{ kind: "pct", depth: 2 },
 	{ kind: "pct", depth: 3 }
 ])
+
+/** A move of the turn-taking driver: how many turns of the scheduler it takes before it ends. */
+export type Turns = Readonly<{ turns: number }>
+
+/**
+ * Sessions of moves that each take two to five turns of the scheduler, never waiting on anything: the moves a watch must
+ * wait out without asking its driver again.
+ */
+export const turnSessions: Gen<Sessions<Named, Turns>> = (source) => {
+	const turn = (s: Source): Turns => ({ turns: s.draw(int(2, 5)) })
+	const movesOf = () => Arr.prepend(source.draw(array(turn, { min: 0, max: 1 })), source.draw(turn))
+	return {
+		a: { moves: movesOf(), after: Option.none() },
+		b: { moves: movesOf(), after: Option.none() },
+		c: { moves: movesOf(), after: Option.none() }
+	}
+}
+
+/**
+ * A driver whose moves take their turns and end, never seen waiting, which counts how many times the engine asks it
+ * whether a move waits (`asked`) and how many moves the engine issued (`issued`).
+ */
+export const turnTaker = (): Readonly<{
+	driver: Driver<Named, Turns, "ok", never, never, never, never, never>
+	asked: () => number
+	issued: () => number
+}> => {
+	let asked = 0
+	let issued = 0
+	const taking = (turns: number): Effect.Effect<"ok"> =>
+		turns <= 0 ? Effect.succeed("ok") : Effect.andThen(Effect.yieldNow, taking(turns - 1))
+	return {
+		driver: {
+			reset: Effect.void,
+			run: (_session, move) =>
+				Effect.suspend(() => {
+					issued += 1
+					return taking(move.turns)
+				}),
+			waitOf: () =>
+				Effect.suspend(() => {
+					asked += 1
+					return Effect.never
+				}),
+			quiesce: () => Effect.void,
+			outcome: () => ({ key: "ok", session: "continues" }),
+			release: () => Effect.void,
+			commute: () => false,
+			onWait: () => "wait",
+			read: () => Effect.never
+		},
+		asked: () => asked,
+		issued: () => issued
+	}
+}

@@ -28,6 +28,8 @@ import {
 	sameMembers,
 	scriptedCases,
 	sessionSets,
+	turnSessions,
+	turnTaker,
 	walkScript
 } from "#interleave.fixtures.ts"
 import { interleave, type Strategy } from "#interleave.ts"
@@ -418,3 +420,40 @@ export const everyStartedSessionReleased = property.explore(
 		]
 	}
 )
+
+/**
+ * The engine waits out a move in flight without asking its driver again: each move it issues costs at most one waitOf,
+ * however many turns of the scheduler the move takes, so a run costs the work its moves do and not the time they take.
+ */
+export const aMoveInFlightIsWaitedOutNotPolled = property.explore(turnSessions, {
+	needs: {},
+	situations: [],
+	check: () => (sessions) =>
+		Effect.gen(function* () {
+			const counting = turnTaker()
+			yield* interleave(
+				counting.driver,
+				{ sessions, exclusive: [], state: Option.none() },
+				{ kind: "every", reduction: "none" },
+				() => Effect.void
+			)
+			assertTrue(counting.issued() > 0)
+			assertTrue(
+				counting.asked() <= counting.issued(),
+				`the engine asked waitOf ${String(counting.asked())} times for ${String(counting.issued())} moves`
+			)
+		}),
+	oracle: {
+		kind: "specification",
+		name: "a watch races the move's end against its driver's waitOf, asking once"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/interleave.ts",
+			original: `\t\t\t\t\t\t\t: Effect.flatMap(\n\t\t\t\t\t\t\t\t\tEffect.raceFirst(\n\t\t\t\t\t\t\t\t\t\tEffect.map(Fiber.await(pendingMove.fiber), (settled): Settling<S, O, W> => ({\n\t\t\t\t\t\t\t\t\t\t\tkind: "ended",\n\t\t\t\t\t\t\t\t\t\t\tsettled\n\t\t\t\t\t\t\t\t\t\t})),\n\t\t\t\t\t\t\t\t\t\tEffect.map(\n\t\t\t\t\t\t\t\t\t\t\tdriver.waitOf(pendingMove.session, pendingMove.move),\n\t\t\t\t\t\t\t\t\t\t\t(seen): Settling<S, O, W> => ({ kind: "waiting", seen })\n\t\t\t\t\t\t\t\t\t\t)\n\t\t\t\t\t\t\t\t\t),\n\t\t\t\t\t\t\t\t\t(first) =>\n\t\t\t\t\t\t\t\t\t\tfirst.kind === "ended"\n\t\t\t\t\t\t\t\t\t\t\t? Effect.as(ended(pendingMove, first.settled), true)\n\t\t\t\t\t\t\t\t\t\t\t: seenWaiting(pendingMove, first.seen)\n\t\t\t\t\t\t\t\t)`,
+			replacement: `\t\t\t\t\t\t\t: Effect.gen(function* () {\n\t\t\t\t\t\t\t\t\tfor (;;) {\n\t\t\t\t\t\t\t\t\t\tconst settled = pendingMove.fiber.pollUnsafe()\n\t\t\t\t\t\t\t\t\t\tif (settled !== undefined) {\n\t\t\t\t\t\t\t\t\t\t\treturn yield* Effect.as(ended(pendingMove, settled), true)\n\t\t\t\t\t\t\t\t\t\t}\n\t\t\t\t\t\t\t\t\t\tconst first = yield* Effect.raceFirst(\n\t\t\t\t\t\t\t\t\t\t\tEffect.asSome(\n\t\t\t\t\t\t\t\t\t\t\t\tEffect.map(\n\t\t\t\t\t\t\t\t\t\t\t\t\tdriver.waitOf(pendingMove.session, pendingMove.move),\n\t\t\t\t\t\t\t\t\t\t\t\t\t(seen): Settling<S, O, W> => ({ kind: "waiting", seen })\n\t\t\t\t\t\t\t\t\t\t\t\t)\n\t\t\t\t\t\t\t\t\t\t\t),\n\t\t\t\t\t\t\t\t\t\t\tEffect.as(Effect.yieldNow, Option.none<Settling<S, O, W>>())\n\t\t\t\t\t\t\t\t\t\t)\n\t\t\t\t\t\t\t\t\t\tif (Option.isSome(first) && first.value.kind === "waiting") {\n\t\t\t\t\t\t\t\t\t\t\treturn yield* seenWaiting(pendingMove, first.value.seen)\n\t\t\t\t\t\t\t\t\t\t}\n\t\t\t\t\t\t\t\t\t}\n\t\t\t\t\t\t\t\t})`,
+			why: "A watch that polls its driver back to back, asking waitOf on every turn of the scheduler while the move runs, spends CPU for the move's whole wall time."
+		}
+	]
+})

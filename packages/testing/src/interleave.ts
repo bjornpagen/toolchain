@@ -33,9 +33,11 @@ export type Classified = Readonly<{ key: string; session: "continues" | "ends" }
  * means, and which moves commute.
  * - `reset` puts the system in its initial state before each run;
  * - `run` runs one move to its end; it never fails, a failure being an outcome, and interrupting it cancels the move;
- * - `waitOf` says whether a move in flight waits, on which of the schedule's sessions, and what the driver saw of the
- *   wait (PostgreSQL's lock and mode); the engine polls it back to back with the other fibers yielded to, never on a
- *   timer;
+ * - `waitOf` completes once the driver sees a move in flight waiting, with the schedule's sessions it waits on and what
+ *   the driver saw of the wait (PostgreSQL's lock and mode), and never completes for a move the driver never sees
+ *   waiting (`Effect.never` for a driver that sees no waits). The engine races it against the move's own end, so it
+ *   waits on one of the two and never asks again while the move runs: a driver that can only observe a wait, never be
+ *   told of one, observes it inside its `waitOf`, at the pace its observation allows;
  * - `quiesce` returns only once the system has decided every wait it will decide on its own (PostgreSQL's deadlock
  *   check, which runs `deadlock_timeout` after a wait begins), so its choices repeat; the engine never infers that from
  *   time;
@@ -59,7 +61,7 @@ export type Classified = Readonly<{ key: string; session: "continues" | "ends" }
 export interface Driver<S extends string, M, O, Q, A, W, E, R> {
 	readonly reset: Effect.Effect<void, E, R>
 	readonly run: (session: S, move: M) => Effect.Effect<O, never, R>
-	readonly waitOf: (session: S, move: M) => Effect.Effect<Option.Option<Wait<S, W>>, E, R>
+	readonly waitOf: (session: S, move: M) => Effect.Effect<Wait<S, W>, E, R>
 	readonly quiesce: (waiting: ReadonlyArray<S>) => Effect.Effect<void, E, R>
 	readonly outcome: (move: M, ended: Ended<O>) => Classified
 	readonly release: (session: S) => Effect.Effect<void, never, R>
@@ -111,6 +113,11 @@ export type Strategy<S extends string, Q> =
 
 /** A move seen waiting: the schedule's sessions it waits on, and what the driver saw of the wait. */
 export type Wait<S extends string, W> = Readonly<{ on: Arr.NonEmptyReadonlyArray<S>; detail: W }>
+
+/** What settled a move in flight first: its end, or its driver seeing it waiting. */
+type Settling<S extends string, O, W> =
+	| Readonly<{ kind: "ended"; settled: Exit.Exit<O> }>
+	| Readonly<{ kind: "waiting"; seen: Wait<S, W> }>
 
 /** How an issued move ended: with its outcome, or cancelled where it was seen waiting. */
 export type Ended<O> = Readonly<{ kind: "ended"; outcome: O }> | Readonly<{ kind: "cancelled" }>
@@ -487,33 +494,55 @@ export const interleave = <S extends string, M, O, Q, A, W, E, R, F, RJ>(
 						? finish(pendingMove, { kind: "ended", outcome: exit.value })
 						: Effect.failCause(exit.cause)
 
-				const watch = (pendingMove: Pending<S, M, O, W>) =>
+				/**
+				 * A move seen waiting: its wait recorded, and, where its driver cancels a waiting move, the move cancelled (true:
+				 * it settled); otherwise left to wait (false). A move that ended as it was seen waiting settles as ended.
+				 */
+				const seenWaiting = (pendingMove: Pending<S, M, O, W>, seen: Wait<S, W>) =>
 					Effect.gen(function* () {
-						for (;;) {
-							const exit = pendingMove.fiber.pollUnsafe()
-							if (exit !== undefined) {
-								return yield* Effect.as(ended(pendingMove, exit), true)
-							}
-							const seen = yield* driver.waitOf(pendingMove.session, pendingMove.move)
-							if (Option.isSome(seen)) {
-								const settledExit = pendingMove.fiber.pollUnsafe()
-								if (settledExit !== undefined) {
-									return yield* Effect.as(ended(pendingMove, settledExit), true)
-								}
-								pendingMove.waiting = seen
-								Option.map(pendingMove.issuedAt, (node) => node.waited.add(pendingMove.session))
-								if (Option.isNone(pendingMove.record.waited)) {
-									pendingMove.record.waited = Option.some({ wait: seen.value, at: clock })
-								}
-								if (driver.onWait(pendingMove.move) === "interrupt") {
-									yield* Fiber.interrupt(pendingMove.fiber)
-									yield* finish(pendingMove, { kind: "cancelled" })
-									return true
-								}
-								return false
-							}
-							yield* Effect.yieldNow
+						const settledExit = pendingMove.fiber.pollUnsafe()
+						if (settledExit !== undefined) {
+							return yield* Effect.as(ended(pendingMove, settledExit), true)
 						}
+						pendingMove.waiting = Option.some(seen)
+						Option.map(pendingMove.issuedAt, (node) => node.waited.add(pendingMove.session))
+						if (Option.isNone(pendingMove.record.waited)) {
+							pendingMove.record.waited = Option.some({ wait: seen, at: clock })
+						}
+						if (driver.onWait(pendingMove.move) === "interrupt") {
+							yield* Fiber.interrupt(pendingMove.fiber)
+							yield* finish(pendingMove, { kind: "cancelled" })
+							return true
+						}
+						return false
+					})
+
+				/**
+				 * Waits for a move in flight to settle: it ends (true), or its driver sees it waiting (seenWaiting). The engine
+				 * waits on whichever comes first, the move's end or the driver's word, and asks nothing while it waits; a move
+				 * that has already ended settles as ended, whatever its driver would say.
+				 */
+				const watch = (pendingMove: Pending<S, M, O, W>) =>
+					Effect.suspend(() => {
+						const exit = pendingMove.fiber.pollUnsafe()
+						return exit !== undefined
+							? Effect.as(ended(pendingMove, exit), true)
+							: Effect.flatMap(
+									Effect.raceFirst(
+										Effect.map(Fiber.await(pendingMove.fiber), (settled): Settling<S, O, W> => ({
+											kind: "ended",
+											settled
+										})),
+										Effect.map(
+											driver.waitOf(pendingMove.session, pendingMove.move),
+											(seen): Settling<S, O, W> => ({ kind: "waiting", seen })
+										)
+									),
+									(first) =>
+										first.kind === "ended"
+											? Effect.as(ended(pendingMove, first.settled), true)
+											: seenWaiting(pendingMove, first.seen)
+								)
 					})
 
 				const settleAll = Effect.gen(function* () {
