@@ -10,10 +10,15 @@ import {
 	appliesToSql,
 	counted,
 	type Counts,
+	droppedShape,
+	elementEditsOf,
 	expectedOf,
 	familyCase,
 	killCase,
+	literalGen,
+	literalProgram,
 	literalsText,
+	literalText,
 	placeOf,
 	placesIn,
 	programGen,
@@ -21,7 +26,8 @@ import {
 	renamedOf,
 	renamesOf,
 	renamingFamily,
-	SHAPES
+	SHAPES,
+	unspaced
 } from "#mutants.fixtures.ts"
 import { applied, killApplied, mutantsOf, noFamilies } from "#mutants.ts"
 import { property } from "#property.ts"
@@ -176,6 +182,88 @@ export const killAppliedOnce = property.explore(killCase, {
 			original: "\treturn places.length === 1 && at !== undefined",
 			replacement: "\treturn places.length >= 1 && at !== undefined",
 			why: "A kill whose original stands in several places applies at the first of them, never stale; the property fails."
+		}
+	]
+})
+
+/**
+ * An array literal's element mutants: one an element, each dropping that element with the separator that joins it to
+ * its neighbour, so the literal that is left holds the other elements in order with no hole; each as long as its
+ * element and separator, never the literal; and each beginning outside every element, the place a coverage map reads.
+ */
+export const elementMutants = property.explore(literalGen, {
+	needs: {},
+	situations: [
+		"the first element",
+		"a later element",
+		"an element a function",
+		"a trailing comma",
+		"a separator over lines"
+	],
+	check: (_resources, c) => (literal) =>
+		Effect.gen(function* () {
+			c.note("the first element")
+			c.note("a later element")
+			if (Arr.contains(literal.items, "() => a")) {
+				c.note("an element a function")
+			}
+			if (literal.trailing) {
+				c.note("a trailing comma")
+			}
+			if (Arr.some(literal.joins, (join) => Str.includes("\n")(join))) {
+				c.note("a separator over lines")
+			}
+			const { text, at } = literalProgram(literal)
+			const mutants = yield* mutantsOf([{ file: "program.ts", text }], noFamilies)
+			const edits = Arr.map(mutants, ({ operator, start, original, replacement }) => ({
+				operator,
+				start,
+				original,
+				replacement
+			}))
+			deepStrictEqual(
+				edits,
+				Arr.map(elementEditsOf(literal, at), (edit) => ({ operator: "element", ...edit }))
+			)
+			const literalEnd = at + literalText(literal).length
+			deepStrictEqual(
+				Arr.map(mutants, (mutant) =>
+					unspaced(
+						Str.slice(
+							at,
+							literalEnd - mutant.original.length + mutant.replacement.length
+						)(applied(mutant))
+					)
+				),
+				Arr.map(literal.items, (_, index) => droppedShape(literal, index))
+			)
+		}),
+	oracle: {
+		kind: "specification",
+		name: "each element dropped with the separator next to it, the bracket kept: the others in order, no hole"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/mutants.ts",
+			original: '\t\t\tadd("element", { start: left.end, end: right.end }, "")',
+			replacement:
+				'\t\t\tadd("element", { start: node.getStart(source), end: node.end }, "[" + Arr.join(Arr.remove(Arr.map(node.elements, (e) => source.text.slice(e.getStart(source), e.end)), index + 1), ", ") + "]")',
+			why: "A later element's mutant replaces the whole literal, so a literal of n elements yields n copies of itself and a table of thousands exhausts the heap."
+		},
+		{
+			file: "packages/testing/src/mutants.ts",
+			original:
+				'\t\t\t\tadd("element", { start: node.getStart(source), end: right.getStart(source) }, "[")',
+			replacement:
+				'\t\t\t\tadd("element", { start: left.getStart(source), end: right.getStart(source) }, "")',
+			why: "The first element's mutant begins at the element, so a coverage map reads it inside the element: an unrun function there makes it uncovered."
+		},
+		{
+			file: "packages/testing/src/mutants.ts",
+			original: '\t\t\tadd("element", { start: left.end, end: right.end }, "")',
+			replacement: '\t\t\tadd("element", { start: right.getStart(source), end: right.end }, "")',
+			why: "A later element is dropped without its separator, leaving a hole in the literal or a comma of its own."
 		}
 	]
 })

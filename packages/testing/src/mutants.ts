@@ -316,12 +316,21 @@ const caseSwap: LibraryRule = (node, { add, text, source }) => {
 	}
 }
 
-/** One element of an array literal dropped. */
-const element: LibraryRule = (node, { add, slice, span }) => {
-	if (ts.isArrayLiteralExpression(node) && node.elements.length > 1) {
-		const elements = Arr.map(node.elements, slice)
-		for (const index of elements.keys()) {
-			add("element", span(node), `[${Arr.join(without(elements, index), ", ")}]`)
+/**
+ * One element of an array literal dropped, with the separator that joins it to its neighbour: the first from the
+ * bracket to the next element (the bracket written back), any other from where the element before it ends. The span
+ * holds that one element and its separator, so a literal of n elements yields n mutants an element long each, never n
+ * copies of the literal, and it begins outside every element, at the bracket or where the element before ends: the
+ * place a coverage map reads for it is the literal's, whatever its elements are.
+ */
+const element: LibraryRule = (node, { add, source }) => {
+	if (ts.isArrayLiteralExpression(node)) {
+		const pairs = Arr.zip(node.elements, Arr.drop(node.elements, 1))
+		for (const [index, [left, right]] of pairs.entries()) {
+			if (index === 0) {
+				add("element", { start: node.getStart(source), end: right.getStart(source) }, "[")
+			}
+			add("element", { start: left.end, end: right.end }, "")
 		}
 	}
 }

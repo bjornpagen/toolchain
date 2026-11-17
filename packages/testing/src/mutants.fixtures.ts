@@ -1,5 +1,5 @@
 import { Array as Arr, Option, Order, Record as Rec, String as Str } from "effect"
-import { array, element, type Gen, int, shuffled } from "#gen.ts"
+import { array, boolean, element, type Gen, int, shuffled } from "#gen.ts"
 import { applied, type Family, type Mutant, type Operator } from "#mutants.ts"
 
 /**
@@ -293,3 +293,80 @@ export const placesIn = (text: string, original: string): ReadonlyArray<number> 
 		Array.from({ length: text.length + 1 }, (_, i) => i),
 		(at) => Str.slice(at, at + original.length)(text) === original
 	)
+
+/** How an element of an array literal is written: none of them holds a mutant of its own. */
+const ITEMS = ["a", "f(a)", "() => a", "{ k: a }", "...a"] as const
+
+/** What joins two elements: a comma and a space, or a comma and a new line. */
+const JOINS = [", ", ",\n\t\t"] as const
+
+/**
+ * An array literal of two to six elements: each element's text, what joins each to the one before, whether a space
+ * follows the bracket, and whether a comma trails the last element.
+ */
+export type Literal = Readonly<{
+	items: ReadonlyArray<string>
+	joins: ReadonlyArray<string>
+	padded: boolean
+	trailing: boolean
+}>
+
+export const literalGen: Gen<Literal> = (source) => {
+	const items = source.draw(array(element(ITEMS), { min: 2, max: 6 }))
+	return {
+		items,
+		joins: Arr.map(Arr.drop(items, 1), () => source.draw(element(JOINS))),
+		padded: source.draw(boolean),
+		trailing: source.draw(boolean)
+	}
+}
+
+/** The literal's text. */
+export const literalText = (literal: Literal) =>
+	`[${literal.padded ? " " : ""}${Arr.join(
+		Arr.map(
+			literal.items,
+			(item, index) => `${index === 0 ? "" : (literal.joins[index - 1] ?? "")}${item}`
+		),
+		""
+	)}${literal.trailing ? "," : ""}]`
+
+/** Where the literal stands in its program, the binding of `xs` in `run`'s body. */
+export const literalProgram = (literal: Literal) => {
+	const before = "const run = () => {\n\tconst xs = "
+	return { text: `${before}${literalText(literal)}\n}\n`, at: before.length }
+}
+
+/** An element mutant as the oracle states it: where it begins, the text it replaces and what it writes there. */
+export type ElementEdit = Readonly<{ start: number; original: string; replacement: string }>
+
+/**
+ * Each element's mutant, by the rule's contract: the first from the bracket to the next element, the bracket written
+ * back; any other from where the element before it ends to its own end, nothing written.
+ */
+export const elementEditsOf = (literal: Literal, at: number): ReadonlyArray<ElementEdit> => {
+	const pad = literal.padded ? " " : ""
+	const edits: Array<ElementEdit> = []
+	let end = at + 1 + pad.length
+	for (const [index, item] of literal.items.entries()) {
+		const join = literal.joins[index === 0 ? 0 : index - 1] ?? ""
+		edits.push(
+			index === 0
+				? { start: at, original: `[${pad}${item}${join}`, replacement: "[" }
+				: { start: end, original: `${join}${item}`, replacement: "" }
+		)
+		end += (index === 0 ? 0 : join.length) + item.length
+	}
+	return edits
+}
+
+/** A text with every space, tab and line break taken out. */
+export const unspaced = (text: string) =>
+	Arr.join(
+		Arr.filter(Arr.fromIterable(text), (character) => Str.trim(character) !== ""),
+		""
+	)
+
+/** The literal with element `index` dropped, as its elements and commas read with every space removed. */
+export const droppedShape = (literal: Literal, index: number) =>
+	unspaced(`[${Arr.join(Arr.remove(literal.items, index), ",")}${literal.trailing ? "," : ""}]`)
