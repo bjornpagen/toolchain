@@ -141,8 +141,10 @@ export type Printed = typeof Printed.Type
  * How a case ended: it passed, keeping its tape and its printed form as its order asked; it passed but used its case
  * after the case ended (`misused`); its check failed, with the failure as its report states it; it ran past its
  * deadline (`hung`); its process ended while it ran (`lost`: a blocked event loop its watchdog ended, a crash), which
- * the parent reports with what the process last wrote; or it never ran, because a need of its property did not open on
- * its process (`unopened`), which is no fact of the case. A failed or hung case carries its tape and its printed form.
+ * the parent reports with what the process last wrote; or it could not have its resources, because a need of its
+ * property did not open on its process or failed the case (its check failed with a NeedFailed: a take of a need, or a
+ * need the check opened itself), `unopened`, which is no fact of the case's value. A failed or hung case carries its
+ * tape and its printed form.
  */
 const CaseOutcome = Schema.Union([
 	Schema.Struct({
@@ -525,10 +527,15 @@ export type SearchRun = Readonly<{
  */
 export type CasePhase = "kept" | "floor" | "steered" | "exhaustive" | "independent" | "replayed"
 
-/** How far a failing case was shrunk: no candidate made progress, its budget ran out, or it was not shrunk. */
+/**
+ * How far a failing case was shrunk: no candidate made progress, its budget ran out, a candidate's need failed
+ * (`unopened`: the need and why, after which no candidate ran, since every one would take the need again), or it was
+ * not shrunk.
+ */
 export type Shrinking =
 	| Readonly<{ kind: "minimal"; candidates: number }>
 	| Readonly<{ kind: "budget"; candidates: number }>
+	| Readonly<{ kind: "unopened"; candidates: number; need: string; message: string }>
 	| Readonly<{ kind: "unshrunk" }>
 
 /** The witnesses a coverage verdict was judged on: an exploration's floor and steered cases, or an exhaustion's every
@@ -539,8 +546,8 @@ export type Witnessed =
 
 /**
  * Why a property failed: a case failed (shrunk as far as it went), hung, used its case after it ended, or was lost
- * with its process; a need of the property did not open on a process, so no case of it ran there (`unopened`, borne by
- * no case, printed once); a required situation no witness reached; a kept or replayed token that no longer runs as it
+ * with its process; a need of the property did not open on a process or failed a case there, so no case of it was
+ * judged (`unopened`, borne by no case, printed once, never shrunk); a required situation no witness reached; a kept or replayed token that no longer runs as it
  * says (`stale`); or an exhaustion's space too large to count within the case deadline. Every case-borne finding names
  * where its case came from and prints it as it ran, with its replay token where it has one.
  */

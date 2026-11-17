@@ -1,7 +1,11 @@
 import { Context, type Effect, Schema } from "effect"
 import type { ClosureHash } from "#runner/closure-hash.ts"
 
-/** A need failed to open or to give a case its resource: the case fails with it, never the run silently. */
+/**
+ * A need failed to open or to give a case its resource. It is the need's failure, never the case's: a case whose check
+ * fails with it is unopened, not falsified, so its property fails once, naming the need and why, and no shrink runs it
+ * again; never the run silently.
+ */
 export class NeedFailed extends Schema.TaggedError<NeedFailed, { readonly brand: unique symbol }>()(
 	"NeedFailed",
 	{ need: Schema.String, message: Schema.String }

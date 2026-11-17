@@ -81,6 +81,8 @@ const shrinkingText = (shrinking: Shrinking): string => {
 			return `shrunk in ${shrinking.candidates} candidates`
 		case "budget":
 			return `shrunk in ${shrinking.candidates} candidates, cut short by its budget`
+		case "unopened":
+			return `shrunk in ${shrinking.candidates} candidates, then stopped: its need ${shrinking.need} failed a candidate, so no later one could be judged: ${shrinking.message}`
 		case "unshrunk":
 			return "not shrunk"
 	}
@@ -101,7 +103,7 @@ const headlineOf = (finding: Finding): string => {
 		case "lost":
 			return `lost its worker on ${finding.where}`
 		case "unopened":
-			return `its need ${finding.need} did not open on a worker, so no case of it ran there`
+			return `its need ${finding.need} failed on a worker (its open, or a case's take of it), so no case of it was judged`
 		case "stale":
 			return `${finding.where} is stale`
 		case "unreached":

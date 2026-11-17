@@ -16,20 +16,33 @@
  *   slower to open than the case deadline hangs no case.
  * - A need that does not open on a process (its open fails, or runs past the open bound) fails its property once, with
  *   the need and why, and no case of the property runs there.
+ * - A need that fails inside a case (a take of a need the property opened, or a need its check opens itself), checked
+ *   one case at a time or a batch at a time, fails its property once, unopened, with the need and why: no case is
+ *   judged failed, none is shrunk, and no case after it reaches the need.
+ * - A need that fails a shrink's candidate stops the shrink there: the failing case is reported shrunk as far as it
+ *   went, with the need and why, and no candidate after it reaches the need.
  * - A process holds a need open while a property readied there that uses it has not retired: a retirement releases
  *   exactly the keys no other live property uses, and a released need's scope is closed (what it acquired released)
  *   and opens again when asked.
  *
  * Oracles are stated per property.
  */
-import { Array as Arr, Clock, Effect, Option, Order } from "effect"
+import { Array as Arr, Clock, Effect, Option, Order, String as Str } from "effect"
 import { TestClock } from "effect/testing"
 import { deepStrictEqual, strictEqual } from "#assert.ts"
 import { aimed, int } from "#gen.ts"
 import { property } from "#property.ts"
 import {
+	CASE_NEED_FAILURES,
+	CHECKINGS,
+	caseNeedFailures,
+	checkings,
 	cycledReleases,
+	FAILED_CASE,
 	FAILED_OPEN,
+	FAILING_NEED,
+	failingInCases,
+	failingMidShrink,
 	hanging,
 	holdingHistories,
 	LATE_USES,
@@ -389,6 +402,103 @@ export const releasedNeedsClose = property.explore(
 				original: "\t\t\t\t\t\t\tonSome: (open) => Scope.close(open, Exit.void)",
 				replacement: "\t\t\t\t\t\t\tonSome: () => Effect.void",
 				why: "A released need is forgotten but its scope is never closed, so the clones, sessions and lease permits its open acquired stay held for the worker's life (GZ-FOUNDATION: LeaseBudgetExhausted over a full run); this property fails."
+			}
+		]
+	}
+)
+
+export const needFailsInCase = property.explore(
+	(source) => ({
+		failure: source.draw(caseNeedFailures),
+		checking: source.draw(checkings),
+		seed: source.draw(seeds)
+	}),
+	{
+		needs: {},
+		situations: [...CASE_NEED_FAILURES, ...CHECKINGS],
+		check:
+			(_resources, c) =>
+			({ failure, checking, seed }) =>
+				Effect.gen(function* () {
+					c.note(failure)
+					c.note(checking)
+					const inner = failingInCases(failure, checking)
+					const verdict = yield* searchedAt(inner.property, {
+						...fullRun("need fails in case/inner", seed),
+						reach: "rotating"
+					})
+					deepStrictEqual(
+						{ finding: findingOf(verdict), reached: inner.counts.reached },
+						{
+							finding: Option.some({ kind: "unopened", need: FAILING_NEED, message: FAILED_CASE }),
+							reached: 1
+						}
+					)
+				}),
+		oracle: {
+			kind: "specification",
+			name: "a need that fails a case fails its property once, naming it and why; no case is judged failed or shrunk"
+		},
+		kept: [],
+		kills: [
+			{
+				file: "packages/testing/src/runner/case.ts",
+				original: '\t\t\tonSome: (unopened): Settled => ({ kind: "unopened", unopened })',
+				replacement: '\t\t\tonSome: (): Settled => ({ kind: "failed", cause })',
+				why: "A need that fails inside a case falsifies the case, as before NEED-SHRINK: the search shrinks it, and every candidate takes the need again (CALLERROR's write oracle: 749 candidates, 1,043 CPU-s, no case judged); this property fails."
+			}
+		]
+	}
+)
+
+export const shrinkStopsAtNeed = property.explore(
+	(source) => ({
+		threshold: source.draw(int(1, 1000)),
+		good: source.draw(int(1, 4)),
+		seed: source.draw(seeds)
+	}),
+	{
+		needs: {},
+		situations: [],
+		check:
+			() =>
+			({ threshold, good, seed }) =>
+				Effect.gen(function* () {
+					const inner = failingMidShrink(threshold, good)
+					const verdict = yield* searchedAt(inner.property, {
+						...fullRun("shrink stops at need/inner", seed),
+						reach: "rotating"
+					})
+					deepStrictEqual(
+						{
+							stopped: Option.flatMap(findingOf(verdict), (finding) =>
+								finding.kind === "falsified" && finding.shrinking.kind === "unopened"
+									? Option.some({
+											failed: Str.includes("drew too much")(finding.failure),
+											need: finding.shrinking.need,
+											message: finding.shrinking.message
+										})
+									: Option.none()
+							),
+							reached: inner.counts.reached
+						},
+						{
+							stopped: Option.some({ failed: true, need: FAILING_NEED, message: FAILED_CASE }),
+							reached: 1
+						}
+					)
+				}),
+		oracle: {
+			kind: "specification",
+			name: "a shrink stops at the first candidate a need fails, reporting the failure as far as it shrank, with the need and why"
+		},
+		kept: [],
+		kills: [
+			{
+				file: "packages/testing/src/runner/search.ts",
+				original: '\t\t\treturn { kind: "unjudged", why: outcome }',
+				replacement: '\t\t\treturn { kind: "holds" }',
+				why: "A candidate a need failed is read as one that holds, so the shrink goes on, and every later candidate that reaches the need takes it again; this property fails."
 			}
 		]
 	}

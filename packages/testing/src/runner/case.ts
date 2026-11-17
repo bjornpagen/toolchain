@@ -12,6 +12,7 @@ import {
 	Option,
 	Record as Rec,
 	Result,
+	Schema,
 	Scope,
 	Struct
 } from "effect"
@@ -481,19 +482,39 @@ const printedOf = <S>(
 	draws: Arr.map(drew, (draw) => Formatter.format(draw))
 })
 
-/** How a guarded effect ended: it passed, failed with its cause, or ran past its deadline. */
+/**
+ * How a guarded effect ended: it passed, failed with its cause, ran past its deadline, or could not have a need's
+ * resource (`unopened`: a NeedFailed in its error channel, a need's take that failed or a need the check opened itself),
+ * which is no fact of its case's value, so no shrink ever sees it.
+ */
 type Settled =
 	| Readonly<{ kind: "passed" }>
 	| Readonly<{ kind: "failed"; cause: Cause.Cause<unknown> }>
 	| Readonly<{ kind: "hung" }>
+	| Readonly<{ kind: "unopened"; unopened: NeedFailed }>
+
+/**
+ * A guarded effect's failure as it settles: unopened by the first need that failed in its error channel, whatever else
+ * failed beside it, since a case without its resources says nothing of its value; failed with its cause otherwise.
+ */
+const failedOf = (cause: Cause.Cause<unknown>): Settled =>
+	Option.match(
+		Arr.findFirst(cause.reasons, (reason) =>
+			Cause.isFailReason(reason) && Schema.is(NeedFailed)(reason.error)
+				? Option.some(reason.error)
+				: Option.none()
+		),
+		{
+			onNone: (): Settled => ({ kind: "failed", cause }),
+			onSome: (unopened): Settled => ({ kind: "unopened", unopened })
+		}
+	)
 
 const settledOf = <E>(exit: Exit.Exit<Exit.Exit<void, E>>): Settled => {
 	if (Exit.isFailure(exit)) {
-		return { kind: "failed", cause: exit.cause }
+		return failedOf(exit.cause)
 	}
-	return Exit.isSuccess(exit.value)
-		? { kind: "passed" }
-		: { kind: "failed", cause: exit.value.cause }
+	return Exit.isSuccess(exit.value) ? { kind: "passed" } : failedOf(exit.value.cause)
 }
 
 /**
@@ -603,7 +624,9 @@ const cpuSince = (began: NodeJS.CpuUsage) =>
 
 /**
  * The outcome of a case that drew its value and settled, printed (`printed`, which formats its value) only when the
- * outcome shows it: a failing or hung case, or a passing one its order asks to show.
+ * outcome shows it: a failing or hung case, or a passing one its order asks to show. A case that could not have a need's
+ * resource is unopened, as a property whose need did not open on its process is: the need and why, no tape and no
+ * printed value, which a search reports once and never shrinks.
  */
 const outcomeOf = (
 	settled: Settled,
@@ -628,6 +651,12 @@ const outcomeOf = (
 			}
 		case "hung":
 			return { kind: "hung", tape: recorded.tape(), printed: printed() }
+		case "unopened":
+			return {
+				kind: "unopened",
+				need: settled.unopened.need,
+				message: settled.unopened.message
+			}
 	}
 }
 

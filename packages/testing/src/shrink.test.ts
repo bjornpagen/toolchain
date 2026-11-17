@@ -4,12 +4,13 @@
  * judge gives verdicts back, to a local least of its moves, and to its space's least wherever its moves reach it; it
  * never throws, and proposes only its documented moves of the smallest failing case so far, accepting the first smaller
  * failure in candidate order and counting exactly the verdicts it read, returning one its own decisions replay; and it
- * spends at most its budget of candidates, saying so when the budget stopped it. Each shrink is driven directly: a
+ * spends at most its budget of candidates, saying so when the budget stopped it; and it stops at the first candidate in
+ * candidate order its judge could not judge, judging none after it. Each shrink is driven directly: a
  * drawn generator and failure, and a judge that replays each candidate's values through the generator. Oracles are
  * stated per property.
  */
 import { Array as Arr, Effect } from "effect"
-import { assertTrue, deepStrictEqual, strictEqual } from "#assert.ts"
+import { assertTrue, deepStrictEqual, fail, strictEqual } from "#assert.ts"
 import { int } from "#gen.ts"
 import { property } from "#property.ts"
 import {
@@ -20,6 +21,7 @@ import {
 	failsBy,
 	formedProblems,
 	generatorOfShape,
+	heldBy,
 	JUDGING_FEATURES,
 	judgedBy,
 	judgedOf,
@@ -35,8 +37,13 @@ import {
 	sequential,
 	shrunkUnder,
 	spansWithin,
+	stopOf,
+	stoppedAt,
+	stoppedBy,
 	straysOf,
 	thresholdOf,
+	unjudgedAt,
+	unjudgedProblems,
 	wholeOn,
 	widthPastRoom
 } from "#shrink.fixtures.ts"
@@ -238,6 +245,8 @@ export const shrinkSpendsItsBudget = property.explore(budgetedProblems, {
 						c.note("minimal within its budget")
 						deepStrictEqual(valuesOf(bounded.shrunk.best.tape), valuesOf(complete.shrunk.best.tape))
 						break
+					case "unjudged":
+						fail("a shrink whose judge judged every candidate stopped at one it could not judge")
 				}
 			}),
 	oracle: {
@@ -253,6 +262,49 @@ export const shrinkSpendsItsBudget = property.explore(budgetedProblems, {
 			replacement:
 				'budget.kind === "bounded" ? budget.candidates + 1 - candidates : Number.POSITIVE_INFINITY',
 			why: "A bounded shrink runs one candidate past its budget; the budget property fails."
+		}
+	]
+})
+
+/**
+ * A shrink stops at the first candidate in candidate order its judge could not judge (what judging it needed could not
+ * be had, as when a need of its property fails it), uncounted and with nothing judged after it, keeping the smallest
+ * failure so far: where the sequential shrink that finds those candidates holding stands at its first round that
+ * proposes one, at every width and either way of giving verdicts back.
+ */
+export const shrinkStopsUnjudged = property.explore(unjudgedProblems, {
+	needs: {},
+	situations: ["stopped at an unjudged candidate", "ended before any unjudged candidate"],
+	check:
+		(_resources, c) =>
+		({ problem, every, judging }) =>
+			Effect.gen(function* () {
+				const { fails, failing } = failingOf(problem)
+				const begun = Arr.getUnsafe(failing, c.draw(int(0, failing.length - 1)))
+				const start = { tape: begun.tape, failure: begun.value }
+				const run = judgedBy(generatorOfShape(problem.shape), fails)
+				const unjudged = unjudgedAt(every)
+				const stopped = yield* shrunkUnder(judging, start, stoppedBy(unjudged, run), completeShrink)
+				const held = yield* shrunkUnder(sequential, start, heldBy(unjudged, run), completeShrink)
+				const expected = stoppedAt(held, unjudged)
+				c.note(
+					expected.ended === "unjudged"
+						? "stopped at an unjudged candidate"
+						: "ended before any unjudged candidate"
+				)
+				deepStrictEqual(stopOf(stopped), expected)
+			}),
+	oracle: {
+		kind: "second-implementation",
+		name: "the sequential shrink that finds the unjudged candidates holding, read up to its first round that proposes one"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/shrink.ts",
+			original: '\t\t\t\tif (judged.kind === "unjudged") {',
+			replacement: "\t\t\t\tif (false) {",
+			why: "A candidate the judge could not judge is read as one that holds, so the shrink goes on past it, judging every later candidate by the same broken means (CALLERROR's write oracle: 749 candidates, each a clone of a missing template); the stopping property fails."
 		}
 	]
 })

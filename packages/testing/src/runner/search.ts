@@ -14,6 +14,7 @@ import { type Drawn, type ReplayCase, replayOf, replayTokenOf } from "#replay.ts
 import {
 	type Batch,
 	type CaseOrder,
+	type CaseOutcome,
 	type CasePhase,
 	type CaseResult,
 	type Measures,
@@ -27,6 +28,7 @@ import {
 	type Noted,
 	type SeriesOrder,
 	type SeriesRan,
+	type Shrinking,
 	type Verdict
 } from "#runner/protocol.ts"
 import { runOfLabel } from "#runner/stack.ts"
@@ -35,6 +37,7 @@ import {
 	boundedShrink,
 	completeShrink,
 	type Judged,
+	type Ordered,
 	type ShrinkBudget,
 	shrinkInOrder
 } from "#shrink.ts"
@@ -150,17 +153,42 @@ const measuring = () => {
 	}
 }
 
-/** A shrink candidate's verdict: a smaller case of the failure only when its check failed. */
-const judgedOf = (result: CaseResult): Judged<CaseResult> => {
-	switch (result.outcome.kind) {
+/** A case that could not have a need's resource: the need, and why. */
+type Unopened = Extract<CaseOutcome, Readonly<{ kind: "unopened" }>>
+
+/**
+ * A shrink candidate's verdict: a smaller case of the failure only when its check failed; never judged when a need of
+ * its property failed it (unopened), which ends the shrink, since every later candidate would take that need again.
+ */
+const judgedOf = (result: CaseResult): Judged<CaseResult, Unopened> => {
+	const outcome = result.outcome
+	switch (outcome.kind) {
 		case "failed":
-			return { kind: "fails", tape: result.outcome.tape, failure: result }
+			return { kind: "fails", tape: outcome.tape, failure: result }
+		case "unopened":
+			return { kind: "unjudged", why: outcome }
 		case "passed":
 		case "misused":
 		case "hung":
 		case "lost":
-		case "unopened":
 			return { kind: "holds" }
+	}
+}
+
+/** How far a shrink in candidate order went, as a finding states it. */
+const shrinkingOf = (shrunk: Ordered<CaseResult, Unopened>): Shrinking => {
+	switch (shrunk.ended) {
+		case "minimal":
+			return { kind: "minimal", candidates: shrunk.candidates }
+		case "budget":
+			return { kind: "budget", candidates: shrunk.candidates }
+		case "unjudged":
+			return {
+				kind: "unopened",
+				candidates: shrunk.candidates,
+				need: shrunk.why.need,
+				message: shrunk.why.message
+			}
 	}
 }
 
@@ -170,7 +198,7 @@ const candidatesOf =
 	(run: SearchRun, drawn: Drawn) =>
 	(
 		candidates: Arr.NonEmptyReadonlyArray<Float64Array>
-	): Effect.Effect<ReadonlyArray<Judged<CaseResult>>> =>
+	): Effect.Effect<ReadonlyArray<Judged<CaseResult, Unopened>>> =>
 		Effect.map(
 			windowOf(
 				run,
@@ -256,10 +284,7 @@ const findingOf = (
 						where,
 						printed: best.kind === "failed" ? best.printed : outcome.printed,
 						failure: best.kind === "failed" ? best.failure : outcome.failure,
-						shrinking:
-							shrunk.ended === "minimal"
-								? { kind: "minimal", candidates: shrunk.candidates }
-								: { kind: "budget", candidates: shrunk.candidates },
+						shrinking: shrinkingOf(shrunk),
 						token: tokenOf(run.id, drawn, shrunk.best.tape)
 					})
 				}

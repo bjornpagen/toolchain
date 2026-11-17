@@ -6,6 +6,7 @@ import {
 	type Failing,
 	type Judged,
 	type Ordered,
+	type OrderedEnd,
 	type ShrinkBudget,
 	shrinkInOrder
 } from "#shrink.ts"
@@ -18,7 +19,7 @@ import {
 	recorder,
 	type Source
 } from "#source.ts"
-import { shortlex, type Tape, valuesOf } from "#tape.ts"
+import { digestOf, shortlex, type Tape, valuesOf } from "#tape.ts"
 
 /** A list known to be non-empty, as its type says; a list built to hold a case it was asked for holds one. */
 const nonEmpty = <A>(values: ReadonlyArray<A>): Arr.NonEmptyReadonlyArray<A> =>
@@ -239,24 +240,24 @@ export type Reached = Readonly<{ values: ReadonlyArray<number>; candidates: numb
  * A shrink in candidate order, the rounds its judge saw, and what the judge saw it reach: the best case the acceptance
  * rule restated here tracked, and the verdicts it counted, round by round.
  */
-export type Watched<X> = Readonly<{
-	shrunk: Ordered<X>
+export type Watched<X, U> = Readonly<{
+	shrunk: Ordered<X, U>
 	rounds: ReadonlyArray<Round>
 	seen: Reached
 }>
 
 /** A round's verdicts, as a judging gives them back: every one, or in order up to the first that fails. */
-const verdictsOf = <X>(
+const verdictsOf = <X, U>(
 	giving: Giving,
 	candidates: Arr.NonEmptyReadonlyArray<Float64Array>,
-	run: (values: Float64Array) => Effect.Effect<Judged<X>>
-): Effect.Effect<ReadonlyArray<Judged<X>>> => {
+	run: (values: Float64Array) => Effect.Effect<Judged<X, U>>
+): Effect.Effect<ReadonlyArray<Judged<X, U>>> => {
 	switch (giving) {
 		case "every verdict":
 			return Effect.forEach(candidates, run)
 		case "up to the first failure":
 			return Effect.gen(function* () {
-				const given: Array<Judged<X>> = []
+				const given: Array<Judged<X, U>> = []
 				for (const values of candidates) {
 					const verdict = yield* run(values)
 					given.push(verdict)
@@ -273,8 +274,8 @@ const verdictsOf = <X>(
  * The verdict a shrink accepts among a round's, as its documentation states the rule: the first in candidate order
  * that fails with a tape smaller than the best, and where it stands.
  */
-const acceptedOf = <X>(
-	verdicts: ReadonlyArray<Judged<X>>,
+const acceptedOf = <X, U>(
+	verdicts: ReadonlyArray<Judged<X, U>>,
 	best: Tape
 ): Option.Option<Readonly<{ at: number; tape: Tape }>> => {
 	for (const [at, verdict] of verdicts.entries()) {
@@ -292,12 +293,12 @@ const acceptedOf = <X>(
  * Shrinks a failing case in candidate order under a judging, each candidate run by `run`, and keeps what the judge saw
  * of every round (Round).
  */
-export const shrunkUnder = <X>(
+export const shrunkUnder = <X, U>(
 	judging: Judging,
 	failing: Failing<X>,
-	run: (values: Float64Array) => Effect.Effect<Judged<X>>,
+	run: (values: Float64Array) => Effect.Effect<Judged<X, U>>,
 	budget: ShrinkBudget
-): Effect.Effect<Watched<X>> =>
+): Effect.Effect<Watched<X, U>> =>
 	Effect.suspend(() => {
 		const rounds: Array<Round> = []
 		let reads = 0
@@ -336,13 +337,13 @@ export const shrunkUnder = <X>(
 	})
 
 /** What a shrink says it reached. */
-export const reachedOf = <X>({ shrunk }: Watched<X>): Reached => ({
+export const reachedOf = <X, U>({ shrunk }: Watched<X, U>): Reached => ({
 	values: valuesOf(shrunk.best.tape),
 	candidates: shrunk.candidates
 })
 
 /** What a shrink says it reached, and why it ended. */
-export const outcomeOf = <X>(watched: Watched<X>) => ({
+export const outcomeOf = <X, U>(watched: Watched<X, U>) => ({
 	...reachedOf(watched),
 	ended: watched.shrunk.ended
 })
@@ -368,6 +369,96 @@ const REACHED_BY: Readonly<Record<JudgingFeature, (round: Round) => boolean>> = 
 	"a round shorter than its width": (round) => round.proposed.length < round.width
 }
 
+/**
+ * A shrink problem, how many of its candidates its judge cannot judge (one in `every`, by their values' digest, as a
+ * need fails the cases that reach a broken member of a cluster), and its judging.
+ */
+export const unjudgedProblems: Gen<
+	Readonly<{ problem: Problem; every: number; judging: Judging }>
+> = (source) => ({
+	problem: source.draw(problems),
+	every: source.draw(int(2, 6)),
+	judging: source.draw(judgings)
+})
+
+/** Whether a candidate is one in `every` its judge cannot judge, by its values' digest. */
+export const unjudgedAt =
+	(every: number) =>
+	(values: Float64Array): boolean =>
+		digestOf(values, values.length) % every === 0
+
+/** A judge that cannot judge the candidates `unjudged` holds of, their values why, and judges the rest by `run`. */
+export const stoppedBy =
+	(
+		unjudged: (values: Float64Array) => boolean,
+		run: (values: Float64Array) => Effect.Effect<Judged<ReadonlyArray<number>, never>>
+	) =>
+	(values: Float64Array): Effect.Effect<Judged<ReadonlyArray<number>, ReadonlyArray<number>>> =>
+		unjudged(values)
+			? Effect.succeed({ kind: "unjudged", why: Arr.fromIterable(values) })
+			: run(values)
+
+/** A judge that finds the candidates `unjudged` holds of holding, and judges the rest by `run`. */
+export const heldBy =
+	(
+		unjudged: (values: Float64Array) => boolean,
+		run: (values: Float64Array) => Effect.Effect<Judged<ReadonlyArray<number>, never>>
+	) =>
+	(values: Float64Array): Effect.Effect<Judged<ReadonlyArray<number>, never>> =>
+		unjudged(values) ? Effect.succeed({ kind: "holds" }) : run(values)
+
+/** Where a shrink ended: why, its best case's values, the candidates it counted, and the candidate that stopped it. */
+export type Stop = Readonly<{
+	ended: OrderedEnd | "unjudged"
+	values: ReadonlyArray<number>
+	candidates: number
+	why: Option.Option<ReadonlyArray<number>>
+}>
+
+/** Where a shrink whose judge gave unjudged candidates' values as why ended. */
+export const stopOf = ({
+	shrunk
+}: Watched<ReadonlyArray<number>, ReadonlyArray<number>>): Stop => ({
+	ended: shrunk.ended,
+	values: valuesOf(shrunk.best.tape),
+	candidates: shrunk.candidates,
+	why: shrunk.ended === "unjudged" ? Option.some(shrunk.why) : Option.none()
+})
+
+/**
+ * Where a shrink that stops at its first candidate `unjudged` holds of ends, as the sequential shrink that found those
+ * candidates holding (`held`, one candidate a round) shows it: at the first round that proposed one, with that round's
+ * best, the candidates counted before it and its values; where `held` ended, when it proposed none.
+ */
+export const stoppedAt = (
+	held: Watched<ReadonlyArray<number>, never>,
+	unjudged: (values: Float64Array) => boolean
+): Stop =>
+	Option.match(
+		Arr.findFirstIndex(held.rounds, (round) => unjudged(Arr.headNonEmpty(round.proposed))),
+		{
+			onNone: (): Stop => ({
+				ended: held.shrunk.ended,
+				values: valuesOf(held.shrunk.best.tape),
+				candidates: held.shrunk.candidates,
+				why: Option.none()
+			}),
+			onSome: (at): Stop => {
+				const round = Arr.getUnsafe(held.rounds, at)
+				return {
+					ended: "unjudged",
+					values: valuesOf(round.best),
+					candidates: Arr.reduce(
+						Arr.take(held.rounds, at),
+						0,
+						(counted, before) => counted + before.counted
+					),
+					why: Option.some(Arr.fromIterable(Arr.headNonEmpty(round.proposed)))
+				}
+			}
+		}
+	)
+
 /** The situations of judging many candidates at once that some round of a shrink reached. */
 export const judgingFeaturesOf = (rounds: ReadonlyArray<Round>): ReadonlyArray<JudgingFeature> =>
 	Arr.filter(JUDGING_FEATURES, (feature) => Arr.some(rounds, REACHED_BY[feature]))
@@ -385,7 +476,7 @@ export const widthPastRoom = (rounds: ReadonlyArray<Round>, budget: number): boo
 export const judgedBy = (
 	generator: Gen<ReadonlyArray<number>>,
 	fails: (items: ReadonlyArray<number>) => boolean
-): ((values: Float64Array) => Effect.Effect<Judged<ReadonlyArray<number>>>) => {
+): ((values: Float64Array) => Effect.Effect<Judged<ReadonlyArray<number>, never>>) => {
 	const recorded = recorder()
 	return (values) =>
 		Effect.sync(() => {
@@ -520,7 +611,7 @@ export const ranOn =
 	}
 
 /** A candidate's run as the shrink reads its verdict: still failing with its tape, or holding. */
-export const judgedOf = (ran: Ran): Judged<ReadonlyArray<number>> => {
+export const judgedOf = (ran: Ran): Judged<ReadonlyArray<number>, never> => {
 	switch (ran.kind) {
 		case "fails":
 			return ran
@@ -705,9 +796,9 @@ const loweringsOf = (tape: Tape): ReadonlyArray<ReadonlyArray<number>> => {
  * judged every one of them in its last round and accepted none, so none is left: its best case is a local least of its
  * moves.
  */
-export const acceptedMovesOf = <X>(
+export const acceptedMovesOf = <X, U>(
 	best: Tape,
-	run: (values: Float64Array) => Effect.Effect<Judged<X>>
+	run: (values: Float64Array) => Effect.Effect<Judged<X, U>>
 ): Effect.Effect<ReadonlyArray<ReadonlyArray<number>>> =>
 	Effect.filter(
 		Arr.filter([...movesOf(best), ...loweringsOf(best)], (move) => {

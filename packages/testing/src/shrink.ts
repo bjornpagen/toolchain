@@ -381,16 +381,28 @@ export const shrink = <A, R>(
 		)
 	})
 
-/** A candidate's verdict as a shrink in candidate order reads it: it still fails, with the tape it drew, or it holds. */
-export type Judged<X> =
+/**
+ * A candidate's verdict as a shrink in candidate order reads it: it still fails, with the tape it drew; it holds; or it
+ * was never judged (`unjudged`, with why: what judging it needed could not be had), which says nothing of the failure,
+ * and no later candidate, judged by the same means, would say more.
+ */
+export type Judged<X, U> =
 	| Readonly<{ kind: "fails"; tape: Tape; failure: X }>
 	| Readonly<{ kind: "holds" }>
+	| Readonly<{ kind: "unjudged"; why: U }>
 
-/** Why a shrink in candidate order ended: no pass made progress, or its budget of candidates ran out. */
+/** Why a shrink in candidate order ended with every candidate it ran judged: no pass made progress, or its budget of
+ * candidates ran out. */
 export type OrderedEnd = "minimal" | "budget"
 
-/** The smallest failing case a shrink in candidate order reached, the candidates it judged, and why it ended. */
-export type Ordered<X> = Readonly<{ best: Failing<X>; candidates: number; ended: OrderedEnd }>
+/**
+ * The smallest failing case a shrink in candidate order reached and the candidates it judged: it ended as OrderedEnd
+ * says, or at the first candidate in candidate order it could not judge (`unjudged`, with why), every candidate before
+ * it judged and none after it run.
+ */
+export type Ordered<X, U> =
+	| Readonly<{ best: Failing<X>; candidates: number; ended: OrderedEnd }>
+	| Readonly<{ best: Failing<X>; candidates: number; ended: "unjudged"; why: U }>
 
 /**
  * Where a shrink is among its passes (shrinkAttempt's, in its order): deleting the item at `cursor`, deleting or
@@ -622,16 +634,17 @@ const speculated = (
  * is accepted once every candidate before it has been judged, and the walk goes on from it; the candidates judged after
  * it are let go. So the case it reaches, and how many candidates it counts, depend on the failing case alone, never on
  * the width. A candidate already judged in this shrink, or not smaller than the best, is passed over unjudged and
- * uncounted. It ends when a round of every pass accepts nothing (`minimal`) or `budget` candidates have been judged.
+ * uncounted. It ends when a round of every pass accepts nothing (`minimal`) or `budget` candidates have been judged, or
+ * at the first candidate in candidate order that `judge` could not judge (`unjudged`), uncounted, with the best so far.
  */
-export const shrinkInOrder = <X, R>(
+export const shrinkInOrder = <X, U, R>(
 	failing: Failing<X>,
 	judge: (
 		candidates: Arr.NonEmptyReadonlyArray<Float64Array>
-	) => Effect.Effect<ReadonlyArray<Judged<X>>, never, R>,
+	) => Effect.Effect<ReadonlyArray<Judged<X, U>>, never, R>,
 	width: Effect.Effect<number, never, R>,
 	budget: ShrinkBudget
-): Effect.Effect<Ordered<X>, never, R> =>
+): Effect.Effect<Ordered<X, U>, never, R> =>
 	Effect.gen(function* () {
 		let best: Parsed<X> = parsedOf(failing)
 		let walk = roundOf(best)
@@ -675,9 +688,17 @@ export const shrinkInOrder = <X, R>(
 				if (Option.isNone(verdict)) {
 					break
 				}
+				const judged = verdict.value
+				if (judged.kind === "unjudged") {
+					return {
+						best: { tape: best.tape, failure: best.failure },
+						candidates,
+						ended: "unjudged",
+						why: judged.why
+					}
+				}
 				candidates += 1
 				remember(tried, candidate.values)
-				const judged = verdict.value
 				const accepted =
 					judged.kind === "fails" &&
 					shortlex(judged.tape.values, judged.tape.length, best.tape.values, best.tape.length) ===

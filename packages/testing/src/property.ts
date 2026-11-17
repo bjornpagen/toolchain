@@ -76,7 +76,8 @@ export type NeedContext = Scope.Scope | RunnerServices[keyof RunnerServices]
  * that needs it (needs with the same `key` share it): before that property's first case there and outside every case's
  * deadline, within the runner's open bound (needOpenMillis), so a need that fails to open or outruns it fails the
  * property once, never a case. It keeps warm what the need keeps warm (a pool of pre-cloned databases); the effect it
- * returns gives one case its resource in the case's scope, released when the case ends. A shared mutable
+ * returns gives one case its resource in the case's scope, released when the case ends; a take that fails (NeedFailed)
+ * fails the property once as well, unopened, never the case, and is never shrunk. A shared mutable
  * resource is unrepresentable: what is shared is immutable (a Template) and what a case gets is its own.
  */
 export type Need<A> = Readonly<{
@@ -104,7 +105,8 @@ export type CheckContext = Scope.Scope | NodeServices
 
 /**
  * One case's check: given the case's resources and its handle (notes, mid-case draws, observations), it checks the
- * property on one value of the space. Any failure falsifies the case.
+ * property on one value of the space. Any failure falsifies the case but a need's (NeedFailed: a take of its resources,
+ * or a need it opens itself), which fails its property once, unopened, and is never shrunk.
  */
 export type Check<S, F extends string, N extends Needs, E> = (
 	resources: Resources<N>,

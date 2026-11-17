@@ -3,7 +3,14 @@ import type { NodeServices } from "@effect/platform-node/NodeServices"
 import { Array as Arr, Context, Duration, Effect, Option, Record as Rec, Scope } from "effect"
 import { element, finite, type Gen, int, map } from "#gen.ts"
 import { HUNG_CLEANUP_GRACE, liveSleep } from "#live.ts"
-import { type Case, type Need, NeedFailed, type Property, property } from "#property.ts"
+import {
+	type Case,
+	type Need,
+	NeedFailed,
+	type Property,
+	property,
+	type Resources
+} from "#property.ts"
 import { needCacheOf } from "#runner/case.ts"
 import { runnerLimits } from "#runner/limits.ts"
 import { moduleClosureAt } from "#runner/module-closure.ts"
@@ -286,6 +293,145 @@ export const needing = (
 					for (const resource of Rec.values(resources)) {
 						yield* resource
 					}
+				}),
+			oracle: planted,
+			kept: [],
+			kills: []
+		})
+	}
+}
+
+/**
+ * Where a case meets a need's failure: taking a need its property opened (a clone of a template missing on its member),
+ * or opening a need in its check itself.
+ */
+export const CASE_NEED_FAILURES = ["its take", "a need its check opens"] as const
+
+export type CaseNeedFailure = (typeof CASE_NEED_FAILURES)[number]
+
+export const caseNeedFailures: Gen<CaseNeedFailure> = (source) =>
+	source.draw(element(CASE_NEED_FAILURES))
+
+/** How a property checks its cases: one at a time, or a batch at a time in one check. */
+export const CHECKINGS = ["one at a time", "a batch at a time"] as const
+
+export type Checking = (typeof CHECKINGS)[number]
+
+export const checkings: Gen<Checking> = (source) => source.draw(element(CHECKINGS))
+
+/** The key of the need that fails the cases reaching it. */
+export const FAILING_NEED = "failing"
+
+/** The message the failing need fails a case with. */
+export const FAILED_CASE = "the drawn need failed the case"
+
+/** How many times an inner search's cases reached the failing need. */
+export type Reaches = { reached: number }
+
+/** The failing need's failure, met by a case: counted in `counts`. */
+const failingIn = (counts: Reaches): Effect.Effect<never, NeedFailed> =>
+	Effect.suspend(() => {
+		counts.reached += 1
+		return Effect.fail(NeedFailed.make({ need: FAILING_NEED, message: FAILED_CASE }))
+	})
+
+/** The needs of an inner search whose cases meet a need's failure: the failing need alone. */
+type FailingNeeds = Readonly<{ failing: Need<never> }>
+
+/** The failing need: it opens, and its every take fails the case taking it, counted in `counts`. */
+const failingTake = (counts: Reaches): FailingNeeds => ({
+	failing: { key: FAILING_NEED, open: Effect.succeed(failingIn(counts)) }
+})
+
+/** Where an inner search's case meets the failing need's failure, as `failure` says. */
+const failingOf = (
+	failure: CaseNeedFailure,
+	counts: Reaches,
+	resources: Resources<FailingNeeds>
+): Effect.Effect<void, NeedFailed, Scope.Scope> => {
+	switch (failure) {
+		case "its take":
+			return Effect.asVoid(resources.failing)
+		case "a need its check opens":
+			return failingIn(counts)
+	}
+}
+
+/**
+ * An inner search over 0..9 whose every case draws a whole number up to 2^30 of its own, room a shrink would spend
+ * candidates on, then meets the failing need's failure where `failure` says, checked as `checking` says (a batch of
+ * four meeting it once); and its counts.
+ */
+export const failingInCases = (
+	failure: CaseNeedFailure,
+	checking: Checking
+): Readonly<{ counts: Reaches; property: Property }> => {
+	const counts: Reaches = { reached: 0 }
+	const needs = failingTake(counts)
+	const drawn = (c: Case<never>) => c.draw(int(0, 2 ** 30))
+	switch (checking) {
+		case "one at a time":
+			return {
+				counts,
+				property: property.explore(int(0, 9), {
+					needs,
+					situations: [],
+					check: (resources, c) => () =>
+						Effect.andThen(
+							Effect.sync(() => drawn(c)),
+							failingOf(failure, counts, resources)
+						),
+					oracle: planted,
+					kept: [],
+					kills: []
+				})
+			}
+		case "a batch at a time":
+			return {
+				counts,
+				property: property.batched(int(0, 9), {
+					needs,
+					situations: [],
+					size: 4,
+					checkAll: (resources) => (cases) =>
+						Effect.andThen(
+							Effect.sync(() => Arr.map(cases, ([, c]) => drawn(c))),
+							Effect.as(
+								failingOf(failure, counts, resources),
+								Arr.map(cases, () => Effect.void)
+							)
+						),
+					oracle: planted,
+					kept: [],
+					kills: []
+				})
+			}
+	}
+}
+
+/**
+ * An inner search over 0..9 whose property fails when its own draw of a whole number up to 2^30 is `threshold` or
+ * more, a failure a shrink lowers toward the threshold; from its failing case after the first `good` on, a case takes
+ * the failing need first, as every clone fails once a template goes missing mid-run; and its counts.
+ */
+export const failingMidShrink = (
+	threshold: number,
+	good: number
+): Readonly<{ counts: Reaches; property: Property }> => {
+	const counts: Reaches = { reached: 0 }
+	let failures = 0
+	return {
+		counts,
+		property: property.explore(int(0, 9), {
+			needs: failingTake(counts),
+			situations: [],
+			check: (resources, c) => () =>
+				Effect.suspend(() => {
+					if (c.draw(int(0, 2 ** 30)) < threshold) {
+						return Effect.void
+					}
+					failures += 1
+					return failures > good ? Effect.asVoid(resources.failing) : Effect.die("drew too much")
 				}),
 			oracle: planted,
 			kept: [],
