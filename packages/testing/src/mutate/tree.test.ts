@@ -1,29 +1,27 @@
 /**
  * Worker trees (mutate/tree.ts): a tree holds exactly the files git shows in the checkout, tracked or untracked and not
- * ignored, a submodule's included and a file deleted from the working tree left out, each with its text, a symbolic
- * link as the same link; its node_modules resolve a workspace package to the tree's own copy and an installed package
- * to the checkout's; and a mutant written into a tree stands there, and only there, until its scope closes and the
- * file's own text is back.
+ * ignored, a submodule's included (an uninitialized one holds none) and a file deleted from the working tree left out,
+ * each with its text, a symbolic link as the same link; its node_modules resolve a workspace package to the tree's own
+ * copy and an installed package to the checkout's; and a mutant written into a tree stands there, and only there, until
+ * its scope closes and the file's own text is back.
  */
 import { Array as Arr, Effect, FileSystem, Path, String as Str } from "effect"
 import { deepStrictEqual } from "#assert.ts"
 import { realPathOf } from "#mutate/mutated.ts"
-import { checkoutGen, filesIn, made, STATES } from "#mutate/tree.fixtures.ts"
+import { checkoutGen, filesIn, made, STATES, SUBMODULES } from "#mutate/tree.fixtures.ts"
 import { mutantIn, treeOf } from "#mutate/tree.ts"
 import { property } from "#property.ts"
 
 export const workerTree = property.explore(checkoutGen, {
 	needs: {},
-	situations: [...STATES, "a symbolic link", "a submodule"],
+	situations: [...STATES, "a symbolic link", ...SUBMODULES],
 	check: (_resources, c) => (checkout) =>
 		Effect.gen(function* () {
 			c.noteAll(Arr.map(checkout.files, (file) => file.state))
 			if (checkout.link) {
 				c.note("a symbolic link")
 			}
-			if (checkout.submodule) {
-				c.note("a submodule")
-			}
+			c.note(checkout.submodule)
 			const fs = yield* FileSystem.FileSystem
 			const path = yield* Path.Path
 			const scratch = yield* fs.makeTempDirectoryScoped({ prefix: "toolchain-tree-test-" })
@@ -86,6 +84,12 @@ export const workerTree = property.explore(checkoutGen, {
 			original: "? yield* filesUnder(checkout, at)",
 			replacement: "? []",
 			why: "A submodule's files are left out of the tree."
+		},
+		{
+			file: "packages/testing/src/mutate/tree.ts",
+			original: 'Arr.filter(shown, (entry) => entry !== "./")',
+			replacement: "shown",
+			why: "An uninitialized submodule's directory lists its own gitlink as ./, so the walk lists that directory again, forever."
 		},
 		{
 			file: "packages/testing/src/mutate/tree.ts",

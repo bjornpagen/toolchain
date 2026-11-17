@@ -12,11 +12,14 @@ export type State = (typeof STATES)[number]
 /** The paths a checkout's files take. */
 const PATHS = ["a.ts", "src/b.ts", "src/deep/c.ts", "docs/d.txt", "e.json"] as const
 
-/** A case: the checkout's files and their states, whether it holds a tracked symbolic link, and a submodule. */
+/** A checkout's submodule: none, one checked out, or one left uninitialized (an empty directory). */
+export const SUBMODULES = ["no submodule", "a submodule", "an uninitialized submodule"] as const
+
+/** A case: the checkout's files and their states, whether it holds a tracked symbolic link, and its submodule. */
 export type Checkout = Readonly<{
 	files: ReadonlyArray<Readonly<{ path: string; state: State }>>
 	link: boolean
-	submodule: boolean
+	submodule: (typeof SUBMODULES)[number]
 }>
 
 export const checkoutGen: Gen<Checkout> = (source) => ({
@@ -25,7 +28,7 @@ export const checkoutGen: Gen<Checkout> = (source) => ({
 		state: source.draw(element(STATES))
 	})),
 	link: source.draw(boolean),
-	submodule: source.draw(boolean)
+	submodule: source.draw(element(SUBMODULES))
 })
 
 /** Runs git in `directory`, failing the case on a non-zero exit. */
@@ -107,7 +110,7 @@ export const made = (directory: RealPath, checkout: Checkout) =>
 		if (checkout.link) {
 			yield* fs.symlink("packages/pkg/index.ts", path.join(directory, "linked.ts"))
 		}
-		if (checkout.submodule) {
+		if (checkout.submodule !== "no submodule") {
 			const origin = `${directory}-sub`
 			yield* fs.makeDirectory(origin)
 			yield* git(origin, ["init", "-q"])
@@ -122,6 +125,9 @@ export const made = (directory: RealPath, checkout: Checkout) =>
 			yield* git(directory, ["reset", "-q", "--", ...untracked])
 		}
 		yield* git(directory, ["commit", "-qm", "checkout", "--allow-empty"])
+		if (checkout.submodule === "an uninitialized submodule") {
+			yield* git(directory, ["submodule", "deinit", "-q", "-f", "vendor/sub"])
+		}
 		for (const file of checkout.files) {
 			if (file.state === "deleted") {
 				yield* fs.remove(path.join(directory, file.path))

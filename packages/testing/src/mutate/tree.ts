@@ -62,6 +62,7 @@ type Shown = Readonly<{ path: string; link: boolean }>
 /**
  * The files git shows under `relative` in the checkout, recursing into each submodule, which git shows as the one
  * directory of its gitlink; a path it shows that no longer exists (deleted in the working tree) is not the checkout's.
+ * An uninitialized submodule is an empty directory, in which git shows its own gitlink as `./`: it holds no files.
  */
 const filesUnder = (
 	checkout: RealPath,
@@ -76,7 +77,7 @@ const filesUnder = (
 		const path = yield* Path.Path
 		const shown = yield* gitShown(path.join(checkout, relative))
 		const found = yield* Effect.forEach(
-			shown,
+			Arr.filter(shown, (entry) => entry !== "./"),
 			(entry) =>
 				Effect.gen(function* () {
 					const at = path.join(relative, entry)
