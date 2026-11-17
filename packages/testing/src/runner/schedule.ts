@@ -170,6 +170,19 @@ type Shortfall = Readonly<{
 	caseCpu: number
 	readyCpu: number
 	holding: number
+	work: number
+	rest: number
+}>
+
+/**
+ * How long each module with queued work would take on the workers it has, as a decision reads them: its remaining work
+ * (queued, and sent to its holders) over its holders, one at least (a module no worker holds gets one); and the two
+ * longest, whose difference says how far the longest leads the run.
+ */
+type Spans = Readonly<{
+	of: ReadonlyMap<string, number>
+	first: Option.Option<readonly [string, number]>
+	second: number
 }>
 
 /** A running sum of cases: how many, their milliseconds, and their CPU. */
@@ -315,8 +328,8 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 	 * to 64 workers at 959 CPU-s against Vitest's 450). A module with a part of that readying unmeasured spreads to no
 	 * further worker until it is measured.
 	 */
-	const outgrowsAfter = (module: string, view: View<U>, before: Start): boolean =>
-		Option.exists(shortfallOf(module, view, before), covered)
+	const outgrowsAfter = (module: string, view: View<U>, before: Start, spans: Spans): boolean =>
+		Option.exists(shortfallOf(module, view, before, spans), covered)
 
 	/**
 	 * Whether undrained work covers the wait a further worker spends before it can take any of it, and the CPU the
@@ -327,8 +340,11 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 	 * saves costs CPU every worker's start and readying spend (GZ-NETWORK: 30 network modules forked all 64 workers, 155
 	 * CPU-s of starts, readying and parent for the runner's 841.8 CPU-s against Vitest's 533.7, PostgreSQL's included).
 	 */
-	const covered = ({ short, within, caseCpu, readyCpu, holding }: Shortfall): boolean =>
-		short > 0 && short >= within && caseCpu >= (holding + 1) * readyCpu
+	const covered = ({ short, within, caseCpu, readyCpu, holding, work, rest }: Shortfall): boolean =>
+		short > 0 &&
+		short >= within &&
+		caseCpu >= (holding + 1) * readyCpu &&
+		work / Math.max(1, holding) - rest > within
 
 	/**
 	 * How many further workers a module's queued work pays for: as many as its undrained work holds the wait whole, and
@@ -342,10 +358,24 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 					Math.min(
 						Math.floor(shortfall.short / Math.max(shortfall.within, Number.MIN_VALUE)),
 						Math.floor(shortfall.caseCpu / Math.max(shortfall.readyCpu, Number.MIN_VALUE)) -
-							shortfall.holding
+							shortfall.holding,
+						leadingFor(shortfall)
 					)
 				)
 			: 0
+
+	/**
+	 * How many further workers keep a module the run's critical path by more than one further worker's wait each: the
+	 * k-th is wanted while the module's remaining work over its holders and the k - 1 before it still outlasts every
+	 * other module's span by more than that wait, so a module forks only down to the run's next longest, never past it.
+	 */
+	const leadingFor = ({ work, rest, within, holding }: Shortfall): number => {
+		let further = 0
+		while (work / Math.max(1, holding + further) - rest > within && further < workers) {
+			further += 1
+		}
+		return further
+	}
 
 	/**
 	 * How much of a module's queued work its holders leave undrained within a further worker's wait before its first case
@@ -356,7 +386,50 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 	 * back the spread of work already measured (with a property's whole streams queued at once, one property's units
 	 * could otherwise keep a module on its holder until it reached the last property's).
 	 */
-	const shortfallOf = (module: string, view: View<U>, before: Start): Option.Option<Shortfall> => {
+	/** A module's remaining work: its queued work, and the work of its units its holders were sent. */
+	const remainingOf = (module: string, queued: ModuleQueue<U>, view: View<U>): number => {
+		let work = queuedWorkOf(queued)
+		for (const holder of holders.get(module) ?? []) {
+			for (const unit of view.sentOf(holder)) {
+				if (unit.module === module) {
+					work += workOfCases(unit.property, unit.cases)
+				}
+			}
+		}
+		return work
+	}
+
+	/** Every queued module's span now (Spans), read once for a decision that weighs several modules. */
+	const spansOf = (view: View<U>): Spans => {
+		const of = new Map<string, number>()
+		let first: Option.Option<readonly [string, number]> = Option.none()
+		let second = 0
+		for (const [module, queued] of queue) {
+			const span = remainingOf(module, queued, view) / Math.max(1, holders.get(module)?.size ?? 0)
+			of.set(module, span)
+			if (Option.match(first, { onNone: () => true, onSome: ([, longest]) => span > longest })) {
+				second = Option.match(first, { onNone: () => second, onSome: ([, longest]) => longest })
+				first = Option.some([module, span])
+			} else if (span > second) {
+				second = span
+			}
+		}
+		return { of, first, second }
+	}
+
+	/** How long the run takes beside a module: the longest span of every other module with queued work. */
+	const restOf = (module: string, spans: Spans): number =>
+		Option.match(spans.first, {
+			onNone: () => 0,
+			onSome: ([longest, span]) => (longest === module ? spans.second : span)
+		})
+
+	const shortfallOf = (
+		module: string,
+		view: View<U>,
+		before: Start,
+		spans: Spans
+	): Option.Option<Shortfall> => {
 		const queued = queue.get(module)
 		if (queued === undefined) {
 			return Option.none()
@@ -377,7 +450,9 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 					within,
 					caseCpu: queuedCaseCpuOf(queued),
 					readyCpu: before.cpu + readyingCpu,
-					holding: holders.get(module)?.size ?? 0
+					holding: holders.get(module)?.size ?? 0,
+					work: remainingOf(module, queued, view),
+					rest: restOf(module, spans)
 				}
 			})
 		)
@@ -647,10 +722,12 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 					oldestOf(held ?? [], () => true),
 					() => oldestOf(queue.keys(), (candidate) => (holders.get(candidate)?.size ?? 0) === 0)
 				),
-				() =>
-					oldestOf(queue.keys(), (candidate) =>
-						outgrowsAfter(candidate, view, { millis: 0, cpu: 0 })
+				() => {
+					const spans = spansOf(view)
+					return oldestOf(queue.keys(), (candidate) =>
+						outgrowsAfter(candidate, view, { millis: 0, cpu: 0 }, spans)
 					)
+				}
 			)
 			return Option.match(
 				Option.flatMap(module, (chosen) => take(worker, chosen)),
@@ -660,16 +737,17 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 				}
 			)
 		},
-		outgrows: (module, view) => outgrowsAfter(module, view, { millis: 0, cpu: 0 }),
+		outgrows: (module, view) => outgrowsAfter(module, view, { millis: 0, cpu: 0 }, spansOf(view)),
 		wanted: (view, starting) => {
 			let wanted = 0
+			const spans = spansOf(view)
 			for (const module of queue.keys()) {
 				if ((holders.get(module)?.size ?? 0) === 0) {
 					wanted += 1
 					continue
 				}
 				wanted += Option.match(
-					Option.flatMap(starting, (start) => shortfallOf(module, view, start)),
+					Option.flatMap(starting, (start) => shortfallOf(module, view, start, spans)),
 					{
 						onNone: () => 0,
 						onSome: paidFor

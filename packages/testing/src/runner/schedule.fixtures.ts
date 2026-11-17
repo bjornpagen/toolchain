@@ -447,6 +447,7 @@ export const simulate = (workload: Workload, forking: Forking): Ran => {
 export type SpreadState = Readonly<{
 	importing: number
 	importingCpu: number
+	other: Readonly<{ queued: number; caseMillis: number }>
 	properties: ReadonlyArray<
 		Readonly<{
 			opening: number
@@ -492,6 +493,7 @@ export const spreadStates: Gen<SpreadState> = (source) => {
 	return {
 		importing,
 		importingCpu: source.draw(int(0, importing)),
+		other: { queued: source.draw(int(0, 20)), caseMillis: source.draw(int(1, 40)) },
 		properties: [
 			{ ...source.draw(spreadProperty(int(1, 6))), measured: true },
 			...source.draw(array(spreadProperty(int(0, 6)), { min: 0, max: 3 }))
@@ -501,18 +503,22 @@ export const spreadStates: Gen<SpreadState> = (source) => {
 
 /**
  * What the scheduler judges of the module of `state`, beside its one holder (worker 0, which readied every property of
- * it, ran a cold first unit of each that took far longer than the rest, and was sent its units) and a second worker
- * idle: whether it outgrows its holder, and how many new workers it
- * wants when a worker takes `starting` milliseconds to start; the scheduler as the pool feeds it, every number
- * measured.
+ * it, ran a cold first unit of each that took far longer than the rest, and was sent its units), a second worker idle,
+ * and a third holding another module `o` with its own queue, measured, which the run takes as long as besides: whether
+ * it outgrows its holder, and how many new workers it wants when a worker takes `starting` to start (milliseconds of
+ * wall time and of CPU); the scheduler as the pool feeds it, every number measured.
  */
 export const spreadIn = (
 	state: SpreadState,
 	starting: Start
 ): Readonly<{ outgrows: boolean; wanted: number }> => {
-	const scheduler = schedulerOf<Scheduled>(2)
+	const scheduler = schedulerOf<Scheduled>(3)
 	let ids = 0
 	const sent: Array<Scheduled> = []
+	scheduler.occupied(2, "o#p", 1, 10 * state.other.caseMillis + 100)
+	scheduler.occupied(2, "o#p", 1, state.other.caseMillis)
+	scheduler.finished("o#p", 1, state.other.caseMillis, state.other.caseMillis)
+	scheduler.hand(2, [{ id: 0, property: "o#p", module: "o", cases: 1 }])
 	for (const [at, drawn] of state.properties.entries()) {
 		const property = `m#p${at}`
 		if (drawn.measured) {
@@ -535,8 +541,12 @@ export const spreadIn = (
 		}
 	}
 	scheduler.hand(0, sent)
+	for (let unit = 0; unit < state.other.queued; unit += 1) {
+		ids += 1
+		scheduler.enqueue({ id: ids, property: "o#p", module: "o", cases: 1 })
+	}
 	const view: View<Scheduled> = {
-		workers: 2,
+		workers: 3,
 		sentOf: (worker) => (worker === 0 ? sent : []),
 		unstartedOf: (worker) => (worker === 0 ? Arr.drop(sent, 1) : []),
 		stealable: () => true,

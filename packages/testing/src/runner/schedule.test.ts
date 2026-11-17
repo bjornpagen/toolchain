@@ -137,7 +137,9 @@ export const spreadPaysForItself = property.explore(
 			"nothing queued",
 			"a further worker pays for itself",
 			"the cases' CPU pays one worker's readying but not a share beside its holder",
-			"the undrained work covers the wait and the cases' CPU does not"
+			"the undrained work covers the wait and the cases' CPU does not",
+			"the rest of the run outlasts the module",
+			"the module leads by its wait and its undrained work falls short of it"
 		],
 		check:
 			(_resources, c) =>
@@ -175,8 +177,20 @@ export const spreadPaysForItself = property.explore(
 					)
 					const shortWithin = (within: number) =>
 						work((drawn) => drawn.queued) - Math.max(0, within - work((drawn) => drawn.sent))
+					const remaining = work((drawn) => drawn.queued) + work((drawn) => drawn.sent)
+					const rest = state.other.queued * state.other.caseMillis
 					const pays = (within: number, readyCpu: number) =>
-						shortWithin(within) > 0 && shortWithin(within) >= within && caseCpu >= 2 * readyCpu
+						shortWithin(within) > 0 &&
+						shortWithin(within) >= within &&
+						caseCpu >= 2 * readyCpu &&
+						remaining - rest > within
+					const leading = (within: number) => {
+						let further = 0
+						while (remaining / (1 + further) - rest > within && further < 3) {
+							further += 1
+						}
+						return further
+					}
 					if (pays(readying, readyingCpu)) {
 						c.note("a further worker pays for itself")
 					}
@@ -190,6 +204,21 @@ export const spreadPaysForItself = property.explore(
 					if (shortWithin(readying) >= readying && caseCpu < 2 * readyingCpu) {
 						c.note("the undrained work covers the wait and the cases' CPU does not")
 					}
+					if (
+						shortWithin(readying) >= readying &&
+						caseCpu >= 2 * readyingCpu &&
+						remaining - rest <= readying
+					) {
+						c.note("the rest of the run outlasts the module")
+					}
+					if (
+						shortWithin(readying) > 0 &&
+						shortWithin(readying) < readying &&
+						caseCpu >= 2 * readyingCpu &&
+						remaining - rest > readying
+					) {
+						c.note("the module leads by its wait and its undrained work falls short of it")
+					}
 					const forked = readying + starting.millis
 					const forkedCpu = readyingCpu + starting.cpu
 					deepStrictEqual(spreadIn(state, starting), {
@@ -199,7 +228,8 @@ export const spreadPaysForItself = property.explore(
 									0,
 									Math.min(
 										Math.floor(shortWithin(forked) / Math.max(forked, Number.MIN_VALUE)),
-										Math.floor(caseCpu / Math.max(forkedCpu, Number.MIN_VALUE)) - 1
+										Math.floor(caseCpu / Math.max(forkedCpu, Number.MIN_VALUE)) - 1,
+										leading(forked)
 									)
 								)
 							: 0
@@ -225,14 +255,14 @@ export const spreadPaysForItself = property.explore(
 			},
 			{
 				file: "packages/testing/src/runner/schedule.ts",
-				original: "\t\tshort > 0 && short >= within",
-				replacement: "\t\tshort > 0",
+				original: "\t\tshort > 0 &&\n\t\tshort >= within &&\n",
+				replacement: "\t\tshort > 0 &&\n",
 				why: "A module spreads whenever its holders leave any work undrained, however little, as before main's rule: a further worker spends seconds readying for a case or two (education at 959 CPU-s against Vitest's 450); this property fails."
 			},
 			{
 				file: "packages/testing/src/runner/schedule.ts",
-				original: "\t\tshort > 0 && short >= within && caseCpu >= (holding + 1) * readyCpu",
-				replacement: "\t\tshort > 0 && short >= within",
+				original: "\t\tcaseCpu >= (holding + 1) * readyCpu &&\n",
+				replacement: "",
 				why: "A module spreads by how long its units hold their workers alone, as before: a module of cheap cases whose units wait on PostgreSQL spreads to workers whose start and readying cost more CPU than every case it has left (GZ-NETWORK: 30 network modules on all 64 workers, 155 CPU-s of starts, readying and parent); this property fails."
 			},
 			{
@@ -245,8 +275,8 @@ export const spreadPaysForItself = property.explore(
 			},
 			{
 				file: "packages/testing/src/runner/schedule.ts",
-				original: "\t\tshort > 0 && short >= within && caseCpu >= (holding + 1) * readyCpu",
-				replacement: "\t\tshort > 0 && short >= within && caseCpu >= readyCpu",
+				original: "\t\tcaseCpu >= (holding + 1) * readyCpu &&\n",
+				replacement: "\t\tcaseCpu >= readyCpu &&\n",
 				why: "A further worker is judged by the whole of the cases' CPU as if it were its alone, its holders forgotten: a module of a few CPU-s of cases spreads to a worker whose start and readying take most of what is left (GZ-NETWORK: the guard alone still forked all 64 workers for 30 network modules); this property fails."
 			},
 			{
@@ -254,6 +284,18 @@ export const spreadPaysForItself = property.explore(
 				original: "\t\t\t\t\t\t\tshortfall.holding",
 				replacement: "\t\t\t\t\t\t\t0",
 				why: "The pool forks as many workers as the cases' CPU pays one start and readying each, its holders forgotten, so every share falls short; this property fails."
+			},
+			{
+				file: "packages/testing/src/runner/schedule.ts",
+				original: "\t\twork / Math.max(1, holding) - rest > within\n",
+				replacement: "\t\ttrue\n",
+				why: "A module spreads whatever the rest of the run takes, as before: every module of a small package is spread over idle workers it does not shorten the run on, each paying its start and readying (edullm's sign-in, 3 properties, on 52 workers); this property fails."
+			},
+			{
+				file: "packages/testing/src/runner/schedule.ts",
+				original: "work / Math.max(1, holding + further) - rest > within && further < workers",
+				replacement: "work / Math.max(1, holding + further) > 0 && further < workers",
+				why: "A leading module forks every worker its other bounds allow, past the run's next longest module, as if its lead never ran out; this property fails."
 			},
 			{
 				file: "packages/testing/src/runner/schedule.ts",
