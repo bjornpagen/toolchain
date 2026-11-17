@@ -1,6 +1,14 @@
 import { Array as Arr, Effect, Option, Predicate, Record as Rec, String as Str } from "effect"
 import type { Needs } from "#property.ts"
-import { lockKey, PgCluster, type PgMember, quoteIdent, run, single } from "#resources/cluster.ts"
+import {
+	lockKey,
+	PgCluster,
+	type PgMember,
+	quoteIdent,
+	run,
+	single,
+	useKey
+} from "#resources/cluster.ts"
 import { namedOf } from "#resources/names.ts"
 import { DatabaseTemplate, type Identified, identify } from "#resources/template.ts"
 import { ModuleClosure, type NeedFailed } from "#runner/services.ts"
@@ -25,8 +33,9 @@ const chainNames = (identified: Identified): ReadonlyArray<string> => [
 /**
  * Drops, on one member, what no run may use again: every clone whose owner's lock is free (its worker has ended:
  * cluster.ts Owner), and every template no declared template's chain names (stale: its declaration, its content or its
- * module's closure changed), unless a builder holds its gate. A template is first made no template, which DROP DATABASE
- * requires; a database a drop left invalid (dbcommands.c dropdb, interrupted after it marked the database) is no
+ * module's closure changed), unless a builder holds its gate or a live worker holds it in use (template.ts holdInUse:
+ * another run's, of other properties or other code, a kill trial's among them). A template is first made no template,
+ * which DROP DATABASE requires; a database a drop left invalid (dbcommands.c dropdb, interrupted after it marked the database) is no
  * template, and PostgreSQL lets nothing but a drop touch it, so it is dropped as it is. Each lock is tried on the collector's own session in the
  * owner's database, and held until collection ends, so a key it found free stays free while it drops.
  */
@@ -56,6 +65,11 @@ const collectMember = (
 					single(admin, `SELECT pg_catalog.pg_try_advisory_lock(${lockKey("$1")})::text`, [key]),
 					(taken) => taken === "true"
 				)
+			const unused = (key: string): Effect.Effect<boolean, NeedFailed> =>
+				Effect.map(
+					single(admin, `SELECT pg_catalog.pg_try_advisory_lock(${useKey("$1")})::text`, [key]),
+					(taken) => taken === "true"
+				)
 			const dropped = yield* Effect.forEach(named, ({ database, template }) =>
 				Effect.gen(function* () {
 					switch (database.kind) {
@@ -75,7 +89,11 @@ const collectMember = (
 								cluster.prefix.length + 4,
 								cluster.prefix.length + 20
 							)(database.name)
-							if (declared.has(database.name) || !(yield* free(digest))) {
+							if (
+								declared.has(database.name) ||
+								!(yield* free(digest)) ||
+								!(yield* unused(digest))
+							) {
 								return Option.none<string>()
 							}
 							if (template) {

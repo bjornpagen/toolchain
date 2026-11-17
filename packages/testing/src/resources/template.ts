@@ -19,7 +19,8 @@ import {
 	quoteLiteral,
 	required,
 	run,
-	single
+	single,
+	useKey
 } from "#resources/cluster.ts"
 import type { Database, TemplateDatabase } from "#resources/database.ts"
 import { cloneName, templateName } from "#resources/names.ts"
@@ -379,6 +380,26 @@ const ensureBuilt = (
 		)
 	})
 
+/**
+ * Holds the identified template and every origin it is built from in use for the worker's life: a session-level shared
+ * advisory lock on each one's use key (cluster.ts useKey), taken on the worker's owner session, which ends with the
+ * worker. Collection drops a template only once it holds that key exclusively (collect.ts), so it never drops one a
+ * live worker opened, which the worker clones (and builds from) for as long as it runs, whichever run collects: a
+ * concurrent run of other properties, or of other code, a kill trial's mutant included. Taken before the template is
+ * built, so a collection that held a key first has dropped the template before the opener finds it absent and builds it
+ * again.
+ */
+const holdInUse = (owner: Owner, identified: Identified): Effect.Effect<void, NeedFailed> =>
+	Effect.andThen(
+		Option.match(identified.origin, {
+			onNone: () => Effect.void,
+			onSome: (origin) => holdInUse(owner, origin)
+		}),
+		run(owner.session, `SELECT pg_catalog.pg_advisory_lock_shared(${useKey("$1")})::text`, [
+			Str.slice(0, 16)(identified.digest)
+		])
+	)
+
 /** A database template opened on the worker's member: its name there, how a clone of it is made, and what a clone gets again. */
 type BuiltTemplate = Readonly<{
 	member: PgMember
@@ -389,8 +410,8 @@ type BuiltTemplate = Readonly<{
 
 /**
  * Opens `template` on the worker's member: the cluster and the closure hashes from the run, the member the worker
- * reaches, the template built there once (ensureBuilt), the strategy the member clones with, and what each clone gets
- * again. A clone is created in the caller's scope, which drops it when it closes (DROP DATABASE ... WITH (FORCE)),
+ * reaches, the template held in use for the worker's life (holdInUse) and built there once (ensureBuilt), the strategy
+ * the member clones with, and what each clone gets again. A clone is created in the caller's scope, which drops it when it closes (DROP DATABASE ... WITH (FORCE)),
  * then given its template's privileges and settings, and refused unless they are the template's.
  */
 const openDatabaseTemplate = (
@@ -408,6 +429,7 @@ const openDatabaseTemplate = (
 		const fsync = yield* single(owner.session, "SELECT pg_catalog.current_setting('fsync')", [])
 		const strategy = strategyOf(fsync)
 		const identified = yield* identify(cluster, closures, owner.session, template)
+		yield* holdInUse(owner, identified)
 		yield* ensureBuilt(cluster, identified, member, strategy)
 		const name = identified.name
 		const replay = yield* replayOf(owner, name)

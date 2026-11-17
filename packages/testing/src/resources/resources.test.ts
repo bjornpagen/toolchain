@@ -14,20 +14,22 @@ import {
 	Exit,
 	Layer,
 	Number as Num,
+	Option,
 	Ref,
 	Scope
 } from "effect"
 import { assertTrue, deepStrictEqual, strictEqual } from "#assert.ts"
-import { array, boolean, int } from "#gen.ts"
+import { array, boolean, finite, int } from "#gen.ts"
 import { property } from "#property.ts"
 import { PgCluster, run as runIn, single } from "#resources/cluster.ts"
 import { collect } from "#resources/collect.ts"
 import { Database } from "#resources/database.ts"
 import {
 	countedConnections,
+	derivedMarksTemplate,
+	derivedTemplate,
 	dropTemplate,
 	exists,
-	derivedMarksTemplate,
 	inDatabase,
 	marksTemplate,
 	ownCluster,
@@ -370,7 +372,8 @@ export const staleCollected = property.explore(int(1, 3), {
 							)
 						)
 						yield* Scope.close(ended, Exit.void)
-						const live = yield* Layer.build(ownCluster(prefix))
+						const alive = yield* Scope.make()
+						const live = yield* Scope.provide(Layer.build(ownCluster(prefix)), alive)
 						const inLive = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
 							Effect.provideContext(
 								effect,
@@ -379,13 +382,21 @@ export const staleCollected = property.explore(int(1, 3), {
 									Context.merge(closure(import.meta.url), Context.make(WorkerIndex, worker))
 								)
 							)
-						const current = yield* inLive(Effect.flatMap(template.open, (opened) => opened.clone))
+						const current = yield* Scope.provide(
+							inLive(Effect.flatMap(template.open, (opened) => opened.clone)),
+							alive
+						)
 						const collected = yield* inLive(collect([template]))
 						const gone = yield* inLive(
 							Effect.forEach(left, (database) => Effect.map(exists(database), (found) => !found))
 						)
 						const kept = yield* inLive(exists(current))
-						yield* inLive(collect([]))
+						yield* Scope.close(alive, Exit.void)
+						const after = yield* Layer.build(ownCluster(prefix))
+						yield* Effect.provideContext(
+							collect([]),
+							Context.merge(after, closure(import.meta.url))
+						)
 						return { collected, gone, kept }
 					})
 				)
@@ -400,6 +411,107 @@ export const staleCollected = property.explore(int(1, 3), {
 	kept: [],
 	kills: []
 })
+
+export const inUseKept = property.exhaust(
+	finite((source) => ({ derived: source.draw(boolean), ended: source.draw(boolean) })),
+	{
+		box: "a template alone or built from another, its opener's worker alive or ended",
+		needs: { services },
+		situations: ["a live opener", "an ended opener", "a template built from another"],
+		check:
+			({ services: context }, c) =>
+			({ derived, ended }) =>
+				Effect.gen(function* () {
+					c.note(ended ? "an ended opener" : "a live opener")
+					if (derived) {
+						c.note("a template built from another")
+					}
+					const ctx = yield* context
+					const worker = Context.get(ctx, WorkerIndex)
+					const runner = Context.make(ModuleClosure, Context.get(ctx, ModuleClosure)).pipe(
+						Context.add(WorkerIndex, worker)
+					)
+					const outcome = yield* Effect.scoped(
+						Effect.gen(function* () {
+							const cluster = Context.get(ctx, PgCluster)
+							const member = yield* Effect.map(cluster.members, Arr.headNonEmpty)
+							const prefixToken = yield* Effect.scoped(
+								Effect.flatMap(cluster.connect(member, cluster.maintenance), (session) =>
+									Effect.flatMap(
+										single(
+											session,
+											"SELECT pg_catalog.substr(pg_catalog.md5(pg_catalog.gen_random_uuid()::text), 1, 12)",
+											[]
+										),
+										(drawn) => Effect.fromOption(Option.fromNullishOr(drawn))
+									)
+								)
+							)
+							const prefix = `tcs${prefixToken}_`
+							const own = tokenTemplate(prefix, () => Effect.void)
+							const template = derived ? derivedTemplate(own, prefix) : own
+							const templates = Effect.scoped(
+								Effect.flatMap(cluster.connect(member, cluster.maintenance), (session) =>
+									single(
+										session,
+										"SELECT pg_catalog.count(*)::text FROM pg_catalog.pg_database WHERE pg_catalog.starts_with(datname, $1)",
+										[`${prefix}tpl_`]
+									)
+								)
+							)
+							const opener = yield* Scope.make()
+							const openers = yield* Scope.provide(Layer.build(ownCluster(prefix)), opener)
+							yield* Effect.provideContext(
+								Scope.provide(
+									Effect.flatMap(template.open, (opened) => opened.clone),
+									opener
+								),
+								Context.merge(openers, runner)
+							)
+							const built = yield* templates
+							if (ended) {
+								yield* Scope.close(opener, Exit.void)
+							}
+							const collector = yield* Layer.build(ownCluster(prefix))
+							yield* Effect.provideContext(collect([]), Context.merge(collector, runner))
+							const kept = yield* templates
+							yield* Scope.close(opener, Exit.void)
+							yield* Effect.provideContext(collect([]), Context.merge(collector, runner))
+							const left = yield* templates
+							return { built, kept, left }
+						})
+					)
+					const chain = derived ? "2" : "1"
+					deepStrictEqual(outcome, { built: chain, kept: ended ? "0" : chain, left: "0" })
+				}),
+		oracle: {
+			kind: "specification",
+			name: "another run's collection keeps a template a live worker opened, and every origin it was built from, and drops them once that worker has ended"
+		},
+		kept: [],
+		kills: [
+			{
+				file: "packages/testing/src/resources/template.ts",
+				original: "\t\tyield* holdInUse(owner, identified)\n",
+				replacement: "",
+				why: "An opener holds nothing in use, as before: another run's collection drops a template a live worker still clones from (and a kill trial's, once its identity is its own); this property fails."
+			},
+			{
+				file: "packages/testing/src/resources/collect.ts",
+				original:
+					"\t\t\t\t\t\t\t\t!(yield* free(digest)) ||\n\t\t\t\t\t\t\t\t!(yield* unused(digest))",
+				replacement: "\t\t\t\t\t\t\t\t!(yield* free(digest))",
+				why: "Collection drops a template whatever worker holds it in use; this property fails."
+			},
+			{
+				file: "packages/testing/src/resources/template.ts",
+				original: "\t\t\tonSome: (origin) => holdInUse(owner, origin)",
+				replacement: "\t\t\tonSome: () => Effect.void",
+				why: "An opener holds its template in use but not the origin it was built from, which another run's collection then drops under a live worker; this property fails."
+			}
+		]
+	}
+)
 
 export const seatSettles = property.explore(
 	(source) => ({

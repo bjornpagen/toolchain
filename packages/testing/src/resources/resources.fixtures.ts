@@ -27,7 +27,7 @@ import {
 	type TextRows
 } from "#resources/cluster.ts"
 import type { TemplateDatabase } from "#resources/database.ts"
-import { Template } from "#resources/template.ts"
+import { type DatabaseTemplate, Template } from "#resources/template.ts"
 import { ModuleClosure, NeedFailed, WorkerIndex } from "#runner/services.ts"
 
 /** A database name the fixture read back from the cluster. */
@@ -266,18 +266,21 @@ export const marksTemplate = Template.database({
 })
 
 /**
- * A template built from the marks template (its origin, not the cluster's base), whose identity is `token`, unique to
- * the case that declares it, so the case builds it: one table more, and nothing of the settings or privileges its
- * origin's build gave its database, which it must keep.
+ * A template built from `origin` (not the cluster's base), whose identity is `token`, unique to the case that declares
+ * it, so the case builds it: one table more, and nothing of the settings or privileges its origin's build gave its
+ * database, which it must keep.
  */
-export const derivedMarksTemplate = (token: string) =>
+export const derivedTemplate = (origin: DatabaseTemplate, token: string) =>
 	Template.database({
 		declaredIn: import.meta,
-		name: `derived marks ${token}`,
+		name: `derived ${token}`,
 		content: { token },
-		from: marksTemplate,
+		from: origin,
 		build: building(["CREATE TABLE public.derived (value int4 NOT NULL)"])
 	})
+
+/** A template built from the marks template (derivedTemplate), of the case's own `token`. */
+export const derivedMarksTemplate = (token: string) => derivedTemplate(marksTemplate, token)
 
 /**
  * The statements of the seat template: items with an identity, which the seat's reset truncates, and a ledger it does

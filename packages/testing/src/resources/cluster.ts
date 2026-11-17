@@ -155,6 +155,14 @@ export const single = (
 export const lockKey = (placeholder: string): string => `('x' || ${placeholder})::bit(64)::int8`
 
 /**
+ * The advisory-lock key of a template's use, in SQL, from the same 16 hex digits as its build gate's (lockKey): the two
+ * int4 halves of its 64 bits, a key of PostgreSQL's two-int4 space, which no int8 key shares (advisory.c: the lock tag's
+ * last field is 2, an int8's 1), so a template's users and its builder never wait on each other.
+ */
+export const useKey = (placeholder: string): string =>
+	`('x' || pg_catalog.substr(${placeholder}, 1, 8))::bit(32)::int4, ('x' || pg_catalog.substr(${placeholder}, 9, 8))::bit(32)::int4`
+
+/**
  * Opens the worker's owner on `member` in `scope`: a session in the owner's database holding the lock of a fresh owner
  * key, 64 bits the server draws (the MD5 of a random UUID's text) and locks in one statement, and the counter of the
  * clones it names.
