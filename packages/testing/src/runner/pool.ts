@@ -405,8 +405,8 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 				}
 			})
 
-		/** How long a worker took to start, as the workers measured it, by count and milliseconds. */
-		const starts = { count: 0, millis: 0 }
+		/** How long a worker took to start, as the workers measured it, by count, milliseconds and milliseconds of CPU. */
+		const starts = { count: 0, millis: 0, cpu: 0 }
 
 		/**
 		 * Forks the workers the queue wants and no worker idle or starting will take: one for each queued module no worker
@@ -422,7 +422,10 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 				idling: Arr.filter(workers, idle).length,
 				starting: Arr.filter(workers, (worker) => !worker.ready).length,
 				most,
-				started: starts.count === 0 ? Option.none() : Option.some(starts.millis / starts.count)
+				started:
+					starts.count === 0
+						? Option.none()
+						: Option.some({ millis: starts.millis / starts.count, cpu: starts.cpu / starts.count })
 			})
 			for (let more = forks; more > 0; more -= 1) {
 				workers.push(spawn(workers.length))
@@ -466,7 +469,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 			worker.sent = Arr.filter(worker.sent, (sent) => sent.id !== unit.id)
 			const ran = ranOf(done)
 			counts[worker.index] = (counts[worker.index] ?? 0) + ran.cases
-			scheduler.finished(unit.property, ran.cases, ran.millis)
+			scheduler.finished(unit.property, ran.cases, ran.millis, ran.cpu)
 			spent(unit.property, { cases: ran.cases, casesCpu: ran.cpu, readyingCpu: 0, childrenCpu: 0 })
 			Deferred.doneUnsafe(unit.done, Effect.succeed(done))
 		}
@@ -651,6 +654,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 								worker.usage.reported = received.cpu
 								starts.count += 1
 								starts.millis += received.millis
+								starts.cpu += received.cpu
 								worker.ready = true
 								feedAll()
 								return
@@ -669,7 +673,8 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 									(unit) => {
 										scheduler.readied(worker.index, unit.module, unit.property, {
 											importing: received.imported,
-											opening: Math.max(0, received.millis - received.imported)
+											opening: Math.max(0, received.millis - received.imported),
+											cpu: received.cpu
 										})
 										worker.readyingMillis += received.millis
 										spent(unit.property, {

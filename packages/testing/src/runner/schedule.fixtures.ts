@@ -1,5 +1,5 @@
 import { Array as Arr, Option } from "effect"
-import { array, type Gen, int } from "#gen.ts"
+import { array, boolean, type Gen, int } from "#gen.ts"
 import {
 	afterFinished,
 	afterQueued,
@@ -8,6 +8,7 @@ import {
 	forksOf,
 	type Scheduled,
 	schedulerOf,
+	type Start,
 	type View
 } from "#runner/schedule.ts"
 
@@ -82,30 +83,31 @@ export const cheap: Gen<Workload> = (source) => {
 }
 
 /**
- * Workloads of one module whose cases are cheap and few, all of them together less than a worker's start, but whose
- * first unit on a worker runs cold by far longer than they do (superstarter's action-wire: six properties of a few
- * hundred sub-millisecond cases on four workers): no further worker pays for itself, judged warm.
+ * Workloads of one module of one property whose cheap cases together take more than a further worker's start and
+ * import, so that a spread is weighed, but less than twice that, so that what a holder leaves undrained, judged warm,
+ * never covers it; and whose first unit on a worker runs cold by far longer than its cases do (superstarter's
+ * action-wire: six properties of a few hundred sub-millisecond cases on four workers): no further worker pays for
+ * itself, judged warm.
  */
 export const coldCheap: Gen<Workload> = (source) => {
 	const starting = source.draw(int(20, 40))
+	const importing = source.draw(int(1, 5))
+	const within = starting + importing
 	return {
 		workers: source.draw(int(2, 8)),
 		starting,
 		trip: 0,
 		modules: [
 			{
-				importing: source.draw(int(1, 5)),
-				properties: source.draw(
-					array(
-						(inner): DrawnProperty => ({
-							caseMillis: 1,
-							windows: [inner.draw(int(2, 6))],
-							opening: 0,
-							coldMillis: inner.draw(int(50, 200))
-						}),
-						{ min: 1, max: 3 }
-					)
-				)
+				importing,
+				properties: [
+					{
+						caseMillis: 1,
+						windows: [source.draw(int(within + 2, 2 * within - 4))],
+						opening: 0,
+						coldMillis: source.draw(int(50, 200))
+					}
+				]
 			}
 		]
 	}
@@ -140,12 +142,13 @@ export const outgrowing: Gen<Workload> = (source) => {
 
 /**
  * Workloads of one module whose cases cost almost nothing but whose units each hold their worker for a round trip at
- * least as long as readying the module, four or more cases a worker in one window: a module bound by its round trips,
- * which only its units' occupancy, never its cases' time, shows outgrowing one worker.
+ * least as long as readying the module, four or more cases a worker in one window, together more case time than
+ * readying the module takes but less than twice that: a module bound by its round trips, which only its units'
+ * occupancy, never its cases' time, shows outgrowing one worker.
  */
 export const tripBound: Gen<Workload> = (source) => {
 	const workers = source.draw(int(2, 8))
-	const readying = source.draw(int(1, 20))
+	const readying = source.draw(int(4 * workers + 4, 4 * workers + 40))
 	return {
 		starting: source.draw(int(1, 10)),
 		trip: source.draw(int(readying, 3 * readying)),
@@ -156,7 +159,7 @@ export const tripBound: Gen<Workload> = (source) => {
 				properties: [
 					{
 						caseMillis: 1,
-						windows: [source.draw(int(4 * workers, 8 * workers))],
+						windows: [source.draw(int(readying + 2, 2 * readying - 4))],
 						opening: 0,
 						coldMillis: 0
 					}
@@ -294,7 +297,8 @@ export const simulate = (workload: Workload, forking: Forking): Ran => {
 			openedBy.set(unit.property, (openedBy.get(unit.property) ?? new Set()).add(worker.index))
 			scheduler.readied(worker.index, unit.module, unit.property, {
 				importing,
-				opening: unit.opening
+				opening: unit.opening,
+				cpu: importing + unit.opening
 			})
 			afterFinished(scheduler, view, apply, worker.index, unit.module)
 		})
@@ -329,7 +333,9 @@ export const simulate = (workload: Workload, forking: Forking): Ran => {
 			idling: Arr.filter(workers, (worker) => worker.ready && worker.sent.length === 0).length,
 			starting: Arr.filter(workers, (worker) => !worker.ready).length,
 			most: workload.workers,
-			started: started ? Option.some(workload.starting) : Option.none()
+			started: started
+				? Option.some({ millis: workload.starting, cpu: workload.starting })
+				: Option.none()
 		})
 		for (let more = forks; more > 0; more -= 1) {
 			workers.push({
@@ -395,7 +401,7 @@ export const simulate = (workload: Workload, forking: Forking): Ran => {
 		Option.map(Arr.head(worker.sent), (unit) => {
 			worker.sent = Arr.drop(worker.sent, 1)
 			runs.set(unit.id, (runs.get(unit.id) ?? 0) + 1)
-			scheduler.finished(unit.property, 1, unit.caseMillis)
+			scheduler.finished(unit.property, 1, unit.caseMillis, unit.caseMillis)
 			scheduler.occupied(
 				worker.index,
 				unit.property,
@@ -440,10 +446,13 @@ export const simulate = (workload: Workload, forking: Forking): Ran => {
  */
 export type SpreadState = Readonly<{
 	importing: number
+	importingCpu: number
 	properties: ReadonlyArray<
 		Readonly<{
 			opening: number
+			openingCpu: number
 			caseMillis: number
+			tripMillis: number
 			queued: number
 			sent: number
 			measured: boolean
@@ -454,38 +463,52 @@ export type SpreadState = Readonly<{
 /** Whether a property of a spread state was measured: opened somewhere and its occupancy known, or not yet. */
 const measuredness: Gen<boolean> = (source) => source.draw(int(0, 3)) > 0
 
-/** A property of a spread state, with up to six units queued and `sent` sent to the holder, mostly measured. */
+/**
+ * A property of a spread state, with up to twenty units queued and `sent` sent to the holder, mostly measured: each unit
+ * one case of `caseMillis` that holds its worker `tripMillis` longer (its round trip), none half the time, its opening
+ * taking `opening` milliseconds of which `openingCpu` of CPU (the rest a wait, a clone's or a plan's).
+ */
 const spreadProperty =
 	(sent: Gen<number>): Gen<SpreadState["properties"][number]> =>
-	(source) => ({
-		opening: source.draw(int(0, 40)),
-		caseMillis: source.draw(int(1, 20)),
-		queued: source.draw(int(0, 6)),
-		sent: source.draw(sent),
-		measured: source.draw(measuredness)
-	})
+	(source) => {
+		const opening = source.draw(int(0, 40))
+		return {
+			opening,
+			openingCpu: source.draw(int(0, opening)),
+			caseMillis: source.draw(int(1, 40)),
+			tripMillis: source.draw(boolean) ? 0 : source.draw(int(1, 40)),
+			queued: source.draw(int(0, 20)),
+			sent: source.draw(sent),
+			measured: source.draw(measuredness)
+		}
+	}
 
 /**
- * Modules of one to four properties, each measured, with up to six units of each queued and up to six sent to the
+ * Modules of one to four properties, each measured, with up to twenty units of each queued and up to six sent to the
  * holder, one at least (the holder is busy with its first property's), as a holder is that a spread is decided beside.
  */
-export const spreadStates: Gen<SpreadState> = (source) => ({
-	importing: source.draw(int(0, 40)),
-	properties: [
-		{ ...source.draw(spreadProperty(int(1, 6))), measured: true },
-		...source.draw(array(spreadProperty(int(0, 6)), { min: 0, max: 3 }))
-	]
-})
+export const spreadStates: Gen<SpreadState> = (source) => {
+	const importing = source.draw(int(0, 80))
+	return {
+		importing,
+		importingCpu: source.draw(int(0, importing)),
+		properties: [
+			{ ...source.draw(spreadProperty(int(1, 6))), measured: true },
+			...source.draw(array(spreadProperty(int(0, 6)), { min: 0, max: 3 }))
+		]
+	}
+}
 
 /**
  * What the scheduler judges of the module of `state`, beside its one holder (worker 0, which readied every property of
- * it and was sent its units) and a second worker idle: whether it outgrows its holder, and how many new workers it
+ * it, ran a cold first unit of each that took far longer than the rest, and was sent its units) and a second worker
+ * idle: whether it outgrows its holder, and how many new workers it
  * wants when a worker takes `starting` milliseconds to start; the scheduler as the pool feeds it, every number
  * measured.
  */
 export const spreadIn = (
 	state: SpreadState,
-	starting: number
+	starting: Start
 ): Readonly<{ outgrows: boolean; wanted: number }> => {
 	const scheduler = schedulerOf<Scheduled>(2)
 	let ids = 0
@@ -495,10 +518,12 @@ export const spreadIn = (
 		if (drawn.measured) {
 			scheduler.readied(0, "m", property, {
 				importing: at === 0 ? state.importing : 0,
-				opening: drawn.opening
+				opening: drawn.opening,
+				cpu: (at === 0 ? state.importingCpu : 0) + drawn.openingCpu
 			})
-			scheduler.occupied(0, property, 1, drawn.caseMillis)
-			scheduler.occupied(0, property, 1, drawn.caseMillis)
+			scheduler.occupied(0, property, 1, 10 * (drawn.caseMillis + drawn.tripMillis) + 100)
+			scheduler.occupied(0, property, 1, drawn.caseMillis + drawn.tripMillis)
+			scheduler.finished(property, 1, drawn.caseMillis, drawn.caseMillis)
 		}
 		for (let unit = 0; unit < drawn.sent; unit += 1) {
 			ids += 1
@@ -543,7 +568,7 @@ export const messageStates: Gen<MessageState> = (source) => ({
 /** How many of `state`'s queued units the scheduler gives one idle worker in one message. */
 export const messageTaken = (state: MessageState): number => {
 	const scheduler = schedulerOf<Scheduled>(state.workers)
-	scheduler.finished("m#p", 20, 20 * state.meanMillis)
+	scheduler.finished("m#p", 20, 20 * state.meanMillis, 20 * state.meanMillis)
 	for (const [at, cases] of state.units.entries()) {
 		scheduler.enqueue({ id: at + 1, property: "m#p", module: "m", cases })
 	}

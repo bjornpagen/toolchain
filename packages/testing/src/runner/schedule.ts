@@ -56,6 +56,9 @@ export const messageWorkMillis = 12
  */
 export type Scheduled = Readonly<{ id: number; property: string; module: string; cases: number }>
 
+/** What starting a worker takes, as the workers measured it: milliseconds of wall time, and of its CPU. */
+export type Start = Readonly<{ millis: number; cpu: number }>
+
 /** The test module a run label's property is declared in: its identity before the `#`. */
 export const moduleOfLabel = (label: string): string =>
 	Arr.headNonEmpty(Str.split(runOfLabel(label).id, "#"))
@@ -107,11 +110,11 @@ export type Scheduler<U extends Scheduled> = Readonly<{
 	/**
 	 * How many workers that hold nothing the queue would give work to now: one for each queued module no worker holds,
 	 * and, for each module whose work left undrained by its holders within a new worker's start (`starting`, its
-	 * measured milliseconds; none before one started) and its readying covers that wait, as many as the undrained work
-	 * holds that wait whole, so each further worker's share of it pays for its start and readying. A pool sized to its
-	 * work forks no more.
+	 * measured milliseconds and CPU; none before one started) and its readying covers that wait, and whose queued
+	 * cases' CPU covers that start's and readying's CPU, as many as the undrained work holds that wait whole, so each
+	 * further worker's share of it pays for its start and readying. A pool sized to its work forks no more.
 	 */
-	wanted: (view: View<U>, starting: Option.Option<number>) => number
+	wanted: (view: View<U>, starting: Option.Option<Start>) => number
 	/** One message of the module's oldest queued property for `worker`, out of the queue, its module held from now on. */
 	take: (worker: number, module: string) => Option.Option<Arr.NonEmptyReadonlyArray<U>>
 	/** The steal of idle worker `thief` from `victim` alone: its unstarted tail, as far as the thief may take it. */
@@ -122,8 +125,11 @@ export type Scheduler<U extends Scheduled> = Readonly<{
 	holds: (worker: number, module: string) => boolean
 	/** Whether some worker holds `module`. */
 	holdsAny: (module: string) => boolean
-	/** A property's cases finished: how many, and their milliseconds; a unit that ran none (a count) measures nothing. */
-	finished: (property: string, cases: number, millis: number) => void
+	/**
+	 * A property's cases finished: how many, their milliseconds, and the CPU their worker spent on them; a unit that ran
+	 * none (a count) measures nothing.
+	 */
+	finished: (property: string, cases: number, millis: number, cpu: number) => void
 	/**
 	 * How long a unit of a property held its worker, as the pool saw it: from when it was sent (or the worker's last unit
 	 * finished, if later) to its answer, its readying taken out; with how many cases it held. A unit's work is reckoned
@@ -136,13 +142,13 @@ export type Scheduler<U extends Scheduled> = Readonly<{
 	occupied: (worker: number, property: string, cases: number, millis: number) => void
 	/**
 	 * Worker `worker` readied `property` of `module`: it took `importing` milliseconds to import the module (none when it
-	 * had imported it before) and `opening` to open the property's needs.
+	 * had imported it before) and `opening` to open the property's needs, and `cpu` of its CPU for both.
 	 */
 	readied: (
 		worker: number,
 		module: string,
 		property: string,
-		readying: Readonly<{ importing: number; opening: number }>
+		readying: Readonly<{ importing: number; opening: number; cpu: number }>
 	) => void
 	/** Worker `worker` was replaced by a fresh process: it holds nothing and has readied nothing. */
 	forget: (worker: number) => void
@@ -152,6 +158,22 @@ export type Scheduler<U extends Scheduled> = Readonly<{
 
 /** A running sum: how many, and their milliseconds. */
 type Sum = { count: number; millis: number }
+
+/**
+ * What a module's spread is judged by: the queued work its holders leave undrained within a further worker's wait
+ * before its first case, that wait, the CPU its queued cases take, the CPU a further worker spends getting ready, and
+ * how many workers hold it.
+ */
+type Shortfall = Readonly<{
+	short: number
+	within: number
+	caseCpu: number
+	readyCpu: number
+	holding: number
+}>
+
+/** A running sum of cases: how many, their milliseconds, and their CPU. */
+type CaseSum = { count: number; millis: number; cpu: number }
 
 /** Units by id, oldest first. */
 const byId = Order.mapInput(Order.Number, (unit: Scheduled) => unit.id)
@@ -190,7 +212,11 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 	const importedOn: Array<Set<string>> = Array.from({ length: workers }, () => new Set())
 	const warmOn: Array<Set<string>> = Array.from({ length: workers }, () => new Set())
 	const openedOn: Array<Set<string>> = Array.from({ length: workers }, () => new Set())
-	const cases = new Map<string, Sum>()
+	const cases = new Map<string, CaseSum>()
+	const readyingCpuOn: Array<Map<string, number>> = Array.from(
+		{ length: workers },
+		() => new Map<string, number>()
+	)
 	const occupancies = new Map<string, Sum>()
 	const imports = new Map<string, number>()
 	const openings = new Map<string, number>()
@@ -289,26 +315,48 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 	 * to 64 workers at 959 CPU-s against Vitest's 450). A module with a part of that readying unmeasured spreads to no
 	 * further worker until it is measured.
 	 */
-	const outgrowsAfter = (module: string, view: View<U>, before: number): boolean =>
+	const outgrowsAfter = (module: string, view: View<U>, before: Start): boolean =>
 		Option.exists(shortfallOf(module, view, before), covered)
 
-	/** Whether undrained work covers the wait a further worker spends before it can take any of it. */
-	const covered = ({ short, within }: Readonly<{ short: number; within: number }>): boolean =>
-		short > 0 && short >= within
+	/**
+	 * Whether undrained work covers the wait a further worker spends before it can take any of it, and the CPU the
+	 * module's queued cases take, shared among its holders and that worker, covers what each spends getting ready (its
+	 * start, if forked, and its readying of the module): a module whose units hold their workers for their round trips
+	 * spreads by how long they hold them (Scheduler.occupied), but only while the cases left would pay in CPU for every
+	 * worker that takes a share of them. A wait on another process (PostgreSQL's) is no reason to fork: the wall time it
+	 * saves costs CPU every worker's start and readying spend (GZ-NETWORK: 30 network modules forked all 64 workers, 155
+	 * CPU-s of starts, readying and parent for the runner's 841.8 CPU-s against Vitest's 533.7, PostgreSQL's included).
+	 */
+	const covered = ({ short, within, caseCpu, readyCpu, holding }: Shortfall): boolean =>
+		short > 0 && short >= within && caseCpu >= (holding + 1) * readyCpu
+
+	/**
+	 * How many further workers a module's queued work pays for: as many as its undrained work holds the wait whole, and
+	 * no more than leave every worker's share of its cases' CPU, its holders' among them, at least what it spends getting
+	 * ready.
+	 */
+	const paidFor = (shortfall: Shortfall): number =>
+		covered(shortfall)
+			? Math.max(
+					0,
+					Math.min(
+						Math.floor(shortfall.short / Math.max(shortfall.within, Number.MIN_VALUE)),
+						Math.floor(shortfall.caseCpu / Math.max(shortfall.readyCpu, Number.MIN_VALUE)) -
+							shortfall.holding
+					)
+				)
+			: 0
 
 	/**
 	 * How much of a module's queued work its holders leave undrained within a further worker's wait before its first case
-	 * of it (`before` and readying the module's queued work), and that wait; none before the module's import is measured.
+	 * of it (`before` and readying the module's queued work), that wait, and the queued cases' own time; none before the
+	 * module's import is measured.
 	 * Both sides count the queued properties measured so far alone (each opened somewhere, its occupancy known): an
 	 * unmeasured property's work counts nothing yet (workOfCases), so its opening does not either, and it never holds
 	 * back the spread of work already measured (with a property's whole streams queued at once, one property's units
 	 * could otherwise keep a module on its holder until it reached the last property's).
 	 */
-	const shortfallOf = (
-		module: string,
-		view: View<U>,
-		before: number
-	): Option.Option<Readonly<{ short: number; within: number }>> => {
+	const shortfallOf = (module: string, view: View<U>, before: Start): Option.Option<Shortfall> => {
 		const queued = queue.get(module)
 		if (queued === undefined) {
 			return Option.none()
@@ -317,14 +365,53 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 			Arr.fromIterable(queued.byProperty.keys()),
 			(property) => occupancies.has(property) && openings.has(property)
 		)
-		return Option.map(readyingOf(module, measured, Option.none()), (readying) => {
-			const within = before + readying
-			let drained = 0
-			for (const holder of holders.get(module) ?? []) {
-				drained += Math.max(0, within - workOf(view.sentOf(holder)))
+		return Option.flatMap(readyingOf(module, measured, Option.none()), (readying) =>
+			Option.map(readyingCpuOf(module), (readyingCpu) => {
+				const within = before.millis + readying
+				let drained = 0
+				for (const holder of holders.get(module) ?? []) {
+					drained += Math.max(0, within - workOf(view.sentOf(holder)))
+				}
+				return {
+					short: queuedWorkOf(queued) - drained,
+					within,
+					caseCpu: queuedCaseCpuOf(queued),
+					readyCpu: before.cpu + readyingCpu,
+					holding: holders.get(module)?.size ?? 0
+				}
+			})
+		)
+	}
+
+	/**
+	 * The CPU a module's queued cases take, at each property's mean case CPU (Scheduler.finished): what a further worker
+	 * could spend running them; none counted of a property not yet measured.
+	 */
+	const queuedCaseCpuOf = (queued: ModuleQueue<U>): number => {
+		let cpu = 0
+		for (const [property, count] of queued.cases) {
+			const sum = cases.get(property)
+			cpu += sum === undefined ? 0 : (count * sum.cpu) / sum.count
+		}
+		return cpu
+	}
+
+	/**
+	 * The CPU a further worker spends readying a module: the least any worker that readied it spent on every readying of
+	 * it there (its import once, each property's opening); none before a worker readied it.
+	 */
+	const readyingCpuOf = (module: string): Option.Option<number> => {
+		let least: Option.Option<number> = Option.none()
+		for (const spent of readyingCpuOn) {
+			const cpu = spent.get(module)
+			if (
+				cpu !== undefined &&
+				Option.match(least, { onNone: () => true, onSome: (other) => cpu < other })
+			) {
+				least = Option.some(cpu)
 			}
-			return { short: queuedWorkOf(queued) - drained, within }
-		})
+		}
+		return least
 	}
 
 	/**
@@ -560,7 +647,10 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 					oldestOf(held ?? [], () => true),
 					() => oldestOf(queue.keys(), (candidate) => (holders.get(candidate)?.size ?? 0) === 0)
 				),
-				() => oldestOf(queue.keys(), (candidate) => outgrowsAfter(candidate, view, 0))
+				() =>
+					oldestOf(queue.keys(), (candidate) =>
+						outgrowsAfter(candidate, view, { millis: 0, cpu: 0 })
+					)
 			)
 			return Option.match(
 				Option.flatMap(module, (chosen) => take(worker, chosen)),
@@ -570,7 +660,7 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 				}
 			)
 		},
-		outgrows: (module, view) => outgrowsAfter(module, view, 0),
+		outgrows: (module, view) => outgrowsAfter(module, view, { millis: 0, cpu: 0 }),
 		wanted: (view, starting) => {
 			let wanted = 0
 			for (const module of queue.keys()) {
@@ -579,13 +669,10 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 					continue
 				}
 				wanted += Option.match(
-					Option.flatMap(starting, (millis) => shortfallOf(module, view, millis)),
+					Option.flatMap(starting, (start) => shortfallOf(module, view, start)),
 					{
 						onNone: () => 0,
-						onSome: (shortfall) =>
-							covered(shortfall)
-								? Math.floor(shortfall.short / Math.max(shortfall.within, Number.MIN_VALUE))
-								: 0
+						onSome: paidFor
 					}
 				)
 			}
@@ -609,13 +696,14 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 		},
 		holds: (worker, module) => holds[worker]?.has(module) ?? false,
 		holdsAny: (module) => (holders.get(module)?.size ?? 0) > 0,
-		finished: (property, count, millis) => {
+		finished: (property, count, millis, cpu) => {
 			if (count === 0) {
 				return
 			}
-			const sum = cases.get(property) ?? { count: 0, millis: 0 }
+			const sum = cases.get(property) ?? { count: 0, millis: 0, cpu: 0 }
 			sum.count += count
 			sum.millis += millis
+			sum.cpu += cpu
 			cases.set(property, sum)
 		},
 		occupied: (worker, property, count, millis) => {
@@ -633,6 +721,8 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 			occupancies.set(property, sum)
 		},
 		readied: (worker, module, property, readying) => {
+			const spent = readyingCpuOn[worker]
+			spent?.set(module, (spent.get(module) ?? 0) + readying.cpu)
 			if (!(importedOn[worker]?.has(module) ?? false)) {
 				importedOn[worker]?.add(module)
 				imports.set(module, Math.min(imports.get(module) ?? readying.importing, readying.importing))
@@ -653,6 +743,7 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 			importedOn[worker] = new Set()
 			openedOn[worker] = new Set()
 			warmOn[worker] = new Set()
+			readyingCpuOn[worker] = new Map<string, number>()
 		},
 		held: () => Arr.map(holds, (modules) => modules.size)
 	}
@@ -666,7 +757,7 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 export const forksOf = <U extends Scheduled>(
 	scheduler: Scheduler<U>,
 	view: View<U>,
-	pool: Readonly<{ idling: number; starting: number; most: number; started: Option.Option<number> }>
+	pool: Readonly<{ idling: number; starting: number; most: number; started: Option.Option<Start> }>
 ): number => {
 	const room = pool.most - view.workers
 	return room > 0
