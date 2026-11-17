@@ -12,7 +12,7 @@ import {
 } from "effect"
 import { ChildProcess } from "effect/process"
 import { array, element, finite, type Gen, int } from "#gen.ts"
-import { liveMillis, WATCHDOG_GRACE_MILLIS } from "#live.ts"
+import { liveMillis, liveSleep, WATCHDOG_GRACE_MILLIS, watchdogWakes } from "#live.ts"
 import type { CheckoutDir } from "#mutate/checkout.ts"
 import { type Property, property } from "#property.ts"
 import { HARDENED_FLAGS } from "#runner/config.ts"
@@ -155,37 +155,69 @@ export const settledHere = (planted: Planted, seed: number) =>
 	)
 
 /**
- * A search of cases that return at once, run under the runner's own case deadline, far longer than a planted search's:
- * the watchdog it starts sleeps until its last case's moment, so a planted case after it comes due before the watchdog
- * would wake of itself, and the watchdog must be woken for it.
+ * The case deadline of the search that puts the watchdog's thread to sleep before a planted runaway (watchdogAsleep):
+ * four of the watchdog's graces, so the thread sleeps until four graces past that search's first case's start. The
+ * property requires that moment to come past the runaway's moment and grace, counted from when the planted search
+ * began (dueBeforeTheThreadWakes), which holds while the search waits less than three graces less the runaway's
+ * deadline (at most 100 ms, plantedOf) for the thread; a thread left asleep that long, waiting its grace once it wakes,
+ * then ends the process past the property's bound. It is no limit: any multiple of the grace from three up separates
+ * the two, and four leaves the wait a grace.
  */
-const longerDeadlines: Property = property.exhaust(finite(values), {
+const asleepDeadlineMillis = 4 * WATCHDOG_GRACE_MILLIS
+
+/**
+ * Waits, yielding a millisecond at a time, until the process's watchdog thread has said when it will next wake of
+ * itself. Run as a case, the thread's first, the moment it says is that case's own: it reads the earliest moment of the
+ * cases in flight when it starts.
+ */
+const untilTheWatchdogSleeps: Effect.Effect<void> = Effect.suspend(() =>
+	Effect.flatMap(watchdogWakes, (wakes) =>
+		Option.isSome(wakes)
+			? Effect.void
+			: Effect.andThen(liveSleep(Duration.millis(1)), untilTheWatchdogSleeps)
+	)
+)
+
+/**
+ * A search under asleepDeadlineMillis whose cases wait until the watchdog's thread sleeps until a moment of its own. Its
+ * first case starts the process's watchdog and waits until the thread sleeps until that case's moment; its end, and
+ * every later case's start and end, each coming later than that moment or never, wake no thread: the thread sleeps on
+ * until the first case's moment, so a planted runaway after the search comes due before the thread would wake of
+ * itself, and the thread must be woken for it. Without the wait the thread may start only once the runaway holds the
+ * main thread and read the runaway's moment as its first, which needs no wake-up.
+ */
+const watchdogAsleep: Property = property.exhaust(finite(values), {
 	box: "every value from 0 to 9",
 	needs: {},
 	situations: [],
-	check: () => () => Effect.void,
-	oracle: { kind: "specification", name: "cases that return at once" },
+	check: () => () => untilTheWatchdogSleeps,
+	oracle: { kind: "specification", name: "cases that wait until the watchdog's thread sleeps" },
 	kept: [],
 	kills: []
 })
 
 /**
- * The program this module is when run: it runs cases under a longer deadline first (longerDeadlines), then prints the
- * moment its planted search begins, exhausts it inline under its case deadline and the given run seed, and prints how
- * the search ended. A runaway ends the process instead, by its watchdog, which prints its report.
+ * The program this module is when run: it puts the watchdog's thread to sleep until a later moment of its own
+ * (watchdogAsleep), then prints the moment its planted search begins and the moment the thread then said it would wake,
+ * exhausts the planted search inline under its case deadline and the given run seed, and prints how the search ended. A
+ * runaway ends the process instead, by its watchdog, which prints its report.
  */
 const searchedAsProgram = (planted: Planted, seed: number) =>
 	Effect.runPromise(
 		Effect.scoped(
 			Effect.gen(function* () {
-				yield* searchInline(longerDeadlines, {
-					id: `${idOf(planted)} after longer deadlines`,
+				yield* searchInline(watchdogAsleep, {
+					id: `${idOf(planted)} after the watchdog sleeps`,
 					seed,
 					reach: "full",
-					limits: runnerLimits
+					limits: { ...runnerLimits, deadline: asleepDeadlineMillis }
 				})
 				const began = yield* liveMillis
+				const wakes = yield* watchdogWakes
 				yield* Console.log(`began: ${began}`)
+				yield* Console.log(
+					`wakes: ${Option.match(wakes, { onNone: () => "none", onSome: String })}`
+				)
 				const verdict = yield* searchInline(plantedSearch(planted), {
 					id: idOf(planted),
 					seed,
@@ -237,9 +269,13 @@ const ENDED_LINE = regex("^ended: (?<ending>\\S+)$", "m")
 /** The line the program prints as its search begins: the moment, in milliseconds since the epoch. */
 const BEGAN_LINE = regex("^began: (?<moment>\\d+)$", "m")
 
+/** The line the program prints as its search begins: when the watchdog's thread said it would next wake, if it did. */
+const WAKES_LINE = regex("^wakes: (?<moment>\\d+)$", "m")
+
 /**
- * A planted program's run under a seed, from the program at `program`, to its end: what it printed, its exit code, and
- * when it ended. The program runs in its worker's process group, not one of its own, so a worker ended before the
+ * A planted program's run under a seed, from the program at `program`, to its end: what it printed (when its planted
+ * search began, when the watchdog's thread then said it would wake, how the search ended), its exit code, and when it
+ * ended. The program runs in its worker's process group, not one of its own, so a worker ended before the
  * program (a mutant's runaway its watchdog no longer ends, in a kill trial) ends it too (pool.ts endGroup).
  */
 export const programRun = (program: string, planted: Planted, seed: number) =>
@@ -269,6 +305,7 @@ export const programRun = (program: string, planted: Planted, seed: number) =>
 			const ended = yield* liveMillis
 			return {
 				began: Option.map(Option.fromNullishOr(BEGAN_LINE.exec(stdout)?.groups.moment), Number),
+				wakes: Option.map(Option.fromNullishOr(WAKES_LINE.exec(stdout)?.groups.moment), Number),
 				ended,
 				ending: Option.fromNullishOr(ENDED_LINE.exec(stdout)?.groups.ending),
 				replay: Option.fromNullishOr(REPLAY_LINE.exec(stderr)?.groups.token),

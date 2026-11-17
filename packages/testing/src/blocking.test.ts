@@ -1,7 +1,8 @@
 /**
  * The watchdog (live.ts), over planted searches (blocking.fixtures.ts), a runaway's in a program of its own, since it
- * ends its process, after cases under a longer deadline, so the watchdog sleeps past the runaway's moment and must be
- * woken for it, started from the checkout (Checkout.dir, so a mutant of live.ts reaches it on disk), every other one
+ * ends its process, once the watchdog's thread sleeps until a later moment of its own, past the runaway's moment and
+ * grace (a situation every runaway's case requires, from the moment the thread said, so the thread must be woken for
+ * it), started from the checkout (Checkout.dir, so a mutant of live.ts reaches it on disk), every other one
  * in the case's own process: a body that loops or backtracks forever from a drawn threshold must end its process with
  * the hang report, naming the first case at the threshold in a replay token, once its case deadline and the watchdog's
  * grace have passed and before a grace more, the latest bound that still tells a watchdog waiting twice its grace
@@ -65,6 +66,10 @@ export const watchdog = property.explore(aimed(settlingRuns, bodyAims), {
 							values,
 							forcedChooser(Float64Array.from(token.replayed.values), token.replayed.values.length)
 						).value,
+						dueBeforeTheThreadWakes: Option.map(
+							Option.all([ran.began, ran.wakes]),
+							([began, wakes]) => wakes > began + moment
+						),
 						pastItsMoment: Option.map(ran.began, (began) => ran.ended - began >= moment),
 						withinAGraceMore: Option.map(
 							ran.began,
@@ -76,6 +81,7 @@ export const watchdog = property.explore(aimed(settlingRuns, bodyAims), {
 						exitCode: Option.none<number>(),
 						id: idOf(planted),
 						replayed: planted.threshold,
+						dueBeforeTheThreadWakes: Option.some(true),
 						pastItsMoment: Option.some(true),
 						withinAGraceMore: Option.some(true)
 					}

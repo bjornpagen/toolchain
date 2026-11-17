@@ -300,12 +300,14 @@ export const answerOf = (inFlight: ReadonlyArray<Watched>, now: number): Answer 
  * This process's watchdog of its main thread, for the hangs a case's own guard cannot stop: a case that loops
  * synchronously holds the thread its guard's timer would run on. `watch` registers a case in flight and returns its
  * release; `answer` is what the main thread tells the watchdog's thread that asks it, interrupted, whether it is
- * blocked. A process whose tests run off its main thread, in a worker, has none: its watch does nothing, and only the
- * guard's timer stops a case.
+ * blocked; `wakes` is when the watchdog's thread will next wake of itself, as it last said, none until it first says and
+ * while it waits for a case to wake it. A process whose tests run off its main thread, in a worker, has none: its watch
+ * does nothing, and only the guard's timer stops a case.
  */
 type Watchdog = Readonly<{
 	watch: (watched: Watched) => () => void
 	answer: () => Answer
+	wakes: () => Option.Option<number>
 }>
 
 declare global {
@@ -315,7 +317,8 @@ declare global {
 /** The watchdog of a process whose tests do not run on its main thread: it watches nothing. */
 const offMainThread: Watchdog = {
 	watch: () => () => undefined,
-	answer: () => ({ kind: "running" })
+	answer: () => ({ kind: "running" }),
+	wakes: () => Option.none()
 }
 
 /**
@@ -372,7 +375,12 @@ const startedWatchdog = (): Watchdog => {
 			}
 		},
 		answer: () =>
-			answerOf(Arr.fromIterable(inFlight.values()), performance.timeOrigin + performance.now())
+			answerOf(Arr.fromIterable(inFlight.values()), performance.timeOrigin + performance.now()),
+		wakes: () =>
+			Option.filter(
+				Option.some(Number(Atomics.load(stamps, LAYOUT.wakes))),
+				(moment) => moment < LAYOUT.never
+			)
 	}
 }
 
@@ -381,6 +389,19 @@ const watchdogOfProcess = (): Watchdog => {
 	globalThis.bjornpagenTestingWatchdog ??= isMainThread ? startedWatchdog() : offMainThread
 	return globalThis.bjornpagenTestingWatchdog
 }
+
+/**
+ * When this process's watchdog thread will next wake of itself, in milliseconds since the epoch, as it last said: none
+ * before a case started the watchdog or before its thread first said, and none while the thread waits for a case to
+ * wake it. A case whose moment comes before it wakes the thread; any other leaves it asleep. Reading it starts no
+ * watchdog. The watchdog's property (blocking.test.ts) reads it to start its runaway only once the thread sleeps until a
+ * later moment of its own, the situation in which only that wake-up ends the runaway in time.
+ */
+export const watchdogWakes: Effect.Effect<Option.Option<number>> = Effect.sync(() =>
+	Option.flatMap(Option.fromUndefinedOr(globalThis.bjornpagenTestingWatchdog), (watchdog) =>
+		watchdog.wakes()
+	)
+)
 
 /**
  * How long the main thread may go without answering the watchdog once a case in flight has passed the moment its
