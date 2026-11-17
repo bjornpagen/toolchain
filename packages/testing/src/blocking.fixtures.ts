@@ -377,15 +377,18 @@ export const BODY_SITUATIONS: ReadonlyArray<BodySituation> = Arr.map(
 
 /**
  * A case in flight as the main thread holds it when the watchdog asks: whether it has passed the moment its guard would
- * stop it, and by how far, either way, in milliseconds.
+ * first judge it, and by how far, either way, in milliseconds; and whether its work is over its deadline (spent, or
+ * stalled over a whole window) or still within it, as the machine slows it.
  */
-export type InFlight = Readonly<{ past: boolean; by: number }>
+export type InFlight = Readonly<{ past: boolean; by: number; over: boolean }>
 
-/** The cases a main thread holds in flight when the watchdog asks it: none to four, each past its moment or not. */
+/** The cases a main thread holds in flight when the watchdog asks it: none to four, each past its moment or not, its
+ * work over its deadline or not. */
 export const inFlights: Gen<ReadonlyArray<InFlight>> = array(
 	(source) => ({
 		past: source.draw(element([false, true] as const)),
-		by: source.draw(int(0, 10_000))
+		by: source.draw(int(0, 10_000)),
+		over: source.draw(element([false, true] as const))
 	}),
 	{ min: 0, max: 4 }
 )
@@ -396,11 +399,12 @@ export const reportAt = (index: number): string => `<the report of case ${index}
 /**
  * The cases in flight as the watchdog watches them at `now`: one past its moment passed it `by` milliseconds before
  * (at `now` itself when `by` is 0), one not yet past it reaches it `by` and one more milliseconds after; each reports
- * its index.
+ * its index, and its work is over its deadline as drawn.
  */
 export const watchedAt = (inFlight: ReadonlyArray<InFlight>, now: number) =>
 	Arr.map(inFlight, (one, index) => ({
 		hangsAt: one.past ? now - one.by : now + one.by + 1,
 		graceMillis: WATCHDOG_GRACE_MILLIS,
-		report: () => reportAt(index)
+		report: () => reportAt(index),
+		over: () => one.over
 	}))

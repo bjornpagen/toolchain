@@ -1,5 +1,4 @@
-import { Array as Arr, Effect, Option, Result, String as Str } from "effect"
-import { liveMillis, liveSleepUntil } from "#live.ts"
+import { Array as Arr, Option, Result, String as Str } from "effect"
 import { stalledShare } from "#runner/limits.ts"
 
 /**
@@ -173,6 +172,44 @@ export const processWork = (pid: Option.Option<number>, wall: number): TreeWork 
 	}
 }
 
+/**
+ * This process's work as its watchdog reads it while a case holds the main thread (live.ts watchedCase): its own CPU,
+ * every thread's, and its live descendants' started since `wall`. It reads nothing until the watchdog asks, so a case
+ * pays one process.cpuUsage for it; it leaves out the children the process waits for meanwhile, which a held main
+ * thread reaps only through a synchronous spawn, whose child it counts while the child lives.
+ */
+export const heldWork = (wall: number, own: number): TreeWork => ({
+	began: { wall, cpu: own },
+	cpu: () =>
+		ownCpu() +
+		Option.match(sinceBootAt(statOf("self"), wall), {
+			onNone: () => 0,
+			onSome: (at) => descendantsSince("self", at)
+		})
+})
+
+/**
+ * A judge of `work` under `deadline` milliseconds that keeps its window between readings: at each reading, at `wall` on
+ * the live clock, it says whether the work is over its deadline (spent, or stalled over a whole window) and carries a
+ * working window forward.
+ */
+export const judgeOf = (work: TreeWork, deadline: number): ((wall: number) => boolean) => {
+	let window = work.began
+	return (wall) => {
+		const standing = standingOf({
+			began: work.began,
+			window,
+			now: { wall, cpu: work.cpu() },
+			deadline
+		})
+		if (standing.kind !== "working") {
+			return true
+		}
+		window = standing.window
+		return false
+	}
+}
+
 /** A reading of a case's work: the live clock, and the CPU its process tree has spent, both in milliseconds. */
 export type Reading = Readonly<{ wall: number; cpu: number }>
 
@@ -182,7 +219,7 @@ export type Reading = Readonly<{ wall: number; cpu: number }>
  * spent, its tree's CPU since it began at its deadline; or stalled, its tree's CPU moved by less than it takes to show
  * progress over a whole deadline of wall time.
  */
-type Standing =
+export type Standing =
 	| Readonly<{ kind: "working"; window: Reading; readAgainAt: number }>
 	| Readonly<{ kind: "spent" }>
 	| Readonly<{ kind: "stalled" }>
@@ -199,7 +236,7 @@ const progressOver = (deadline: number): number => Math.max(deadline * stalledSh
  * milliseconds. A working case is read again at its window's end, or sooner when its remaining CPU, spent at one CPU,
  * would reach the deadline first.
  */
-const standingOf = (
+export const standingOf = (
 	input: Readonly<{ began: Reading; window: Reading; now: Reading; deadline: number }>
 ): Standing => {
 	const { began, window, now, deadline } = input
@@ -217,25 +254,4 @@ const standingOf = (
 		window: next,
 		readAgainAt: Math.min(next.wall + deadline, now.wall + (deadline - spent))
 	}
-}
-
-/**
- * Ends once `work` has spent `deadline` milliseconds of CPU or its CPU has not moved over a whole `deadline` of wall time
- * (standingOf). It reads the work only when its live-clock timer fires, at a window's end or when the CPU left could run
- * out sooner, so work that ends in time pays one timer and no reading.
- */
-export const overrun = (work: TreeWork, deadline: number): Effect.Effect<void> => {
-	const watch = (window: Reading, readAt: number): Effect.Effect<void> =>
-		Effect.flatMap(Effect.andThen(liveSleepUntil(readAt), liveMillis), (wall) => {
-			const standing = standingOf({
-				began: work.began,
-				window,
-				now: { wall, cpu: work.cpu() },
-				deadline
-			})
-			return standing.kind === "working"
-				? watch(standing.window, standing.readAgainAt)
-				: Effect.void
-		})
-	return watch(work.began, work.began.wall + deadline)
 }

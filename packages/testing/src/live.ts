@@ -1,5 +1,6 @@
 import { isMainThread, Worker } from "node:worker_threads"
 import { Array as Arr, Clock, Duration, Effect, Fiber, Option, Record as Rec } from "effect"
+import { heldWork, judgeOf, ownCpu, type Reading, standingOf, type TreeWork } from "#runner/work.ts"
 
 /**
  * How long the main thread may go without answering the watchdog once a case in flight has passed the moment its
@@ -267,17 +268,24 @@ const watchdogThread = (layout: Layout): void => {
 	watch()
 }
 
-/** A case the watchdog watches: when it passes the moment its guard would stop it, how long the thread then has to
- * answer, and its report should it block. */
-type Watched = Readonly<{ hangsAt: number; graceMillis: number; report: () => string }>
+/** A case the watchdog watches: when it passes the moment its guard would first judge it, how long the thread then has
+ * to answer, its report should it block, and whether, read at a moment, its work is over its deadline (runner/work.ts:
+ * spent in CPU, or stalled over a whole deadline of wall time), so a case the machine slows is never ended for it. */
+type Watched = Readonly<{
+	hangsAt: number
+	graceMillis: number
+	report: () => string
+	over: (now: number) => boolean
+}>
 
 /**
  * What the main thread answers the watchdog at `now`, with `inFlight` its cases in flight: blocked, with the report of
- * every case in flight, when one of them has passed the moment its guard would stop it; running when none has, so a
- * thread that was merely slow to answer, or between cases, is never ended.
+ * every case in flight, when one of them has passed the moment its guard would first judge it and its work is over its
+ * deadline; running when none is, so a thread that was merely slow to answer (a machine that pages it out or starves
+ * it), between cases, or in a case whose work still moves within its deadline, is never ended.
  */
 export const answerOf = (inFlight: ReadonlyArray<Watched>, now: number): Answer => {
-	if (!Arr.some(inFlight, (watched) => watched.hangsAt <= now)) {
+	if (!Arr.some(inFlight, (watched) => watched.hangsAt <= now && watched.over(now))) {
 		return { kind: "running" }
 	}
 	const reports = Arr.map(inFlight, (watched) => watched.report())
@@ -418,9 +426,10 @@ export type CaseLimits = Readonly<{ caseHang: Duration.Input; cut: Option.Option
 
 /**
  * `effect`, a case, watched by the process's watchdog for as long as it runs: should it hold the main thread without
- * yielding past the moment its guard would stop it (CaseLimits) and WATCHDOG_GRACE_MILLIS more, the process ends with
- * `report`, the case's hang verdict, on its stderr, since nothing on that thread can stop it. A case that yields is the
- * guard's to stop, and the watchdog never acts on it.
+ * yielding past the moment its guard would first judge it (CaseLimits) and WATCHDOG_GRACE_MILLIS more, with its work
+ * over its hang limit (its CPU spent, or not moving over a whole hang limit of wall time: runner/work.ts) or its
+ * search's cut reached, the process ends with `report`, the case's hang verdict, on its stderr, since nothing on that
+ * thread can stop it. A case that yields is the guard's to stop, and the watchdog never acts on it.
  */
 export const watchedCase = <A, E, R>(
 	limits: CaseLimits,
@@ -430,16 +439,18 @@ export const watchedCase = <A, E, R>(
 	const hangMillis = Duration.toMillis(Duration.fromInputUnsafe(limits.caseHang))
 	return Effect.acquireUseRelease(
 		Effect.flatMap(liveMillis, (now) =>
-			Effect.sync(() =>
-				watchdogOfProcess().watch({
+			Effect.sync(() => {
+				const judge = judgeOf(heldWork(now, ownCpu()), hangMillis)
+				return watchdogOfProcess().watch({
 					hangsAt: Option.match(limits.cut, {
 						onNone: () => now + hangMillis,
 						onSome: (cut) => Math.min(now + hangMillis, cut)
 					}),
 					graceMillis: WATCHDOG_GRACE_MILLIS,
-					report
+					report,
+					over: (at) => Option.exists(limits.cut, (cut) => at >= cut) || judge(at)
 				})
-			)
+			})
 		),
 		() => effect,
 		(release) => Effect.sync(release)
@@ -450,3 +461,24 @@ export const watchedCase = <A, E, R>(
 export const liveNanos = Clock.currentTimeNanos.pipe(
 	Effect.provideService(Clock.Clock, Clock.Clock.defaultValue())
 )
+
+/**
+ * Ends once `work` has spent `deadline` milliseconds of CPU or its CPU has not moved over a whole `deadline` of wall time
+ * (runner/work.ts standingOf). It reads the work only when its live-clock timer fires, at a window's end or when the CPU
+ * left could run out sooner, so work that ends in time pays one timer and no reading.
+ */
+export const overrun = (work: TreeWork, deadline: number): Effect.Effect<void> => {
+	const watch = (window: Reading, readAt: number): Effect.Effect<void> =>
+		Effect.flatMap(Effect.andThen(liveSleepUntil(readAt), liveMillis), (wall) => {
+			const standing = standingOf({
+				began: work.began,
+				window,
+				now: { wall, cpu: work.cpu() },
+				deadline
+			})
+			return standing.kind === "working"
+				? watch(standing.window, standing.readAgainAt)
+				: Effect.void
+		})
+	return watch(work.began, work.began.wall + deadline)
+}

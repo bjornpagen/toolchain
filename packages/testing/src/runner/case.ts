@@ -20,7 +20,15 @@ import { countWithin } from "#enumerate.ts"
 import { failureText } from "#failure.ts"
 import { keyOf, type Pending, pendingAt, type Reached } from "#features.ts"
 import type { Gen } from "#gen.ts"
-import { abandon, awaitWithinGrace, liveMillis, liveNanos, liveSleep, watchedCase } from "#live.ts"
+import {
+	abandon,
+	awaitWithinGrace,
+	liveMillis,
+	liveNanos,
+	liveSleep,
+	overrun,
+	watchedCase
+} from "#live.ts"
 import type { Need, NeedContext, Needs, NeedValue, Resources } from "#property.ts"
 import { fnv1a32 } from "#random.ts"
 import { type Drawn, replayTokenOf } from "#replay.ts"
@@ -45,7 +53,7 @@ import {
 } from "#runner/protocol.ts"
 import { seriesRun } from "#runner/series.ts"
 import { NeedFailed } from "#runner/services.ts"
-import { overrun, ownCpu, ownWork } from "#runner/work.ts"
+import { ownCpu, ownWork } from "#runner/work.ts"
 import { type Observed, type Recording, recording, simplestChooser } from "#source.ts"
 
 /**

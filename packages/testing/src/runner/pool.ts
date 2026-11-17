@@ -12,7 +12,7 @@ import {
 	Scope,
 	String as Str
 } from "effect"
-import { HUNG_CLEANUP_GRACE, liveMillis, WATCHDOG_GRACE_MILLIS } from "#live.ts"
+import { HUNG_CLEANUP_GRACE, liveMillis, overrun, WATCHDOG_GRACE_MILLIS } from "#live.ts"
 import { type Served, servedArgv } from "#mutate/pool.ts"
 import { withLateUses } from "#runner/case.ts"
 import { compileCacheDirectory, readsCoverage } from "#runner/compile-cache.ts"
@@ -47,7 +47,7 @@ import {
 	type View
 } from "#runner/schedule.ts"
 import type { ChildrenStated, PoolUsage, PropertyUsage } from "#runner/usage.ts"
-import { overrun, processWork } from "#runner/work.ts"
+import { processWork } from "#runner/work.ts"
 
 /**
  * The pool: worker processes, at most one a core and forked as the queue wants them (one for each module no worker

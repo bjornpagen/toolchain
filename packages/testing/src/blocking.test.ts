@@ -110,31 +110,37 @@ export const watchdog = property.explore(aimed(settlingRuns, bodyAims), {
 
 /**
  * What the main thread answers the watchdog's thread that asks it, interrupted, whether it is blocked (live.ts
- * answerOf), over drawn cases in flight, each past the moment its guard would stop it or not: blocked exactly when one
- * is past its moment, naming every case in flight, since the watchdog cannot tell which holds the thread; running
- * otherwise, so a main thread that was merely slow to answer the thread's ping, idle between cases under load, is never
- * ended (MIGRATE-TC met workers ended so, "one of these 0 cases in flight blocked the process"). Oracle: stated in the
+ * answerOf), over drawn cases in flight, each past the moment its guard would first judge it or not, its work over its
+ * deadline or not: blocked exactly when one is past its moment with its work over, naming every case in flight, since
+ * the watchdog cannot tell which holds the thread; running otherwise, so a main thread that was merely slow to answer
+ * the thread's ping, idle between cases under load, is never ended (MIGRATE-TC met workers ended so, "one of these 0
+ * cases in flight blocked the process"), and neither is one whose case the machine slows while its work moves within
+ * its deadline (EDULLM-REPIN met waiting.test.ts ended so at load 410 to 540, 1.1 s alone). Oracle: stated in the
  * property, from the drawn cases.
  */
 export const answersBlockedPastAMoment = property.explore(inFlights, {
 	needs: {},
 	situations: [
 		"nothing in flight",
-		"cases in flight, none past its moment",
-		"one case in flight, past its moment",
-		"a case past its moment among several in flight"
+		"cases in flight, none past its moment with its work over",
+		"a case past its moment whose work still moves within its deadline",
+		"one case in flight, past its moment with its work over",
+		"a case past its moment with its work over among several in flight"
 	],
 	check: (_resources, c) => (inFlight) =>
 		Effect.sync(() => {
-			const past = Arr.some(inFlight, (one) => one.past)
+			const past = Arr.some(inFlight, (one) => one.past && one.over)
+			if (Arr.some(inFlight, (one) => one.past && !one.over)) {
+				c.note("a case past its moment whose work still moves within its deadline")
+			}
 			if (Arr.isReadonlyArrayEmpty(inFlight)) {
 				c.note("nothing in flight")
 			} else if (!past) {
-				c.note("cases in flight, none past its moment")
+				c.note("cases in flight, none past its moment with its work over")
 			} else if (inFlight.length === 1) {
-				c.note("one case in flight, past its moment")
+				c.note("one case in flight, past its moment with its work over")
 			} else {
-				c.note("a case past its moment among several in flight")
+				c.note("a case past its moment with its work over among several in flight")
 			}
 			const now = 1_800_000_000_000
 			const answer = answerOf(watchedAt(inFlight, now), now)
@@ -160,15 +166,23 @@ export const answersBlockedPastAMoment = property.explore(inFlights, {
 		}),
 	oracle: {
 		kind: "specification",
-		name: "the main thread answers blocked exactly when a case in flight is past its moment, naming every case in flight"
+		name: "the main thread answers blocked exactly when a case in flight is past its moment with its work over its deadline, naming every case in flight"
 	},
 	kept: [],
 	kills: [
 		{
 			file: "packages/testing/src/live.ts",
-			original: "\tif (!Arr.some(inFlight, (watched) => watched.hangsAt <= now)) {",
+			original:
+				"\tif (!Arr.some(inFlight, (watched) => watched.hangsAt <= now && watched.over(now))) {",
 			replacement: "\tif (false) {",
 			why: "The main thread answers blocked whatever it holds in flight, as the watchdog ended a process before: a worker asked while idle between cases, or with none past its moment, is ended with a report of no case; the property fails."
+		},
+		{
+			file: "packages/testing/src/live.ts",
+			original:
+				"\tif (!Arr.some(inFlight, (watched) => watched.hangsAt <= now && watched.over(now))) {",
+			replacement: "\tif (!Arr.some(inFlight, (watched) => watched.hangsAt <= now)) {",
+			why: "The main thread answers blocked once a case in flight passes its moment on the live clock, whatever its work, as the watchdog judged before: a case the machine slows while its work moves within its deadline is ended as a hang; the property fails."
 		}
 	]
 })
