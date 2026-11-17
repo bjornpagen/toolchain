@@ -66,6 +66,44 @@ export const leavesChildren = property.exhaust(finite(leavings), {
 	kills: []
 })
 
+/** The identity of runsAwayWithAChild, as a pool's workers load it from the testing package's root. */
+export const RUNAWAY = "src/runner/pool.fixtures.ts#runsAwayWithAChild"
+
+/** The cell a runaway case's loop reads, which nothing writes. */
+const runawayCell = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT))
+
+/**
+ * A property planted to run away with a child of its own (pool.test.ts workersEndWithTheirParent): its case starts one
+ * child in its worker's process group, running until it is ended, as a property's program is (blocking.fixtures.ts
+ * programRun), writes the child's process id to the file CHILD_FILE names, then holds its worker's main thread for
+ * ever, as a mutant's runaway does, so nothing of the worker's own can end either.
+ */
+export const runsAwayWithAChild = property.exhaust(finite(int(0, 1)), {
+	box: "two values",
+	needs: {},
+	situations: [],
+	check: () => () =>
+		Effect.gen(function* () {
+			const file = yield* Config.String(CHILD_FILE)
+			const fs = yield* FileSystem.FileSystem
+			const child = childProcesses.spawn(
+				process.execPath,
+				["-e", "setInterval(() => undefined, 2 ** 30)"],
+				{
+					stdio: "ignore"
+				}
+			)
+			child.unref()
+			yield* fs.writeFileString(file, String(child.pid))
+			while (Atomics.load(runawayCell, 0) === 0) {
+				Atomics.add(runawayCell, 0, 0)
+			}
+		}),
+	oracle: { kind: "specification", name: "a property planted to run away with a child of its own" },
+	kept: [],
+	kills: []
+})
+
 /**
  * The planted property's case that does what `leaving` says, as a search orders it: its decisions, the count's offset
  * from one, then whether it ends its worker.

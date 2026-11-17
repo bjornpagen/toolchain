@@ -183,6 +183,31 @@ const childProcesses = process.getBuiltinModule("node:child_process")
 type ChildProcess = ReturnType<typeof childProcesses.fork>
 
 /**
+ * A worker's launch, bound to the pool's parent: a shell, which leads the worker's process group (it is started
+ * detached), first starts in that group a watcher reading the worker's binding pipe (its fifth standard stream, whose
+ * other end the parent alone holds) to its end, then executes `command` with `args`, the worker, in its own place, the
+ * same process. The pipe ends only once the parent is gone, however it ends (a SIGKILL that runs no finalizer among
+ * them), as the kernel closes the parent's end with the process; the watcher then ends the whole group with SIGKILL: the
+ * worker, whatever its main thread runs (a load or a case that never yields, a mutant's), and every process the worker
+ * started in its group (a property's program, a need's server), a pool such a process holds ending in turn by its own
+ * workers' watchers. The watcher starts before the worker loads anything, holds none of the worker's other streams and
+ * reads nothing but the end; while the parent lives the pool ends a worker's group itself (endGroup), the watcher with it.
+ */
+const launchOf = (
+	command: string,
+	args: ReadonlyArray<string>
+): Readonly<{ command: string; args: ReadonlyArray<string> }> => ({
+	command: "/bin/sh",
+	args: [
+		"-c",
+		'{ while read -r _; do :; done; kill -KILL 0; } <&4 >/dev/null 2>&1 3<&- 4<&- & exec "$@"',
+		"sh",
+		command,
+		...args
+	]
+})
+
+/**
  * Ends a worker with every process it started and did not detach (a property's program, a server its need started):
  * the worker leads a process group of its own (it is forked detached), and the whole group is sent SIGKILL. A worker
  * ended by SIGKILL, by its watchdog or by the pool, runs no finalizer, so its children would otherwise run on, parented
@@ -475,24 +500,22 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 		}
 
 		const spawn = (index: number): Worker => {
-			const child = childProcesses.fork(
+			const launch = launchOf(process.execPath, [
+				...spec.execArgv,
+				...servedArgv(spec.served),
 				spec.entry,
-				[
-					spec.root,
-					String(Arr.get(spec.places.at, index).pipe(Option.getOrElse(() => index))),
-					String(spec.places.of),
-					spec.guide,
-					String(process.pid)
-				],
-				{
-					cwd: spec.cwd,
-					env: { ...inherited, ...spec.env, ...compiling },
-					execArgv: [...spec.execArgv, ...servedArgv(spec.served)],
-					serialization: "advanced",
-					stdio: ["ignore", "pipe", "pipe", "ipc"],
-					detached: true
-				}
-			)
+				spec.root,
+				String(Arr.get(spec.places.at, index).pipe(Option.getOrElse(() => index))),
+				String(spec.places.of),
+				spec.guide
+			])
+			const child = childProcesses.spawn(launch.command, launch.args, {
+				cwd: spec.cwd,
+				env: { ...inherited, ...spec.env, ...compiling },
+				serialization: "advanced",
+				stdio: ["ignore", "pipe", "pipe", "ipc", "pipe"],
+				detached: true
+			})
 			const worker: Worker = {
 				index,
 				child,

@@ -4,15 +4,16 @@ import { ChildProcess } from "effect/process"
 import { liveMillis, liveSleep } from "#live.ts"
 import type { CheckoutDir } from "#mutate/checkout.ts"
 import { HARDENED_FLAGS } from "#runner/config.ts"
+import { CHILD_FILE } from "#runner/pool.fixtures.ts"
 import { placesOf, poolOf } from "#runner/pool.ts"
 import { WORKER_ENTRY } from "#runner/run.ts"
 
 /**
- * The orphan guard's property (pool.test.ts workersOutliveNoParent) kills a parent whose worker is held for ever, a
+ * The binding's property (pool.test.ts workersEndWithTheirParent) kills a parent whose worker is held for ever, a
  * program of its own, since it is killed: this module is that program when run, and the support of the property that
- * runs it. The program forks a pool of one worker over the root it is given (a runner config whose load never ends,
- * pool.fixtures.ts unreadyRoot), queues
- * one unit so the pool forks it, writes the worker's process id to a file, and waits for ever.
+ * runs it. The program forks a pool of one worker over the root it is given, its environment naming the file a planted
+ * case writes its child's process id to (pool.fixtures.ts CHILD_FILE), queues one case of the property it is given so
+ * the pool forks the worker, writes the worker's process id to a file, and waits for ever.
  */
 
 /** The program's path in a checkout of the testing package. */
@@ -27,8 +28,11 @@ const children = Effect.map(
 	(listed) => Arr.filter(Str.split(" ")(Str.trim(listed)), Str.isNonEmpty)
 )
 
-/** The program: a pool held over `root` whose one worker's process id it writes to `pidFile`, then a wait for ever. */
-const heldAsProgram = (root: string, pidFile: string) =>
+/**
+ * The program: a pool held over `root` with one case of `held` queued, whose one worker's process id it writes to
+ * `pidFile`, then a wait for ever.
+ */
+const heldAsProgram = (root: string, held: string, pidFile: string, childFile: string) =>
 	Effect.scoped(
 		Effect.gen(function* () {
 			const fs = yield* FileSystem.FileSystem
@@ -36,7 +40,7 @@ const heldAsProgram = (root: string, pidFile: string) =>
 				entry: WORKER_ENTRY,
 				root,
 				cwd: root,
-				env: {},
+				env: { [CHILD_FILE]: childFile },
 				places: placesOf(1),
 				execArgv: process.execArgv,
 				served: Option.none(),
@@ -48,7 +52,7 @@ const heldAsProgram = (root: string, pidFile: string) =>
 					[
 						[
 							{
-								property: "src/runner/loops.fixtures.ts#withoutNeeds",
+								property: held,
 								chooser: { kind: "simplest" },
 								drawn: { kind: "unsteered" },
 								keep: "nothing",
@@ -74,33 +78,66 @@ const heldAsProgram = (root: string, pidFile: string) =>
 	)
 
 /**
- * The program started from `program` over `root`, writing its worker's process id to `pidFile`: the program's own
- * process id once the file holds the worker's, within `within` milliseconds, or none.
+ * What a held program is told: the root its pool's worker loads, the property whose one case it runs, the file it
+ * writes the worker's process id to, the file the case writes its child's process id to, and whether that case starts
+ * a child (runs away with one) or is never reached (its worker held loading).
  */
-export const heldProgram = (program: string, root: string, pidFile: string, within: number) =>
+export type Holding = Readonly<{
+	root: string
+	held: string
+	pidFile: string
+	childFile: string
+	child: boolean
+}>
+
+/** The process ids a file holds once written, none before. */
+const writtenIn = (file: string) =>
+	Effect.map(
+		Effect.flatMap(FileSystem.FileSystem, (fs) =>
+			Effect.orElseSucceed(fs.readFileString(file), () => "")
+		),
+		(written) => Option.filter(Option.some(Str.trim(written)), Str.isNonEmpty)
+	)
+
+/**
+ * The program started from `program` as `holding` says: the program's own process id and every process its pool's
+ * worker holds (the worker, and the child its case started when it starts one), once their files hold them, within
+ * `within` milliseconds, or none.
+ */
+export const heldProgram = (program: string, holding: Holding, within: number) =>
 	Effect.gen(function* () {
-		const fs = yield* FileSystem.FileSystem
 		const handle = yield* ChildProcess.make(
 			process.execPath,
-			[...HARDENED_FLAGS, program, root, pidFile],
+			[...HARDENED_FLAGS, program, holding.root, holding.held, holding.pidFile, holding.childFile],
 			{ stdin: "ignore", stdout: "ignore", stderr: "ignore", detached: false }
 		)
 		const began = yield* liveMillis
 		for (;;) {
-			const written = yield* Effect.orElseSucceed(fs.readFileString(pidFile), () => "")
-			if (Str.isNonEmpty(Str.trim(written))) {
-				return Option.some({ program: Number(handle.pid), worker: Number(Str.trim(written)) })
+			const worker = yield* writtenIn(holding.pidFile)
+			const child = holding.child ? yield* writtenIn(holding.childFile) : Option.some("")
+			if (Option.isSome(worker) && Option.isSome(child)) {
+				return Option.some({
+					program: Number(handle.pid),
+					held: Arr.map(Arr.filter([worker.value, child.value], Str.isNonEmpty), Number)
+				})
 			}
 			if ((yield* liveMillis) - began >= within) {
-				return Option.none<Readonly<{ program: number; worker: number }>>()
+				return Option.none<Readonly<{ program: number; held: ReadonlyArray<number> }>>()
 			}
 			yield* liveSleep("50 millis")
 		}
 	})
 
 if (import.meta.main) {
-	const [root, pidFile] = process.argv.slice(2)
-	if (root !== undefined && pidFile !== undefined) {
-		await Effect.runPromise(heldAsProgram(root, pidFile).pipe(Effect.provide(NodeServices.layer)))
+	const [root, held, pidFile, childFile] = process.argv.slice(2)
+	if (
+		root !== undefined &&
+		held !== undefined &&
+		pidFile !== undefined &&
+		childFile !== undefined
+	) {
+		await Effect.runPromise(
+			heldAsProgram(root, held, pidFile, childFile).pipe(Effect.provide(NodeServices.layer))
+		)
 	}
 }

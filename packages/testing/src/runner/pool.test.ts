@@ -8,7 +8,8 @@
  * from a worker that cannot send one; and a unit sent to a worker that can no longer say anything (its main thread held
  * between units) is reported lost too, watched from the moment it was sent; and a worker whose runner config's load never
  * ends is ended within the open bound and the grace, its units lost, not waited for; and a worker whose parent is killed
- * ends with it (its orphan guard), even with its main thread held. Oracle: stated per property.
+ * ends with it, with every process it started in its group (its launch binds the group to the parent, pool.ts
+ * launchOf), even with its main thread held. Oracle: stated per property.
  */
 import { Array as Arr, Effect, FileSystem, Option, String as Str } from "effect"
 import { deepStrictEqual } from "#assert.ts"
@@ -36,6 +37,7 @@ import {
 	leavings,
 	loopingProperty,
 	plantedCase,
+	RUNAWAY,
 	shortCase,
 	silencing,
 	unreadyRoot
@@ -123,8 +125,8 @@ export const workersLeaveNoChild = property.exhaust(finite(leavings), {
 		},
 		{
 			file: "packages/testing/src/runner/pool.ts",
-			original: '\t\t\t\t\tstdio: ["ignore", "pipe", "pipe", "ipc"],\n\t\t\t\t\tdetached: true',
-			replacement: '\t\t\t\t\tstdio: ["ignore", "pipe", "pipe", "ipc"]',
+			original: '\t\t\t\tstdio: ["ignore", "pipe", "pipe", "ipc", "pipe"],\n\t\t\t\tdetached: true',
+			replacement: '\t\t\t\tstdio: ["ignore", "pipe", "pipe", "ipc", "pipe"]',
 			why: "A worker is forked into the run's own process group, so it leads none, and ending its group ends nothing of it: its children run on; this property fails."
 		}
 	]
@@ -575,51 +577,54 @@ export const startsNever = property.exhaust(finite(boolean), {
 	]
 })
 
-export const workersOutliveNoParent = property.exhaust(finite(boolean), {
-	box: "a worker held for ever whose parent is killed, twice over",
+export const workersEndWithTheirParent = property.exhaust(finite(boolean), {
+	box: "a worker whose parent is killed, held loading a runner config for ever, or running away for ever with a child it started",
 	needs: { checkout: Checkout.dir, directory: Scratch.dir },
 	situations: [],
 	check:
 		({ checkout, directory }) =>
-		() =>
+		(runsAway) =>
 			Effect.gen(function* () {
 				const dir = yield* checkout
 				const scratch = yield* directory
-				const pidFile = `${scratch}/worker`
-				const root = yield* unreadyRoot(scratch)
-				const held = yield* heldProgram(
+				const found = yield* heldProgram(
 					orphansProgram(dir),
-					root,
-					pidFile,
+					{
+						root: runsAway ? dir : yield* unreadyRoot(scratch),
+						held: runsAway ? RUNAWAY : loopingProperty(false),
+						pidFile: `${scratch}/worker`,
+						childFile: `${scratch}/child`,
+						child: runsAway
+					},
 					runnerLimits.deadline / 2
 				)
-				const gone = yield* Option.match(held, {
-					onNone: () => Effect.succeed(Option.none<number>()),
-					onSome: ({ program, worker }) =>
+				const gone = yield* Option.match(found, {
+					onNone: () => Effect.succeed([]),
+					onSome: ({ program, held }) =>
 						Effect.ensuring(
 							Effect.andThen(
 								Effect.sync(() => process.kill(program, "SIGKILL")),
-								goneWithin(worker, WATCHDOG_GRACE_MILLIS)
+								Effect.forEach(held, (pid) => goneWithin(pid, WATCHDOG_GRACE_MILLIS))
 							),
-							ended(worker)
+							Effect.forEach(held, ended)
 						)
 				})
 				deepStrictEqual(
-					{ held: Option.isSome(held), gone: Option.isSome(gone) },
-					{ held: true, gone: true }
+					{ held: Option.isSome(found), gone: Arr.filter(gone, Option.isSome).length },
+					{ held: true, gone: runsAway ? 2 : 1 }
 				)
 			}),
 	oracle: {
 		kind: "specification",
-		name: "a worker whose parent is killed ends within the watchdog's grace, even with its main thread held for ever"
+		name: "a worker whose parent is killed ends within the watchdog's grace, with every process it started in its group, even with its main thread held"
 	},
 	kept: [],
 	kills: [
 		{
-			file: "packages/testing/src/runner/worker.ts",
-			original: "\t\t\teval: true\n\t\t}).unref()",
-			replacement: "\t\t\teval: true\n\t\t}).terminate()",
-			why: "A worker's orphan guard is terminated as it starts, as if it had none, as before: leading a process group of its own, it outlives a parent killed with no finalizer run, and one whose main thread is held runs on for ever (this lane's own kill trials left such workers at a core each); this property fails."
+			file: "packages/testing/src/runner/pool.ts",
+			original: "'{ while read -r _; do :; done; kill -KILL 0; }",
+			replacement: "'{ while read -r _; do :; done; }",
+			why: "A worker's watcher sees its parent gone and ends nothing, as if the worker were not bound to its parent, as before its orphan guard: leading a process group of its own, a worker outlives a parent killed with no finalizer run, and one whose main thread is held runs on for ever with the children it started (kill trials left such workers and their programs at a core each for hours); this property fails."
 		}
 	]
 })
