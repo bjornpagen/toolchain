@@ -229,14 +229,16 @@ const endGroup = (child: ChildProcess): Effect.Effect<void> =>
 	})
 
 /** What happens to a worker, as the pool's one fiber handles it, in order: it was forked, or is still not ready past
- * the open bound and the grace; units sent to it, a message, its exit, or its silence past a phase of a unit's bound and
- * grace. */
+ * the open bound and the grace; units sent to it, a message, its exit, its silence past a phase of a unit's bound and
+ * grace, or an error of its process or channel (its IPC channel failing as it reads, a message it could not be sent),
+ * which ends it, the error kept in what it last wrote, so its exit reports its unit lost with it. */
 type Event =
 	| Readonly<{ kind: "forked"; worker: Worker }>
 	| Readonly<{ kind: "unready"; worker: Worker }>
 	| Readonly<{ kind: "sent"; worker: Worker; unit: number }>
 	| Readonly<{ kind: "message"; worker: Worker; message: unknown }>
 	| Readonly<{ kind: "exit"; worker: Worker; code: number | null; signal: string | null }>
+	| Readonly<{ kind: "error"; worker: Worker; error: string }>
 	| Readonly<{ kind: "silent"; worker: Worker; unit: number; phase: Phase }>
 
 /**
@@ -545,6 +547,9 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 			child.on("exit", (code, signal) => {
 				Queue.offerUnsafe(events, { kind: "exit", worker, code, signal })
 			})
+			child.on("error", (error) => {
+				Queue.offerUnsafe(events, { kind: "error", worker, error: String(error) })
+			})
 			Queue.offerUnsafe(events, { kind: "forked", worker })
 			return worker
 		}
@@ -620,6 +625,10 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 							)
 							yield* endGroup(worker.child)
 						}
+						return
+					case "error":
+						worker.output = Str.slice(-OUTPUT_TAIL)(`${worker.output}\n${event.error}\n`)
+						yield* endGroup(worker.child)
 						return
 					case "sent":
 						if (Option.isNone(worker.running)) {
