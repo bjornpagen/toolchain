@@ -485,7 +485,17 @@ type StreamPlace = Readonly<{ phase: CasePhase; drawn: Drawn; where: (place: num
 type StreamSeries = ReadonlyArray<readonly [first: number, series: SeriesOrder]>
 
 /**
- * A stream's first `count` cases as series of `window` cases each (their case seeds), each to be drawn, run and summed
+ * How many cases each series of a stream or space of `count` cases holds: `window` (a steering window, a batch's worth
+ * at least), or an even share of the whole for each process the evaluator may run at once when that is more, so no
+ * stream or space is cut into more series than its work can spread over. A series is the unit the evaluator's parent
+ * answers one at a time, so every series past that many costs the parent an answer and spreads nothing (grizzle's unit
+ * tier: 66,103 series of 16 cases each, 3.9 ms of parent time apiece, its parent busy throughout).
+ */
+const seriesSizeOf = (run: SearchRun, count: number, window: number): number =>
+	Math.max(window, Math.ceil(count / run.evaluator.workers))
+
+/**
+ * A stream's first `count` cases as series (their case seeds) of seriesSizeOf's size, each to be drawn, run and summed
  * up by the process it is sent to (runner/series.ts) under the stream's steering.
  */
 const streamSeriesOf = (
@@ -497,8 +507,9 @@ const streamSeriesOf = (
 	drawn: Drawn
 ): StreamSeries => {
 	const series: Array<readonly [number, SeriesOrder]> = []
+	const size = seriesSizeOf(run, count, window)
 	for (let start = 0; start < count;) {
-		const indices = indicesOf(start, window, count)
+		const indices = indicesOf(start, size, count)
 		series.push([
 			start,
 			{
@@ -570,7 +581,8 @@ const judgedStream = (
  * windows of the runner's steering window, each drawn under the snapshot of what was pending when its window began,
  * since each window's aims read the tallies before it. Its rotating stream, and both streams of a property that
  * requires none (whose floor is steered toward nothing), depend on no result: each is sent at once, every series of it
- * (a window's case seeds, drawn, run and summed up by the process it is sent to, runner/series.ts), the second as soon
+ * (a window's case seeds or more, seriesSizeOf, drawn, run and summed up by the process it is sent to,
+ * runner/series.ts), the second as soon
  * as the property starts when no witness window precedes it, so a property's queued work is its whole sample and
  * spreads where that pays, with no round trip between its windows. Results are judged in case order, so width changes how fast a search runs and never what it finds. A failing case is shrunk by editing its tape,
  * property draws included, under the steering it was drawn under. The coverage verdict is judged on the witnesses
@@ -781,7 +793,8 @@ export const exploreSearch =
  * CPU (enumerate.ts countWithin: the count's own CPU, which no load or other search stretches), since a space too large
  * to count is too large to exhaust; then every case in enumeration order. The space is run by
  * sketches, one case of the space alone with every case its property's draws enumerate from it, every series of them
- * sent at once, each the steering window's count of sketches (a batch's worth at least) sent to one process as one unit
+ * sent at once, each the steering window's count of sketches (a batch's worth at least), or as many such windows as
+ * leave no more series than the evaluator's workers (seriesSizeOf), sent to one process as one unit
  * (runner/series.ts), so the space's whole work is queued from the start and spreads where that pays: the process enumerates them from the series'
  * first branch, runs their cases `group` to an evaluation (one, or a batched exhaustion's batch size), and gives back
  * one summary, so no case crosses a process boundary alone. The series are judged in enumeration order, so the first failing case is the
@@ -802,7 +815,8 @@ export const exhaustSearch =
 				return failed({ kind: "uncountable", box, deadline: run.limits.deadline })
 			}
 			const size = counted.value.cases
-			const starts = counted.value.starts
+			const windows = seriesSizeOf(run, counted.value.starts.length, 1)
+			const starts = Arr.filter(counted.value.starts, (_, at) => at % windows === 0)
 			const tally = tallyOf("exhaustive")
 			const measures = measuring()
 			let cases = 0
@@ -813,7 +827,7 @@ export const exhaustSearch =
 						kind: "sketches",
 						start: start.values,
 						length: start.length,
-						count: Math.min(perSeries, size - at * perSeries)
+						count: Math.min(windows * perSeries, size - at * windows * perSeries)
 					},
 					group,
 					deadline: run.limits.deadline,

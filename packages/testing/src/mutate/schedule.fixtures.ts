@@ -119,7 +119,8 @@ export const fakePool = (
 								})
 							})
 						),
-					width: Effect.succeed(workers)
+					width: Effect.succeed(workers),
+					workers
 				}
 			),
 			() => Ref.update(seen, (s) => ({ ...s, live: s.live - workers }))

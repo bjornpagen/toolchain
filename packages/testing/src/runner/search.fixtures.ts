@@ -26,17 +26,18 @@ import { floorSeed, rotatingSeed } from "#random.ts"
 import { type Drawn, type ReplayCase, replayOf, replayTokenOf } from "#replay.ts"
 import { inlineEvaluator, searchInline } from "#runner/inline.ts"
 import { type Limits, runnerLimits } from "#runner/limits.ts"
-import type {
-	Batch,
-	CasePhase,
-	CaseResult,
-	Evaluator,
-	Finding,
-	Printed,
-	Reach,
-	SeriesOrder,
-	SeriesRan,
-	Verdict
+import {
+	type Batch,
+	type CasePhase,
+	type CaseResult,
+	type Evaluator,
+	type Finding,
+	type Printed,
+	type Reach,
+	type SeriesOrder,
+	type SeriesRan,
+	type Verdict,
+	workOf
 } from "#runner/protocol.ts"
 import type { ModuleClosure, WorkerIndex } from "#runner/services.ts"
 import { sample } from "#source.ts"
@@ -130,7 +131,8 @@ const widthEvaluator = (
 					}
 					return summaries
 				}),
-			width: Effect.succeed(width)
+			width: Effect.succeed(width),
+			workers: width
 		}
 		return evaluator
 	})
@@ -148,6 +150,64 @@ export const searchedAt = (
 			limits: run.limits,
 			evaluator
 		})
+	)
+
+/**
+ * An inner search's verdict and how it cut its series: for each call it made of its evaluator's `series`, in order, how
+ * many cases each series of that call holds, on an evaluator of the run's width.
+ */
+export const seriesCutAt = (
+	inner: Property,
+	run: InnerRun
+): Effect.Effect<
+	Readonly<{ verdict: Verdict; cuts: ReadonlyArray<ReadonlyArray<number>> }>,
+	never,
+	InProcess
+> =>
+	Effect.gen(function* () {
+		const evaluator = yield* widthEvaluator(inner, run.width)
+		const cuts: Array<ReadonlyArray<number>> = []
+		const recording: Evaluator = {
+			...evaluator,
+			series: (orders) =>
+				Effect.andThen(
+					Effect.sync(() => {
+						cuts.push(Arr.map(orders, (series) => workOf({ kind: "series", series }).cases))
+					}),
+					evaluator.series(orders)
+				)
+		}
+		const verdict = yield* inner.search({
+			id: run.id,
+			seed: run.seed,
+			reach: run.reach,
+			limits: run.limits,
+			evaluator: recording
+		})
+		return { verdict, cuts }
+	})
+
+/** An inner exhaustion of a space of `values` cases, 0 to one less, whose every case passes. */
+export const spaceOf = (values: number): Property =>
+	property.exhaust(finite(int(0, values - 1)), {
+		box: `the ${values} values from 0`,
+		needs: {},
+		situations: [],
+		check: () => () => Effect.void,
+		oracle: planted,
+		kept: [],
+		kills: []
+	})
+
+/** `count` cases cut into series of `size` each, the last holding what is left. */
+export const cutOf = (count: number, size: number): ReadonlyArray<number> =>
+	Array.from({ length: Math.ceil(count / size) }, (_, at) => Math.min(size, count - at * size))
+
+/** The cuts of a search's series as one comparable list: each call's series sizes, the calls in a fixed order. */
+export const cutsKey = (cuts: ReadonlyArray<ReadonlyArray<number>>): ReadonlyArray<string> =>
+	Arr.sort(
+		Arr.map(cuts, (cut) => Arr.join(Arr.map(cut, String), ",")),
+		Order.String
 	)
 
 /** A token's case replayed alone, as `toolchain-test replay` replays it, on an evaluator of the run's width. */

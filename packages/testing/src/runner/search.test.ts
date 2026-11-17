@@ -46,6 +46,8 @@ import {
 	aimRecorder,
 	caseOf,
 	copiesOf,
+	cutOf,
+	cutsKey,
 	drawsFrom,
 	drawsOnce,
 	endless,
@@ -65,6 +67,8 @@ import {
 	rareDraw,
 	replayedAt,
 	searchedAt,
+	seriesCutAt,
+	spaceOf,
 	steeredSearch,
 	steeredSituations,
 	steeredSketches,
@@ -165,6 +169,87 @@ export const streams = property.explore(
 				original: "streamSeriesOf(run, floor, floorCases, window",
 				replacement: "streamSeriesOf(run, floor, floorCases - 1, window",
 				why: "The floor stream runs one case fewer than its limit (explore-floor-rounded-down, re-anchored from explore.ts's floor count to the floor of a property that requires no situation, sent as series); the streams property fails."
+			}
+		]
+	}
+)
+
+export const seriesPerWorker = property.explore(
+	(source) => ({
+		stream: source.draw(int(0, 96)),
+		space: source.draw(int(1, 96)),
+		window: source.draw(int(1, 16)),
+		width: source.draw(widths),
+		seed: source.draw(seeds)
+	}),
+	{
+		needs: {},
+		situations: ["a stream cut by its workers", "a space cut by its workers"],
+		check: (_resources, c) => (shape) =>
+			Effect.gen(function* () {
+				const limits = {
+					runs: shape.stream,
+					floor: shape.stream,
+					steered: 0,
+					window: shape.window,
+					deadline: runnerLimits.deadline,
+					open: runnerLimits.open
+				}
+				const streamSize = Math.max(shape.window, Math.ceil(shape.stream / shape.width))
+				const windows = Math.ceil(shape.space / shape.window)
+				const spaceSize = Math.max(1, Math.ceil(windows / shape.width)) * shape.window
+				if (streamSize > shape.window) {
+					c.note("a stream cut by its workers")
+				}
+				if (spaceSize > shape.window) {
+					c.note("a space cut by its workers")
+				}
+				const explored = yield* seriesCutAt(passing, {
+					id: "series/explored",
+					seed: shape.seed,
+					reach: "full",
+					limits,
+					width: shape.width
+				})
+				const exhausted = yield* seriesCutAt(spaceOf(shape.space), {
+					id: "series/exhausted",
+					seed: shape.seed,
+					reach: "full",
+					limits,
+					width: shape.width
+				})
+				deepStrictEqual(
+					{
+						explored: cutsKey(explored.cuts),
+						exploredCases: explored.verdict.kind === "explored" ? explored.verdict.cases : -1,
+						exhausted: cutsKey(exhausted.cuts),
+						exhaustedCases: exhausted.verdict.kind === "exhausted" ? exhausted.verdict.cases : -1
+					},
+					{
+						explored: cutsKey([cutOf(shape.stream, streamSize), cutOf(shape.stream, streamSize)]),
+						exploredCases: 2 * shape.stream,
+						exhausted: cutsKey([cutOf(shape.space, spaceSize)]),
+						exhaustedCases: shape.space
+					}
+				)
+			}),
+		oracle: {
+			kind: "specification",
+			name: "a stream or space is cut into series of a window's cases, or of an even share for each of its evaluator's workers when that is more, and runs every case once whatever the cut"
+		},
+		kept: [],
+		kills: [
+			{
+				file: "packages/testing/src/runner/search.ts",
+				original: "\tMath.max(window, Math.ceil(count / run.evaluator.workers))",
+				replacement: "\twindow",
+				why: "A stream is cut into series of one steering window whatever its length, as before: grizzle's unit tier sent 66,103 series of 16 cases each, its parent answering each at 3.9 ms and busy throughout while its workers idled; this property fails."
+			},
+			{
+				file: "packages/testing/src/runner/search.ts",
+				original: "\t\t\tconst windows = seriesSizeOf(run, counted.value.starts.length, 1)",
+				replacement: "\t\t\tconst windows = 1",
+				why: "A space is cut into series of one steering window whatever its size, as before, each a unit its parent answers apart; this property fails."
 			}
 		]
 	}

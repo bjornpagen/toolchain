@@ -425,8 +425,10 @@ export const unopenedResult = (need: string, message: string): CaseResult =>
  * failed); the batches after it that have not started are dropped, and those that have run to their end unread.
  * `series` runs series of cases their processes draw and gives back each one's summary in order, ending with the first
  * whose case stopped, the same way. `width` is how many batches could start at once now, at least one, what a shrink
- * speculates over and a window of series counts them by. Two exist: the pool (a worker a core) and inline (this
- * process, one batch at a time), and a search finds the same on either.
+ * speculates over and a window of series counts them by. `workers` is how many processes may ever run its units at
+ * once, the most a search's sample can spread over, which a search cuts its streams and spaces into no more series
+ * than. Two exist: the pool (a worker a core) and inline (this process, one batch at a time), and a search finds the
+ * same on either.
  */
 export type Evaluator = Readonly<{
 	evaluate: (
@@ -435,6 +437,7 @@ export type Evaluator = Readonly<{
 	) => Effect.Effect<ReadonlyArray<ReadonlyArray<CaseResult>>>
 	series: (orders: ReadonlyArray<SeriesOrder>) => Effect.Effect<ReadonlyArray<SeriesRan>>
 	width: Effect.Effect<number>
+	workers: number
 }>
 
 /**

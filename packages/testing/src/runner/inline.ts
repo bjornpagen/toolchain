@@ -122,7 +122,8 @@ export const inlineEvaluator = (
 					}
 					return ran
 				}).pipe(Effect.ensuring(stopped.drained), turn.withPermits(1)),
-			width: Effect.succeed(1)
+			width: Effect.succeed(1),
+			workers: 1
 		}
 		return evaluator
 	})

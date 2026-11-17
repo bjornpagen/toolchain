@@ -112,7 +112,8 @@ export const processPool = Effect.map(
 							).pipe(Effect.orDie, Effect.provideContext(services))
 						)
 					),
-				width: Effect.succeed(1)
+				width: Effect.succeed(1),
+				workers: 1
 			})
 	})
 )

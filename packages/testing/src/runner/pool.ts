@@ -825,7 +825,8 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 					),
 					Arr.map(([, ran]) => ran)
 				),
-			width: Effect.sync(() => Math.max(1, Arr.filter(workers, idle).length - scheduler.queued()))
+			width: Effect.sync(() => Math.max(1, Arr.filter(workers, idle).length - scheduler.queued())),
+			workers: spec.workers
 		}
 		return {
 			evaluator,
