@@ -59,7 +59,7 @@ export const mutantPoolOf = (checkout: string, packageRoot: string): MutantPool<
 	const { placesFor } = placesLeased(testWorkers)
 	return {
 		width: testWorkers,
-		lease: (image: WorkerImage, workers: number) =>
+		lease: (image: WorkerImage, workers: number, guide: "notes" | "blocks") =>
 			Effect.gen(function* () {
 				const rebased = rebasedTo(checkout, image.root)
 				const root = rebased(packageRoot)
@@ -72,7 +72,7 @@ export const mutantPoolOf = (checkout: string, packageRoot: string): MutantPool<
 					places: { at: taken, of: testWorkers },
 					execArgv: process.execArgv,
 					served: image.served,
-					guide: "notes",
+					guide,
 					open: runnerLimits.open
 				})
 				return pool.evaluator

@@ -13,8 +13,8 @@ export const mutatorPool = (checkout: RealPath, packageRoot: RealPath): MutantPo
 	const pool = mutantPoolOf(checkout, packageRoot)
 	return {
 		width: pool.width,
-		lease: (image, workers) =>
-			Effect.catchTag(pool.lease(image, workers), "PoolFailed", (failed) =>
+		lease: (image, workers, guide) =>
+			Effect.catchTag(pool.lease(image, workers, guide), "PoolFailed", (failed) =>
 				Effect.fail(Unstarted.make({ message: failed.message }))
 			)
 	}

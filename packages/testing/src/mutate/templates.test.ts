@@ -84,7 +84,8 @@ export const trialTemplatesApart = property.exhaust(runPairs, {
 							)
 							const evaluator = yield* pool.lease(
 								{ ...image, env: { [MARK_TOKEN]: token, [MARK_FILE]: file } },
-								1
+								1,
+								"notes"
 							)
 							const results = yield* evaluator.evaluate(
 								[markedCase(runnerLimits.deadline, runnerLimits.open)],

@@ -55,7 +55,8 @@ export const scheduledTrials = property.explore(scheduleGen, {
 				c.note("a trial all green")
 			}
 			const seen = yield* Ref.make<Seen>(unseen)
-			const fake = fakeProperty(seen)
+			const notes = fakeProperty(seen, { kind: "notes" })
+			const blocks = fakeProperty(seen, { kind: "blocks", files: ["guided.ts"] })
 			const root = yield* realPathOf(".")
 			const trials = Arr.map(schedule.trials, (stages, t) =>
 				Arr.map(stages, (stage, s): Stage<never, number> => ({
@@ -72,7 +73,7 @@ export const scheduledTrials = property.explore(scheduleGen, {
 					),
 					properties: Arr.map(stage.properties, (p): Subject => ({
 						id: PropertyId(p.name),
-						property: fake,
+						property: p.guided ? blocks : notes,
 						loading: "in-process"
 					})),
 					label: s
@@ -106,7 +107,14 @@ export const scheduledTrials = property.explore(scheduleGen, {
 							(schedule.sharing === "one each" || (w + 1) * atOnce > schedule.width)
 					),
 					strays: Arr.copy(after.strays),
-					witnessesOnly: Arr.every(after.reaches, (r) => r === "witnesses")
+					witnessesOnly: Arr.every(after.reaches, (r) => r === "witnesses"),
+					guidedAsTheirProperties: Arr.every(after.guides, ([key, guide]) => {
+						const stage = stages.get(key)
+						return (
+							stage !== undefined &&
+							guide === (Arr.some(stage.properties, (p) => p.guided) ? "blocks" : "notes")
+						)
+					})
 				},
 				{
 					verdicts: expected,
@@ -115,16 +123,23 @@ export const scheduledTrials = property.explore(scheduleGen, {
 					open: 0,
 					leasedAsShared: true,
 					strays: Arr.empty<string>(),
-					witnessesOnly: true
+					witnessesOnly: true,
+					guidedAsTheirProperties: true
 				}
 			)
 		}),
 	oracle: {
 		kind: "second-implementation",
-		name: "the trials run one at a time by hand, each stage's properties in order"
+		name: "the trials run one at a time by hand, each stage's properties in order, on workers guided as its properties are"
 	},
 	kept: [],
 	kills: [
+		{
+			file: "packages/testing/src/mutate/schedule.ts",
+			original: 'Arr.some(stage.properties, (subject) => subject.property.guide.kind === "blocks")',
+			replacement: "false",
+			why: "Every trial's workers start guided by notes, so a property that guides its search by blocks perceives no block coverage under a kill and goes red with no mutant (sense.test.ts#senseIndependence's kill read as killed)."
+		},
 		{
 			file: "packages/testing/src/mutate/schedule.ts",
 			original: "Math.max(1, Math.floor(width / Math.max(1, trials)))",

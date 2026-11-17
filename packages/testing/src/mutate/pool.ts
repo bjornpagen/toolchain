@@ -80,13 +80,16 @@ export class Unstarted extends Schema.TaggedError<Unstarted, { readonly brand: u
  * The runner's pool as the mutator schedules it: its width (one worker a core, the Limit the runner reads), and a
  * lease: an evaluator over `workers` workers started fresh from `image` for the enclosing scope, which every batch it is
  * given runs on and no other lease's batch ever does (no stealing across leases); a worker the case deadline ends is
- * started again from the same image, and closing the scope ends them all; or Unstarted, when no worker starts. The
- * mutator never leases more workers at once than the width (schedule.ts).
+ * started again from the same image, and closing the scope ends them all; or Unstarted, when no worker starts. `guide`
+ * is "blocks" when a property the lease serves guides its search by blocks, so its workers start V8's coverage before
+ * they load a module, as a run's do (runner/run.ts); otherwise "notes". The mutator never leases more workers at once
+ * than the width (schedule.ts).
  */
 export type MutantPool<E> = Readonly<{
 	width: number
 	lease: (
 		image: WorkerImage,
-		workers: number
+		workers: number,
+		guide: "notes" | "blocks"
 	) => Effect.Effect<Evaluator, E | Unstarted, Scope.Scope>
 }>

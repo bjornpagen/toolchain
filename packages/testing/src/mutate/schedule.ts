@@ -87,17 +87,27 @@ const trialOn = <E, L>(
 		? Effect.succeed({ kind: "green" })
 		: Effect.scoped(
 				Effect.flatMap(stage.image, (image) =>
-					pool.lease(image, workers).pipe(
-						Effect.flatMap((evaluator) => firstRed(run, evaluator, stage.label, stage.properties)),
-						Effect.catchIf(Schema.is(Unstarted), (unstarted): Effect.Effect<TrialVerdict<L>> =>
-							Effect.succeed({
-								kind: "red",
-								stage: stage.label,
-								property: Arr.headNonEmpty(stage.properties).id,
-								red: { kind: "unstarted", message: unstarted.message }
-							})
+					pool
+						.lease(
+							image,
+							workers,
+							Arr.some(stage.properties, (subject) => subject.property.guide.kind === "blocks")
+								? "blocks"
+								: "notes"
 						)
-					)
+						.pipe(
+							Effect.flatMap((evaluator) =>
+								firstRed(run, evaluator, stage.label, stage.properties)
+							),
+							Effect.catchIf(Schema.is(Unstarted), (unstarted): Effect.Effect<TrialVerdict<L>> =>
+								Effect.succeed({
+									kind: "red",
+									stage: stage.label,
+									property: Arr.headNonEmpty(stage.properties).id,
+									red: { kind: "unstarted", message: unstarted.message }
+								})
+							)
+						)
 				)
 			).pipe(
 				Effect.filterOrElse(

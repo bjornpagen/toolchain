@@ -4,14 +4,17 @@ import type { MutantPool, WorkerImage } from "#mutate/pool.ts"
 import { lost, oneCase, passed } from "#mutate/processes.fixtures.ts"
 import { SHARINGS, type Sharing, type TrialVerdict } from "#mutate/schedule.ts"
 import { Property, PropertyId } from "#property.ts"
-import type { Batch, Reach } from "#runner/protocol.ts"
+import type { Batch, Reach, Sense } from "#runner/protocol.ts"
 
 /** The properties a stage's draw names. */
 const NAMES = ["p0", "p1", "p2", "p3"] as const
 
-/** A stage as drawn: its properties, distinct and in order, and whether each goes red on the stage's image. */
+/**
+ * A stage as drawn: its properties, distinct and in order, whether each goes red on the stage's image, and whether each
+ * guides its search by blocks.
+ */
 export type DrawnStage = Readonly<{
-	properties: Arr.NonEmptyReadonlyArray<Readonly<{ name: string; red: boolean }>>
+	properties: Arr.NonEmptyReadonlyArray<Readonly<{ name: string; red: boolean; guided: boolean }>>
 }>
 
 /** A case: the pool's width, the trials, each its stages, and how they share the pool. */
@@ -21,29 +24,38 @@ export type Schedule = Readonly<{
 	sharing: Sharing
 }>
 
-/** What the fake pool saw over a run. */
+/** What the fake pool saw over a run: among it, each lease's stage (by its image's STAGE) and the guide it asked. */
 export type Seen = Readonly<{
 	live: number
 	most: number
 	open: number
 	leased: ReadonlyArray<number>
+	guides: ReadonlyArray<readonly [stage: string, guide: "notes" | "blocks"]>
 	strays: ReadonlyArray<string>
 	reaches: ReadonlyArray<Reach>
 }>
 
-export const unseen: Seen = { live: 0, most: 0, open: 0, leased: [], strays: [], reaches: [] }
+export const unseen: Seen = {
+	live: 0,
+	most: 0,
+	open: 0,
+	leased: [],
+	guides: [],
+	strays: [],
+	reaches: []
+}
 
 /**
  * A property whose search orders one case under its identity and reads its verdict from the result: red when the case
  * did not pass. It records the reach every search ran with.
  */
-export const fakeProperty = (seen: Ref.Ref<Seen>): Property =>
+export const fakeProperty = (seen: Ref.Ref<Seen>, guide: Sense): Property =>
 	new Property({
 		kind: "explore",
 		oracle: { kind: "unstated" },
 		kills: [],
 		needs: {},
-		guide: { kind: "notes" },
+		guide,
 		keep: () => ({ kind: "unfound", why: "a fixture keeps nothing" }),
 		search: (run) =>
 			Effect.gen(function* () {
@@ -92,14 +104,15 @@ export const fakePool = (
 	seen: Ref.Ref<Seen>
 ): MutantPool<never> => ({
 	width,
-	lease: (image: WorkerImage, workers: number) =>
+	lease: (image: WorkerImage, workers: number, guide: "notes" | "blocks") =>
 		Effect.acquireRelease(
 			Effect.as(
 				Ref.update(seen, (s) => ({
 					...s,
 					live: s.live + workers,
 					most: Math.max(s.most, s.live + workers),
-					leased: [...s.leased, workers]
+					leased: [...s.leased, workers],
+					guides: [...s.guides, [image.env["STAGE"] ?? "", guide] as const]
 				})),
 				{
 					series: () => Effect.succeed([]),
@@ -150,7 +163,7 @@ export const expectedOf = (stages: ReadonlyArray<DrawnStage>): TrialVerdict<numb
 	return { kind: "green" }
 }
 
-/** A stage: one to three of the properties, distinct, each red or not. */
+/** A stage: one to three of the properties, distinct, each red or not, each guided by blocks or not. */
 const stageGen: Gen<DrawnStage> = (source) => {
 	const first = source.draw(element(NAMES))
 	const rest = source.draw(
@@ -160,7 +173,11 @@ const stageGen: Gen<DrawnStage> = (source) => {
 		)
 	)
 	return {
-		properties: Arr.map(Arr.prepend(rest, first), (name) => ({ name, red: source.draw(boolean) }))
+		properties: Arr.map(Arr.prepend(rest, first), (name) => ({
+			name,
+			red: source.draw(boolean),
+			guided: source.draw(boolean)
+		}))
 	}
 }
 
