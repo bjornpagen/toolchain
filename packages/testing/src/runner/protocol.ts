@@ -621,7 +621,8 @@ export type ChildrenCpu = typeof ChildrenCpu.Type
  * what scheduling measures readying by, and how many of CPU, its children's beside; it started a unit's cases; it finished one, with each order's result, the worker's CPU so
  * far and its children's CPU while it ran; it gave back
  * these units, of those the parent revoked, none of which it had started; a case (a unit's `at`-th order) was used
- * after it ended, printed as it ran; it cannot start, and why; or it asks for a module's closure hash, which the parent
+ * after it ended, printed as it ran; it failed, and why (before it was ready, it cannot start; after, it ends, and the
+ * unit it ran is lost with this as the last it wrote); or it asks for a module's closure hash, which the parent
  * computes once for the whole pool.
  */
 export const FromWorker = Schema.Union([

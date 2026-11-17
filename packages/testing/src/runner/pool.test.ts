@@ -25,6 +25,8 @@ import {
 	countsEvery,
 	CHILD_FILE,
 	countedValues,
+	DIED_OPENING,
+	dyingProperty,
 	ended,
 	goneWithin,
 	leavings,
@@ -292,6 +294,59 @@ export const countedOnAWorker = property.exhaust(finite(countsEvery), {
 			replacement:
 				"\t\t\tcountWithin(drawing.spaceUnder(Option.none()), order.cpu, order.every + 1),",
 			why: "A worker's count gives the branch of every case but the one its order asks for, so an exhaustion's series start where no window does and its sketches overlap or skip cases; this property fails."
+		}
+	]
+})
+
+export const openDiesUnopened = property.exhaust(finite(boolean), {
+	box: "a need's open that throws and one that dies",
+	needs: { checkout: Checkout.dir },
+	situations: [],
+	check:
+		({ checkout }) =>
+		(thrown) =>
+			Effect.gen(function* () {
+				const root = yield* checkout
+				const outcomes = yield* Effect.scoped(
+					Effect.gen(function* () {
+						const pool = yield* poolOf({
+							entry: WORKER_ENTRY,
+							root,
+							cwd: root,
+							env: {},
+							workers: 1,
+							execArgv: process.execArgv,
+							guide: "notes",
+							open: runnerLimits.open
+						})
+						const dying = yield* pool.evaluator.evaluate(
+							[shortCase(dyingProperty(thrown), runnerLimits.deadline, runnerLimits.open)],
+							() => false
+						)
+						const next = yield* pool.evaluator.evaluate(
+							[shortCase(silencing(false).next, runnerLimits.deadline, runnerLimits.open)],
+							() => false
+						)
+						return Arr.map(Arr.flatten([...dying, ...next]), (result) =>
+							result.outcome.kind === "unopened"
+								? `unopened: ${Str.includes(DIED_OPENING)(result.outcome.message) ? "the open's defect" : result.outcome.message}`
+								: result.outcome.kind
+						)
+					})
+				)
+				deepStrictEqual(outcomes, ["unopened: the open's defect", "passed"])
+			}),
+	oracle: {
+		kind: "specification",
+		name: "a need whose open dies refuses its property's cases as unopened, with the defect, and the worker goes on"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/runner/case.ts",
+			original: "\t\t\t\t\t\t\t(cause) => !Cause.hasInterruptsOnly(cause),",
+			replacement: "\t\t\t\t\t\t\t() => false,",
+			why: "A need's open that dies ends its worker, as before: the worker's main effect fails, it says so to the parent and exits 0, and its unit is lost with nothing written (GZ-NETWORK: admission.test.ts's property lost its worker readying, \"ended (exit 0)\"); this property fails."
 		}
 	]
 })

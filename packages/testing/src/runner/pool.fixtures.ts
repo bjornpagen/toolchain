@@ -259,3 +259,44 @@ export const countedSpace = property.exhaust(finite(countedValues), {
 	kept: [],
 	kills: []
 })
+
+/** What a planted need's open says as it dies, which the case it refuses must carry. */
+export const DIED_OPENING = "the planted need's open died"
+
+/** A need whose open dies, by a thrown error (`thrown`) or by Effect.die, as an unexpected defect opening a need does. */
+const diesOpening = (thrown: boolean): Need<void> => ({
+	key: `pool.fixtures.ts dies opening ${thrown ? "by a throw" : "by Effect.die"}`,
+	open: thrown
+		? Effect.sync(() => {
+				throw new Error(DIED_OPENING)
+			})
+		: Effect.die(DIED_OPENING)
+})
+
+/** A property planted to need what dies opening by a throw: its cases pass, should they ever run. */
+export const throwsOpening = property.exhaust(finite(int(0, 1)), {
+	box: "two values",
+	needs: { dying: diesOpening(true) },
+	situations: [],
+	check: () => () => Effect.void,
+	oracle: { kind: "specification", name: "a property planted to need what throws opening" },
+	kept: [],
+	kills: []
+})
+
+/** A property planted to need what dies opening by Effect.die: its cases pass, should they ever run. */
+export const diesOpeningNeed = property.exhaust(finite(int(0, 1)), {
+	box: "two values",
+	needs: { dying: diesOpening(false) },
+	situations: [],
+	check: () => () => Effect.void,
+	oracle: { kind: "specification", name: "a property planted to need what dies opening" },
+	kept: [],
+	kills: []
+})
+
+/** The identity of the planted property whose need dies opening, by a throw or by Effect.die. */
+export const dyingProperty = (thrown: boolean): string =>
+	thrown
+		? "src/runner/pool.fixtures.ts#throwsOpening"
+		: "src/runner/pool.fixtures.ts#diesOpeningNeed"

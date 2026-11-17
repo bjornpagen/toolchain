@@ -624,7 +624,10 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 								feedAll()
 								return
 							case "failed":
-								yield* breaks(worker, received.message)
+								worker.output = Str.slice(-OUTPUT_TAIL)(`${worker.output}${received.message}\n`)
+								if (!worker.ready) {
+									yield* breaks(worker, received.message)
+								}
 								return
 							case "readying":
 								yield* watch(worker, received.unit, "readying")

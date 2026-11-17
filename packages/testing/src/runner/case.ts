@@ -79,7 +79,9 @@ const needSlotOf = <A>(need: Need<A>) => Context.Service<NeedSlot<A>>(slotIdOf(n
  * The needs an evaluating process has opened. `opened` opens a need the first time the process asks for it (needs of
  * one key share it), in a scope of its own under the process's and with the process's services, on a fiber of its own,
  * within `bound` milliseconds on the live clock; every later ask gets what that open gave: the need's taker, or the
- * NeedFailed it failed with (its open past the bound among them), which no later ask retries. What a need keeps warm
+ * NeedFailed it failed with (its open past the bound among them, and an open that died, its defect's text the
+ * failure's message, so a defect opening a need refuses its property on that process, every case unopened, never
+ * ending the process with nothing said), which no later ask retries. What a need keeps warm
  * stays warm across cases and properties until `release` closes its scope (what it holds: clones, sessions, lease
  * permits, released) and forgets it, so a later ask opens it again.
  */
@@ -109,29 +111,38 @@ export const needCacheOf = (
 					onNone: () => {
 						const slot = Deferred.makeUnsafe<Taker<A>, NeedFailed>()
 						slots = Context.add(slots, needSlotOf(need), slot)
-						const open = Effect.raceFirst(
-							Effect.flatMap(
-								Effect.mapError(services, (failed) =>
-									NeedFailed.make({ need: need.key, message: failed.message })
+						const open = Effect.catchCauseIf(
+							Effect.raceFirst(
+								Effect.flatMap(
+									Effect.mapError(services, (failed) =>
+										NeedFailed.make({ need: need.key, message: failed.message })
+									),
+									(context) =>
+										Effect.flatMap(Scope.fork(Context.get(context, Scope.Scope)), (scope) => {
+											scopes.set(need.key, scope)
+											return Effect.provideContext(
+												need.open,
+												Context.add(context, Scope.Scope, scope)
+											)
+										})
 								),
-								(context) =>
-									Effect.flatMap(Scope.fork(Context.get(context, Scope.Scope)), (scope) => {
-										scopes.set(need.key, scope)
-										return Effect.provideContext(
-											need.open,
-											Context.add(context, Scope.Scope, scope)
-										)
-									})
-							),
-							Effect.andThen(
-								liveSleep(Duration.millis(bound)),
-								Effect.fail(
-									NeedFailed.make({
-										need: need.key,
-										message: `its open ran past the open bound of ${Duration.format(Duration.millis(bound))} (needOpenMillis)`
-									})
+								Effect.andThen(
+									liveSleep(Duration.millis(bound)),
+									Effect.fail(
+										NeedFailed.make({
+											need: need.key,
+											message: `its open ran past the open bound of ${Duration.format(Duration.millis(bound))} (needOpenMillis)`
+										})
+									)
 								)
-							)
+							),
+							(cause) => !Cause.hasInterruptsOnly(cause),
+							(cause) =>
+								Effect.fail(
+									Option.getOrElse(Cause.findErrorOption(cause), () =>
+										NeedFailed.make({ need: need.key, message: failureText(cause) })
+									)
+								)
 						)
 						return Effect.andThen(
 							Effect.forkDetach(Deferred.into(open, slot)),
