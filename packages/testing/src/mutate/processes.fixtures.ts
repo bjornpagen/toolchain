@@ -1,6 +1,6 @@
 import { Array as Arr, Effect, Stream, String as Str } from "effect"
 import { ChildProcess, type ChildProcessSpawner } from "effect/process"
-import type { MutantPool } from "#mutate/pool.ts"
+import { type MutantPool, servedArgv } from "#mutate/pool.ts"
 import { type Kill, Property } from "#property.ts"
 import { runnerLimits } from "#runner/limits.ts"
 import type { Batch, CaseResult } from "#runner/protocol.ts"
@@ -98,7 +98,7 @@ export const processPool = Effect.map(
 								Effect.gen(function* () {
 									const handle = yield* ChildProcess.make(
 										process.execPath,
-										[...image.execArgv, `${order.property}.ts`],
+										[...servedArgv(image.served), `${order.property}.ts`],
 										{ cwd: image.root, env: image.env, extendEnv: true, stdin: "ignore" }
 									)
 									const [printed] = yield* Effect.all(

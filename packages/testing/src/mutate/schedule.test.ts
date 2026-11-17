@@ -5,7 +5,7 @@
  * alone; and the trials fill the pool's width and never pass it: as many run at once as the width allows, each lease
  * the most workers an even split of the width gives them, every lease and image released at the end.
  */
-import { Array as Arr, Effect, Ref } from "effect"
+import { Array as Arr, Effect, Option, Ref } from "effect"
 import { deepStrictEqual } from "#assert.ts"
 import { array, int } from "#gen.ts"
 import { realPathOf } from "#mutate/mutated.ts"
@@ -66,7 +66,7 @@ export const scheduledTrials = property.explore(
 								Ref.update(seen, (x) => ({ ...x, open: x.open + 1 })),
 								{
 									root,
-									execArgv: [],
+									served: Option.none(),
 									env: { STAGE: keyOf(t, s) }
 								}
 							),

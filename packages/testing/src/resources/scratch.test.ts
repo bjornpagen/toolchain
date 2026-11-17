@@ -4,7 +4,7 @@
  * run leaves nothing behind. And a worker's scratch root outlives no worker: opening Scratch.dir removes the roots of
  * workers whose process has ended and keeps those of running ones. Oracle: the specification, stated in each check.
  */
-import { Array as Arr, Effect, Exit, FileSystem, Path, Scope, String as Str } from "effect"
+import { Array as Arr, Effect, Exit, FileSystem, Option, Path, Scope, String as Str } from "effect"
 import { deepStrictEqual, strictEqual } from "#assert.ts"
 import { array, int } from "#gen.ts"
 import { property } from "#property.ts"
@@ -19,7 +19,7 @@ export const scratchOwn = property.explore(array(int(0, 3), { min: 0, max: 4 }),
 		Effect.gen(function* () {
 			c.note(files.length === 0 ? "an empty scratch directory" : "a scratch directory with files")
 			const fs = yield* FileSystem.FileSystem
-			const closures = yield* moduleClosureAt(process.cwd())
+			const closures = yield* moduleClosureAt(process.cwd(), Option.none())
 			const take = yield* Scratch.dir.open.pipe(
 				Effect.provideService(WorkerIndex, { index: 0, workers: 1 }),
 				Effect.provideService(ModuleClosure, closures)
@@ -82,7 +82,7 @@ export const deadRootsSwept = property.explore(
 					yield* Effect.forEach([...ended, ...runningRoots], (root) => fs.makeDirectory(root), {
 						discard: true
 					})
-					const closures = yield* moduleClosureAt(process.cwd())
+					const closures = yield* moduleClosureAt(process.cwd(), Option.none())
 					yield* Effect.scoped(
 						Effect.asVoid(
 							Scratch.dir.open.pipe(

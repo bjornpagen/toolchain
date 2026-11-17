@@ -174,7 +174,7 @@ const collected = (
 		? Effect.scoped(
 				Effect.gen(function* () {
 					const scope = yield* Scope.Scope
-					const closures = yield* moduleClosureAt(root)
+					const closures = yield* moduleClosureAt(root, Option.none())
 					const platform = yield* Effect.context<NodeServices>()
 					const runner = Context.add(
 						Context.add(
@@ -244,6 +244,7 @@ export const runPackage = (
 					env: {},
 					places: placesOf(testWorkers),
 					execArgv: flagsOf(stack),
+					served: Option.none(),
 					guide,
 					open: runnerLimits.open
 				})
@@ -330,6 +331,7 @@ export const replayToken = (
 			env: {},
 			places: placesOf(1),
 			execArgv: flagsOf(named.stack),
+			served: Option.none(),
 			guide: "notes",
 			open: runnerLimits.open
 		})

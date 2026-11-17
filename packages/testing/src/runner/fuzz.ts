@@ -1,4 +1,4 @@
-import { Array as Arr, Console, Duration, Effect, Random, Schema } from "effect"
+import { Array as Arr, Console, Duration, Effect, Option, Random, Schema } from "effect"
 import { budgetOf, type FuzzBudget, FuzzTime } from "#fuzz.ts"
 import { liveMillis } from "#live.ts"
 import { runnerLimits } from "#runner/limits.ts"
@@ -79,6 +79,7 @@ export const fuzz = (root: string, args: ReadonlyArray<string>) =>
 				env: {},
 				places: placesOf(testWorkers),
 				execArgv: process.execArgv,
+				served: Option.none(),
 				guide: Arr.some(sampled, (found) => found.property.guide.kind === "blocks")
 					? "blocks"
 					: "notes",

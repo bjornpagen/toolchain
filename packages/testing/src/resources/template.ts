@@ -240,7 +240,11 @@ const stateQuery = `SELECT COALESCE((SELECT CASE WHEN datistemplate AND NOT data
 
 /**
  * The identity digest of a template, from its declaration, its module's closure hash and its origin's identity: the
- * SHA-256, as hex, of their canonical text, which the member computes on `session`.
+ * SHA-256, as hex, of their canonical text, which the member computes on `session`. The closure is of the module as the
+ * opening worker loads it (runner/module-closure.ts), a kill trial's mutant included, so a template a trial builds is
+ * named by the mutant's code and no unmutated run ever opens it. That is version 2 of the text: version 1 hashed the
+ * checkout's files as they are on disk, so a template first built in a trial was kept under the unmutated identity, and
+ * every version-1 template is named by no declaration now, which the next run's collection drops (collect.ts).
  */
 const identityOf = (
 	session: Owner["session"],
@@ -254,7 +258,7 @@ const identityOf = (
 			"SELECT pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to($1, 'UTF8')), 'hex')",
 			[
 				canonicalText([
-					"@bjornpagen/testing/resources database template 1",
+					"@bjornpagen/testing/resources database template 2",
 					template.name,
 					template.content,
 					closure,

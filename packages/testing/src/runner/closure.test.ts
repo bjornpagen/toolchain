@@ -209,7 +209,7 @@ export const moduleClosureIsTheClosureHash = property.explore(workspaces, {
 					Effect.provideService(ModuleSyntax, parser.syntax),
 					Effect.provideService(Digest.Digest, parser.digest)
 				)
-				const closures = yield* moduleClosureAt(written)
+				const closures = yield* moduleClosureAt(written, Option.none())
 				for (const [index, root] of roots.entries()) {
 					const url = moduleUrlOf(written, workspace, index)
 					const first = yield* closures.hashOf(url)

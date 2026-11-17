@@ -13,6 +13,7 @@ import { Checkout } from "#mutate/checkout.ts"
 import { type Hooked, mainOf, valueModule, WAYS } from "#mutate/hook.fixtures.ts"
 import { imagesOf } from "#mutate/image.ts"
 import { realPathOf } from "#mutate/mutated.ts"
+import { servedArgv } from "#mutate/pool.ts"
 import { treesOf } from "#mutate/tree.ts"
 import { property } from "#property.ts"
 
@@ -69,11 +70,15 @@ export const hookedImage = property.explore(
 						? Option.some({ target, text: valueModule(hooked.extension, hooked.mutant) })
 						: Option.none()
 				)
-				const handle = yield* ChildProcess.make(process.execPath, [...image.execArgv, "main.ts"], {
-					cwd: image.root,
-					extendEnv: true,
-					stdin: "ignore"
-				})
+				const handle = yield* ChildProcess.make(
+					process.execPath,
+					[...servedArgv(image.served), "main.ts"],
+					{
+						cwd: image.root,
+						extendEnv: true,
+						stdin: "ignore"
+					}
+				)
 				const [printed, failure] = yield* Effect.all(
 					[
 						Stream.mkString(Stream.decodeText(handle.stdout)),

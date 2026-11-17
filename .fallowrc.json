@@ -5,6 +5,7 @@
 		"packages/devtools/src/oxlint/fixtures.config.ts",
 		"packages/devtools/src/style/classes.config.ts",
 		"packages/testing/src/mutate/hook.ts",
+		"packages/testing/src/mutate/templates.fixtures.ts",
 		"packages/testing/src/runner/cli.ts",
 		"packages/testing/src/runner/loops.fixtures.ts",
 		"packages/testing/src/runner/orphans.fixtures.ts",

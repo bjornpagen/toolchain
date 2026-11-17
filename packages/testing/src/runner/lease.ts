@@ -42,9 +42,10 @@ export const placesLeased = (width: number) => {
  * steals only among its own workers). A path the runner knows in `checkout` (the worker's entry, the package root, which
  * is the checkout itself in a repository whose package is its root) is taken in the image's root instead (rebasedTo),
  * so a worker tree's workers load the tree's modules and its test.config.ts, and run in the tree's package directory;
- * the image's flags follow this process's, and its environment adds to this process's. A worker killed past its case
- * deadline is forked again from the same image; closing the lease's scope disconnects every worker and waits for it to
- * exit on its own, so a coverage pass's dumps are written before the scope closes.
+ * its workers take this process's flags and serve the image's mutant (PoolSpec served), and its environment adds to
+ * this process's. A worker killed past its case deadline is forked again from the same image; closing the lease's
+ * scope disconnects every worker and waits for it to exit on its own, so a coverage pass's dumps are written before the
+ * scope closes.
  *
  * Every lease's workers take places among the pool's width that no other lease open at once holds (runner/pool.ts
  * Places), each taken as the lease opens and given back once its pool has closed, a lease waiting while too few are
@@ -69,7 +70,8 @@ export const mutantPoolOf = (checkout: string, packageRoot: string): MutantPool<
 					cwd: root,
 					env: image.env,
 					places: { at: taken, of: testWorkers },
-					execArgv: [...process.execArgv, ...image.execArgv],
+					execArgv: process.execArgv,
+					served: image.served,
 					guide: "notes",
 					open: runnerLimits.open
 				})

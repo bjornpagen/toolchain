@@ -13,6 +13,7 @@ import {
 	String as Str
 } from "effect"
 import { HUNG_CLEANUP_GRACE, liveMillis, WATCHDOG_GRACE_MILLIS } from "#live.ts"
+import { type Served, servedArgv } from "#mutate/pool.ts"
 import { withLateUses } from "#runner/case.ts"
 import { compileCacheDirectory, readsCoverage } from "#runner/compile-cache.ts"
 import { moduleClosureAt } from "#runner/module-closure.ts"
@@ -132,9 +133,10 @@ export const placesOf = (workers: number): Places => ({
 
 /**
  * What the pool's workers start from: the worker's entry module, the package root its test modules load from, the
- * directory it runs in, its Node flags and what its environment adds to this process's; the places its workers take
- * (one a core for a run); and whether any search guides by blocks (each worker then starts V8's coverage before it
- * loads a module). A worker the parent kills is forked again from the same spec, in the same place. `open` is the run's
+ * directory it runs in, its Node flags, the mutant its module hook serves, if any (mutate/pool.ts Served: the pool adds
+ * the hook to the flags, and hashes the closures it answers its workers with over the files as they load them), and
+ * what its environment adds to this process's; the places its workers take (one a core for a run); and whether any
+ * search guides by blocks (each worker then starts V8's coverage before it loads a module). A worker the parent kills is forked again from the same spec, in the same place. `open` is the run's
  * open bound: within it and the silence grace a worker must be ready (its runner config loaded, its services
  * declared), or it is ended as one that cannot start.
  */
@@ -145,6 +147,7 @@ export type PoolSpec = Readonly<{
 	env: Readonly<Record<string, string>>
 	places: Places
 	execArgv: ReadonlyArray<string>
+	served: Option.Option<Served>
 	guide: "notes" | "blocks"
 	open: number
 }>
@@ -269,7 +272,10 @@ const compilingOf = (spec: PoolSpec) =>
 export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Scope> =>
 	Effect.gen(function* () {
 		const scope = yield* Scope.Scope
-		const closures = yield* moduleClosureAt(spec.root)
+		const closures = yield* moduleClosureAt(
+			spec.root,
+			Option.map(spec.served, (served) => served.mutant)
+		)
 		const events = yield* Queue.unbounded<Event>()
 		const most = spec.places.at.length
 		const scheduler = schedulerOf<Unit>(most)
@@ -478,7 +484,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 				{
 					cwd: spec.cwd,
 					env: { ...inherited, ...spec.env, ...compiling },
-					execArgv: Arr.copy(spec.execArgv),
+					execArgv: [...spec.execArgv, ...servedArgv(spec.served)],
 					serialization: "advanced",
 					stdio: ["ignore", "pipe", "pipe", "ipc"],
 					detached: true

@@ -403,7 +403,7 @@ const countedNeed = (key: string, counts: HeldCounts): Need<number> => ({
 const processNeedCache = Effect.gen(function* () {
 	const scope = yield* Scope.Scope
 	const platform = yield* Effect.context<NodeServices>()
-	const closures = yield* moduleClosureAt(process.cwd())
+	const closures = yield* moduleClosureAt(process.cwd(), Option.none())
 	const context = Context.add(
 		Context.add(
 			Context.add(platform, WorkerIndex, { index: 0, workers: 1 }),

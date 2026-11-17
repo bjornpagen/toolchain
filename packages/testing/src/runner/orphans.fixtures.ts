@@ -39,6 +39,7 @@ const heldAsProgram = (root: string, pidFile: string) =>
 				env: {},
 				places: placesOf(1),
 				execArgv: process.execArgv,
+				served: Option.none(),
 				guide: "notes",
 				open: 3_600_000
 			})

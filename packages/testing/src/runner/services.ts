@@ -18,9 +18,11 @@ export class WorkerIndex extends Context.Service<
 >()("@bjornpagen/testing/runner/services/WorkerIndex") {}
 
 /**
- * A module's import-closure hash, as the runner computes it for a verdict key (runner/closure.ts): what a need whose
- * identity is a module reads, so a template declared in a module is a new template exactly when that module or anything
- * it loads changed. `hashOf` takes the module's URL (`import.meta.url`); each process hashes a module once.
+ * A module's import-closure hash, as the runner computes it for a verdict key (runner/closure.ts), over the files as the
+ * asking worker loads them, the mutant its module hook serves in place of its file's text (runner/module-closure.ts):
+ * what a need whose identity is a module reads, so a template declared in a module is a new template exactly when that
+ * module or anything it loads changed, on disk or under a kill trial's mutant. `hashOf` takes the module's URL
+ * (`import.meta.url`); each process hashes a module once.
  */
 export class ModuleClosure extends Context.Service<
 	ModuleClosure,

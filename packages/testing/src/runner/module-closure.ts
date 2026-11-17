@@ -14,17 +14,20 @@ import {
 	Scope,
 	String as Str
 } from "effect"
+import type { MutatedFile } from "#mutate/mutated.ts"
 import type { ClosureHash } from "#runner/closure-hash.ts"
+import type { Files, RepoPath } from "#runner/closure.ts"
 import { ModuleClosure, NeedFailed } from "#runner/services.ts"
 
 /**
  * ModuleClosure computed in this process: a module's import-closure hash, as closure.ts computes it for a verdict key,
- * so a need whose identity reads it (a template, by the module that declares it) changes identity exactly when that
- * module or anything it loads changes. The pool's parent holds one for the pool's root and answers every worker's
- * request from it (runner/closure-requests.ts), so a run hashes each module once, not once a worker; an inline search
- * holds its own. The modules resolve under the conditions this process runs with (the runner config's, which every
- * process of a run is started with), over the workspace whose lockfile is nearest above the root: the checkout's, or
- * a worker tree's.
+ * over the files as the workers it answers load them, so a need whose identity reads it (a template, by the module that
+ * declares it) changes identity exactly when that module or anything it loads changes, a mutant's text included. The
+ * pool's parent holds one for the pool's root and the mutant its workers serve (runner/pool.ts PoolSpec served), and
+ * answers every worker's request from it (runner/closure-requests.ts), so a run hashes each module once, not once a
+ * worker; an inline search holds its own. The modules resolve under the conditions this process runs with (the runner
+ * config's, which every process of a run is started with), over the workspace whose lockfile is nearest above the root:
+ * the checkout's, or a worker tree's.
  *
  * Nothing here loads the compiler until a hash is first asked for: closure.ts, and TypeScript's native parser with it
  * (an optional peer of the library), are imported then, in this process's scope; each module's hash is kept for the
@@ -57,11 +60,43 @@ const workspaceOf = (
 	)
 
 /**
- * The ModuleClosure of the package at `root`, its compiler and hashes held in the enclosing scope's lifetime: the
- * pool's, or an inline search's caller's.
+ * The files of the workspace at `workspace` as a worker serving `served` loads them: the working tree's, but the served
+ * mutant's file, which holds the mutant's text (mutate/hook.ts serves it so), by its path from the workspace (`pathOf`,
+ * closure.ts repoPathOf). A mutant outside the workspace is in no closure: a closure hashes an external package by its
+ * lockfile entry, never by its files.
+ */
+const loadedFiles = (
+	tree: Files,
+	workspace: string,
+	served: Option.Option<MutatedFile>,
+	pathOf: (relative: string) => Option.Option<RepoPath>
+): Files =>
+	Option.match(
+		Option.flatMap(served, (mutant) =>
+			Option.map(
+				Option.flatMap(
+					Option.liftPredicate(mutant.target, Str.startsWith(`${workspace}/`)),
+					(target) => pathOf(Str.slice(workspace.length + 1)(target))
+				),
+				(path) => ({ path, bytes: new TextEncoder().encode(mutant.text) })
+			)
+		),
+		{
+			onNone: () => tree,
+			onSome: (replaced) => ({
+				read: (path) =>
+					path === replaced.path ? Effect.succeedSome(replaced.bytes) : tree.read(path)
+			})
+		}
+	)
+
+/**
+ * The ModuleClosure of the package at `root` as its workers load it, serving `served` (mutate/pool.ts Served) or no
+ * mutant, its compiler and hashes held in the enclosing scope's lifetime: the pool's, or an inline search's caller's.
  */
 export const moduleClosureAt = (
-	root: string
+	root: string,
+	served: Option.Option<MutatedFile>
 ): Effect.Effect<Context.Service.Shape<typeof ModuleClosure>, never, Scope.Scope> =>
 	Effect.gen(function* () {
 		const scope = yield* Scope.Scope
@@ -111,9 +146,10 @@ export const moduleClosureAt = (
 							message: `${module} lies outside the workspace ${workspace}`
 						})
 				)
-				const tree = yield* closure
+				const working = yield* closure
 					.workingTree(workspace)
 					.pipe(Effect.provideService(FileSystem.FileSystem, fs))
+				const tree = loadedFiles(working, workspace, served, closure.repoPathOf)
 				const closures = yield* Effect.mapError(
 					closure
 						.closuresOf({ tree, conditions, runtime: process.version, roots: [path] })

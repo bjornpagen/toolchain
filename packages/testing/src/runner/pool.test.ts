@@ -63,6 +63,7 @@ export const workersLeaveNoChild = property.exhaust(finite(leavings), {
 							env: { [CHILD_FILE]: file },
 							places: placesOf(1),
 							execArgv: process.execArgv,
+							served: Option.none(),
 							guide: "notes",
 							open: runnerLimits.open
 						})
@@ -148,6 +149,7 @@ export const loadsNever = property.exhaust(finite(boolean), {
 							env: {},
 							places: placesOf(1),
 							execArgv: process.execArgv,
+							served: Option.none(),
 							guide: "notes",
 							open: runnerLimits.open
 						}),
@@ -198,6 +200,7 @@ export const silentBeforeReadying = property.exhaust(finite(boolean), {
 							env: {},
 							places: placesOf(1),
 							execArgv: process.execArgv,
+							served: Option.none(),
 							guide: "notes",
 							open: runnerLimits.open
 						})
@@ -251,6 +254,7 @@ export const countedOnAWorker = property.exhaust(finite(countsEvery), {
 							env: {},
 							places: placesOf(1),
 							execArgv: process.execArgv,
+							served: Option.none(),
 							guide: "notes",
 							open: runnerLimits.open
 						}),
@@ -320,6 +324,7 @@ export const openDiesUnopened = property.exhaust(finite(boolean), {
 							env: {},
 							places: placesOf(1),
 							execArgv: process.execArgv,
+							served: Option.none(),
 							guide: "notes",
 							open: runnerLimits.open
 						})
@@ -421,6 +426,7 @@ export const workersTakeTheirPlaces = property.exhaust(
 								env: {},
 								places: { at: [at], of },
 								execArgv: process.execArgv,
+								served: Option.none(),
 								guide: "notes",
 								open: runnerLimits.open
 							}),
@@ -537,6 +543,7 @@ export const startsNever = property.exhaust(finite(boolean), {
 							env: {},
 							places: placesOf(1),
 							execArgv: process.execArgv,
+							served: Option.none(),
 							guide: "notes",
 							open: 1000
 						}),

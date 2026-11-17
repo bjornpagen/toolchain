@@ -51,7 +51,7 @@ export const inlineEvaluator = (
 ): Effect.Effect<Evaluator, never, Scope.Scope | InlineContext> =>
 	Effect.gen(function* () {
 		const caller = yield* Effect.context<InlineContext | Scope.Scope>()
-		const closures = yield* moduleClosureAt(process.cwd())
+		const closures = yield* moduleClosureAt(process.cwd(), Option.none())
 		const context = Context.add(
 			Context.add(caller, WorkerIndex, { index: 0, workers: 1 }),
 			ModuleClosure,
