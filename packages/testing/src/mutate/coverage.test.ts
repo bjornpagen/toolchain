@@ -3,23 +3,37 @@
  * enclosing range, as V8 nests a script's ranges, has a count above zero, disjoint, in order and maximal, and the map
  * names a property at exactly those places; and on a real process under NODE_V8_COVERAGE, a TypeScript module's places
  * map to the properties that ran them: the body of each function the process called, and the module's top level, and
- * never the body of one it did not call.
+ * never the body of one it did not call; and a process a coverage pass started that ended before it wrote its dump is
+ * coverage lost, never less coverage, while a process a check starts and ends is no loss.
  */
-import { Array as Arr, Effect, FileSystem, Option, Path, Stream, String as Str } from "effect"
+import {
+	Array as Arr,
+	Effect,
+	FileSystem,
+	Option,
+	Path,
+	Schema,
+	Stream,
+	String as Str
+} from "effect"
 import { ChildProcess } from "effect/process"
 import { deepStrictEqual } from "#assert.ts"
 import { array, boolean, finite } from "#gen.ts"
 import {
+	childText,
 	FUNCTIONS,
 	inSpans,
 	laidOut,
+	lostGen,
+	lostMainText,
 	mainText,
 	moduleText,
 	nodeGen,
 	ranByHand,
 	wellFormed
 } from "#mutate/coverage.fixtures.ts"
-import { coverageMapOf, ranIn, ranOf } from "#mutate/coverage.ts"
+import { CoverageLost, coverageMapOf, ranIn, ranOf } from "#mutate/coverage.ts"
+import { startedMark } from "#mutate/image.ts"
 import { realPathOf } from "#mutate/mutated.ts"
 import { property } from "#property.ts"
 
@@ -155,3 +169,60 @@ export const realProcessCoverage = property.exhaust(
 		kills: []
 	}
 )
+
+export const lostCoverage = property.exhaust(finite(lostGen), {
+	box: "every way the pass's process and a child of it end",
+	needs: {},
+	situations: [],
+	check: () => (lost) =>
+		Effect.gen(function* () {
+			const fs = yield* FileSystem.FileSystem
+			const path = yield* Path.Path
+			const made = yield* fs.makeTempDirectoryScoped({ prefix: "toolchain-coverage-test-" })
+			const directory = yield* realPathOf(made)
+			yield* fs.writeFileString(path.join(directory, "package.json"), `{"type":"module"}`)
+			yield* fs.writeFileString(path.join(directory, "main.ts"), lostMainText(lost))
+			yield* fs.writeFileString(path.join(directory, "child.ts"), childText)
+			const dumps = path.join(directory, "dumps")
+			const handle = yield* ChildProcess.make(
+				process.execPath,
+				[...startedMark(process.pid), "main.ts"],
+				{ cwd: directory, env: { NODE_V8_COVERAGE: dumps }, extendEnv: true, stdin: "ignore" }
+			)
+			yield* handle.stdout.pipe(
+				Stream.decodeText(),
+				Stream.takeUntil((text) => Str.includes("ready")(text)),
+				Stream.runDrain
+			)
+			if (lost.main === "killed") {
+				yield* handle.kill({ killSignal: "SIGKILL" })
+			}
+			yield* Effect.exit(handle.exitCode)
+			const read = yield* Effect.result(ranIn("the process", dumps, []))
+			deepStrictEqual(
+				read._tag === "Failure" && Schema.is(CoverageLost)(read.failure)
+					? Option.some(Arr.copy(read.failure.processes))
+					: Option.none(),
+				lost.main === "killed" ? Option.some([String(handle.pid)]) : Option.none()
+			)
+		}),
+	oracle: {
+		kind: "specification",
+		name: "lost exactly when the pass's own process was killed, naming it; a child's ending never counts"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/mutate/coverage.ts",
+			original: "\tif (Arr.isReadonlyArrayNonEmpty(lost)) {",
+			replacement: "\tif (Arr.isReadonlyArrayNonEmpty([])) {",
+			why: "A process that started and wrote no dump is read as having run nothing, so a worker killed before it exits leaves its property covering less, silently."
+		},
+		{
+			file: "packages/testing/src/mutate/image.ts",
+			original: "if (process.ppid === ",
+			replacement: "if (true || process.ppid === ",
+			why: "Every process under the pass's coverage marks itself, a check's child among them, so a child the check kills refuses the run."
+		}
+	]
+})

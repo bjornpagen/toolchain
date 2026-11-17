@@ -10,6 +10,7 @@ import {
 	String as Str
 } from "effect"
 import type { Span } from "#mutants.ts"
+import { STARTED } from "#mutate/image.ts"
 import type { RealPath } from "#mutate/mutated.ts"
 
 /**
@@ -167,7 +168,26 @@ const ranFrom = <P>(
 /** Whether a name is one Node gives a coverage dump: `coverage-<pid>-<timestamp>-<sequence>.json`. */
 const isDump = (name: string) => Str.startsWith("coverage-")(name) && Str.endsWith(".json")(name)
 
-/** What `property` ran of `files`, from the dumps in `directory`, its coverage pass's. */
+/** The process a dump's name names. */
+const dumpedBy = (name: string) => Option.fromUndefinedOr(Str.split(name, "-")[1])
+
+/** The process a start mark's name (image.ts startedMark) names. */
+const markedBy = (name: string) =>
+	Str.startsWith(STARTED)(name) ? Option.some(Str.slice(STARTED.length)(name)) : Option.none()
+
+/**
+ * A coverage pass's processes that started and wrote no dump: each was ended before it exited on its own (a worker
+ * the pool ends past its grace), so what it ran is unknown, and the pass refuses rather than read less coverage.
+ */
+export class CoverageLost extends Schema.TaggedError<
+	CoverageLost,
+	{ readonly brand: unique symbol }
+>()("CoverageLost", { directory: Schema.String, processes: Schema.Array(Schema.String) }) {}
+
+/**
+ * What `property` ran of `files`, from the dumps in `directory`, its coverage pass's; CoverageLost when a process
+ * marked as started there left no dump.
+ */
 export const ranIn = Effect.fn("testing.mutate.ranIn")(function* <P>(
 	property: P,
 	directory: string,
@@ -176,7 +196,16 @@ export const ranIn = Effect.fn("testing.mutate.ranIn")(function* <P>(
 	const fs = yield* FileSystem.FileSystem
 	const path = yield* Path.Path
 	const names = yield* fs.readDirectory(directory)
-	const dumps = yield* Effect.forEach(Arr.filter(names, isDump), (name) =>
+	const dumpNames = Arr.filter(names, isDump)
+	const dumped = new Set(Arr.flatMap(dumpNames, (name) => Option.toArray(dumpedBy(name))))
+	const lost = Arr.filter(
+		Arr.flatMap(names, (name) => Option.toArray(markedBy(name))),
+		(pid) => !dumped.has(pid)
+	)
+	if (Arr.isReadonlyArrayNonEmpty(lost)) {
+		return yield* CoverageLost.make({ directory, processes: lost })
+	}
+	const dumps = yield* Effect.forEach(dumpNames, (name) =>
 		Effect.map(fs.readFileString(path.join(directory, name)), (text) => ({ name, text }))
 	)
 	return yield* ranFrom(property, dumps, files)

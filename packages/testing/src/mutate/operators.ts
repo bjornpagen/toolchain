@@ -111,7 +111,8 @@ const trialOf = (
 
 /**
  * The coverage pass: each subject's witnesses once, unmutated, on a worker of its own whose dumps go to a directory of
- * the subject's, and the map of what each ran of the run's files. A subject red with no mutant refuses the run.
+ * the subject's, and the map of what each ran of the run's files. A subject red with no mutant refuses the run, and so
+ * does one whose coverage a worker lost (coverage.ts CoverageLost).
  */
 const coverageOf = <E>(
 	pool: MutantPool<E>,
@@ -154,7 +155,13 @@ const coverageOf = <E>(
 		const ran = yield* Effect.forEach(passes, ({ subject, directory }) =>
 			Effect.flatMap(fs.exists(directory), (present) =>
 				present
-					? ranIn(subject, directory, targets)
+					? Effect.catchTag(ranIn(subject, directory, targets), "CoverageLost", (lost) =>
+							Effect.fail(
+								MutationRefused.make({
+									message: `the coverage pass of ${subject.id} lost what its workers ${Arr.join(lost.processes, ", ")} ran: each started and ended before it wrote its coverage, as a worker the pool ends past its grace does, so the run refuses rather than read less coverage`
+								})
+							)
+						)
 					: Effect.succeed({ property: subject, files: new Map() })
 			)
 		)

@@ -1,5 +1,5 @@
 import { Array as Arr } from "effect"
-import { array, boolean, type Gen, int } from "#gen.ts"
+import { array, boolean, element, type Gen, int } from "#gen.ts"
 import type { Span } from "#mutants.ts"
 
 /** A range as V8 reports one: half-open, with the times it ran. */
@@ -99,3 +99,44 @@ export const mainText = (called: ReadonlyArray<boolean>) =>
 		Arr.flatMap(called, (call, i) => (call ? [` + m.f${String(i)}(1)`] : [])),
 		""
 	)})\n`
+
+/** How a process under a coverage pass ends: it exits on its own, writing its dump, or is killed before it can. */
+const ENDINGS = ["exits", "killed"] as const
+
+export type Ending = (typeof ENDINGS)[number]
+
+/**
+ * A lost-coverage case: how the pass's process ends, and whether it first forks a child, a check's process, and how that
+ * child ends.
+ */
+export type Lost = Readonly<{ main: Ending; child: Ending | "none" }>
+
+export const lostGen: Gen<Lost> = (source) => ({
+	main: source.draw(element(ENDINGS)),
+	child: source.draw(element(["none", ...ENDINGS]))
+})
+
+/** The child's text: it says it is up, then exits when told. */
+export const childText = `process.send("up")\nprocess.on("message", () => process.exit(0))\n`
+
+/**
+ * The pass's process: it forks the child, waits for it to be up and ends it as the case says; then it exits, or says
+ * `ready` and waits to be killed (a process that kills itself still writes its dump).
+ */
+export const lostMainText = (lost: Lost) =>
+	Arr.join(
+		[
+			`import { fork } from "node:child_process"`,
+			...(lost.child === "none"
+				? []
+				: [
+						`const child = fork("child.ts")`,
+						`await new Promise((resolve) => child.once("message", resolve))`,
+						lost.child === "killed" ? `child.kill("SIGKILL")` : `child.send("exit")`,
+						`await new Promise((resolve) => child.once("exit", resolve))`
+					]),
+			...(lost.main === "killed" ? [`console.log("ready")`, `setInterval(() => {}, 1000)`] : []),
+			""
+		],
+		"\n"
+	)
