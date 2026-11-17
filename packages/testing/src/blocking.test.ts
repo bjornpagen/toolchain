@@ -1,6 +1,7 @@
 /**
  * The watchdog (live.ts), over planted searches (blocking.fixtures.ts), a runaway's in a program of its own, since it
- * ends its process, started from the checkout (Checkout.dir, so a mutant of live.ts reaches it on disk), every other one
+ * ends its process, after cases under a longer deadline, so the watchdog sleeps past the runaway's moment and must be
+ * woken for it, started from the checkout (Checkout.dir, so a mutant of live.ts reaches it on disk), every other one
  * in the case's own process: a body that loops or backtracks forever from a drawn threshold must end its process with
  * the hang report, naming the first case at the threshold in a replay token, once its case deadline and the watchdog's
  * grace have passed and before a grace more, the latest bound that still tells a watchdog waiting twice its grace
@@ -86,6 +87,12 @@ export const watchdog = property.explore(aimed(settlingRuns, bodyAims), {
 	},
 	kept: [],
 	kills: [
+		{
+			file: "packages/testing/src/live.ts",
+			original: "\t\tif (moment < Number(Atomics.load(stamps, LAYOUT.wakes))) {",
+			replacement: "\t\tif (false) {",
+			why: "A case whose moment comes before the moment the watchdog's thread will wake of itself never wakes it, so a runaway after cases under a longer deadline runs on past its moment and a grace; the property fails."
+		},
 		{
 			file: "packages/testing/src/live.ts",
 			original: "\t\t\t\t\tgraceMillis: WATCHDOG_GRACE_MILLIS,",

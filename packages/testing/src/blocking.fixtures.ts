@@ -155,14 +155,35 @@ export const settledHere = (planted: Planted, seed: number) =>
 	)
 
 /**
- * The program this module is when run: it prints the moment its search begins, exhausts the planted search inline under
- * its case deadline and the given run seed, and prints how the search ended. A runaway ends the process instead, by its
- * watchdog, which prints its report.
+ * A search of cases that return at once, run under the runner's own case deadline, far longer than a planted search's:
+ * the watchdog it starts sleeps until its last case's moment, so a planted case after it comes due before the watchdog
+ * would wake of itself, and the watchdog must be woken for it.
+ */
+const longerDeadlines: Property = property.exhaust(finite(values), {
+	box: "every value from 0 to 9",
+	needs: {},
+	situations: [],
+	check: () => () => Effect.void,
+	oracle: { kind: "specification", name: "cases that return at once" },
+	kept: [],
+	kills: []
+})
+
+/**
+ * The program this module is when run: it runs cases under a longer deadline first (longerDeadlines), then prints the
+ * moment its planted search begins, exhausts it inline under its case deadline and the given run seed, and prints how
+ * the search ended. A runaway ends the process instead, by its watchdog, which prints its report.
  */
 const searchedAsProgram = (planted: Planted, seed: number) =>
 	Effect.runPromise(
 		Effect.scoped(
 			Effect.gen(function* () {
+				yield* searchInline(longerDeadlines, {
+					id: `${idOf(planted)} after longer deadlines`,
+					seed,
+					reach: "full",
+					limits: runnerLimits
+				})
 				const began = yield* liveMillis
 				yield* Console.log(`began: ${began}`)
 				const verdict = yield* searchInline(plantedSearch(planted), {

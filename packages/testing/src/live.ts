@@ -104,11 +104,13 @@ export const stopHung = <A, E>(running: Fiber.Fiber<A, E>): Effect.Effect<void> 
 /**
  * @formatConstant the watchdog's shared memory, its slots and their offsets
  *
- * Where the watchdog's two threads meet in their shared memory: three Int32 counters (bumped when the earliest moment
- * moves earlier; bumped at every sign of life of the main thread, a case's start or end or an answer to a ping; one
- * nothing writes, for the watchdog's thread to time a wait on), then, at the first 8-byte boundary past them, two
- * Float64 moments (the earliest moment a case in flight passes the moment its guard would stop it, in milliseconds since
- * the epoch, and how long that case's thread then has to answer, in milliseconds).
+ * Where the watchdog's two threads meet in their shared memory: three Int32 counters (bumped when a case's moment comes
+ * before the one the watchdog's thread will wake at; bumped at every sign of life of the main thread, a case's start or
+ * end or an answer to a ping; one nothing writes, for the watchdog's thread to time a wait on), then, at the first
+ * 8-byte boundary past them, two BigInt64 moments, whole milliseconds since the epoch, each read and written atomically
+ * (the earliest moment a case in flight passes the moment its guard would stop it, and the moment the watchdog's thread
+ * will next wake of itself; `never`, Number.MAX_SAFE_INTEGER, for none), then one Float64 (how long the earliest case's
+ * thread then has to answer, in milliseconds).
  */
 const LAYOUT = {
 	generation: 0,
@@ -116,10 +118,14 @@ const LAYOUT = {
 	timer: 2,
 	counters: 3,
 	earliest: 0,
-	grace: 1,
-	moments: 2,
-	momentsOffset: 16,
-	bytes: 32
+	wakes: 1,
+	stamps: 2,
+	stampsOffset: 16,
+	grace: 0,
+	moments: 1,
+	momentsOffset: 32,
+	bytes: 40,
+	never: Number.MAX_SAFE_INTEGER
 } as const
 
 type Layout = typeof LAYOUT
@@ -158,8 +164,20 @@ const watchdogThread = (layout: Layout): void => {
 	}
 	const shared: SharedArrayBuffer = threads.workerData
 	const counters = new Int32Array(shared, 0, layout.counters)
+	const stamps = new BigInt64Array(shared, layout.stampsOffset, layout.stamps)
 	const moments = new Float64Array(shared, layout.momentsOffset, layout.moments)
 	const nowMillis = () => performance.timeOrigin + performance.now()
+	const earliestMoment = (): number => Number(Atomics.load(stamps, layout.earliest))
+	/**
+	 * Says when this thread will next wake of itself, `moment`, so a case whose moment comes sooner wakes it and any
+	 * other lets it sleep: the main thread writes a case's moment and then reads this one, and this thread writes this
+	 * one and then reads the earliest moment again, so of a case published as it says so one of the two sees the other.
+	 * Gives the earliest moment as it stands once said.
+	 */
+	const wakesAt = (moment: number): number => {
+		Atomics.store(stamps, layout.wakes, BigInt(Math.min(Math.ceil(moment), layout.never)))
+		return earliestMoment()
+	}
 	const after = (waited: ReturnType<typeof Atomics.waitAsync>, then: () => void): void => {
 		if (waited.async) {
 			void waited.value.then(then)
@@ -172,8 +190,7 @@ const watchdogThread = (layout: Layout): void => {
 		process.kill(process.pid, "SIGKILL")
 	}
 	const stillBlocked = (looked: number): boolean =>
-		Atomics.load(counters, layout.progress) === looked &&
-		(moments[layout.earliest] ?? Number.POSITIVE_INFINITY) <= nowMillis()
+		Atomics.load(counters, layout.progress) === looked && earliestMoment() <= nowMillis()
 	const unanswered =
 		"@bjornpagen/testing: a case held its process's main thread without yielding past the moment its guard would stop it, and the thread's inspector did not answer for its report; the watchdog ended the process: a hang"
 	const blocked = (looked: number, graceMillis: number): void => {
@@ -221,9 +238,13 @@ const watchdogThread = (layout: Layout): void => {
 	const watch = (): void => {
 		const looked = Atomics.load(counters, layout.progress)
 		const generation = Atomics.load(counters, layout.generation)
-		const hangsAt = moments[layout.earliest] ?? Number.POSITIVE_INFINITY
+		const hangsAt = earliestMoment()
+		if (wakesAt(hangsAt) !== hangsAt) {
+			watch()
+			return
+		}
 		const graceMillis = moments[layout.grace] ?? 0
-		const waitMillis = hangsAt - nowMillis()
+		const waitMillis = hangsAt >= layout.never ? Number.POSITIVE_INFINITY : hangsAt - nowMillis()
 		if (waitMillis > 0) {
 			after(Atomics.waitAsync(counters, layout.generation, generation, waitMillis), watch)
 			return
@@ -238,15 +259,9 @@ const watchdogThread = (layout: Layout): void => {
 		})
 	}
 	const rest = (graceMillis: number): void => {
-		after(
-			Atomics.waitAsync(
-				counters,
-				layout.generation,
-				Atomics.load(counters, layout.generation),
-				graceMillis
-			),
-			watch
-		)
+		const generation = Atomics.load(counters, layout.generation)
+		wakesAt(nowMillis() + graceMillis)
+		after(Atomics.waitAsync(counters, layout.generation, generation, graceMillis), watch)
 	}
 	port.on("message", () => undefined)
 	watch()
@@ -311,8 +326,10 @@ const offMainThread: Watchdog = {
 const startedWatchdog = (): Watchdog => {
 	const shared = new SharedArrayBuffer(LAYOUT.bytes)
 	const counters = new Int32Array(shared, 0, LAYOUT.counters)
+	const stamps = new BigInt64Array(shared, LAYOUT.stampsOffset, LAYOUT.stamps)
 	const moments = new Float64Array(shared, LAYOUT.momentsOffset, LAYOUT.moments)
-	moments[LAYOUT.earliest] = Number.POSITIVE_INFINITY
+	Atomics.store(stamps, LAYOUT.earliest, BigInt(LAYOUT.never))
+	Atomics.store(stamps, LAYOUT.wakes, BigInt(LAYOUT.never))
 	const layout = `{ ${Arr.join(
 		Arr.map(Rec.toEntries(LAYOUT), ([name, at]) => `${name}: ${at}`),
 		", "
@@ -334,10 +351,10 @@ const startedWatchdog = (): Watchdog => {
 			{ hangsAt: Number.POSITIVE_INFINITY, graceMillis: 0 },
 			(first, watch) => (watch.hangsAt < first.hangsAt ? watch : first)
 		)
-		const earlier = earliest.hangsAt < (moments[LAYOUT.earliest] ?? Number.POSITIVE_INFINITY)
-		moments[LAYOUT.earliest] = earliest.hangsAt
+		const moment = Math.min(Math.ceil(earliest.hangsAt), LAYOUT.never)
 		moments[LAYOUT.grace] = earliest.graceMillis
-		if (earlier) {
+		Atomics.store(stamps, LAYOUT.earliest, BigInt(moment))
+		if (moment < Number(Atomics.load(stamps, LAYOUT.wakes))) {
 			Atomics.add(counters, LAYOUT.generation, 1)
 			Atomics.notify(counters, LAYOUT.generation)
 		}
