@@ -38,8 +38,10 @@ import {
 	loopingProperty,
 	plantedCase,
 	RUNAWAY,
+	SLOW_WORKER_DEADLINE,
 	shortCase,
 	silencing,
+	slowlyWorkingProperty,
 	unreadyRoot
 } from "#runner/pool.fixtures.ts"
 import { placesOf, poolOf } from "#runner/pool.ts"
@@ -179,6 +181,51 @@ export const loadsNever = property.exhaust(finite(boolean), {
 			original: "\t\t\treturn workOf(unit.work).open\n",
 			replacement: "\t\t\treturn Number.POSITIVE_INFINITY\n",
 			why: "A unit's readying has no bound, so a worker whose module's load never ends is never ended and its search never returns; this property's case hangs past its deadline."
+		}
+	]
+})
+
+export const slowWorkerKept = property.exhaust(finite(boolean), {
+	box: "a slow unit whose work is its worker's, and one whose work is a child's",
+	needs: { checkout: Checkout.dir },
+	situations: [],
+	check:
+		({ checkout }) =>
+		(inChild) =>
+			Effect.gen(function* () {
+				const root = yield* checkout
+				const outcomes = yield* Effect.scoped(
+					Effect.gen(function* () {
+						const pool = yield* poolOf({
+							entry: WORKER_ENTRY,
+							root,
+							cwd: root,
+							env: {},
+							places: placesOf(1),
+							execArgv: process.execArgv,
+							guide: "notes",
+							open: runnerLimits.open
+						})
+						const results = yield* pool.evaluator.evaluate(
+							[shortCase(slowlyWorkingProperty(inChild), SLOW_WORKER_DEADLINE, 1000)],
+							() => true
+						)
+						return Arr.map(Arr.flatten(results), (result) => result.outcome.kind)
+					})
+				)
+				deepStrictEqual(outcomes, ["passed"])
+			}),
+	oracle: {
+		kind: "specification",
+		name: "a worker silent past its unit's bound and the silence grace while its process tree's CPU moves and stays within them, in the worker or in a child, is left to finish, never killed as lost"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/runner/pool.ts",
+			original: "\t\t\t\t\t\t\tprocessWork(Option.fromUndefinedOr(worker.child.pid), began),",
+			replacement: "\t\t\t\t\t\t\tprocessWork(Option.none(), began),",
+			why: "The parent reads no worker's CPU, so a worker silent past its bound and grace is killed whatever it is doing, as the live clock's watch killed it: the slow worker's unit is lost; the slow-worker property fails."
 		}
 	]
 })

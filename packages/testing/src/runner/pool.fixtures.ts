@@ -1,10 +1,11 @@
-import { Array as Arr, Config, Effect, FileSystem, Option } from "effect"
+import { Array as Arr, Config, Duration, Effect, FileSystem, Option } from "effect"
 import { boolean, finite, type Gen, int, map } from "#gen.ts"
 import { liveMillis, liveSleep } from "#live.ts"
 import { type Need, property } from "#property.ts"
 import { Scratch } from "#resources/scratch.ts"
 import type { Batch } from "#runner/protocol.ts"
 import { WorkerIndex } from "#runner/services.ts"
+import { ownCpu } from "#runner/work.ts"
 
 /**
  * The pool's teardown property (pool.test.ts) runs a planted property on a pool of its own: this module is that
@@ -222,6 +223,89 @@ export const silencesItsWorker = property.exhaust(finite(int(0, 1)), {
 	kept: [],
 	kills: []
 })
+
+/** The case deadline the slow planted properties run under, in milliseconds. */
+export const SLOW_WORKER_DEADLINE = 2000
+
+/** How many bursts of CPU a slow planted case spends, one every SLOW_STALL_MILLIS, each SLOW_BURST_MILLIS long. */
+const SLOW_BURSTS = 38
+
+const SLOW_BURST_MILLIS = 20
+
+const SLOW_STALL_MILLIS = 500
+
+/** The program a slow planted case's child runs: the bursts and stalls of the case itself, then it exits. */
+const SLOW_CHILD_PROGRAM = `const cpu = () => { const u = process.cpuUsage(); return (u.user + u.system) / 1000 }
+const burst = () => { const until = cpu() + ${SLOW_BURST_MILLIS}; while (cpu() < until) {} }
+const step = (left) => { if (left === 0) { return } burst(); setTimeout(() => step(left - 1), ${SLOW_STALL_MILLIS}) }
+step(${SLOW_BURSTS})`
+
+/** One burst of a slow planted case's own CPU. */
+const slowBurst = Effect.sync(() => {
+	const until = ownCpu() + SLOW_BURST_MILLIS
+	let spins = 0
+	while (ownCpu() < until) {
+		spins += 1
+	}
+	return spins
+})
+
+/** A slow planted case's work in its worker: its bursts, each followed by its stall on the live clock. */
+const slowInWorker = Effect.forEach(
+	Array.from({ length: SLOW_BURSTS }, (_, at) => at),
+	() => Effect.andThen(slowBurst, liveSleep(Duration.millis(SLOW_STALL_MILLIS))),
+	{ discard: true }
+)
+
+/** A slow planted case's work in a child of its worker, which waits for it to exit. */
+const slowInChild = Effect.callback<void>((resume) => {
+	const child = process
+		.getBuiltinModule("node:child_process")
+		.spawn(process.execPath, ["-e", SLOW_CHILD_PROGRAM], { stdio: "ignore" })
+	child.on("exit", () => resume(Effect.void))
+	return Effect.sync(() => {
+		child.kill("SIGKILL")
+	})
+})
+
+/**
+ * Properties planted to keep their worker silent and working past their unit's bound and the silence grace: the one
+ * case spends 20 ms of CPU every 500 ms of the live clock for 19 s, in the worker or in a child it waits on, so its work
+ * moves in every window of its 2 s deadline (three bursts or more, past the 10 ms progress takes) and spends about
+ * 760 ms in all, under the deadline; its worker sends nothing until the case ends, past the 2 s bound and the 15 s
+ * grace in wall time. Then it passes.
+ */
+export const slowlyWorking = property.exhaust(finite(int(0, 1)), {
+	box: "two values",
+	needs: {},
+	situations: [],
+	check: () => () => slowInWorker,
+	oracle: {
+		kind: "specification",
+		name: "a property planted to keep its worker silent and working"
+	},
+	kept: [],
+	kills: []
+})
+
+export const slowlyWorkingChild = property.exhaust(finite(int(0, 1)), {
+	box: "two values",
+	needs: {},
+	situations: [],
+	check: () => () => slowInChild,
+	oracle: {
+		kind: "specification",
+		name: "a property planted to keep its worker silent while its child works"
+	},
+	kept: [],
+	kills: []
+})
+
+/** The identity of a slow planted property, as a pool's workers load it: its work in its worker, or in a child. */
+export const slowlyWorkingProperty = (inChild: boolean): string =>
+	inChild
+		? "src/runner/pool.fixtures.ts#slowlyWorkingChild"
+		: "src/runner/pool.fixtures.ts#slowlyWorking"
 
 /** A property planted to pass at once, with no need: the next unit a silenced worker is sent. */
 export const passesAtOnce = property.exhaust(finite(int(0, 1)), {

@@ -47,6 +47,7 @@ import {
 	type View
 } from "#runner/schedule.ts"
 import type { ChildrenStated, PoolUsage, PropertyUsage } from "#runner/usage.ts"
+import { overrun, processWork } from "#runner/work.ts"
 
 /**
  * The pool: worker processes, at most one a core and forked as the queue wants them (one for each module no worker
@@ -565,7 +566,11 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 				return Option.map(running, (ran) => ({ unit: ran.unit, phase: ran.phase }))
 			})
 
-		/** Watches a worker in a phase of one of its units: silent past the phase's bound and the grace, it is killed. */
+		/**
+		 * Watches a worker in a phase of one of its units: silent while its process tree spends the phase's bound and the
+		 * grace in CPU, or does not move over a whole bound and grace of wall time (runner/work.ts overrun), it is killed.
+		 * A worker whose case the machine slows keeps moving and is left to its own guard.
+		 */
 		const watch = (worker: Worker, id: number, phase: Phase) =>
 			Effect.gen(function* () {
 				yield* settle(worker)
@@ -573,9 +578,13 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 				if (Option.isNone(unit)) {
 					return
 				}
+				const began = yield* liveMillis
 				const silence = yield* Effect.forkIn(
 					Effect.andThen(
-						Effect.sleep(Duration.millis(boundOf(unit.value, phase) + SILENCE_GRACE_MILLIS)),
+						overrun(
+							processWork(Option.fromUndefinedOr(worker.child.pid), began),
+							boundOf(unit.value, phase) + SILENCE_GRACE_MILLIS
+						),
 						Queue.offer(events, { kind: "silent", worker, unit: id, phase })
 					).pipe(Effect.asVoid),
 					scope

@@ -1,4 +1,5 @@
-import { Array as Arr, Option, Result, String as Str } from "effect"
+import { Array as Arr, Effect, Option, Result, String as Str } from "effect"
+import { liveMillis, liveSleepUntil } from "#live.ts"
 import { stalledShare } from "#runner/limits.ts"
 
 /**
@@ -89,56 +90,88 @@ const descendantsSince = (pid: string, since: number): number =>
 		})
 	)
 
-/**
- * Where a case's work begins: the live clock, this process's own CPU (every thread's) and its waited-for children's, in
- * milliseconds, and when this process started, in milliseconds since the machine booted (none without /proc, where the
- * children's CPU is none too).
- */
-export type Began = Readonly<{ wall: number; cpu: number; booted: Option.Option<number> }>
-
 /** This process's own CPU so far, every thread's, in milliseconds: process.cpuUsage, a system call and no file. */
 export const ownCpu = (): number => {
 	const own = process.cpuUsage()
 	return (own.user + own.system) / microsPerMilli
 }
 
+/** The CPU (ms) of the children a process has waited for. */
+const reapedOf = (field: (field: number) => number): number =>
+	field(PROC.childrenUser) + field(PROC.childrenSystem)
+
 /**
- * Where a case's work began, at `wall` on the live clock with `own` CPU: read when its guard first needs it, once the
- * case has yielded, so a case that runs to its end synchronously reads no file. One read of /proc/self/stat; no
- * descendant is read, since none the case started is counted until its first reading (treeCpuAt), all of whose CPU is
- * the case's.
+ * A moment on the live clock as milliseconds since the machine booted, the clock a process's start is stated in: the two
+ * meet at this process's start (performance.timeOrigin), to a tick. None without /proc.
  */
-export const beganAt = (wall: number, own: number): Began => {
+const sinceBootAt = (
+	self: Option.Option<(field: number) => number>,
+	wall: number
+): Option.Option<number> =>
+	Option.map(self, (field) => field(PROC.started) + (wall - performance.timeOrigin))
+
+/**
+ * A process tree's work as a guard reads it: where it began, and the CPU (ms) it has spent by now, on the same scale. Its
+ * live descendants count only when started since it began; a descendant started earlier (a helper a need left running)
+ * is no part of this work.
+ */
+export type TreeWork = Readonly<{ began: Reading; cpu: () => number }>
+
+/**
+ * This process's work, begun at `wall` on the live clock with `own` CPU (ownCpu, read before the work started): its own
+ * CPU, its waited-for children's, and its live descendants'. Read when a guard first needs it, once the work has
+ * yielded, so work that runs to its end synchronously reads no file; it reads /proc/self/stat once, and no descendant,
+ * since none the work started is counted until its first reading, all of whose CPU is the work's. Without /proc its own
+ * CPU counts alone.
+ */
+export const ownWork = (wall: number, own: number): TreeWork => {
 	const self = statOf("self")
+	const since = sinceBootAt(self, wall)
 	return {
-		wall,
-		cpu:
-			own +
-			Option.match(self, {
+		began: { wall, cpu: own + Option.match(self, { onNone: () => 0, onSome: reapedOf }) },
+		cpu: () =>
+			ownCpu() +
+			Option.match(statOf("self"), {
 				onNone: () => 0,
-				onSome: (field) => field(PROC.childrenUser) + field(PROC.childrenSystem)
-			}),
-		booted: Option.map(self, (field) => field(PROC.started))
+				onSome: (field) =>
+					reapedOf(field) +
+					Option.match(since, {
+						onNone: () => 0,
+						onSome: (at) => descendantsSince("self", at)
+					})
+			})
 	}
 }
 
 /**
- * The CPU (ms) this process's tree has spent, for a case begun at `began`: its own, its waited-for children's, and every
- * live descendant's started since the case began. The live clock and the boot clock meet at this process's start
- * (performance.timeOrigin), to a tick.
+ * Another process's work, begun at `wall` on the live clock (the pool's watch of a worker): its own CPU, its waited-for
+ * children's, and its live descendants' started since. A process this one cannot read (none started, gone, or no /proc)
+ * reads as spending nothing, so its work never moves and a guard ends it after one deadline of wall time, as the live
+ * clock did.
  */
-export const treeCpuAt = (began: Began): number =>
-	ownCpu() +
-	Option.match(statOf("self"), {
-		onNone: () => 0,
-		onSome: (field) =>
-			field(PROC.childrenUser) +
-			field(PROC.childrenSystem) +
-			Option.match(began.booted, {
+export const processWork = (pid: Option.Option<number>, wall: number): TreeWork => {
+	const since = sinceBootAt(statOf("self"), wall)
+	const own = () =>
+		Option.match(
+			Option.flatMap(pid, (id) => statOf(String(id))),
+			{
 				onNone: () => 0,
-				onSome: (booted) => descendantsSince("self", booted + (began.wall - performance.timeOrigin))
-			})
-	})
+				onSome: allOf
+			}
+		)
+	return {
+		began: { wall, cpu: own() },
+		cpu: () =>
+			own() +
+			Option.match(
+				Option.zipWith(pid, since, (id, at) => descendantsSince(String(id), at)),
+				{
+					onNone: () => 0,
+					onSome: (descendants) => descendants
+				}
+			)
+	}
+}
 
 /** A reading of a case's work: the live clock, and the CPU its process tree has spent, both in milliseconds. */
 export type Reading = Readonly<{ wall: number; cpu: number }>
@@ -149,7 +182,7 @@ export type Reading = Readonly<{ wall: number; cpu: number }>
  * spent, its tree's CPU since it began at its deadline; or stalled, its tree's CPU moved by less than it takes to show
  * progress over a whole deadline of wall time.
  */
-export type Standing =
+type Standing =
 	| Readonly<{ kind: "working"; window: Reading; readAgainAt: number }>
 	| Readonly<{ kind: "spent" }>
 	| Readonly<{ kind: "stalled" }>
@@ -166,7 +199,7 @@ const progressOver = (deadline: number): number => Math.max(deadline * stalledSh
  * milliseconds. A working case is read again at its window's end, or sooner when its remaining CPU, spent at one CPU,
  * would reach the deadline first.
  */
-export const standingOf = (
+const standingOf = (
 	input: Readonly<{ began: Reading; window: Reading; now: Reading; deadline: number }>
 ): Standing => {
 	const { began, window, now, deadline } = input
@@ -184,4 +217,25 @@ export const standingOf = (
 		window: next,
 		readAgainAt: Math.min(next.wall + deadline, now.wall + (deadline - spent))
 	}
+}
+
+/**
+ * Ends once `work` has spent `deadline` milliseconds of CPU or its CPU has not moved over a whole `deadline` of wall time
+ * (standingOf). It reads the work only when its live-clock timer fires, at a window's end or when the CPU left could run
+ * out sooner, so work that ends in time pays one timer and no reading.
+ */
+export const overrun = (work: TreeWork, deadline: number): Effect.Effect<void> => {
+	const watch = (window: Reading, readAt: number): Effect.Effect<void> =>
+		Effect.flatMap(Effect.andThen(liveSleepUntil(readAt), liveMillis), (wall) => {
+			const standing = standingOf({
+				began: work.began,
+				window,
+				now: { wall, cpu: work.cpu() },
+				deadline
+			})
+			return standing.kind === "working"
+				? watch(standing.window, standing.readAgainAt)
+				: Effect.void
+		})
+	return watch(work.began, work.began.wall + deadline)
 }

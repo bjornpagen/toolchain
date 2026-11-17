@@ -20,15 +20,7 @@ import { countWithin } from "#enumerate.ts"
 import { failureText } from "#failure.ts"
 import { keyOf, type Pending, pendingAt, type Reached } from "#features.ts"
 import type { Gen } from "#gen.ts"
-import {
-	abandon,
-	awaitWithinGrace,
-	liveMillis,
-	liveNanos,
-	liveSleep,
-	liveSleepUntil,
-	watchedCase
-} from "#live.ts"
+import { abandon, awaitWithinGrace, liveMillis, liveNanos, liveSleep, watchedCase } from "#live.ts"
 import type { Need, NeedContext, Needs, NeedValue, Resources } from "#property.ts"
 import { fnv1a32 } from "#random.ts"
 import { type Drawn, replayTokenOf } from "#replay.ts"
@@ -53,7 +45,7 @@ import {
 } from "#runner/protocol.ts"
 import { seriesRun } from "#runner/series.ts"
 import { NeedFailed } from "#runner/services.ts"
-import { type Began, beganAt, ownCpu, type Reading, standingOf, treeCpuAt } from "#runner/work.ts"
+import { overrun, ownCpu, ownWork } from "#runner/work.ts"
 import { type Observed, type Recording, recording, simplestChooser } from "#source.ts"
 
 /**
@@ -547,23 +539,6 @@ export const stoppedOf = (): Context.Service.Shape<typeof Stopped> => {
 }
 
 /**
- * Ends `{ kind: "hung" }` once the work begun at `began` has spent `deadline` milliseconds of its process tree's CPU, or
- * its CPU has not moved over a whole `deadline` of wall time (runner/work.ts standingOf). It reads the tree only when its
- * live-clock timer fires, at a window's end or when the CPU left could run out sooner, so a case that ends in time pays
- * one timer and no reading of its tree.
- */
-const overrun = (began: Began, deadline: number): Effect.Effect<Settled> => {
-	const watch = (window: Reading, readAt: number): Effect.Effect<Settled> =>
-		Effect.flatMap(Effect.andThen(liveSleepUntil(readAt), liveMillis), (wall) => {
-			const standing = standingOf({ began, window, now: { wall, cpu: treeCpuAt(began) }, deadline })
-			return standing.kind === "working"
-				? watch(standing.window, standing.readAgainAt)
-				: Effect.succeed<Settled>({ kind: "hung" })
-		})
-	return watch(began, began.wall + deadline)
-}
-
-/**
  * Runs `effect` in a fiber of its own, raced against `deadline` milliseconds of its work (overrun): an effect that runs
  * to its end synchronously arms no timer and reads no file. A hung effect is interrupted, and its cleanup awaited for
  * HUNG_CLEANUP_GRACE (live.ts) before the case is reported; a cleanup that runs longer is held among the process's
@@ -588,7 +563,7 @@ const guarded = <E, R>(
 			const ended = yield* restore(
 				Effect.raceFirst(
 					Effect.map(Fiber.await(running), settledOf),
-					overrun(beganAt(wall, own), deadline)
+					Effect.as(overrun(ownWork(wall, own), deadline), { kind: "hung" } satisfies Settled)
 				)
 			).pipe(
 				Effect.onInterrupt(() =>

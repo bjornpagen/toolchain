@@ -4,7 +4,7 @@ import { liveMillis, liveSleep } from "#live.ts"
 import { type Property, property } from "#property.ts"
 import { type Limits, runnerLimits } from "#runner/limits.ts"
 import { fullRun, type InnerRun } from "#runner/search.fixtures.ts"
-import { beganAt, ownCpu, treeCpuAt } from "#runner/work.ts"
+import { ownCpu, ownWork } from "#runner/work.ts"
 
 /**
  * What the meta-tests of a case's deadline as a budget of its work (runner/work.ts, case.ts guarded) share: inner
@@ -94,7 +94,7 @@ export type ChildSeen = Readonly<{ childCpu: number; treeCpu: number }>
 export const childSeen = (burnMillis: number): Effect.Effect<ChildSeen> =>
 	Effect.flatMap(liveMillis, (wall) =>
 		Effect.callback<ChildSeen>((resume) => {
-			const began = beganAt(wall, ownCpu())
+			const work = ownWork(wall, ownCpu())
 			const child = process
 				.getBuiltinModule("node:child_process")
 				.spawn(process.execPath, ["-e", childProgram(burnMillis)], {
@@ -106,7 +106,7 @@ export const childSeen = (burnMillis: number): Effect.Effect<ChildSeen> =>
 				if (!Str.includes("\n")(said)) {
 					return
 				}
-				const treeCpu = treeCpuAt(began) - began.cpu
+				const treeCpu = work.cpu() - work.began.cpu
 				child.stdin.end()
 				resume(Effect.succeed({ childCpu: Number(Str.trim(said)), treeCpu }))
 			})
