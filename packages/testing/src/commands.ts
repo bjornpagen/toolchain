@@ -1,5 +1,5 @@
 import { Array as Arr, Effect, Formatter, Option, Schema, Struct } from "effect"
-import type { Gen, Size, Weight } from "#gen.ts"
+import type { Aimed, Gen, Size, Steered, Weight } from "#gen.ts"
 import type {
 	Case,
 	CheckContext,
@@ -525,17 +525,37 @@ declare const noCommand: unique symbol
  */
 export type NoCommands = Readonly<{ [noCommand]: never }>
 
-/** The command names of a stateful property's machine, of either kind (the other kind's are none). */
-type NamesOf<PP, PR> = CommandName<PP> | CommandName<PR>
+/**
+ * What a reactive case draws before its run, from its property's mix: the swarm its steps are drawn over, beside
+ * whatever else the property draws there for its real to read (an installation, the aims its steering left pending). A
+ * mix is a space, as an explored property's is, plain, aimed or steered, so it is the part of a reactive case that
+ * reads the case's steering: the steps are drawn as the run goes, and a real cannot see what is pending.
+ */
+export type ReactiveMix<K extends string> = Readonly<{ swarm: Swarm<K> }>
+
+/**
+ * The features a stateful property's situations name: its machine's step features, of either kind (the other kind's are
+ * none), and its real's own notes.
+ */
+export type StatefulFeature<PP, V extends string, PR, O extends string, F extends string> =
+	| StepFeature<PP, V>
+	| OutcomeFeature<PR, O>
+	| F
 
 /**
  * A stateful property's machine with the real system it runs on, by the kind of machine, its first argument:
- * - `planned`: a Machine, whose programs are drawn whole before they run, so a case is its program, printed and kept
- *   as the literal it is; its real (Real) checks the state the model's one verdict claims;
- * - `reactive`: a ReactiveMachine, whose steps are drawn as the run goes, so a case is its swarm and its steps are its
- *   draws, printed beside it; its real (ReactiveReal) answers observations, whose outcome the model's branches choose.
+ * - `planned`: a Machine, whose programs are drawn whole before they run, over a swarm drawn from `mix`
+ *   (`swarm(names)` for each case its own lopsided mix, `constant(fullSwarm(names))` every command at its weight), so
+ *   a case is its program, printed and kept as the literal it is; its real (Real) checks the state the model's one
+ *   verdict claims;
+ * - `reactive`: a ReactiveMachine, whose steps are drawn as the run goes, so a case is its mix (ReactiveMix) and its
+ *   steps are its draws, printed beside it. `mix` is a space of the case's mix, plain (`map(swarm(names), (swarm) =>
+ *   ({ swarm }))`), aimed or steered, as property.explore's space is and typed as it is, by the features it aims at: a
+ *   steered mix reads the required situations still pending, as an explored space does, and resolves what its steps
+ *   should aim at into the mix it draws. Its real (ReactiveReal) is handed that mix, so the state the model starts in
+ *   carries what the rules read of it, and answers observations, whose outcome the model's branches choose.
  * `real` builds the system on the case's resources, in its scope, and may note situations of its own and draw from the
- * case. The machine and its real are one value, so a machine is never run on the other kind's real.
+ * case. The machine, its mix and its real are one value, so a machine is never run on the other kind's mix or real.
  */
 export type StatefulMachine<
 	M,
@@ -544,6 +564,7 @@ export type StatefulMachine<
 	PR,
 	O extends string,
 	X,
+	W extends ReactiveMix<CommandName<PR>>,
 	N extends Needs,
 	F extends string,
 	E
@@ -551,6 +572,7 @@ export type StatefulMachine<
 	| Readonly<{
 			kind: "planned"
 			machine: Machine<M, PP, V>
+			mix: Gen<Swarm<NoInfer<CommandName<PP>>>>
 			real: (
 				resources: Resources<N>,
 				c: Case<F>
@@ -563,9 +585,12 @@ export type StatefulMachine<
 	| Readonly<{
 			kind: "reactive"
 			machine: ReactiveMachine<M, PR, O, X>
+			mix: Space<W> | Aimed<W, F> | Steered<W, F>
 			real: (
 				resources: Resources<N>,
 				c: Case<F>
+			) => (
+				mix: NoInfer<W>
 			) => Effect.Effect<
 				ReactiveReal<NoInfer<M>, NoInfer<PR>, NoInfer<O>, NoInfer<X>, E, CheckContext>,
 				E,
@@ -574,10 +599,9 @@ export type StatefulMachine<
 	  }>
 
 /**
- * What a stateful property states beside its machine: programs of `size` steps over a swarm drawn from `mix`
- * (`swarm(names)` for each case its own lopsided mix, `constant(fullSwarm(names))` every command at its weight), and
- * what every property states, its situations among its machine's step features (StepFeature, or OutcomeFeature) and
- * its real's own notes. A case prints in its structural form.
+ * What a stateful property states beside its machine: runs of `size` steps, and what every property states, its
+ * situations among its machine's step features (StepFeature, or OutcomeFeature) and its real's own notes. A case prints
+ * in its structural form.
  */
 export type StatefulSpec<
 	PP,
@@ -589,22 +613,19 @@ export type StatefulSpec<
 > = Omit<
 	ExploreStated<
 		never,
-		StepFeature<NoInfer<PP>, NoInfer<V>> | OutcomeFeature<NoInfer<PR>, NoInfer<O>> | F,
+		StatefulFeature<NoInfer<PP>, NoInfer<V>, NoInfer<PR>, NoInfer<O>, F>,
 		N,
 		never
 	>,
 	"check" | "show"
 > &
-	Readonly<{
-		size: Size
-		mix: Gen<Swarm<NamesOf<NoInfer<PP>, NoInfer<PR>>>>
-	}>
+	Readonly<{ size: Size }>
 
 /**
  * The exploration a stateful property is, handed to `explored` (CORE's constructor), whatever its case type: a planned
  * machine's programs as its space, and a check that runs the case's program (runProgram); or a reactive machine's
- * swarms as its space, and a check that runs its steps as they are drawn (runReactive). Either notes each step's
- * feature.
+ * mix as its space, steered as an explored space is, and a check that hands the case's mix to its real and runs its
+ * steps over the mix's swarm as they are drawn (runReactive). Either notes each step's feature.
  */
 export const statefulExplore = <
 	M,
@@ -613,28 +634,29 @@ export const statefulExplore = <
 	PR,
 	O extends string,
 	X,
+	W extends ReactiveMix<CommandName<PR>>,
 	N extends Needs,
 	F extends string,
 	E,
 	Built
 >(
-	machine: StatefulMachine<M, PP, V, PR, O, X, N, F, E>,
+	machine: StatefulMachine<M, PP, V, PR, O, X, W, N, F, E>,
 	spec: StatefulSpec<PP, V, PR, O, N, F>,
 	explored: <S>(
 		explore: ExploreSpec<
 			S,
-			StepFeature<PP, V> | OutcomeFeature<PR, O> | F,
+			StatefulFeature<PP, V, PR, O, F>,
 			N,
 			E | StepInapplicable | VerdictDiverged
 		>
 	) => Built
 ): Built => {
-	const { size, mix, ...stated } = spec
+	const { size, ...stated } = spec
 	switch (machine.kind) {
 		case "planned":
 			return explored({
 				...stated,
-				space: programs(machine.machine, size, mix),
+				space: programs(machine.machine, size, machine.mix),
 				check: (resources, c) => (steps) =>
 					Effect.gen(function* () {
 						const system = yield* machine.real(resources, c)
@@ -645,11 +667,11 @@ export const statefulExplore = <
 		case "reactive":
 			return explored({
 				...stated,
-				space: mix,
-				check: (resources, c) => (drawn) =>
+				space: machine.mix,
+				check: (resources, c) => (mix) =>
 					Effect.gen(function* () {
-						const system = yield* machine.real(resources, c)
-						const reacted = yield* runReactive(machine.machine, system, size, drawn, c.draw)
+						const system = yield* machine.real(resources, c)(mix)
+						const reacted = yield* runReactive(machine.machine, system, size, mix.swarm, c.draw)
 						c.noteAll(reacted.outcomes)
 					})
 			})

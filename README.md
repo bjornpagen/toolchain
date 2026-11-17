@@ -52,7 +52,8 @@ are properties is the properties pack, which that repository's conversion turns 
   which the preset applies to test modules only under the properties pack.
 - `devtools/no-case-list` is the core's: every repository states `"no-case-list": { searches, generators, mints,
   cases, dictionaries }`. A search says where it holds its space: `space: { argument: 0 }` (the constructors take it
-  first: `property.explore(space, spec)`, `exhaust`, `batched`, `interleave`; `stateful` takes a machine, no space) or
+  first: `property.explore(space, spec)`, `exhaust`, `batched`, `interleave`; `stateful` takes a machine, whose
+  reactive mix is typed a `Space`, which no case list is) or
   `space: { field: "draw" }` (the old `explore`'s spec field). Spread `CASE_LISTS` (`@bjornpagen/testing/oxlint`: the
   four constructors, the old `explore`/`exhaust`, `element`, `constant`, `int` (`"range"`), `map`, `span`, `aimed`,
   `finite`, the choices, and the `dictionary` mint), and `PROPERTY_SEARCHES(specifier)` for another specifier of the

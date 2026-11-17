@@ -5,9 +5,11 @@ import {
 	type Observation,
 	type OutcomeFeature,
 	type ReactiveMachine,
+	type ReactiveMix,
 	type ReactiveReal
 } from "#commands.ts"
-import { constant, type Gen, int } from "#gen.ts"
+import { constant, type Gen, int, map, type Space } from "#gen.ts"
+import { swarm } from "#swarm.ts"
 
 /** The messages a lossy channel's model holds in flight, oldest first. */
 export type InFlight = ReadonlyArray<number>
@@ -25,7 +27,12 @@ export type ChannelOutcome = "delivered" | "dropped" | "received" | "empty" | "s
 /** What a channel shows of a step: the message it received or saw, none for a send or an empty receive. */
 export type Shown = Option.Option<number>
 
-export const RULES: Arr.NonEmptyReadonlyArray<ChannelRule> = ["send", "receive", "peek"]
+const RULES: Arr.NonEmptyReadonlyArray<ChannelRule> = ["send", "receive", "peek"]
+
+/** The channel's mix: each case's own lopsided swarm of its rules, and nothing else, since nothing steers its steps. */
+export const channelMixes: Space<ReactiveMix<ChannelRule>> = map(swarm(RULES), (drawn) => ({
+	swarm: drawn
+}))
 
 /** Every step feature of the channel's model. */
 export const CHANNEL_FEATURES: Arr.NonEmptyReadonlyArray<

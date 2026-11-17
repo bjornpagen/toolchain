@@ -124,7 +124,8 @@ export const MODULE_RULES: DummyRuleMap = atError(MODULE)
 
 /**
  * The property constructors that take a space, as no-case-list reads them from a module: each holds it in its first
- * argument (`property.explore(space, spec)`). `property.stateful` takes a machine, no space.
+ * argument (`property.explore(space, spec)`). `property.stateful` takes a machine first, whose reactive mix is typed a
+ * Space, which no case list is (gen.ts CaseList), and whose planned mix draws only swarms.
  */
 export const PROPERTY_SEARCHES = (module: string) =>
 	Arr.map(

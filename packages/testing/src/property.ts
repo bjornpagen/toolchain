@@ -1,6 +1,12 @@
 import type { NodeServices } from "@effect/platform-node/NodeServices"
 import { Array as Arr, Brand, Effect, Formatter, Option, type Scope } from "effect"
-import type { NoCommands, StatefulMachine, StatefulSpec } from "#commands.ts"
+import type {
+	CommandName,
+	NoCommands,
+	ReactiveMix,
+	StatefulMachine,
+	StatefulSpec
+} from "#commands.ts"
 import { statefulExplore } from "#commands.ts"
 import type { Oracle } from "#explore.ts"
 import { keyOf, type Pending, pendingAt, type Reached } from "#features.ts"
@@ -491,7 +497,10 @@ export const property = {
 		space: Space<C> | Aimed<C, F | Interleaved>,
 		spec: InterleaveSpec<C, S, M, O, Q, A, W, N, F, E, J>
 	): Property => exploredAs("interleave")(interleaveExplore(space, spec)),
-	/** Programs of a machine's commands run against the real system and its model (commands.ts). */
+	/**
+	 * Programs of a machine's commands run against the real system and its model (commands.ts): drawn whole, or, for a
+	 * reactive machine, step by step over a mix that may read its case's steering as an explored space does.
+	 */
 	stateful: <
 		M,
 		N extends Needs,
@@ -501,9 +510,10 @@ export const property = {
 		V extends string = never,
 		PR = NoCommands,
 		O extends string = never,
-		X = never
+		X = never,
+		W extends ReactiveMix<CommandName<PR>> = ReactiveMix<CommandName<PR>>
 	>(
-		machine: StatefulMachine<M, PP, V, PR, O, X, N, F, E>,
+		machine: StatefulMachine<M, PP, V, PR, O, X, W, N, F, E>,
 		spec: StatefulSpec<PP, V, PR, O, N, F>
 	): Property => statefulExplore(machine, spec, exploredAs("stateful"))
 } as const

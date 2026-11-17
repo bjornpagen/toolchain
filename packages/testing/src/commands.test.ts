@@ -3,16 +3,29 @@
  * ring buffer built right or wrong (commands.fixtures.ts), against what they promise. Oracles are stated per property.
  */
 import { Array as Arr, Effect, Exit, Formatter, Option, Order, Schema, Struct } from "effect"
+import {
+	ACCOUNT,
+	ACCOUNT_FEATURES,
+	type AccountFeature,
+	type AccountMix,
+	accountBuilds,
+	accountMixes,
+	accountOf,
+	accountReal,
+	isRightAccount,
+	plainMixes,
+	rightAccount
+} from "#account.fixtures.ts"
 import { assertTrue, deepStrictEqual, strictEqual } from "#assert.ts"
 import { everyCase, everyValue, type Fraction, fraction, plus, shareOf } from "#chance.fixtures.ts"
 import {
 	CHANNEL,
 	CHANNEL_FEATURES,
 	channelBuilds,
+	channelMixes,
 	channelOf,
 	channelReal,
-	isRightChannel,
-	RULES
+	isRightChannel
 } from "#channel.fixtures.ts"
 import {
 	anyProgram,
@@ -49,10 +62,11 @@ import {
 	StepInapplicable,
 	stepFeature
 } from "#commands.ts"
-import { element, finite, int, subarray } from "#gen.ts"
+import { element, finite, int, type Space, type Steered, subarray } from "#gen.ts"
 import { property } from "#property.ts"
 import { fnv1a32 } from "#random.ts"
-import { inlineRun, searchInline } from "#runner/inline.ts"
+import { inlineRun, replayInline, searchInline } from "#runner/inline.ts"
+import { falsifiedOf, shownOf, unreachedOf } from "#runner/search.fixtures.ts"
 import { fullSwarm, swarm } from "#swarm.ts"
 
 /**
@@ -179,11 +193,11 @@ export const ringBufferMeetsQueue = property.stateful(
 	{
 		kind: "planned",
 		machine: QUEUE,
+		mix: swarm(COMMANDS),
 		real: () => Effect.sync(() => realOf(ringBuffer(rightly)))
 	},
 	{
 		size: { min: 0, max: 12 },
-		mix: swarm(COMMANDS),
 		needs: {},
 		situations: STEP_FEATURES,
 		oracle: {
@@ -287,11 +301,11 @@ export const shrinksToShortest = property.exhaust(finite(builds), {
 					{
 						kind: "planned",
 						machine: QUEUE,
+						mix: swarm(COMMANDS),
 						real: () => Effect.sync(() => realOf(ringBuffer(build)))
 					},
 					{
 						size: { min: 0, max: 12 },
-						mix: swarm(COMMANDS),
 						needs: {},
 						situations: [],
 						oracle: { kind: "specification", name: "a ring buffer built as the case says" },
@@ -379,7 +393,8 @@ export const channelMeetsModel = property.stateful(
 	{
 		kind: "reactive",
 		machine: CHANNEL,
-		real: (_resources, c) =>
+		mix: channelMixes,
+		real: (_resources, c) => () =>
 			Effect.sync(() =>
 				channelReal(
 					channelOf({ capacity: c.draw(int(1, 3)), reorders: false, leaksDropped: false })
@@ -388,7 +403,6 @@ export const channelMeetsModel = property.stateful(
 	},
 	{
 		size: { min: 0, max: 16 },
-		mix: swarm(RULES),
 		needs: {},
 		situations: CHANNEL_FEATURES,
 		oracle: {
@@ -438,11 +452,11 @@ export const wrongChannelsCaught = property.exhaust(finite(channelBuilds), {
 					{
 						kind: "reactive",
 						machine: CHANNEL,
-						real: () => Effect.sync(() => channelReal(channelOf(build)))
+						mix: channelMixes,
+						real: () => () => Effect.sync(() => channelReal(channelOf(build)))
 					},
 					{
 						size: { min: 0, max: 16 },
-						mix: swarm(RULES),
 						needs: {},
 						situations: [],
 						oracle: { kind: "specification", name: "a channel built as the case says" },
@@ -471,6 +485,118 @@ export const wrongChannelsCaught = property.exhaust(finite(channelBuilds), {
 			original: "\t\tyield* real.holds(taken.value)\n",
 			replacement: "",
 			why: "No step checks the system holds the state its outcome leads to, so a channel that keeps a dropped message where nothing serves it passes."
+		}
+	]
+})
+
+/**
+ * An account built right meets its model, whose withdrawal of exactly the balance empties it: property.stateful's
+ * reactive form over a steered mix (account.fixtures.ts accountMixes). A withdrawal drawn plainly names the balance
+ * about once in 2^32 draws, so an emptied withdrawal is reached only by a case whose turn aims at it while it is
+ * pending, the steering an explored space reads, which its mix resolves into withdrawals drawn at the balance.
+ */
+export const steeredMixReachesRare = property.stateful(
+	{
+		kind: "reactive",
+		machine: ACCOUNT,
+		mix: accountMixes,
+		real: () => (mix) => Effect.sync(() => accountReal(accountOf(rightAccount), mix))
+	},
+	{
+		size: { min: 0, max: 16 },
+		needs: {},
+		situations: ACCOUNT_FEATURES,
+		oracle: {
+			kind: "second-implementation",
+			name: "the account's model: a deposit adds, a withdrawal of no more than the balance is paid and empties it at exactly the balance, one of more is refused"
+		},
+		kept: [],
+		kills: [
+			{
+				file: "packages/testing/src/property.ts",
+				original: "\t\t\t\treturn space.under(steering)",
+				replacement: "\t\t\t\treturn space.under(Option.none())",
+				why: "A steered space is drawn as if nothing were pending (property.ts spaceUnderOf), so no reactive case's mix aims its withdrawals at the balance, no withdrawal empties the account, and the required emptied withdrawal is unreached."
+			},
+			{
+				file: "packages/testing/src/features.ts",
+				original: "\t\taimed: (situation) => Option.contains(aim, keyOf(situation))",
+				replacement: "\t\taimed: () => false",
+				why: "No pending situation is any case's aim (features.ts pendingAt), so no reactive case's mix aims its withdrawals at the balance and the required emptied withdrawal is unreached."
+			}
+		]
+	}
+)
+
+/**
+ * An account that refuses a withdrawal of exactly its balance (an overdraft check off by one) is falsified under the
+ * steered mix and its failing case replays from its token as it ran, steering and all; an account built right passes;
+ * and at the same seed a search over the plain mix (the steered mix as no steering draws it) misses the emptied
+ * withdrawal, so it falsifies neither: each build searched inline (runner/inline.ts) as property.stateful's reactive
+ * form, once under each mix.
+ */
+export const steeredMixCatchesExact = property.exhaust(finite(accountBuilds), {
+	box: "every account: paying a withdrawal of exactly its balance, or refusing it",
+	needs: {},
+	situations: [
+		"a right account passes",
+		"a wrong account is falsified and replays",
+		"the plain mix misses the emptied withdrawal at the same seed"
+	],
+	check: (_resources, c) => (build) =>
+		Effect.gen(function* () {
+			const searched = (mix: Space<AccountMix> | Steered<AccountMix, AccountFeature>) =>
+				property.stateful(
+					{
+						kind: "reactive",
+						machine: ACCOUNT,
+						mix,
+						real: () => (drawn) => Effect.sync(() => accountReal(accountOf(build), drawn))
+					},
+					{
+						size: { min: 0, max: 16 },
+						needs: {},
+						situations: ACCOUNT_FEATURES,
+						oracle: { kind: "specification", name: "an account built as the case says" },
+						kept: [],
+						kills: []
+					}
+				)
+			const id = `commands.test.ts#steeredMixCatchesExact/${Formatter.format(build)}`
+			const run = inlineRun(id, fnv1a32(id))
+			const plain = yield* searchInline(searched(plainMixes), run)
+			if (Option.exists(unreachedOf(plain), Arr.contains("withdraw emptied"))) {
+				c.note("the plain mix misses the emptied withdrawal at the same seed")
+			}
+			const verdict = yield* searchInline(searched(accountMixes), run)
+			if (isRightAccount(build)) {
+				strictEqual(verdict.kind, "explored")
+				c.note("a right account passes")
+				return
+			}
+			const falsified = yield* Option.match(falsifiedOf(verdict), {
+				onNone: () => Effect.die(`a wrong account was not falsified: ${Formatter.format(verdict)}`),
+				onSome: Effect.succeed
+			})
+			const replayed = yield* replayInline(searched(accountMixes), run, falsified.token)
+			deepStrictEqual(
+				shownOf(replayed),
+				Option.some({ phase: "replayed", printed: falsified.printed })
+			)
+			c.note("a wrong account is falsified and replays")
+		}),
+	oracle: {
+		kind: "specification",
+		name: "an account that refuses a withdrawal of exactly its balance is not the account its model allows, and a plain draw of 2^32 amounts almost never names the balance"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/commands.ts",
+			original: "\t\t\t\tspace: machine.mix,",
+			replacement:
+				'\t\t\t\tspace: typeof machine.mix === "function" ? machine.mix : machine.mix.kind === "steered" ? machine.mix.under(Option.none()) : machine.mix.space,',
+			why: "The reactive kind draws its mix as no steering draws it, so no case aims its withdrawals at the balance and the account refusing exactly its balance passes the steered search."
 		}
 	]
 })
