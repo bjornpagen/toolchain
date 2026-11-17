@@ -165,7 +165,7 @@ const stageGen: Gen<DrawnStage> = (source) => {
 }
 
 /** A trial: one or two stages. */
-export const trialGen: Gen<Arr.NonEmptyReadonlyArray<DrawnStage>> = (source) =>
+const trialGen: Gen<Arr.NonEmptyReadonlyArray<DrawnStage>> = (source) =>
 	Arr.prepend(source.draw(array(stageGen, { min: 0, max: 1 })), source.draw(stageGen))
 
 /** A case: a pool one to eight wide, up to twelve trials, and either way of sharing the pool. */

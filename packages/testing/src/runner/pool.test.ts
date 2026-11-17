@@ -203,6 +203,7 @@ export const slowWorkerKept = property.exhaust(finite(boolean), {
 							env: {},
 							places: placesOf(1),
 							execArgv: process.execArgv,
+							served: Option.none(),
 							guide: "notes",
 							open: runnerLimits.open
 						})

@@ -64,7 +64,7 @@ export const scheduledTrials = property.explore(scheduleGen, {
 							Ref.update(seen, (x) => ({ ...x, open: x.open + 1 })),
 							{
 								root,
-								execArgv: [],
+								served: Option.none(),
 								env: { STAGE: keyOf(t, s) }
 							}
 						),
