@@ -210,93 +210,102 @@ const collected = (
  * Runs a package's properties on the pool, every property's search at once, its cases spread over every worker:
  * loads the package's runner config and the test modules the request names, forks the pool (one worker a core, under
  * this process's flags, the hardened flags and the config's conditions among them), and gives each property's verdict.
+ * The pool is closed before it returns, every worker ended and what its needs held released (a lease's permit, a
+ * seat's clone), so what the caller runs next (the kills' trials of `run` and `affected`, on workers of their own)
+ * finds them free: a pool left open past its properties held every lease its workers had drawn while the kills' trials
+ * waited for one (GZ-NETWORK: a run of 32 network modules hung, 64 idle workers holding their leases and five trials
+ * of one worker each waiting on the lease gate).
  */
 export const runPackage = (
 	request: RunRequest
-): Effect.Effect<RunOutcome, LoadFailed | PoolFailed, Scope.Scope | NodeServices> =>
-	Effect.gen(function* () {
-		const began = yield* liveMillis
-		const { config, discovered, stackOf } = yield* loadPackage(request.root, request.selected)
-		yield* collected(
-			config,
-			request.root,
-			Arr.flatMap(discovered, (found) => templatesOf(found.property.needs))
-		)
-		const runs = Arr.map(discovered, (found) => ({ found, stack: stackOf(found) }))
-		const kinds = new Map(
-			Arr.map(runs, ({ found, stack }) => {
-				const kind = workersOf(stack, found)
-				return [labelOfWorkers(kind), kind] as const
-			})
-		)
-		const pools = new Map<string, Pool>()
-		for (const [label, [stack, guide]] of kinds) {
-			const pool = yield* poolOf({
-				entry: WORKER_ENTRY,
-				root: request.root,
-				cwd: request.root,
-				env: {},
-				workers: testWorkers,
-				execArgv: flagsOf(stack),
-				guide,
-				open: runnerLimits.open
-			})
-			pools.set(label, pool)
-		}
-		const properties = yield* Effect.forEach(
-			runs,
-			({ found, stack }) =>
-				Effect.gen(function* () {
-					const start = yield* liveMillis
-					const label = labelOf(found.id, stack)
-					const pool = yield* Effect.mapError(
-						Effect.fromOption(
-							Option.fromUndefinedOr(pools.get(labelOfWorkers(workersOf(stack, found))))
-						),
-						() => PoolFailed.make({ message: `no pool was forked for ${label}` })
-					)
-					const evaluator = pool.evaluator
-					const verdict = yield* found.property.search({
-						id: label,
-						seed: request.seed,
-						limits: runnerLimits,
-						evaluator,
-						reach: request.reach
-					})
-					yield* pool.retire(label)
-					const end = yield* liveMillis
-					return {
-						id: found.id,
-						stack,
-						label,
-						module: found.module,
-						kind: found.property.kind,
-						oracle: found.property.oracle,
-						kills: found.property.kills,
-						verdict,
-						millis: end - start
-					}
-				}),
-			{ concurrency: "unbounded" }
-		)
-		const counted = yield* Effect.forEach(Arr.fromIterable(pools.values()), (pool) => pool.cases)
-		const held = yield* Effect.forEach(Arr.fromIterable(pools.values()), (pool) => pool.held)
-		const usages = yield* Effect.forEach(Arr.fromIterable(pools.values()), (pool) => pool.usage)
-		const parent = yield* Effect.sync(() => process.cpuUsage())
-		const ended = yield* liveMillis
-		return {
-			properties,
-			millis: ended - began,
-			workers: Arr.flatten(counted),
-			held: Arr.flatten(held),
-			usage: {
-				parent: (parent.user + parent.system) / 1000,
-				properties: Arr.flatMap(usages, (usage) => usage.properties),
-				workers: Arr.flatMap(usages, (usage) => usage.workers),
-				children: Arr.every(usages, (usage) => usage.children === "stated") ? "stated" : "unstated"
+): Effect.Effect<RunOutcome, LoadFailed | PoolFailed, NodeServices> =>
+	Effect.scoped(
+		Effect.gen(function* () {
+			const began = yield* liveMillis
+			const { config, discovered, stackOf } = yield* loadPackage(request.root, request.selected)
+			yield* collected(
+				config,
+				request.root,
+				Arr.flatMap(discovered, (found) => templatesOf(found.property.needs))
+			)
+			const runs = Arr.map(discovered, (found) => ({ found, stack: stackOf(found) }))
+			const kinds = new Map(
+				Arr.map(runs, ({ found, stack }) => {
+					const kind = workersOf(stack, found)
+					return [labelOfWorkers(kind), kind] as const
+				})
+			)
+			const pools = new Map<string, Pool>()
+			for (const [label, [stack, guide]] of kinds) {
+				const pool = yield* poolOf({
+					entry: WORKER_ENTRY,
+					root: request.root,
+					cwd: request.root,
+					env: {},
+					workers: testWorkers,
+					execArgv: flagsOf(stack),
+					guide,
+					open: runnerLimits.open
+				})
+				pools.set(label, pool)
 			}
-		}
-	})
+			const properties = yield* Effect.forEach(
+				runs,
+				({ found, stack }) =>
+					Effect.gen(function* () {
+						const start = yield* liveMillis
+						const label = labelOf(found.id, stack)
+						const pool = yield* Effect.mapError(
+							Effect.fromOption(
+								Option.fromUndefinedOr(pools.get(labelOfWorkers(workersOf(stack, found))))
+							),
+							() => PoolFailed.make({ message: `no pool was forked for ${label}` })
+						)
+						const evaluator = pool.evaluator
+						const verdict = yield* found.property.search({
+							id: label,
+							seed: request.seed,
+							limits: runnerLimits,
+							evaluator,
+							reach: request.reach
+						})
+						yield* pool.retire(label)
+						const end = yield* liveMillis
+						return {
+							id: found.id,
+							stack,
+							label,
+							module: found.module,
+							kind: found.property.kind,
+							oracle: found.property.oracle,
+							kills: found.property.kills,
+							verdict,
+							millis: end - start
+						}
+					}),
+				{ concurrency: "unbounded" }
+			)
+			const counted = yield* Effect.forEach(Arr.fromIterable(pools.values()), (pool) => pool.cases)
+			const held = yield* Effect.forEach(Arr.fromIterable(pools.values()), (pool) => pool.held)
+			const usages = yield* Effect.forEach(Arr.fromIterable(pools.values()), (pool) => pool.usage)
+			const parent = yield* Effect.sync(() => process.cpuUsage())
+			const ended = yield* liveMillis
+			return {
+				properties,
+				millis: ended - began,
+				workers: Arr.flatten(counted),
+				held: Arr.flatten(held),
+				usage: {
+					parent: (parent.user + parent.system) / 1000,
+					properties: Arr.flatMap(usages, (usage) => usage.properties),
+					workers: Arr.flatMap(usages, (usage) => usage.workers),
+					children: Arr.every(usages, (usage) => usage.children === "stated")
+						? "stated"
+						: "unstated"
+				}
+			}
+		})
+	)
 
 /** Replays one token on a pool of one worker: the case it names, as it ran, under the run's flags and services. */
 export const replayToken = (

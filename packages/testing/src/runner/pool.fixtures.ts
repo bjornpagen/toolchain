@@ -300,3 +300,59 @@ export const dyingProperty = (thrown: boolean): string =>
 	thrown
 		? "src/runner/pool.fixtures.ts#throwsOpening"
 		: "src/runner/pool.fixtures.ts#diesOpeningNeed"
+
+/** The prefix of the file a planted runner config's services write in their package root as they are released. */
+export const RELEASED = "released-"
+
+/**
+ * Writes into `directory` a package a run can load (a runner config and one test module) and gives the directory: its
+ * runner config's services, which a worker builds the first time a need of its opens, write a file named RELEASED and
+ * the worker's process id into the root when the worker's scope closes, as the lease a repository's services draw is
+ * released only when its worker ends; its one property needs a need, so every worker that runs a case builds them.
+ * Each import is the file URL this module resolves, as unreadyRoot's are.
+ */
+export const releasingRoot = (directory: string) =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		yield* fs.writeFileString(
+			`${directory}/test.config.ts`,
+			Arr.join(
+				[
+					`import { Effect, Layer } from "${import.meta.resolve("effect")}"`,
+					`import { defineRunner } from "${import.meta.resolve("#runner/config.ts")}"`,
+					'const { writeFileSync } = process.getBuiltinModule("node:fs")',
+					"export default defineRunner({",
+					'\tinclude: ["held.test.ts"],',
+					"\tsmallStack: [],",
+					"\tconditions: [],",
+					`\tlayer: Layer.effectDiscard(Effect.addFinalizer(() => Effect.sync(() => writeFileSync(\`\${import.meta.dirname}/${RELEASED}\${process.pid}\`, "")))),`,
+					"\tfamilies: []",
+					"})",
+					""
+				],
+				"\n"
+			)
+		)
+		yield* fs.writeFileString(
+			`${directory}/held.test.ts`,
+			Arr.join(
+				[
+					`import { Effect } from "${import.meta.resolve("effect")}"`,
+					`import { finite, int } from "${import.meta.resolve("#gen.ts")}"`,
+					`import { property } from "${import.meta.resolve("#property.ts")}"`,
+					"export const holds = property.exhaust(finite(int(0, 1)), {",
+					'\tbox: "two values",',
+					'\tneeds: { held: { key: "held.test.ts held", open: Effect.succeed(Effect.void) } },',
+					"\tsituations: [],",
+					"\tcheck: () => () => Effect.void,",
+					'\toracle: { kind: "specification", name: "a property planted to build its worker\'s services" },',
+					"\tkept: [],",
+					"\tkills: []",
+					"})",
+					""
+				],
+				"\n"
+			)
+		)
+		return directory
+	})

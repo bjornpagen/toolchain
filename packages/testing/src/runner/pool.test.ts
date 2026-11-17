@@ -25,6 +25,8 @@ import {
 	countsEvery,
 	CHILD_FILE,
 	countedValues,
+	RELEASED,
+	releasingRoot,
 	DIED_OPENING,
 	dyingProperty,
 	ended,
@@ -37,7 +39,7 @@ import {
 	unreadyRoot
 } from "#runner/pool.fixtures.ts"
 import { poolOf } from "#runner/pool.ts"
-import { WORKER_ENTRY } from "#runner/run.ts"
+import { runPackage, WORKER_ENTRY } from "#runner/run.ts"
 
 export const workersLeaveNoChild = property.exhaust(finite(leavings), {
 	box: "one to three children, their worker ended or left running",
@@ -347,6 +349,49 @@ export const openDiesUnopened = property.exhaust(finite(boolean), {
 			original: "\t\t\t\t\t\t\t(cause) => !Cause.hasInterruptsOnly(cause),",
 			replacement: "\t\t\t\t\t\t\t() => false,",
 			why: "A need's open that dies ends its worker, as before: the worker's main effect fails, it says so to the parent and exits 0, and its unit is lost with nothing written (GZ-NETWORK: admission.test.ts's property lost its worker readying, \"ended (exit 0)\"); this property fails."
+		}
+	]
+})
+
+export const closedOnReturn = property.exhaust(finite(boolean), {
+	box: "a run of the planted package, twice",
+	needs: { directory: Scratch.dir },
+	situations: [],
+	check:
+		({ directory }) =>
+		() =>
+			Effect.gen(function* () {
+				const fs = yield* FileSystem.FileSystem
+				const scratch = yield* directory
+				const root = yield* releasingRoot(scratch)
+				const released = yield* Effect.scoped(
+					Effect.gen(function* () {
+						const outcome = yield* runPackage({ root, seed: 1, reach: "full", selected: [] })
+						const files = yield* fs.readDirectory(root)
+						return {
+							failed: Arr.filter(outcome.properties, (ran) => ran.verdict.kind === "failed").length,
+							released: Arr.filter(files, (file) => Str.startsWith(RELEASED)(file)).length
+						}
+					})
+				)
+				deepStrictEqual(
+					{ failed: released.failed, released: released.released > 0 },
+					{ failed: 0, released: true }
+				)
+			}),
+	oracle: {
+		kind: "specification",
+		name: "a run's pool is closed when runPackage returns: every worker has ended and released what its services held, before the caller goes on"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/runner/run.ts",
+			original:
+				"\tEffect.scoped(\n\t\tEffect.gen(function* () {\n\t\t\tconst began = yield* liveMillis",
+			replacement:
+				"\t(<A>(effect: A) => effect)(\n\t\tEffect.gen(function* () {\n\t\t\tconst began = yield* liveMillis",
+			why: "A run's pool stays open in its caller's scope past its properties, as before: its workers hold what their services drew (a lease's permit) while the caller runs the kills' trials, which wait for it (GZ-NETWORK: 32 network modules hung, 64 idle workers holding their leases and five trials waiting on the lease gate); this property fails."
 		}
 	]
 })
