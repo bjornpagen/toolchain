@@ -28,6 +28,7 @@ export default defineRunner({
 		"src/fuzz.test.ts",
 		"src/sense.test.ts",
 		"src/blocking.test.ts",
+		"src/runner/work.test.ts",
 		"src/runner/search.test.ts",
 		"src/runner/case.test.ts",
 		"src/runner/pool.test.ts",

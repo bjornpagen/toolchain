@@ -76,9 +76,10 @@ const steeredCases = 200
 const steeringWindow = 16
 
 /**
- * How long one case may run before it is hung (runner/limits.ts): the runner-wide case deadline. The worker's guard
- * stops a case that yields past it, its watchdog ends a worker whose case holds the event loop past it, and the parent
- * kills a worker silent past it and its grace.
+ * How much work one case may do before it is hung (runner/limits.ts): the runner-wide case deadline, a budget of the
+ * case's own work (runner/work.ts). The worker's guard stops a case whose process tree has spent it in CPU, or whose
+ * CPU has not moved over a whole deadline of wall time; its watchdog ends a worker whose case holds the event loop past
+ * it; and the parent kills a worker silent past it and its grace.
  *
  * @limitKind provisional
  * @owner the testing library's runner (runner/case.ts, runner/pool.ts)
@@ -172,11 +173,42 @@ const STEERED_CASES = steeredCases
 const STEERING_WINDOW = steeringWindow
 
 /**
- * How long one case may run before it is hung: the runner-wide case deadline, which replaces every suite's caseHang.
- * The worker's guard stops a case that yields past it; its watchdog ends a worker whose case holds the event loop past
- * it; the parent kills a worker silent past it and its grace.
+ * How much work one case may do before it is hung: the runner-wide case deadline, which replaces every suite's
+ * caseHang, as CPU its process tree may spend and as the wall time over which that CPU must move (runner/work.ts).
  */
 const CASE_DEADLINE_MILLIS = caseDeadlineMillis
+
+/**
+ * The share of one CPU a case's process tree must spend over a window of its deadline's wall time for its work to count
+ * as moving (runner/work.ts progressOver): a tree that spends less over a whole deadline is stalled, blocked on
+ * something that will not come, and its case is hung. A process that waits spends almost none, a case the machine
+ * slows still spends some, and the share sits between them.
+ *
+ * @limitKind measured
+ * @owner the testing library's runner (runner/work.ts, runner/case.ts guarded)
+ * @unit CPU milliseconds per wall millisecond
+ * @scope every window of every case's deadline, on every worker
+ * @evidence ~/.cache/grizzle-release/CHECK-ROOT/scratch/idle.mjs (a Node process shaped like a worker: an IPC-free
+ *   main thread with a pending timer and a worker thread parked on Atomics.waitAsync, as the watchdog's is) and
+ *   ~/.cache/grizzle-release/CHECK-ROOT/out/flake/{solo,full-1,full-2,full-3,full-4}.tsv (every case of the
+ *   toolchain's gate.test.ts#filledSubmodule, its wall and its own CPU with its waited-for children's, alone and under
+ *   the toolchain's whole suite)
+ * @observed 2026-11-17 05:15 UTC (idle.mjs); 2026-11-17 04:3x to 04:5x UTC (the gate cases)
+ * @environment cassowary, Ubuntu 26.04 (Linux 7.0.0-1016-aws) on an AWS Graviton3 (arm64) instance with 64 logical
+ *   CPUs and 247 GiB, Node 26.13.1; load average 220 to 880, 80 GB of swap in use during the suite runs
+ * @workload idle.mjs: 60 s of nothing, its CPU read every 10 s. The gate cases: 32 cases alone, then four runs of the
+ *   devtools package's whole suite beside the machine's other lanes
+ * @result idle: 0.3 to 1.2 ms of CPU per 10 s after start, 0.003 % to 0.012 % of one CPU. The gate cases: the slowest,
+ *   92.1 s of wall, spent 0.76 s and more of CPU, 0.83 % of one CPU; none spent less than 0.76 s in any case
+ * @decision a thousandth of one CPU, 0.1 %: eight times the idle process's most and eight times under the slowest
+ *   working case's least. At the runner's 60 s deadline a case must spend 60 ms in a minute to be moving
+ * @revalidate a worker that does more while it waits (a heartbeat, a poll), which raises the idle side; a suite whose
+ *   working cases spend less of a CPU than 0.8 % under load; another machine
+ */
+const stalledShareOfCpu = 0.001
+
+/** The share of one CPU a case's tree must spend over a deadline's wall time to be moving: stalledShareOfCpu. */
+export const stalledShare = stalledShareOfCpu
 
 /**
  * How long a property's needs may take to open on a process that has not opened them, before its first case there and
