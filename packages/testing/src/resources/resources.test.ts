@@ -1,7 +1,8 @@
 /**
  * The per-case resources (resources/): a fresh clone holds its template's rows and its case's alone; a template is
  * built once however many open it at once; a template whose module's closure changed is a new one and the old is
- * collected, with the clones of a worker that ended; a pool never hands one clone twice; a seat comes back to its
+ * collected, with the clones of a worker that ended; a pool never hands one clone twice, and clones only as its cases
+ * ask, one ahead of its first case where every slot it may have made one at its open; a seat comes back to its
  * template after every case or is replaced, failing the case that left something; a transaction case is rolled back
  * and one that commits fails; a scratch directory is the case's own and gone after it. Run against the PostgreSQL
  * libpq's environment names (resources.fixtures.ts). Oracle: the specification, stated in each check.
@@ -20,6 +21,7 @@ import {
 } from "effect"
 import { assertTrue, deepStrictEqual, strictEqual } from "#assert.ts"
 import { array, boolean, finite, int } from "#gen.ts"
+import { liveSleep } from "#live.ts"
 import { property } from "#property.ts"
 import { PgCluster, run as runIn, single } from "#resources/cluster.ts"
 import { collect } from "#resources/collect.ts"
@@ -42,6 +44,7 @@ import {
 	tokenTemplate,
 	unpopulatedViewTemplate
 } from "#resources/resources.fixtures.ts"
+import type { DatabaseTemplate } from "#resources/template.ts"
 import { ModuleClosure, WorkerIndex } from "#runner/services.ts"
 
 export const freshIsolation = property.explore(array(int(-5, 5), { min: 0, max: 6 }), {
@@ -322,6 +325,63 @@ export const pooledOnce = property.explore(array(boolean, { min: 1, max: 12 }), 
 	oracle: { kind: "specification", name: "a pool hands each clone to one case, never to two" },
 	kept: [],
 	kills: []
+})
+
+export const clonedAsAsked = property.explore(int(0, 50), {
+	needs: { services },
+	situations: [],
+	check:
+		({ services: context }) =>
+		(holdMillis) =>
+			Effect.gen(function* () {
+				const ctx = yield* context
+				const started = yield* Ref.make(0)
+				const counted: DatabaseTemplate = {
+					kind: marksTemplate.kind,
+					key: marksTemplate.key,
+					declaredIn: marksTemplate.declaredIn,
+					name: marksTemplate.name,
+					content: marksTemplate.content,
+					from: marksTemplate.from,
+					build: marksTemplate.build,
+					open: Effect.map(marksTemplate.open, (opened) => ({
+						clone: Effect.andThen(
+							Ref.update(started, (clones) => clones + 1),
+							opened.clone
+						)
+					}))
+				}
+				const startedInCase = yield* Effect.provideContext(
+					Effect.scoped(
+						Effect.gen(function* () {
+							const take = yield* Database.fresh(counted).open
+							return yield* Effect.scoped(
+								Effect.gen(function* () {
+									yield* take
+									yield* liveSleep(`${holdMillis} millis`)
+									return yield* Ref.get(started)
+								})
+							)
+						})
+					),
+					ctx
+				)
+				assertTrue(startedInCase <= 2)
+			}),
+	oracle: {
+		kind: "specification",
+		name: "a pool clones as its cases ask: by its first case's end it has started that case's clone and at most one more"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/resources/database.ts",
+			original: "\t\t\tyield* grown\n\t\t\treturn { ready, grown }",
+			replacement:
+				"\t\t\tyield* grown\n\t\t\tyield* grown\n\t\t\tyield* grown\n\t\t\tyield* grown\n\t\t\treturn { ready, grown }",
+			why: "A pool opens every slot it may have with its need, as before, each making a clone at once and again after each case it serves, for cases that may never come (SS-CONV: four standby clones at 19.2 ms of PostgreSQL's CPU each for a worker of a few batches); this property fails."
+		}
+	]
 })
 
 export const staleCollected = property.explore(int(1, 3), {

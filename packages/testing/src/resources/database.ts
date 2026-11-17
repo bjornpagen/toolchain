@@ -13,10 +13,11 @@ import { canonicalText, type DatabaseTemplate, type Opened } from "#resources/te
 import { NeedFailed } from "#runner/services.ts"
 
 /**
- * How many clones of one template a worker's Database.fresh pool holds (packages/testing/src/resources/database.ts):
+ * How many clones of one template a worker's Database.fresh pool may hold (packages/testing/src/resources/database.ts):
  * each slot clones, offers its clone to the next case, waits for that case to end, drops it and clones again, so a
  * worker holds at most this many clones of a template and the next cases' clones are made while the current one runs.
- * Fewer, and a case waits for a clone; more, and a worker holds clones no case waits for.
+ * A pool opens one slot and adds one each time a case finds no clone ready, so it reaches this many only while its
+ * cases outrun its clones. Fewer, and a case waits for a clone; more, and a worker holds clones no case waits for.
  *
  * @limitKind measured
  * @owner the testing library's per-case resources (resources/database.ts, Database.fresh)
@@ -84,9 +85,14 @@ const slot = (opened: Opened<Database>, ready: Queue.Queue<Ready>): Effect.Effec
 
 /**
  * Each case its own database, a clone of `template`, dropped once the case ends; no case ever sees another's rows. Each
- * worker keeps a pool of freshPoolDepth slots for each template it has served (slot), opened with the need, so the
- * clone a case takes was made while earlier cases ran, and its drop runs after the case, in the slot, never in the
- * case's time.
+ * worker keeps a pool for each template it has served, whose slots (slot) clone as its cases ask: one slot opened with
+ * the need, cloning for the first case while its property readies, and one more each time a case asks for a clone and
+ * finds none ready, up to freshPoolDepth. So a worker keeps as many clones ahead as its cases outrun its slots, and
+ * never more: one whose cases take longer than a clone, or are few, holds one clone ahead of them, not freshPoolDepth,
+ * where every slot opened with the need made a clone at once, and made it again after each case it served, for cases
+ * that may never come (SS-CONV: four standby clones and their drops at 19.2 ms of PostgreSQL's CPU each, for a worker
+ * of one property's few batches). A clone a case takes was made while earlier cases ran wherever the cases leave a
+ * slot the time to, and its drop runs after the case, in the slot, never in the case's time.
  */
 const fresh = (template: DatabaseTemplate): DatabaseNeed<Database> => ({
 	key: `@bjornpagen/testing/resources Database.fresh ${template.key}`,
@@ -96,14 +102,22 @@ const fresh = (template: DatabaseTemplate): DatabaseNeed<Database> => ({
 			const opened = yield* template.open
 			const scope = yield* Effect.scope
 			const ready = yield* Queue.unbounded<Ready>()
-			yield* Effect.forEach(
-				Array.from({ length: freshPoolDepth }, () => slot(opened, ready)),
-				(filling) => Effect.forkIn(filling, scope),
-				{ discard: true }
+			const slots = yield* Ref.make(0)
+			const grown = Effect.flatMap(
+				Ref.modify(slots, (open): readonly [boolean, number] =>
+					open < freshPoolDepth ? [true, open + 1] : [false, open]
+				),
+				(started) =>
+					started ? Effect.asVoid(Effect.forkIn(slot(opened, ready), scope)) : Effect.void
 			)
-			return ready
+			yield* grown
+			return { ready, grown }
 		}),
-		takeReady
+		({ ready, grown }) =>
+			Effect.andThen(
+				Effect.flatMap(Queue.size(ready), (waiting) => (waiting === 0 ? grown : Effect.void)),
+				takeReady(ready)
+			)
 	)
 })
 
