@@ -17,6 +17,7 @@ import { runDevtool } from "#shared/run.ts"
 import { deadPathFindings } from "#workspace/dead-paths.ts"
 import { tsOnlyExtensionFindings } from "#workspace/extensions.ts"
 import { parentSnapshot } from "#workspace/parent.ts"
+import { rootFileFindings, rootIncludeOf } from "#workspace/root-files.ts"
 import { ROOT_MANIFEST, rootTaskFindings, TURBO_CONFIG } from "#workspace/root-tasks.ts"
 import type { Exceptions } from "#workspace/rules.ts"
 import { readsText, testSystemFindings } from "#workspace/test-system.ts"
@@ -30,7 +31,9 @@ import { tsconfigFindings, workspaceFixtureMismatches } from "#workspace/tsconfi
  * plugin block every package inherits (effect-plugin-block), each Effect-free package's tsconfig and manifest to
  * carrying no Effect (effect-free-packages), every file git shows to a TypeScript extension (ts-only-extensions), every
  * oxlint override glob and exception path to naming a file (dead-paths), every root script named as a generic turbo
- * task to a root task turbo.json registers, so no `turbo run` passes over the root's own files (root-tasks), and the
+ * task to a root task turbo.json registers, so no `turbo run` passes over the root's own files (root-tasks), every
+ * TypeScript file under no workspace package to a path the root tsconfig's include names, which the root's typecheck
+ * and its lint (`toolchain-oxlint-root`) both read, and the root's oxlint script to that lint (root-files), and the
  * test system's gates (workspace/test-system.ts): no worker flag in a script, and, in a repository that runs the
  * properties pack, no Vitest configuration, no plant and no numbered shard of a test module.
  * The repository's decisions come from its toolchain.config.ts: its rejected diagnostics, its Effect-free packages, and
@@ -92,7 +95,7 @@ const checkFixtures = Effect.gen(function* () {
 
 /** Every finding of the gate over the repository, less those its exceptions excuse. */
 const checkRepository = Effect.gen(function* () {
-	const { root } = yield* Repository
+	const { root, packages } = yield* Repository
 	const config = yield* repositoryToolchain
 	const tsconfigs = yield* tsconfigFindings({
 		effectFree: config.effectFree,
@@ -144,13 +147,19 @@ const checkRepository = Effect.gen(function* () {
 		toolchain: { path: CONFIG_FILE, text: toolchainText, exceptions: config.exceptions },
 		standard: STANDARD_GLOBS
 	})
-	const rootTasks = yield* rootTaskFindings({
+	const manifest = yield* read(ROOT_MANIFEST)
+	const rootTasks = yield* rootTaskFindings({ root, manifest, turbo: yield* read(TURBO_CONFIG) })
+	const rootTsconfig = yield* rootIncludeOf(root)
+	const rootFiles = yield* rootFileFindings({
 		root,
-		manifest: yield* read(ROOT_MANIFEST),
-		turbo: yield* read(TURBO_CONFIG)
+		files,
+		packages: Arr.map(packages, relativeTo(root)),
+		include: rootTsconfig.include,
+		tsconfig: rootTsconfig.text,
+		manifest
 	})
 	const findings = Arr.filter(
-		[...tsconfigs, ...extensions, ...testSystem, ...deadPaths, ...rootTasks],
+		[...tsconfigs, ...extensions, ...testSystem, ...deadPaths, ...rootTasks, ...rootFiles],
 		(finding) => !isExcepted(config.exceptions, root, finding)
 	)
 	yield* Console.log(renderFindings({ tool: "workspace-gate", root, findings }))

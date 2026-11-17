@@ -23,6 +23,7 @@
 	"bin": {
 		"toolchain-gate": "./bin/gate.sh",
 		"toolchain-oxlint": "./bin/oxlint.sh",
+		"toolchain-oxlint-root": "./src/oxlint-root.ts",
 		"toolchain-typecheck": "./bin/typecheck.sh",
 		"superstyle": "./src/style.ts",
 		"workspace-gate": "./src/workspace-gate.ts"

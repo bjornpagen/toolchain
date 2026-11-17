@@ -4,7 +4,8 @@ The dev tools and the testing library that Bjorn's TypeScript repositories share
 
 - `@bjornpagen/devtools` (`packages/devtools`): the oxlint preset and plugin (every lint rule, each reading syntax
   alone), the tsconfig bases, the fixtures that prove every rule, and the commands `toolchain-gate`,
-  `toolchain-typecheck`, `toolchain-oxlint`, `workspace-gate` (the repository-wide tsconfig, manifest and file-name
+  `toolchain-typecheck`, `toolchain-oxlint`, `toolchain-oxlint-root` (the root's lint, over the root tsconfig's
+  include), `workspace-gate` (the repository-wide tsconfig, manifest and file-name
   checks) and `superstyle` (a Tailwind app's stylesheet contract). No check builds a TypeScript program but the
   typecheck.
 - `@bjornpagen/testing` (`packages/testing`): the choice-stream testing library on Effect and Vitest.
@@ -95,7 +96,10 @@ are properties is the properties pack, which that repository's conversion turns 
   `toolchain.config.ts` exception's path, that names no tracked file; the preset's own test globs excepted), and
   `root-tasks` (a root script named as a turbo task every package runs, such as `typecheck`, `typecheck:full` or
   `oxlint`, that turbo.json registers as no `//#<name>` task: turbo never runs the root's script for the generic task,
-  so every `turbo run` of it passes over the root's own files; a root script that runs turbo itself is left alone).
+  so every `turbo run` of it passes over the root's own files; a root script that runs turbo itself is left alone), and
+  `root-files` (a TypeScript file under no workspace package that the root tsconfig's `include` names neither by its
+  path nor by a directory above it, an `include` entry that is a glob, or a root `oxlint` script that is not
+  `toolchain-oxlint-root`, which lints exactly the `include`'s paths: the root's typecheck and its lint read one list).
 - The properties pack, `packs: [..., properties()]` (`@bjornpagen/devtools/config`), which a repository's conversion
   adds once its test modules are properties: `testing/test-module-shape` on test modules, and the workspace gate's
   `no-vitest-config` (any `vitest.config.*`, `vitest.workspace.*`, or Vite configuration with a test block) and

@@ -51,7 +51,12 @@ Every package's scripts are:
 "oxlint": "toolchain-oxlint"
 ```
 
-and the root adds `"types": "turbo run typecheck"` and runs `typecheck:full` in `check` in place of `typecheck`.
+and the root adds `"types": "turbo run typecheck"` and runs `typecheck:full` in `check` in place of `typecheck`. The
+root's own `"oxlint"` is `"toolchain-oxlint-root"`: oxlint over the paths the root tsconfig's `include` names, the same
+list its typecheck reads, so the root's files are named once. turbo.json registers `//#typecheck`, `//#typecheck:full`
+and `//#oxlint`, since turbo runs a root script for no generic task; the workspace gate's `root-tasks` and `root-files`
+rules refuse a root script turbo would skip, a root TypeScript file the include does not name, and a root `oxlint`
+script that is not the root lint.
 
 ## oxlint: the two configurations
 
