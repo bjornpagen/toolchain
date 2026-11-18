@@ -318,6 +318,94 @@ export const touchedWorkspaces: Gen<Touched> = (source) => {
 	return { workspace, touch }
 }
 
+/**
+ * What changes between two hashings of a workspace's module closures as a pool reads them (runner/module-closure.ts): a
+ * touch (`Touch`), whose module edit keeps the module's imports, or a module whose imports are drawn again.
+ */
+export type Change = Touch | Readonly<{ kind: "imports"; module: number; workspace: Workspace }>
+
+/** A workspace and one change of it. */
+export type Changed = Readonly<{ workspace: Workspace; change: Change }>
+
+/** A workspace and a change drawn for it: a touch, or one module's imports drawn again. */
+export const changedWorkspaces: Gen<Changed> = (source) => {
+	const { workspace, touch } = source.draw(touchedWorkspaces)
+	const placed = Arr.map(workspace.modules, (module) => module.library)
+	const change = source.draw(
+		oneOf<Change>([
+			() => touch,
+			(inner) => {
+				const module = inner.draw(element(Arr.map(workspace.modules, (_, at) => at)))
+				const imports = inner.draw(array(importsFor(placed, module), { min: 0, max: 4 }))
+				return {
+					kind: "imports",
+					module,
+					workspace: {
+						...workspace,
+						modules: Arr.map(workspace.modules, (held, at) =>
+							at === module ? { ...held, imports } : held
+						)
+					}
+				}
+			}
+		])
+	)
+	return { workspace, change }
+}
+
+/** A changed workspace's files: the touched files, or the files of the workspace whose module's imports changed. */
+export const changedFilesOf = (
+	changed: Changed
+): ReadonlyArray<readonly [path: string, text: string]> =>
+	changed.change.kind === "imports"
+		? filesOf(changed.change.workspace, { kind: "nothing" })
+		: filesOf(changed.workspace, changed.change)
+
+/**
+ * The one file a change gives another text, with its path and new text, where it is a module, as a pool serving it as a
+ * mutant loads it: a module touch's, or an imports change's whose new imports leave every other file as it was (one
+ * through the library's export pattern also changes its package.json, which no mutant of one file serves).
+ */
+export const changedModuleOf = (
+	changed: Changed
+): Option.Option<Readonly<{ path: string; text: string }>> => {
+	const change = changed.change
+	if (change.kind !== "module" && change.kind !== "imports") {
+		return Option.none()
+	}
+	const before = new Map(filesOf(changed.workspace, { kind: "nothing" }))
+	const differing = Arr.filter(changedFilesOf(changed), ([path, text]) => before.get(path) !== text)
+	return Option.flatMap(Arr.head(differing), ([path, text]) =>
+		differing.length === 1 && path === modulePathOf(changed.workspace, change.module)
+			? Option.some({ path, text })
+			: Option.none()
+	)
+}
+
+/** What a change is, as a situation of the module closures a pool reads. */
+export type ChangeSituation =
+	| "nothing changed"
+	| "a module's text, its imports kept"
+	| "a module's imports"
+	| "a data file"
+	| "a lockfile entry"
+
+/** The situation a change is. */
+export const changeSituationOf = (change: Change): ChangeSituation => {
+	switch (change.kind) {
+		case "nothing":
+			return "nothing changed"
+		case "module":
+			return "a module's text, its imports kept"
+		case "imports":
+			return "a module's imports"
+		case "data":
+			return "a data file"
+		case "lock":
+			return "a lockfile entry"
+	}
+}
+
 /** The path of module `index`. */
 const modulePathOf = (workspace: Workspace, index: number): string =>
 	`${Arr.getUnsafe(workspace.modules, index).library ? "packages/lib/" : ""}src/m${index}.ts`

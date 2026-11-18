@@ -6,6 +6,7 @@ import {
 	Context,
 	Deferred,
 	Effect,
+	Exit,
 	FileSystem,
 	Inspectable,
 	Layer,
@@ -16,7 +17,7 @@ import {
 } from "effect"
 import type { MutatedFile } from "#mutate/mutated.ts"
 import type { ClosureHash } from "#runner/closure-hash.ts"
-import type { Files, RepoPath } from "#runner/closure.ts"
+import type { Files, RepoPath, Walk } from "#runner/closure.ts"
 import { ModuleClosure, NeedFailed } from "#runner/services.ts"
 
 /**
@@ -31,8 +32,12 @@ import { ModuleClosure, NeedFailed } from "#runner/services.ts"
  *
  * Nothing here loads the compiler until a hash is first asked for: closure.ts, and TypeScript's native parser with it
  * (an optional peer of the library), are imported then; the parser is the process's (closure.ts processSyntax), shared
- * by every pool, so a module's text is parsed once a process whichever mutant a pool serves. Each module's hash is kept
- * for the ModuleClosure's life, every request for it after the first awaiting the same computation.
+ * by every pool, so a module's text is parsed once a process whichever mutant a pool serves. A module's walk is the
+ * process's too (`sharedWalk`): a pool reads every file the walk read, and where only modules' bytes differ, its served
+ * mutant's or a worker tree's, and each loads what it did, hashes the walk with those bytes (closure.ts walkHolds)
+ * without resolving a specifier; only a file it read that changed otherwise, or a module that loads other specifiers,
+ * walks the pool's tree again. Each module's hash is kept for the ModuleClosure's life, every request for it after the
+ * first awaiting the same computation.
  */
 
 /** The export conditions a process was started with: each `--conditions=<c>`, `--conditions <c>` or `-C <c>`. */
@@ -90,6 +95,43 @@ const loadedFiles = (
 			})
 		}
 	)
+
+declare global {
+	var bjornpagenTestingWalks: Map<string, Deferred.Deferred<Walk, NeedFailed>> | undefined
+}
+
+/**
+ * This process's walk of a module (closure.ts Walk), by its workspace, its path and the conditions it resolves under:
+ * the first pool to ask walks it, detached from that pool's scope, which may close before the walk ends, and every
+ * pool after it reads that walk, as it holds over its own tree (closure.ts walkHolds). A walk that fails is forgotten,
+ * so the next pool to ask walks again.
+ */
+const sharedWalk = (key: string, walk: Effect.Effect<Walk, NeedFailed>) =>
+	Effect.suspend(() => {
+		globalThis.bjornpagenTestingWalks ??= new Map()
+		const walks = globalThis.bjornpagenTestingWalks
+		const held = walks.get(key)
+		if (held !== undefined) {
+			return Deferred.await(held)
+		}
+		const made = Deferred.makeUnsafe<Walk, NeedFailed>()
+		walks.set(key, made)
+		return Effect.andThen(
+			Effect.forkDetach(
+				Effect.onExit(walk, (exit) =>
+					Effect.andThen(
+						Effect.sync(() => {
+							if (Exit.isFailure(exit)) {
+								walks.delete(key)
+							}
+						}),
+						Deferred.done(made, exit)
+					)
+				)
+			),
+			Deferred.await(made)
+		)
+	})
 
 /**
  * The ModuleClosure of the package at `root` as its workers load it, serving `served` (mutate/pool.ts Served) or no
@@ -151,10 +193,23 @@ export const moduleClosureAt = (
 					.workingTree(workspace)
 					.pipe(Effect.provideService(FileSystem.FileSystem, fs))
 				const tree = loadedFiles(working, workspace, served, closure.repoPathOf)
-				const closures = yield* Effect.mapError(
+				const walkOf = Effect.mapError(
 					closure
-						.closuresOf({ tree, conditions, runtime: process.version, roots: [path] })
+						.walkOf({ tree, conditions, runtime: process.version, roots: [path] })
 						.pipe(Effect.provideContext(services)),
+					failed(module)
+				)
+				const shared = yield* sharedWalk(
+					Arr.join([workspace, path, ...conditions], "\u0000"),
+					walkOf
+				)
+				const held = yield* Effect.mapError(
+					closure.walkHolds(shared, tree).pipe(Effect.provideContext(services)),
+					failed(module)
+				)
+				const walk = yield* Option.match(held, { onSome: Effect.succeed, onNone: () => walkOf })
+				const closures = yield* Effect.mapError(
+					closure.closuresOfWalk(walk).pipe(Effect.provideContext(services)),
 					failed(module)
 				)
 				const hashed = yield* Effect.mapError(

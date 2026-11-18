@@ -709,7 +709,13 @@ const lockClosureOf = (
 }
 
 /** One module of the walk: its content, and what each of its runtime specifiers resolved to. */
-type Walked = Readonly<{ path: RepoPath; content: ContentHash; links: ReadonlyArray<Link> }>
+type Walked = Readonly<{
+	path: RepoPath
+	content: ContentHash
+	/** The specifiers it loads at run time (`specifiersOf`), each once, in its text's order. */
+	specifiers: ReadonlyArray<string>
+	links: ReadonlyArray<Link>
+}>
 
 /** What a specifier resolved to: another module of the walk (by its place in the walk), or a leaf. */
 type Link = Readonly<{ kind: "module"; index: number }> | Readonly<{ kind: "leaf"; leaf: Leaf }>
@@ -848,12 +854,44 @@ const componentsOf = (
 }
 
 /**
- * The closure of each root: every module the root loads, transitively, walked once for all roots, each file read and
- * parsed once. The hash of a root is that of its component under the input's conditions and runtime, and a component's
- * hash is that of its members' paths and bytes, the leaves they load and the hashes of the components they reach.
+ * A closure input's walk: every module its roots load, transitively, in the order the walk placed them (`Walked`), the
+ * roots' places among them, the input's conditions and runtime, and every file the walk read with its bytes' hash, or
+ * none where it found no file there: a manifest's absence decides a package scope as its presence does. A walk is a
+ * function of those reads, its conditions and runtime, and each module's syntax, which is a function of its text, and
+ * of nothing else (`walkHolds`).
  */
-export const closuresOf = Effect.fn("closuresOf")(function* (input: ClosureInput) {
-	const syntax = yield* ModuleSyntax
+export type Walk = Readonly<{
+	walked: ReadonlyArray<Walked>
+	roots: ReadonlyArray<number>
+	conditions: ReadonlyArray<string>
+	runtime: string
+	read: ReadonlyMap<RepoPath, Option.Option<ContentHash>>
+}>
+
+/** The specifiers a module of `path` with these bytes loads at run time, each once, in its text's order: a code file's
+ * runtime specifiers, and none for any other file, which is content alone. */
+const specifiersOf = (
+	path: RepoPath,
+	content: ContentHash,
+	bytes: Uint8Array
+): Effect.Effect<ReadonlyArray<string>, SyntaxUnread, ModuleSyntax> =>
+	CODE.test(path)
+		? Effect.flatMap(ModuleSyntax, (syntax) =>
+				Effect.map(
+					syntax.runtimeSpecifiers(path, content, new TextDecoder().decode(bytes)),
+					Arr.dedupe
+				)
+			)
+		: Effect.succeed([])
+
+/**
+ * The closure of each root: every module the root loads, transitively, walked once for all roots, each file read and
+ * parsed once (`walkOf`), and hashed (`closuresOfWalk`).
+ */
+export const closuresOf = (input: ClosureInput) => Effect.flatMap(walkOf(input), closuresOfWalk)
+
+/** The walk of a closure input (`Walk`): each file read once, each module parsed once. */
+export const walkOf = Effect.fn("walkOf")(function* (input: ClosureInput) {
 	const active: ReadonlySet<string> = new Set([...NODE_CONDITIONS, ...input.conditions])
 	const files = new Map<RepoPath, Option.Option<Uint8Array>>()
 	const read = (path: RepoPath) =>
@@ -1128,18 +1166,39 @@ export const closuresOf = Effect.fn("closuresOf")(function* (input: ClosureInput
 			return yield* ModuleMissing.make({ module: path })
 		}
 		const content = yield* contentHashOf(bytes.value)
-		const specifiers = CODE.test(path)
-			? yield* syntax.runtimeSpecifiers(path, content, new TextDecoder().decode(bytes.value))
-			: []
-		const links = yield* Effect.forEach(Arr.dedupe(specifiers), (specifier) =>
+		const specifiers = yield* specifiersOf(path, content, bytes.value)
+		const links = yield* Effect.forEach(specifiers, (specifier) =>
 			Effect.map(resolve(path, specifier), (resolved): Link =>
 				resolved.kind === "file"
 					? { kind: "module", index: placeOf(resolved.path) }
 					: { kind: "leaf", leaf: resolved.leaf }
 			)
 		)
-		walked.push({ path, content, links })
+		walked.push({ path, content, specifiers, links })
 	}
+	const readings = new Map<RepoPath, Option.Option<ContentHash>>()
+	for (const [path, bytes] of files) {
+		const reading = yield* readingOf(bytes)
+		readings.set(path, reading)
+	}
+	const walk: Walk = {
+		walked,
+		roots,
+		conditions: input.conditions,
+		runtime: input.runtime,
+		read: readings
+	}
+	return walk
+})
+
+/**
+ * The closure of each root of a walk. The hash of a root is that of its component under the walk's conditions and
+ * runtime, and a component's hash is that of its members' paths and bytes, the leaves they load and the hashes of the
+ * components they reach.
+ */
+export const closuresOfWalk = Effect.fn("closuresOfWalk")(function* (walk: Walk) {
+	const { walked, roots } = walk
+	const order = Arr.map(walked, (node) => node.path)
 	const components = componentsOf(walked, roots)
 	const componentOf: Array<number> = Array.from({ length: walked.length }, () => 0)
 	const componentHashes: Array<string> = []
@@ -1165,7 +1224,7 @@ export const closuresOf = Effect.fn("closuresOf")(function* (input: ClosureInput
 		const hash = yield* linesHashOf(lines)
 		componentHashes.push(hash)
 	}
-	const context = `runtime ${input.runtime}\nconditions ${Arr.join(Arr.sort(Arr.dedupe(input.conditions), Str.Order), ",")}`
+	const context = `runtime ${walk.runtime}\nconditions ${Arr.join(Arr.sort(Arr.dedupe(walk.conditions), Str.Order), ",")}`
 	const closures = new Map<RepoPath, Closure>()
 	for (const root of roots) {
 		const path = Arr.getUnsafe(order, root)
@@ -1177,6 +1236,64 @@ export const closuresOf = Effect.fn("closuresOf")(function* (input: ClosureInput
 		closures.set(path, { hash: closureHash(hash), ...membersOf(walked, root) })
 	}
 	return closures
+})
+
+/** A file's reading: its bytes' hash, or none where no file is there. */
+const readingOf = (
+	bytes: Option.Option<Uint8Array>
+): Effect.Effect<Option.Option<ContentHash>, never, Digest.Digest> =>
+	Option.match(bytes, {
+		onNone: () => Effect.succeedNone,
+		onSome: (found) => Effect.asSome(contentHashOf(found))
+	})
+
+/** Whether two reads of a file found alike: no file both times, or bytes of one hash. */
+const readAlike = (a: Option.Option<ContentHash>, b: Option.Option<ContentHash>): boolean =>
+	Option.isSome(a) ? Option.isSome(b) && a.value === b.value : Option.isNone(b)
+
+/** Whether two modules' texts load the same specifiers, in the same order. */
+const loadAlike = (a: ReadonlyArray<string>, b: ReadonlyArray<string>): boolean =>
+	a.length === b.length && Arr.every(a, (specifier, at) => specifier === b[at])
+
+/**
+ * `walk` as it holds over `tree`, which a walk of `tree` would find (`Walk`): the walk itself where every file it read
+ * reads alike; where only modules' bytes differ, each still a file whose text loads the specifiers it did, the walk with
+ * those modules' bytes, its links and every other file's reading unchanged; and none where a file it read appeared,
+ * vanished or changed and is no module of it, or a module's text now loads other specifiers, whose links only a walk of
+ * `tree` resolves.
+ */
+export const walkHolds = Effect.fn("walkHolds")(function* (walk: Walk, tree: Files) {
+	const places = new Map(Arr.map(walk.walked, (node, at) => [node.path, at] as const))
+	const contents = new Map<number, ContentHash>()
+	const read = new Map(walk.read)
+	for (const [path, was] of walk.read) {
+		const bytes = yield* tree.read(path)
+		const now = yield* readingOf(bytes)
+		if (readAlike(was, now)) {
+			continue
+		}
+		const at = places.get(path)
+		if (at === undefined || Option.isNone(bytes) || Option.isNone(now)) {
+			return Option.none<Walk>()
+		}
+		const specifiers = yield* specifiersOf(path, now.value, bytes.value)
+		if (!loadAlike(specifiers, Arr.getUnsafe(walk.walked, at).specifiers)) {
+			return Option.none<Walk>()
+		}
+		contents.set(at, now.value)
+		read.set(path, now)
+	}
+	const held: Walk = {
+		...walk,
+		walked: Arr.map(walk.walked, (node, at) =>
+			Option.match(Option.fromUndefinedOr(contents.get(at)), {
+				onNone: () => node,
+				onSome: (content) => ({ ...node, content })
+			})
+		),
+		read
+	}
+	return Option.some(held)
 })
 
 /** What a root's closure holds: every file it reaches and every leaf they load, each list sorted. */

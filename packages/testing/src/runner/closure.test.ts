@@ -1,9 +1,14 @@
 import { Array as Arr, Effect, Option } from "effect"
 import { Digest } from "effect/crypto"
+import { realPathOf } from "#mutate/mutated.ts"
 import { agree, exact } from "#oracle.ts"
 import { property } from "#property.ts"
 import {
 	aimedWorkspaces,
+	changedFilesOf,
+	changedModuleOf,
+	changedWorkspaces,
+	changeSituationOf,
 	closuresIn,
 	moduleSituationsOf,
 	moduleUrlOf,
@@ -244,9 +249,131 @@ export const moduleClosureIsTheClosureHash = property.explore(workspaces, {
 	kills: [
 		{
 			file: "packages/testing/src/runner/module-closure.ts",
-			original: "closuresOf({ tree, conditions, runtime: process.version, roots: [path] })",
-			replacement: 'closuresOf({ tree, conditions, runtime: "", roots: [path] })',
+			original: ".walkOf({ tree, conditions, runtime: process.version, roots: [path] })",
+			replacement: '.walkOf({ tree, conditions, runtime: "", roots: [path] })',
 			why: "a module closure hashed for no runtime: a template's identity no longer the hash a verdict key holds"
+		}
+	]
+})
+
+/**
+ * A pool's ModuleClosure gives each module the hash closure.ts computes over the files its workers load, however the
+ * process's walk of the module was first read (runner/module-closure.ts sharedWalk): a workspace written to disk is
+ * hashed, then hashed again by a pool serving one module's changed text as a mutant, then by a pool over the same
+ * directory with the change written, a module's text with its imports kept or drawn again, a data file or a lockfile
+ * entry. Oracle: closuresOf walking each set of files afresh, under the process's conditions and Node's version.
+ */
+export const moduleClosureFollowsWhatItsPoolLoads = property.explore(changedWorkspaces, {
+	needs: { hashing, directory: scratch },
+	situations: [
+		"nothing changed",
+		"a module's text, its imports kept",
+		"a module's imports",
+		"a data file",
+		"a lockfile entry"
+	],
+	check:
+		({ hashing: services, directory }, c) =>
+		(changed) =>
+			Effect.gen(function* () {
+				c.note(changeSituationOf(changed.change))
+				const { workspace } = changed
+				const written = yield* directory
+				const plain = filesOf(workspace, { kind: "nothing" })
+				const after = changedFilesOf(changed)
+				yield* writtenTo(written, plain)
+				const roots = yield* Effect.fromOption(rootsOf(workspace))
+				const parser = yield* services
+				const fresh = (files: ReadonlyArray<readonly [path: string, text: string]>) =>
+					closuresOf({ tree: treeOf(files), conditions: [], runtime: process.version, roots }).pipe(
+						Effect.provideService(ModuleSyntax, parser.syntax),
+						Effect.provideService(Digest.Digest, parser.digest)
+					)
+				const wantBefore = yield* fresh(plain)
+				const wantAfter = yield* fresh(after)
+				const served = yield* Effect.transposeOption(
+					Option.map(changedModuleOf(changed), ({ path, text }) =>
+						Effect.map(realPathOf(`${written}/${path}`), (target) => ({ target, text }))
+					)
+				)
+				const first = yield* moduleClosureAt(written, Option.none())
+				const mutant = yield* moduleClosureAt(written, served)
+				const beforeHashes = yield* Effect.forEach(roots, (_, index) =>
+					first.hashOf(moduleUrlOf(written, workspace, index))
+				)
+				const servedHashes = yield* Effect.forEach(roots, (_, index) =>
+					mutant.hashOf(moduleUrlOf(written, workspace, index))
+				)
+				yield* writtenTo(written, after)
+				const onDisk = yield* moduleClosureAt(written, Option.none())
+				const diskHashes = yield* Effect.forEach(roots, (_, index) =>
+					onDisk.hashOf(moduleUrlOf(written, workspace, index))
+				)
+				const wanted = (closures: typeof wantBefore) =>
+					Effect.forEach(roots, (root) =>
+						Effect.map(
+							Effect.fromOption(Option.fromUndefinedOr(closures.get(root))),
+							(held) => held.hash
+						)
+					)
+				const before = yield* wanted(wantBefore)
+				const changedHashes = yield* wanted(wantAfter)
+				yield* agree(
+					[
+						["closuresOf over the written files", before],
+						["the first pool's hashes", beforeHashes]
+					],
+					exact
+				)
+				yield* agree(
+					[
+						[
+							Option.isSome(served)
+								? "closuresOf over the files with the mutant's text"
+								: "closuresOf over the written files, no module's text changed",
+							Option.isSome(served) ? changedHashes : before
+						],
+						["the hashes of a pool serving the changed module's text", servedHashes]
+					],
+					exact
+				)
+				yield* agree(
+					[
+						["closuresOf over the changed files", changedHashes],
+						["the hashes of a pool over the directory, the change written", diskHashes]
+					],
+					exact
+				)
+			}),
+	oracle: {
+		kind: "second-implementation",
+		name: "closuresOf walking each set of files afresh, under no conditions and this Node's version"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/runner/closure.ts",
+			original: "const now = yield* readingOf(bytes)",
+			replacement: "const now = was",
+			why: "a shared walk read as holding over any tree: a mutant's text or a change on disk goes unseen, and the pool hashes the closure its workers do not load"
+		},
+		{
+			file: "packages/testing/src/runner/closure.ts",
+			original: "onSome: (content) => ({ ...node, content })",
+			replacement: "onSome: () => node",
+			why: "a module whose bytes changed and whose imports did not keeps its old bytes in the walk, so its closure hashes the text before the change"
+		},
+		{
+			file: "packages/testing/src/runner/closure.ts",
+			original: "if (!loadAlike(specifiers, Arr.getUnsafe(walk.walked, at).specifiers)) {",
+			replacement: "if (!loadAlike(specifiers, specifiers)) {",
+			why: "a module whose imports changed keeps its old links, so its closure holds what it no longer loads and lacks what it now does"
+		},
+		{
+			file: "packages/testing/src/runner/module-closure.ts",
+			original: "onNone: () => walkOf",
+			replacement: "onNone: () => Effect.succeed(shared)",
+			why: "a shared walk that no longer holds is hashed anyway: a lockfile entry or a module's imports changed and the pool hashes the closure as it was"
 		}
 	]
 })
