@@ -198,6 +198,7 @@ export class ModuleSyntax extends Context.Service<
 	Readonly<{
 		runtimeSpecifiers: (
 			module: RepoPath,
+			content: ContentHash,
 			text: string
 		) => Effect.Effect<ReadonlyArray<string>, SyntaxUnread>
 	}>
@@ -226,38 +227,70 @@ const runtimeSpecifierOf = (node: ts.Node): Option.Option<string> => {
 	return Option.none()
 }
 
+/** The native parser could not be started. */
+const parserUnstarted = (cause: unknown) => SyntaxUnread.make({ module: Option.none(), cause })
+
 /**
- * ModuleSyntax on TypeScript 7's native parser: one compiler process for the layer's life, each module parsed from the
- * text the closure hashed, so its bytes and its imports are read from the same text.
+ * ModuleSyntax on a native compiler process: each module parsed from the text the closure hashed, so its bytes and its
+ * imports are read from the same text, and each parse kept by the module's path and content for the parser's life, so a
+ * text is parsed once however many closures read it.
  */
+const parserOn = (api: API): Context.Service.Shape<typeof ModuleSyntax> => {
+	const parsed = new Map<RepoPath, Map<ContentHash, ReadonlyArray<string>>>()
+	return ModuleSyntax.of({
+		runtimeSpecifiers: (module, content, text) =>
+			Effect.suspend(() => {
+				const texts = parsed.get(module) ?? new Map<ContentHash, ReadonlyArray<string>>()
+				parsed.set(module, texts)
+				const held = texts.get(content)
+				if (held !== undefined) {
+					return Effect.succeed(held)
+				}
+				return Effect.try({
+					try: () => {
+						using retained = api.createSourceFile(`/${module}`, text)
+						const specifiers = Arr.getSomes(
+							Arr.map(retained.sourceFile.imports, runtimeSpecifierOf)
+						)
+						texts.set(content, specifiers)
+						return specifiers
+					},
+					catch: (cause) => SyntaxUnread.make({ module: Option.some(module), cause })
+				})
+			})
+	})
+}
+
+/** ModuleSyntax on TypeScript 7's native parser: one compiler process for the layer's life (`parserOn`). */
 export const nativeSyntax: Layer.Layer<ModuleSyntax, SyntaxUnread> = Layer.effect(
 	ModuleSyntax,
 	Effect.map(
-		Effect.acquireRelease(
-			Effect.try({
-				try: () => new API(),
-				catch: (cause) => SyntaxUnread.make({ module: Option.none(), cause })
-			}),
-			(api) =>
-				Effect.ignore(
-					Effect.try({
-						try: () => api.close(),
-						catch: (cause) => SyntaxUnread.make({ module: Option.none(), cause })
-					})
-				)
+		Effect.acquireRelease(Effect.try({ try: () => new API(), catch: parserUnstarted }), (api) =>
+			Effect.ignore(Effect.try({ try: () => api.close(), catch: parserUnstarted }))
 		),
-		(api) =>
-			ModuleSyntax.of({
-				runtimeSpecifiers: (module, text) =>
-					Effect.try({
-						try: () => {
-							using retained = api.createSourceFile(`/${module}`, text)
-							return Arr.getSomes(Arr.map(retained.sourceFile.imports, runtimeSpecifierOf))
-						},
-						catch: (cause) => SyntaxUnread.make({ module: Option.some(module), cause })
-					})
-			})
+		parserOn
 	)
+)
+
+declare global {
+	var bjornpagenTestingSyntax: Context.Service.Shape<typeof ModuleSyntax> | undefined
+}
+
+/**
+ * ModuleSyntax on this process's native parser (`parserOn`): one compiler process for the process's life, started at
+ * the first closure the process hashes, so every pool of a run, each kill trial's included, parses a module's text once
+ * (runner/module-closure.ts), where each pool's own parser parsed its whole closure again, the parent's one thread
+ * blocked in each parse. The compiler process is unreferenced, so it holds no process open, and it ends with its pipes.
+ */
+export const processSyntax: Layer.Layer<ModuleSyntax, SyntaxUnread> = Layer.effect(
+	ModuleSyntax,
+	Effect.try({
+		try: () => {
+			globalThis.bjornpagenTestingSyntax ??= parserOn(new API())
+			return globalThis.bjornpagenTestingSyntax
+		},
+		catch: parserUnstarted
+	})
 )
 
 /** What an `imports` or `exports` key maps to, as Node reads it. */
@@ -1096,7 +1129,7 @@ export const closuresOf = Effect.fn("closuresOf")(function* (input: ClosureInput
 		}
 		const content = yield* contentHashOf(bytes.value)
 		const specifiers = CODE.test(path)
-			? yield* syntax.runtimeSpecifiers(path, new TextDecoder().decode(bytes.value))
+			? yield* syntax.runtimeSpecifiers(path, content, new TextDecoder().decode(bytes.value))
 			: []
 		const links = yield* Effect.forEach(Arr.dedupe(specifiers), (specifier) =>
 			Effect.map(resolve(path, specifier), (resolved): Link =>

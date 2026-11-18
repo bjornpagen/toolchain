@@ -30,8 +30,9 @@ import { ModuleClosure, NeedFailed } from "#runner/services.ts"
  * the checkout's, or a worker tree's.
  *
  * Nothing here loads the compiler until a hash is first asked for: closure.ts, and TypeScript's native parser with it
- * (an optional peer of the library), are imported then, in this process's scope; each module's hash is kept for the
- * process's life, every request for it after the first awaiting the same computation.
+ * (an optional peer of the library), are imported then; the parser is the process's (closure.ts processSyntax), shared
+ * by every pool, so a module's text is parsed once a process whichever mutant a pool serves. Each module's hash is kept
+ * for the ModuleClosure's life, every request for it after the first awaiting the same computation.
  */
 
 /** The export conditions a process was started with: each `--conditions=<c>`, `--conditions <c>` or `-C <c>`. */
@@ -118,7 +119,7 @@ export const moduleClosureAt = (
 						})
 				})
 				const services = yield* Effect.mapError(
-					Scope.provide(scope)(Layer.build(Layer.merge(closure.nativeSyntax, layerDigest))),
+					Scope.provide(scope)(Layer.build(Layer.merge(closure.processSyntax, layerDigest))),
 					(cause) => NeedFailed.make({ need: "ModuleClosure", message: cause.message })
 				)
 				return { closure, services }

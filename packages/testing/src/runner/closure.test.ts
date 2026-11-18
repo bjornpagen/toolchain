@@ -89,6 +89,12 @@ export const closureIsWhatNodeLoads = property.explore(aimedWorkspaces, {
 		},
 		{
 			file: "packages/testing/src/runner/closure.ts",
+			original: "const held = texts.get(content)",
+			replacement: "const held = texts.values().next().value",
+			why: "a parse kept by its module's path alone: a module whose text differs from the one first parsed at that path is read with the imports of the first"
+		},
+		{
+			file: "packages/testing/src/runner/closure.ts",
 			original: 'const NODE_CONDITIONS = ["node", "import", "module-sync", "default"] as const',
 			replacement: 'const NODE_CONDITIONS = ["node", "module-sync", "default"] as const',
 			why: "a conditional map read without Node's own `import` condition resolves to another file than Node loads"
@@ -165,6 +171,12 @@ export const closureHashFollowsTheClosure = property.explore(touchedWorkspaces, 
 			original: "return parent.isTypeOnly ? Option.none() : Option.some(node.text)",
 			replacement: "return Option.some(node.text)",
 			why: "an `export type` held in the closure: Node erases it and never loads its module"
+		},
+		{
+			file: "packages/testing/src/runner/closure.ts",
+			original: "const held = texts.get(content)",
+			replacement: "const held = texts.values().next().value",
+			why: "a parse kept by its module's path alone: a module whose text differs from the one first parsed at that path is read with the imports of the first"
 		},
 		{
 			file: "packages/testing/src/runner/closure.ts",
