@@ -9,7 +9,8 @@ import type { Finding } from "#shared/finding.ts"
  * register is a check every `turbo run <name>` skips, and the root's own files, its configuration among them, go
  * unchecked: superstarter's root typecheck and oxlint ran in no `pnpm types` or `pnpm check` until its c8b40d1, and a
  * type error in a root config file passed the gate. The gate refuses such a script. A root script that runs turbo
- * itself is the entry point of its task, never a task turbo runs, and is left alone.
+ * itself is the entry point of its task, never a task turbo runs, and is left alone. A repository with no turbo.json
+ * runs no turbo task, so it reads as a turbo.json of no tasks: no script is passed over and nothing is reported.
  */
 
 /** turbo's configuration, at the repository root. */
@@ -65,11 +66,11 @@ const keyLine = (text: string, name: string): number =>
 /**
  * The root scripts turbo would pass over: each one named as a task of turbo.json, which every package runs (a
  * package's own task, `@scope/a#<name>`, is named by no script of the root), registered as no root task, and running
- * no turbo of its own, reported at the task's key. The texts are the root manifest's and turbo.json's; a text that is
- * not the JSON the gate reads fails the gate.
+ * no turbo of its own, reported at the task's key. The texts are the root manifest's and turbo.json's, which a
+ * repository may not have; a text that is not the JSON the gate reads fails the gate.
  */
 export const rootTaskFindings = (
-	input: Readonly<{ root: string; manifest: string; turbo: string }>
+	input: Readonly<{ root: string; manifest: string; turbo: Option.Option<string> }>
 ): Effect.Effect<ReadonlyArray<Finding>, DevtoolFailure> =>
 	Effect.gen(function* () {
 		const manifest = yield* Schema.decodeEffect(Manifest)(input.manifest).pipe(
@@ -77,29 +78,39 @@ export const rootTaskFindings = (
 				DevtoolFailure.make({ detail: `${ROOT_MANIFEST} is not a manifest the gate reads`, cause })
 			)
 		)
-		const turbo = yield* Schema.decodeEffect(Turbo)(input.turbo).pipe(
-			Effect.mapError((cause) =>
-				DevtoolFailure.make({
-					detail: `${TURBO_CONFIG} is not a turbo configuration the gate reads`,
-					cause
-				})
-			)
-		)
-		const tasks = Record.keys(turbo.tasks ?? {})
-		return Arr.filterMap(
-			Record.toEntries(manifest.scripts ?? {}),
-			([name, command]): Result.Result<Finding, void> =>
-				Arr.contains(tasks, name) &&
-				!Arr.contains(tasks, `${ROOT_TASK}${name}`) &&
-				!runsTurbo(command)
-					? Result.succeed({
-							file: `${input.root}/${TURBO_CONFIG}`,
-							line: keyLine(input.turbo, name),
-							column: 1,
-							rule: "root-tasks",
-							message: `The root's ${name} script runs only as the task ${ROOT_TASK}${name}: the generic ${name} task never reaches the root, so every turbo run of ${name} passes over the root's own files.`,
-							suggestion: `Register "${ROOT_TASK}${name}" in ${TURBO_CONFIG}'s tasks.`
-						})
-					: Result.failVoid
-		)
+		const turbo = yield* Option.match(input.turbo, {
+			onNone: () =>
+				Effect.succeed(Option.none<Readonly<{ text: string; tasks: ReadonlyArray<string> }>>()),
+			onSome: (text) =>
+				Schema.decodeEffect(Turbo)(text).pipe(
+					Effect.mapBoth({
+						onSuccess: (config) => Option.some({ text, tasks: Record.keys(config.tasks ?? {}) }),
+						onFailure: (cause) =>
+							DevtoolFailure.make({
+								detail: `${TURBO_CONFIG} is not a turbo configuration the gate reads`,
+								cause
+							})
+					})
+				)
+		})
+		return Option.match(turbo, {
+			onNone: () => [],
+			onSome: ({ text, tasks }) =>
+				Arr.filterMap(
+					Record.toEntries(manifest.scripts ?? {}),
+					([name, command]): Result.Result<Finding, void> =>
+						Arr.contains(tasks, name) &&
+						!Arr.contains(tasks, `${ROOT_TASK}${name}`) &&
+						!runsTurbo(command)
+							? Result.succeed({
+									file: `${input.root}/${TURBO_CONFIG}`,
+									line: keyLine(text, name),
+									column: 1,
+									rule: "root-tasks",
+									message: `The root's ${name} script runs only as the task ${ROOT_TASK}${name}: the generic ${name} task never reaches the root, so every turbo run of ${name} passes over the root's own files.`,
+									suggestion: `Register "${ROOT_TASK}${name}" in ${TURBO_CONFIG}'s tasks.`
+								})
+							: Result.failVoid
+				)
+		})
 	})

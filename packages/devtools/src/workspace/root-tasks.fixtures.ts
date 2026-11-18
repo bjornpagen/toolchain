@@ -6,8 +6,8 @@ import { ROOT_TASK, rootTaskFindings, TURBO, TURBO_CONFIG } from "#workspace/roo
  * The repositories the root-tasks property draws (root-tasks.test.ts), from a grammar of the gate's contract read over
  * the names its module exports: for each of a handful of task names, whether turbo.json defines the generic task, the
  * root task and a package's own task of that name, and what the root's script of that name runs (nothing, a command of
- * its own, or turbo); with the tasks written before or after the root's and the package's. And the lines the gate
- * reports for one.
+ * its own, or turbo); with the tasks written before or after the root's and the package's; or no turbo.json at all,
+ * which the contract reads as one of no tasks, so each of its names draws none. And the lines the gate reports for one.
  */
 
 /** What a task name is in a repository, as the property names its situations. */
@@ -18,6 +18,7 @@ export type Feature =
 	| "a root script with no generic task"
 	| "a generic task with no root script"
 	| "a package's own task"
+	| "a repository with no turbo.json"
 
 /** The task names a repository draws: a prefix of another among them, so a key is found whole or not at all. */
 const NAMES = ["typecheck", "typecheck:full", "oxlint", "check", "format"] as const
@@ -65,19 +66,29 @@ type Task = Readonly<{
 	script: Script
 }>
 
-/** A repository: one Task per name, and whether turbo.json writes the root's and the packages' tasks first. */
-export type Repository = Readonly<{ tasks: ReadonlyArray<Task>; rootFirst: boolean }>
+/** A repository: one Task per name, whether it has a turbo.json, and whether that writes the root's and the packages'
+ * tasks first. With no turbo.json, no Task defines a task of turbo's. */
+export type Repository = Readonly<{
+	tasks: ReadonlyArray<Task>
+	turbo: boolean
+	rootFirst: boolean
+}>
 
-export const repositories: Gen<Repository> = (source) => ({
-	tasks: Arr.map(NAMES, (name) => ({
-		name,
-		generic: source.draw(boolean),
-		registered: source.draw(boolean),
-		packageOwn: source.draw(boolean),
-		script: source.draw(scriptGen)
-	})),
-	rootFirst: source.draw(boolean)
-})
+export const repositories: Gen<Repository> = (source) => {
+	const turbo = source.draw(boolean)
+	const defined = (): boolean => turbo && source.draw(boolean)
+	return {
+		tasks: Arr.map(NAMES, (name) => ({
+			name,
+			generic: defined(),
+			registered: defined(),
+			packageOwn: defined(),
+			script: source.draw(scriptGen)
+		})),
+		turbo,
+		rootFirst: source.draw(boolean)
+	}
+}
 
 const ROOT = "/repository"
 
@@ -137,7 +148,11 @@ const sortedLines = (lines: ReadonlyArray<number>): ReadonlyArray<number> =>
 /** The gate's findings over a repository. */
 export const outcomeOf = (repository: Repository) =>
 	Effect.map(
-		rootTaskFindings({ root: ROOT, manifest: manifestOf(repository), turbo: turboOf(repository) }),
+		rootTaskFindings({
+			root: ROOT,
+			manifest: manifestOf(repository),
+			turbo: repository.turbo ? Option.some(turboOf(repository)) : Option.none()
+		}),
 		(findings): Outcome => ({
 			lines: sortedLines(Arr.map(findings, (finding) => finding.line)),
 			placed: Arr.every(
@@ -191,8 +206,10 @@ const scriptFeatureOf = (task: Task): ReadonlyArray<Feature> =>
 					: one("an unregistered root script")
 
 /** The situations a repository reaches, one or more per task name. */
-export const featuresOf = (repository: Repository): ReadonlyArray<Feature> =>
-	Arr.flatMap(repository.tasks, (task) => [
+export const featuresOf = (repository: Repository): ReadonlyArray<Feature> => [
+	...(repository.turbo ? [] : one("a repository with no turbo.json")),
+	...Arr.flatMap(repository.tasks, (task) => [
 		...(task.packageOwn ? one("a package's own task") : []),
 		...scriptFeatureOf(task)
 	])
+]

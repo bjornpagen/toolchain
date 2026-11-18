@@ -148,7 +148,11 @@ const checkRepository = Effect.gen(function* () {
 		standard: STANDARD_GLOBS
 	})
 	const manifest = yield* read(ROOT_MANIFEST)
-	const rootTasks = yield* rootTaskFindings({ root, manifest, turbo: yield* read(TURBO_CONFIG) })
+	const turboPresent = yield* fs
+		.exists(`${root}/${TURBO_CONFIG}`)
+		.pipe(Effect.mapError(failureFrom(`${TURBO_CONFIG} could not be read`)))
+	const turbo = turboPresent ? yield* Effect.asSome(read(TURBO_CONFIG)) : Option.none<string>()
+	const rootTasks = yield* rootTaskFindings({ root, manifest, turbo })
 	const rootTsconfig = yield* rootIncludeOf(root)
 	const rootFiles = yield* rootFileFindings({
 		root,
