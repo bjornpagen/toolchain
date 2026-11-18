@@ -92,7 +92,7 @@ const shrinkingText = (shrinking: Shrinking): string => {
 const replayText = (token: string): string => `replay: toolchain-test replay '${token}'`
 
 /** A finding's headline: what failed, and where. */
-const headlineOf = (finding: Finding): string => {
+export const headlineOf = (finding: Finding): string => {
 	switch (finding.kind) {
 		case "falsified":
 			return `falsified on ${finding.where}`
@@ -114,7 +114,7 @@ const headlineOf = (finding: Finding): string => {
 }
 
 /** A finding's lines below its headline: the case as it ran, the failure, the shrink and the replay token. */
-const findingLines = (finding: Finding): ReadonlyArray<string> => {
+export const findingLines = (finding: Finding): ReadonlyArray<string> => {
 	switch (finding.kind) {
 		case "falsified":
 			return [

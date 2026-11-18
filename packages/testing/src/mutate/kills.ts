@@ -23,6 +23,7 @@ import {
 } from "#mutate/schedule.ts"
 import type { TreeFailed } from "#mutate/tree.ts"
 import type { Kill, PropertyId } from "#property.ts"
+import { findingLines, headlineOf } from "#runner/report.ts"
 
 /**
  * What a kill's trial decided. Killed: the property's witnesses went red with the kill applied, and the gate passes it.
@@ -82,11 +83,14 @@ const verdictOf = (trial: TrialVerdict<KillStage>): KillVerdict => {
 	}
 }
 
-/** What turned a property red, on one line. */
+/**
+ * What turned a property red, on one line: the runner's own report of its witnesses' finding (runner/report.ts), its
+ * headline and each line below it, so an unopened need names the need and why it failed and a hung case its token.
+ */
 export const redText = (red: Red): string =>
 	red.kind === "unstarted"
 		? `its workers would not start: ${red.message}`
-		: `its witnesses found ${red.finding.kind}`
+		: Arr.join([headlineOf(red.finding), ...findingLines(red.finding)], "; ")
 
 /**
  * The kill gate: every kill of every subject applied to its file in the checkout (killApplied), and the subject's
