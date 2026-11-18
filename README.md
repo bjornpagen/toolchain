@@ -14,6 +14,30 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: type-aware lint on tsrs (2026-11-18)
+
+oxlint's type-aware rules run in `tsrs --lint`, the TypeScript the typecheck runs (tsrs 0.25.0, TypeScript
+7.1.0-beta), and no longer in tsgolint, whose checker is typescript-go 7.0.2's: on edullm's grizzle and pantry types it
+took 984 to 1,537 s a package where tsrs takes 8 to 12 s, with the same diagnostics. oxlint 1.93.0 takes the tsrs
+package's `tsrs-lint` from `node_modules/.bin` ahead of any tsgolint. Before you move `vendor/toolchain` past this
+section:
+
+1. **Catalog.** Add `tsrs: 0.25.0-ts7.1.0-beta` to `pnpm-workspace.yaml`'s catalog and delete `oxlint-tsgolint`.
+2. **Manifests.** In the root `package.json`'s devDependencies, and in any other package that names oxlint-tsgolint
+   for a type-aware oxlint of its own (edullm's qti-pie), replace `"oxlint-tsgolint": "catalog:"` with
+   `"tsrs": "catalog:"`. The root's puts `tsrs-lint` in the root's `node_modules/.bin`, where every package's oxlint
+   finds it, under any `nodeLinker`.
+3. **Lockfile.** pnpm keeps oxlint's optional peer while the lockfile resolves it: after `pnpm install`, if
+   `pnpm-lock.yaml` still names `oxlint-tsgolint` anywhere but oxlint's `peerDependencies`, delete those entries (the
+   `oxlint-tsgolint@…` and `@oxlint-tsgolint/…` packages and snapshots, the `(oxlint-tsgolint@…)` suffix of every
+   `oxlint@…`, and oxlint's `oxlint-tsgolint` optional dependency) and run `pnpm install` again, then
+   `pnpm dedupe --check`. `node_modules/.bin` then holds `tsrs-lint` and no `tsgolint`.
+
+Nothing else changes: `toolchain-oxlint` is still `exec oxlint "$@"`, and every rule, option and file it lints is as
+before. `effect-tsgo --tsrs-lint oxlint` is not the way in: it swaps in its own Oxlint binding through a
+`NODE_OPTIONS` preload, which a Node built `--without-node-options` ignores (cassowary's is), so there it runs stock
+oxlint with whatever type-aware linter that finds, tsgolint while one is installed.
+
 ## Consumer migration: a library theme is a stylesheet role (2026-11-18)
 
 Each app's `stylesheet` options in web.ts take `libraryThemes`: the sheets in one directory of the app that draw one
@@ -163,7 +187,7 @@ whole section, and do every part: the parts are one migration, in the order a re
 ### 1. Dependencies (ad8d0ec, 3a4a777, 175689e)
 
 - The catalog's versions: `@effect/tsgo` 0.69.0 (tsrs 0.25.0) with `typescript` 7.1.0-beta, `oxlint` 1.93.0,
-  `oxlint-tsgolint` 7.0.2007, `turbo` 2.11.11, `vitest` 5.1.0, `oxfmt` 0.78.0, `fallow` 3.43.0 or later,
+  `tsrs` 0.25.0-ts7.1.0-beta, `turbo` 2.11.11, `vitest` 5.1.0, `oxfmt` 0.78.0, `fallow` 3.43.0 or later,
   `effect`, `@effect/platform-node` and `@effect/vitest` 4.1.4, `tailwindcss` 4.3.5, `vite` 8.3.8, pnpm 12.18.0
   (`@babel/core` and `@tailwindcss/node`, which only the old style linter and React Compiler check loaded, go in part 4).
   A pin newer than the repository's `minimumReleaseAge` allows waits a day.

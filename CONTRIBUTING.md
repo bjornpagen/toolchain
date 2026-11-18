@@ -14,7 +14,7 @@ the toolchain; README.md says what a repository changes to take it.
 | On the consumer's schedule          | `toolchain-test fuzz`     | The scheduled fuzz budget, in each package root its own scheduler names: fresh seeds round after round until a case fails or the budget (`1h`, `100000x`) is spent. Never in a hook.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | By hand                             | `pnpm check`, `pnpm test` | The full gate over the working tree, and the tests, which no hook runs.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
-Type-aware lint stays out of the commit: no tool caches its results (not tsgolint, not `tsrs --lint`, not oxlint), so
+Type-aware lint stays out of the commit: no tool caches its results (not `tsrs --lint`, not oxlint), so
 it would build every package's program on every commit, while a commit holds `.git/index.lock` for its whole hook. The
 push's full gate runs it, and its non-incremental typecheck is the safety net for the open incremental stale-result
 bugs of TypeScript (#64386, #64591).
@@ -39,7 +39,7 @@ directory of the tsconfig being checked, so each package, and the root, keeps it
 The build info is no turbo output. A turbo hit replays the diagnostics and needs no build info; a miss reads whatever
 build info the directory holds, and tsrs proves it against the files' hashes and the options, the Effect plugin's
 included, so any build info is safe to start from. Caching it would store a new copy, megabytes in a large package, for
-every content change. Nothing else writes it: oxlint's tsgolint reads the tsconfig but emits nothing.
+every content change. Nothing else writes it: oxlint's type-aware linter, `tsrs --lint`, reads the tsconfig but emits nothing.
 
 `typecheck:full` is a turbo task of its own, so the push's typecheck never replays a hit of the incremental one.
 
@@ -73,7 +73,10 @@ How oxlint picks a configuration, checked on oxlint 1.93.0:
 - `-c <file>` reads that file alone: nested configuration files are not read.
 - A configuration's JavaScript plugins resolve from the configuration file's directory, so the AST-only configuration
   must sit at the root beside the full one.
-- With `typeAware: false`, oxlint skips every type-aware rule without a word and never starts tsgolint.
+- oxlint runs the type-aware rules in the first `tsrs-lint` or `tsgolint` it finds: `OXLINT_TSGOLINT_PATH`, then each
+  `node_modules/.bin` from the directory it runs in upward, then `PATH`, `tsrs-lint` first in each place. The root
+  lists the tsrs package, whose `tsrs-lint` is `tsrs --lint`, and no `oxlint-tsgolint`.
+- With `typeAware: false`, oxlint skips every type-aware rule without a word and never starts `tsrs-lint`.
   `--type-aware` on the command line turns them back on, so the commit gate never passes it.
 - A path that the ignore patterns exclude is skipped; when nothing is left, oxlint fails ("No files found to lint")
   unless it is given `--no-error-on-unmatched-pattern`, which the commit gate passes.
@@ -93,7 +96,7 @@ style linter and the workspace gate read files as text. A new rule goes, in this
 
 - to an Effect diagnostic or a TypeScript option, when the compiler can own it;
 - to oxlint's built-in rules, turned on in the preset (`packages/devtools/src/preset.ts`), with their type-aware rules
-  among them (tsgolint runs those in `pnpm check` only);
+  among them (`tsrs --lint` runs those in `pnpm check` only);
 - to the devtools oxlint plugin (`packages/devtools/src/oxlint/rules/`), reading one file's syntax and scopes, with
   its `clean.tsx` and `violating.tsx` fixtures under `src/oxlint/fixtures/<rule>/`, its fixture options in
   `src/oxlint/fixture-rules.ts` and its place in the preset's `PLACES` (a rule that judges a file by its path, as the

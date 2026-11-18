@@ -843,7 +843,7 @@ export const standard = <const T extends Toolchain>(
 
 /**
  * A configuration's AST-only twin, for the commit gate (oxlint.ast.config.ts): the same plugins, rules and blocks, but
- * typeAware off, so oxlint skips every type-aware rule and starts no tsgolint, and lints without building a program.
+ * typeAware off, so oxlint skips every type-aware rule and starts no `tsrs-lint`, and lints without building a program.
  * Every rule of the JavaScript plugins stays, since a JavaScript plugin reads syntax and scope only.
  */
 export const astOnly = (config: OxlintConfig): OxlintConfig => ({
