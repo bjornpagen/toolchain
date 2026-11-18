@@ -9,7 +9,7 @@ import {
 	Result,
 	type Scope
 } from "effect"
-import { killApplied, KillStale } from "#mutants.ts"
+import { killApplied, killMissing, type KillStale } from "#mutants.ts"
 import type { Images } from "#mutate/image.ts"
 import { type MutatedFile, probeOf, type RealPath, realPathOf } from "#mutate/mutated.ts"
 import type { MutantPool } from "#mutate/pool.ts"
@@ -60,14 +60,7 @@ const appliedIn = (checkout: RealPath, kill: Kill) =>
 		),
 		(read): Result.Result<Readonly<{ mutated: MutatedFile; probe: MutatedFile }>, KillStale> =>
 			Option.match(read, {
-				onNone: () =>
-					Result.fail(
-						KillStale.make({
-							file: kill.file,
-							found: 0,
-							message: `the kill "${kill.why}" names ${kill.file}, which is not in the checkout`
-						})
-					),
+				onNone: () => Result.fail(killMissing(kill)),
 				onSome: ({ target, own }) =>
 					Result.map(killApplied(kill, own), (text) => ({
 						mutated: { target, text },

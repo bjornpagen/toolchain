@@ -10,8 +10,12 @@
  * Oracle: the specification, each rule's JSDoc read over the lists its module exports, never a list written again
  * here. Situations, required for every rule: a site reported, a site left alone, and a program of several sites.
  */
+import { Array as Arr, Effect, Option } from "effect"
+import { deepStrictEqual } from "#assert.ts"
+import { placesIn } from "#mutants.fixtures.ts"
 import {
 	booleanSites,
+	type CaseKill,
 	clampedSites,
 	clockSites,
 	concurrencySites,
@@ -26,10 +30,13 @@ import {
 	seedSites,
 	serializedSites,
 	sleepSites,
+	staleKillCases,
+	staleKillJudged,
 	tableSites,
 	verdictPrograms,
 	weightSites
 } from "#oxlint/rules.fixtures.ts"
+import { property } from "#property.ts"
 
 /** no-wall-clock-verdict reports exactly the reads of the clock. */
 export const noWallClockVerdict = ruleProperty(
@@ -189,3 +196,51 @@ export const noRestatedConcurrency = ruleProperty(
 	inTests(programOf(concurrencySites)),
 	[]
 )
+
+/**
+ * no-stale-kill reports exactly the kills a test module states that a mutation run would find stale: each whose file
+ * the checkout does not hold, or whose original stands in its file other than once, overlapping places counted.
+ */
+export const noStaleKill = property.explore(staleKillCases, {
+	needs: {},
+	situations: [
+		"a kill stale where its original stands nowhere",
+		"a kill stale where its original stands more than once",
+		"a kill stale where its file is not in the checkout",
+		"a kill whose original stands once"
+	],
+	check: (_resources, c) => (staleKillCase) =>
+		Effect.gen(function* () {
+			const text = Arr.join(staleKillCase.parts, "")
+			const places = (kill: CaseKill) => placesIn(text, kill.original).length
+			for (const kill of staleKillCase.kills) {
+				c.note(
+					!kill.held
+						? "a kill stale where its file is not in the checkout"
+						: places(kill) === 0
+							? "a kill stale where its original stands nowhere"
+							: places(kill) === 1
+								? "a kill whose original stands once"
+								: "a kill stale where its original stands more than once"
+				)
+			}
+			const judged = yield* staleKillJudged(
+				staleKillCase,
+				(kill) => !kill.held || places(kill) !== 1
+			)
+			deepStrictEqual(judged, Option.none())
+		}),
+	oracle: {
+		kind: "second-implementation",
+		name: "a kill is stale where its file is absent or where its original stands other than once, its places found by splitting the text at every offset"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/oxlint/rules/no-stale-kill.ts",
+			original: "onNone: () => Result.fail(killMissing(kill.value)),",
+			replacement: 'onNone: () => Result.succeed(""),',
+			why: "A kill naming a file the checkout does not hold passes the rule, which a mutation run finds stale."
+		}
+	]
+})

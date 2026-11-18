@@ -3,7 +3,17 @@
  * exports, written in every spelling the rule reads, beside the neighbours its contract leaves alone), each site
  * carrying the reports its rule's stated contract gives it, and the judge, oxlint's RuleTester run in the case itself.
  */
-import { Array as Arr, Effect, Formatter, Option, Record, Result, String as Str } from "effect"
+import {
+	Array as Arr,
+	Effect,
+	FileSystem,
+	Formatter,
+	Option,
+	Path,
+	Record,
+	Result,
+	String as Str
+} from "effect"
 import { RuleTester } from "oxlint/plugins-dev"
 import { deepStrictEqual } from "#assert.ts"
 import {
@@ -1556,4 +1566,89 @@ export const ruleProperty = (
 		},
 		kept: [],
 		kills
+	})
+
+/** A kill a stale-kill case's test module states: of the checkout's one target file or of a file it does not hold, and the original it names. */
+export type CaseKill = Readonly<{ held: boolean; original: string }>
+
+/**
+ * A stale-kill case: the text of a checkout's one target file, a few parts over an alphabet whose originals overlap
+ * (mutants.fixtures.ts killCase's), and the kills a test module of the checkout states, each over that file or over one
+ * the checkout does not hold.
+ */
+export type StaleKillCase = Readonly<{
+	parts: ReadonlyArray<string>
+	kills: ReadonlyArray<CaseKill>
+}>
+
+export const staleKillCases: Gen<StaleKillCase> = (source) => ({
+	parts: source.draw(array(element(["x", "y", "xy", " "]), { min: 0, max: 6 })),
+	kills: source.draw(
+		array(
+			(s): CaseKill => ({
+				held: s.draw(
+					weighted([
+						[4, constant(true)],
+						[1, constant(false)]
+					])
+				),
+				original: s.draw(element(["x", "xy", "yx"]))
+			}),
+			{ min: 1, max: 3 }
+		)
+	)
+})
+
+/** The target file a case's kills name where they name the one the checkout holds, and the one they name where not. */
+const TARGET = "src/target.ts"
+const ABSENT = "src/absent.ts"
+
+/** The test module a case's kills stand in, beside the target. */
+const MODULE = "src/module.test.ts"
+
+/**
+ * What oxlint's RuleTester makes of a case's test module under no-stale-kill, in a checkout of its own (a directory
+ * holding `.git` and the case's target file): none when the rule reports exactly the kills `stale` says, each under its
+ * message, else what the tester threw.
+ */
+export const staleKillJudged = (c: StaleKillCase, stale: (kill: CaseKill) => boolean) =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		const path = yield* Path.Path
+		const checkout = yield* fs.makeTempDirectoryScoped({ prefix: "toolchain-stale-kill-" })
+		yield* fs.makeDirectory(path.join(checkout, ".git"))
+		yield* fs.makeDirectory(path.join(checkout, "src"))
+		yield* fs.writeFileString(path.join(checkout, TARGET), Arr.join(c.parts, ""))
+		const code = `export const kills = [\n${Arr.join(
+			Arr.map(
+				c.kills,
+				(kill) =>
+					`\t{ file: "${kill.held ? TARGET : ABSENT}", original: "${kill.original}", replacement: "z", why: "w" }`
+			),
+			",\n"
+		)}\n]\n`
+		const filename = path.join(checkout, MODULE)
+		const reports = Arr.filter(c.kills, stale).length
+		const ran = Result.try(() =>
+			new RuleTester({ languageOptions: LANGUAGE }).run(
+				"no-stale-kill",
+				plugin.rules["no-stale-kill"],
+				reports === 0
+					? { valid: [{ code, filename }], invalid: [] }
+					: {
+							valid: [],
+							invalid: [
+								{
+									code,
+									filename,
+									errors: Array.from({ length: reports }, () => ({ messageId: "stale" }))
+								}
+							]
+						}
+			)
+		)
+		return Result.match(ran, {
+			onSuccess: () => Option.none<string>(),
+			onFailure: (failure) => Option.some(Formatter.format(failure))
+		})
 	})

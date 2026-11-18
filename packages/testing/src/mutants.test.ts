@@ -22,7 +22,7 @@ import {
 	placeOf,
 	placesIn,
 	programGen,
-	programOf,
+	statementsText,
 	renamedOf,
 	renamesOf,
 	renamingFamily,
@@ -44,7 +44,7 @@ export const statementMutants = property.explore(programGen, {
 	check: (_resources, c) => (statements) =>
 		Effect.gen(function* () {
 			c.noteAll(Arr.map(statements, (statement) => statement.shape))
-			const text = programOf(statements)
+			const text = statementsText(statements)
 			const mutants = yield* mutantsOf([{ file: "program.ts", text }], noFamilies)
 			for (const mutant of mutants) {
 				strictEqual(mutant.source, text)

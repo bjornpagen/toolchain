@@ -167,7 +167,7 @@ export const counted = (counts: ReadonlyArray<Counts>) =>
 	)
 
 /** The program's text: its statements, one a line, in the body of a function named `run`. */
-export const programOf = (statements: ReadonlyArray<Statement>) =>
+export const statementsText = (statements: ReadonlyArray<Statement>) =>
 	`const run = () => {\n${Arr.join(
 		Arr.map(statements, (statement, index) => `\t${textOf(statement, index)}`),
 		"\n"

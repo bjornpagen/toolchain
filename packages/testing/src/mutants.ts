@@ -670,6 +670,14 @@ export class KillStale extends Schema.TaggedError<KillStale, { readonly brand: u
 	{ file: Schema.String, found: Schema.Finite, message: Schema.String }
 ) {}
 
+/** A kill whose file the checkout does not hold: stale, as a kill whose original stands nowhere is. */
+export const killMissing = (kill: Kill): KillStale =>
+	KillStale.make({
+		file: kill.file,
+		found: 0,
+		message: `the kill "${kill.why}" names ${kill.file}, which is not in the checkout`
+	})
+
 /** Every place `original` stands in `text`, overlapping places included; an empty `original` stands nowhere. */
 const placesOf = (text: string, original: string): ReadonlyArray<number> => {
 	const places: Array<number> = []
