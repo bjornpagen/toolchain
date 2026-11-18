@@ -1,0 +1,70 @@
+/* A part of the gadget theme: what a part may not hold. */
+
+[data-part="gadget-card"] { color: red; } /* // violation */
+@layer widget { /* // violation */
+	[data-part="gadget-card"] {
+		color: red;
+	}
+}
+@layer gadget; /* // violation */
+@media (hover: hover) { /* // violation */
+	[data-part="gadget-card"] {
+		color: red;
+	}
+}
+@import "./clean.css"; /* // violation */
+
+@layer gadget {
+	color: red; /* // violation */
+	@import "./clean.css"; /* // violation */
+	@apply flex; /* // violation */
+	@theme inline { /* // violation */
+		--gadget-size: 1px;
+	}
+	@utility gadget-flex { display: flex; } /* // violation */
+	@custom-variant wide (@media (width > 1800px)); /* // violation */
+	@layer inner { [data-part="gadget-card"] { color: red; } } /* // violation */
+	@font-face { font-family: Gadget; } /* // violation */
+	@property --gadget-size { syntax: "<length>"; } /* // violation */
+	@page { size: letter; } /* // violation */
+	@keyframes gadget-spin { /* // violation */
+		to {
+			rotate: 1turn;
+		}
+	}
+
+	.card { color: red; } /* // violation */
+	[data-slot="gadget-card"] { color: red; } /* // violation */
+	[data-part="widget-card"] { color: red; } /* // violation */
+	[data-part*="gadget-"] { color: red; } /* // violation */
+	[data-part|="gadget"] { color: red; } /* // violation */
+	[data-part="gadget-card" i] { color: red; } /* // violation */
+	[data-part] { color: red; } /* // violation */
+	[data-part^="gad"] { color: red; } /* // violation */
+	[data-part="gadget-card"], .card { color: red; } /* // violation */
+	body:has([data-part="gadget-card"]) { color: red; } /* // violation */
+	div:not([data-part^="gadget-"]) { color: red; } /* // violation */
+	:is(.card, [data-part="gadget-card"]) { color: red; } /* // violation */
+	[data-part="gadget-card"] + div { color: red; } /* // violation */
+	[data-part="gadget-card"] ~ div span { color: red; } /* // violation */
+	:root, [data-part="gadget-card"] { --gadget-ink: red; } /* // violation */
+	:root { color: red; } /* // violation */
+	:root { [data-part="gadget-card"] { color: red; } } /* // violation */
+
+	:where(:root) {
+		--gadget-ink: oklch(0.2 0 0);
+		--color-gadget-ink: red; /* // violation */
+		--spacing-gadget-gap: 1rem; /* // violation */
+		--paper: white; /* // violation */
+		--widget-ink: black; /* // violation */
+	}
+
+	[data-part="gadget-card"] {
+		color: red !important;
+		--other-gap: 1rem; /* // violation */
+
+		+ div { color: red; } /* // violation */
+		:not(&) { color: red; } /* // violation */
+		> span { color: red; }
+	}
+}

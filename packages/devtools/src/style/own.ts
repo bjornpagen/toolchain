@@ -14,9 +14,14 @@ import type { RuleOptions, StylesheetOption } from "#style/options.ts"
 
 export type { Finding } from "#shared/finding.ts"
 export { DevtoolFailure } from "#shared/devtool.ts"
-export type { CssNode, CssPosition } from "#style/css.ts"
-export { compact, parseStylesheet, wordsOf } from "#style/css.ts"
-export type { DeclarationOption, RuleOptions, StylesheetOption } from "#style/options.ts"
+export type { AttributeSelector, CssNode, CssPosition } from "#style/css.ts"
+export { attributeSelectorsOf, compact, parseStylesheet, selectorsOf, wordsOf } from "#style/css.ts"
+export type {
+	DeclarationOption,
+	LibraryThemeOption,
+	RuleOptions,
+	StylesheetOption
+} from "#style/options.ts"
 export { isNamedBy } from "#style/paths.ts"
 
 /** One file the run knows: its path, as the run holds it, and its text. */
@@ -44,11 +49,12 @@ export type SheetDeclaration = Extract<CssNode, { kind: "declaration" }>
  * may hold these at-rules at its top level besides the contract's, matched by name and by params up to whitespace,
  * and the declarations directly inside them are the rules' to check. When the sheet is a scoped sheet, the theme
  * tokens of its scope (`<namespace>-<scope>-*` inside `@theme`, colors aside) are the rules' to check too: the
- * contract's theme aliases do not hold them, and the engine hands them over as `tokens`. The reports are what the
- * rules say over the sheet's parsed nodes; they report under the stylesheet rule.
+ * contract's theme aliases do not hold them, and the engine hands them over as `tokens`. A library theme's sheet takes
+ * the rules' reports and never their at-rules, since its contract is its library's hooks alone. The reports are what
+ * the rules say over the sheet's parsed nodes; they report under the stylesheet rule.
  */
 export type SheetExtension = Readonly<{
-	/** The sheet, by repository-relative path. */
+	/** The sheet, by repository-relative path, or every sheet under a directory, by one ending in "/". */
 	sheet: string
 	atRules: ReadonlyArray<Readonly<{ name: string; params: string }>>
 	reports: (

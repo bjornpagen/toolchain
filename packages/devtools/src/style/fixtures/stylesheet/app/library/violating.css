@@ -1,0 +1,18 @@
+/* The gadget theme never enters as its layered import, which the top reports. // violation */
+@layer theme, base, module, widget, gadget, components, utilities;
+@import "tailwindcss";
+@import "../../library/entry/violating.css" layer(widget);
+@import "../../library/entry/violating.css" layer(widget); /* // violation */
+@import "../../library/entry/./violating.css" layer(widget); /* // violation */
+@import "../../library/part/clean.css"; /* // violation */
+@import "../../library/part/clean.css" layer(widget); /* // violation */
+
+:root {
+	--paper: oklch(0.99 0.01 100);
+	--widget-ink: oklch(0.2 0 0); /* // violation */
+}
+
+@theme inline {
+	--color-paper: var(--paper);
+	--color-widget-ink: var(--widget-ink);
+}

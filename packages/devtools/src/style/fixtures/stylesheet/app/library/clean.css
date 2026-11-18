@@ -1,0 +1,13 @@
+@layer theme, base, module, widget, gadget, components, utilities;
+@import "tailwindcss";
+@import "../../library/entry/violating.css" layer(widget);
+@import "../../library/part/clean.css" layer(gadget);
+
+:root {
+	--paper: oklch(0.99 0.01 100);
+}
+
+@theme inline {
+	--color-paper: var(--paper);
+	--color-widget-ink: var(--widget-ink);
+}

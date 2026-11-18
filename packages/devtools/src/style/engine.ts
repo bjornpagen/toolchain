@@ -10,6 +10,8 @@ import {
 	type AppStyleOptions,
 	appPathsOf,
 	FIXTURE_OPTIONS,
+	LIBRARY_FIXTURE_OPTIONS,
+	libraryEntryOf,
 	type RuleOptions,
 	RUNTIME_FIXTURE_OPTIONS,
 	stylesheetPathsOf
@@ -21,7 +23,8 @@ import type {
 	OwnStyleSet,
 	SourceReader
 } from "#style/own.ts"
-import { isNamedBy, isNamedByAny } from "#style/paths.ts"
+import { isNamedBy, isNamedByAny, moduleOf } from "#style/paths.ts"
+import type { LibraryTheme } from "#style/rules/library-theme.ts"
 import {
 	SECOND_STYLESHEET,
 	type SheetRole,
@@ -73,22 +76,49 @@ const fileFinding =
 	(rule: SheetRule, message: string) =>
 	(file: string): Finding => ({ file, line: 1, column: 1, rule, message })
 
+/** The library themes the options name, as the run finds them: each one's entry, the one file the run knows that its
+ * path names, and its parts, every other stylesheet the run knows under the entry's directory. */
+const libraryThemesOf = (
+	run: StyleRun
+): Effect.Effect<ReadonlyArray<LibraryTheme>, DevtoolFailure> =>
+	Effect.forEach(run.options.stylesheet.libraryThemes, (option) => {
+		const path = libraryEntryOf(option)
+		const [entry, ...others] = Arr.filter(run.known, isNamedBy(path))
+		if (entry === undefined || Arr.isReadonlyArrayNonEmpty(others)) {
+			return Effect.fail(
+				DevtoolFailure.make({
+					detail: `The style options name ${path} as a library theme's entry, which ${entry === undefined ? "no file the style linter reads" : "more than one file"} matches`
+				})
+			)
+		}
+		const directory = Str.slice(0, entry.length - option.entry.length)(entry)
+		return Effect.succeed({
+			option,
+			entry,
+			parts: Arr.filter(
+				run.known,
+				(file) => isStylesheetPath(file) && Str.startsWith(directory)(file) && file !== entry
+			)
+		})
+	})
+
 /** A stylesheet with the one role the options give it, none when they name it nowhere. A sheet they give two roles
  * is a failure, never a guess. */
 const roleOf =
-	(run: StyleRun) =>
+	(run: StyleRun, libraries: ReadonlyArray<LibraryTheme>) =>
 	(
 		file: string
 	): Effect.Effect<Readonly<{ file: string; role: Option.Option<SheetRole> }>, DevtoolFailure> => {
 		const [role, ...others] = sheetRolesOf({
 			file,
 			isApp: Arr.contains(run.appStylesheets, file),
-			options: run.options.stylesheet
+			options: run.options.stylesheet,
+			libraries
 		})
 		return Arr.isReadonlyArrayNonEmpty(others)
 			? Effect.fail(
 					DevtoolFailure.make({
-						detail: `${file} has more than one role among the app's stylesheet and the style options' scoped and passthrough sheets`
+						detail: `${file} has more than one role among the app's stylesheet and the style options' scoped and passthrough sheets and library themes`
 					})
 				)
 			: Effect.succeed({ file, role: Option.fromUndefinedOr(role) })
@@ -99,14 +129,17 @@ const roleOf =
 const sheetFindingsOf = (
 	run: StyleRun,
 	prepared: ReadonlyArray<OwnStyleRun>,
+	libraries: ReadonlyArray<LibraryTheme>,
 	sheet: Readonly<{ file: string; role: SheetRole }>
 ) =>
 	Effect.map(readText(sheet.file), (text) =>
 		Arr.map(
 			stylesheet({
+				file: sheet.file,
 				text,
 				role: sheet.role,
 				options: run.options.stylesheet,
+				libraries,
 				extensions: {
 					namespaces: Arr.flatMap(prepared, (own) => own.namespaces),
 					sheets: Arr.filter(
@@ -158,7 +191,8 @@ const styleFindingsOf = Effect.fn("styleFindingsOf")(function* (run: StyleRun) {
 	const prepared = yield* Effect.forEach(run.own, (own) =>
 		own.prepare({ read, stylesheet: run.options.stylesheet })
 	)
-	const sheets = yield* Effect.forEach(run.stylesheets, roleOf(run))
+	const libraries = yield* libraryThemesOf(run)
+	const sheets = yield* Effect.forEach(run.stylesheets, roleOf(run, libraries))
 	const unnamed = Arr.filterMap(sheets, (sheet) =>
 		Option.isNone(sheet.role) ? Result.succeed(sheet.file) : Result.failVoid
 	)
@@ -169,7 +203,7 @@ const styleFindingsOf = Effect.fn("styleFindingsOf")(function* (run: StyleRun) {
 				onSome: (role) => Result.succeed({ file: sheet.file, role })
 			})
 		),
-		(sheet) => sheetFindingsOf(run, prepared, sheet)
+		(sheet) => sheetFindingsOf(run, prepared, libraries, sheet)
 	)
 	const ownFindings = Arr.filter(
 		Arr.flatMap(prepared, (own) => own.findings),
@@ -184,8 +218,8 @@ const styleFindingsOf = Effect.fn("styleFindingsOf")(function* (run: StyleRun) {
 })
 
 /** An app's options as the engine may run them: the repository's own rules report under ids no shared rule and no
- * other of the app's own rule sets uses, and every exception names a rule the app runs, the style linter's, oxlint's
- * or its own. */
+ * other of the app's own rule sets uses, every exception names a rule the app runs, the style linter's, oxlint's or
+ * its own, and the layered imports list each library theme's entry, relative to the app's stylesheet, with its layer. */
 const checkedOptions = (
 	input: Readonly<{ app: string; options: AppStyleOptions }>
 ): Effect.Effect<AppStyleOptions, DevtoolFailure> => {
@@ -206,13 +240,30 @@ const checkedOptions = (
 		(exception) =>
 			!Arr.contains(STYLE_RULES, exception.rule) && !Arr.contains(ownIds, exception.rule)
 	)
-	return Arr.isReadonlyArrayNonEmpty(unknown)
+	if (Arr.isReadonlyArrayNonEmpty(unknown)) {
+		return Effect.fail(
+			DevtoolFailure.make({
+				detail: `The style options of ${input.app} list exceptions for rules it does not run: ${Arr.join(
+					Arr.map(unknown, (exception) => exception.rule),
+					", "
+				)}`
+			})
+		)
+	}
+	const { stylesheet: sheet, entryPoint } = input.options
+	const unlisted = Arr.filterMap(sheet.libraryThemes, (theme) => {
+		const module = moduleOf({ file: entryPoint, target: libraryEntryOf(theme) })
+		return Arr.some(
+			sheet.layeredImports,
+			(imported) => imported.module === module && imported.layer === theme.layer
+		)
+			? Result.failVoid
+			: Result.succeed(`{ module: "${module}", layer: "${theme.layer}" } for ${theme.directory}`)
+	})
+	return Arr.isReadonlyArrayNonEmpty(unlisted)
 		? Effect.fail(
 				DevtoolFailure.make({
-					detail: `The style options of ${input.app} list exceptions for rules it does not run: ${Arr.join(
-						Arr.map(unknown, (exception) => exception.rule),
-						", "
-					)}`
+					detail: `The style options of ${input.app} enter a library theme only as a layered import, and their layeredImports lack ${Arr.join(unlisted, ", ")}`
 				})
 			)
 		: Effect.succeed(input.options)
@@ -327,6 +378,21 @@ const RUNTIME_SUITE: FixtureSuite = {
 	cases: [{ directory: "stylesheet/app/runtime", rule: "stylesheet" }]
 }
 
+/** The stylesheet rule over library themes: the app sheets that import their entries, the passthroughs that may not,
+ * and each theme's entry and parts. It reads the shared fixtures' tree, so its cases are the only directories it
+ * judges. */
+const LIBRARY_SUITE: FixtureSuite = {
+	name: "style, library themes",
+	root: FIXTURES_ROOT,
+	sheets: isSharedSheet,
+	options: LIBRARY_FIXTURE_OPTIONS,
+	own: [],
+	cases: Arr.map(
+		["app/library", "passthrough/library", "library/entry", "library/part"],
+		(directory): FixtureCase => ({ directory: `stylesheet/${directory}`, rule: "stylesheet" })
+	)
+}
+
 /** An own rule set's suite: a case for each id it reports under, in the id's directory, and the set's other cases.
  * It reads every stylesheet outside support/. */
 const ownSuiteOf = (rules: OwnStyleRules): FixtureSuite => ({
@@ -393,14 +459,17 @@ const suiteMismatchesOf = Effect.fn("suiteMismatchesOf")(function* (suite: Fixtu
 	)
 })
 
-/** The fixture suites to run, all at once: the stylesheet rule's (and its run under a runtime layer) when the dev tools
- * run as the repository's own package, and each own rule set's; each with its name, its root, how many rules it
- * proves and its mismatches. */
+/** The fixture suites to run, all at once: the stylesheet rule's (and its runs under a runtime layer and over library
+ * themes) when the dev tools run as the repository's own package, and each own rule set's; each with its name, its
+ * root, how many rules it proves and its mismatches. */
 export const fixtureRuns = (
 	input: Readonly<{ shared: boolean; own: ReadonlyArray<OwnStyleRules> }>
 ) =>
 	Effect.forEach(
-		[...(input.shared ? [SHARED_SUITE, RUNTIME_SUITE] : []), ...Arr.map(input.own, ownSuiteOf)],
+		[
+			...(input.shared ? [SHARED_SUITE, RUNTIME_SUITE, LIBRARY_SUITE] : []),
+			...Arr.map(input.own, ownSuiteOf)
+		],
 		(suite) =>
 			Effect.map(suiteMismatchesOf(suite), (mismatches) => ({
 				name: suite.name,

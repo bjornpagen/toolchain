@@ -14,6 +14,23 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: a library theme is a stylesheet role (2026-11-18)
+
+Each app's `stylesheet` options in web.ts take `libraryThemes`: the sheets in one directory of the app that draw one
+library's markup, which the app renders and does not write, so no utility reaches it (edullm's qti-app draws plate's
+questions this way). Before you move `vendor/toolchain` past this section:
+
+1. **No library theme** (superstarter, edullm's nextjs-app): state `libraryThemes: []` in each app's `stylesheet`.
+2. **A library theme**: state `{ directory, entry, layer, anchor: { attribute, prefix }, tokens }`, the directory
+   repository-relative and ending in `/`, and list its entry in `layeredImports` as
+   `{ module: <the entry's path from the app's stylesheet>, layer }`; `superstyle` refuses to run when that import is
+   missing. The app's stylesheet imports the entry once, as `@import "<module>" layer(<layer>)`; the entry holds only
+   `@import "./<part>.css";` lines, one for each other sheet in the directory; every part holds only
+   `@layer <layer> { … }` blocks, whose every selector styles an element carrying the anchor
+   (`[data-slot="plate-…"]`, `[data-slot^="plate-"]`) or one inside it, and whose custom properties start with one of
+   `tokens`, which no other sheet may declare. `LibraryTheme` in `packages/devtools/src/style/options.ts` has the
+   whole contract.
+
 ## Consumer migration: a runner config's mutation is loaded by mutate alone (2026-11-17)
 
 `defineRunner`'s `families` is gone: a runner config states `mutation`, a load that only `toolchain-test mutate` calls,

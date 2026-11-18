@@ -1,8 +1,15 @@
-import { Array as Arr, Schema } from "effect"
+import { Array as Arr, Schema, String as Str } from "effect"
 import { OwnStyleRules } from "#style/own.ts"
 
 /** A file or directory the options name, repository-relative, as `#style/paths.ts` matches it. */
 const RepositoryPath = Schema.NonEmptyString
+
+/** A directory the options name, repository-relative and ending in "/", as `#style/paths.ts` matches it. */
+const DirectoryPath = RepositoryPath.check(
+	Schema.makeFilter((path: string) => Str.endsWith("/")(path), {
+		expected: 'a repository-relative directory ending in "/"'
+	})
+)
 
 /** One CSS declaration, exactly as a stylesheet must write it. */
 const Declaration = Schema.Struct({ property: Schema.NonEmptyString, value: Schema.String })
@@ -29,9 +36,40 @@ const ScopedSheet = Schema.Struct({
 	pages: Schema.Array(Page)
 })
 
+/**
+ * A library theme: the stylesheets in one directory of the app that draw one library's markup, which the app renders
+ * and does not write (a library's server-rendered parts, whose elements carry the library's hooks and never the app's
+ * classes), so no utility reaches it. Every stylesheet under the directory is the theme's: the entry, which holds only
+ * comments and its parts' imports, each part in the directory once, as `@import "./<part>.css";`, and the parts, whose
+ * top level holds only comments and `@layer <layer> { … }` blocks of style rules, conditioned by `@media`, `@supports`
+ * and `@container` and nested as needed. The app's stylesheet alone imports the entry, exactly once, as its layered
+ * import into the layer, so the theme styles over Tailwind's reset and the app's classes override it.
+ *
+ * The theme draws the library's markup alone, never the app's: every selector styles an element that carries the
+ * anchor, an attribute selector on the library's hook whose value begins with its prefix (`[data-slot="plate-…"]`,
+ * `[data-slot^="plate-"]`), or one inside such an element. A `:root` rule, the one exception, holds only the theme's
+ * tokens. Every custom property it declares lies under one of its token prefixes, which only it declares; the app's
+ * shared tokens, `--color-*` and Tailwind's theme namespaces stay the app's stylesheet's, as do fonts, animations,
+ * `@theme` and utilities. Its values are free, `!important` among them: a library such as UI SDK writes inline styles
+ * that a theme must sometimes override.
+ */
+const LibraryTheme = Schema.Struct({
+	/** The theme's directory: every stylesheet under it is the theme's. */
+	directory: DirectoryPath,
+	/** The entry's file name in the directory, such as "theme.css". */
+	entry: Schema.NonEmptyString,
+	/** The layer the app's stylesheet imports the entry into, and every part writes its rules in, such as "plate". */
+	layer: Schema.NonEmptyString,
+	/** The library's hook: the attribute its markup carries, and the prefix every value of the library's own begins with,
+	 * such as `data-slot` and "plate-". */
+	anchor: Schema.Struct({ attribute: Schema.NonEmptyString, prefix: Schema.NonEmptyString }),
+	/** The prefixes of the custom properties the theme declares, such as "--plate-". */
+	tokens: Schema.Array(Schema.NonEmptyString)
+})
+
 /** The stylesheet contract: what the app's stylesheet (components.json's tailwind.css) and the scoped sheets may
- * hold, and the passthrough sheets that hold one fixed text. Any other stylesheet is a second theme or component
- * CSS owner. */
+ * hold, the passthrough sheets that hold one fixed text, and the library themes that draw one library's markup. Any
+ * other stylesheet is a second theme or component CSS owner. */
 const StylesheetOptions = Schema.Struct({
 	/** The modules the app's stylesheet may `@import`, as written between the quotes. */
 	imports: Schema.Array(Schema.NonEmptyString),
@@ -63,7 +101,10 @@ const StylesheetOptions = Schema.Struct({
 	themeAliases: Schema.Array(Declaration),
 	scopedSheets: Schema.Array(ScopedSheet),
 	/** Stylesheets that hold exactly this text, trimmed: an isolated preview that only imports the theme. */
-	passthrough: Schema.Array(Schema.Struct({ path: RepositoryPath, text: Schema.NonEmptyString }))
+	passthrough: Schema.Array(Schema.Struct({ path: RepositoryPath, text: Schema.NonEmptyString })),
+	/** The library themes, each of whose entries the layered imports list, relative to the app's stylesheet, with its
+	 * layer. */
+	libraryThemes: Schema.Array(LibraryTheme)
 })
 
 /** An inline style operand one file may use: an expression, as written up to whitespace, or any member of a module's
@@ -151,14 +192,25 @@ export type DeclarationOption = (typeof Declaration)["Type"]
 
 export type ScopedSheetOption = (typeof ScopedSheet)["Type"]
 
+export type LibraryThemeOption = (typeof LibraryTheme)["Type"]
+
 export type MarkupOption = (typeof MarkupOptions)["Type"]
 
 export type OperandOption = (typeof Operand)["Type"]
 
-/** Every path the stylesheet contract names, for the check that each names a file the run knows. */
+/** A library theme's entry, by its repository-relative path. */
+export const libraryEntryOf = (theme: LibraryThemeOption): string =>
+	`${theme.directory}${theme.entry}`
+
+/** Every path the stylesheet contract names, for the check that each names a file the run knows: a library theme's
+ * directory, and its entry, among them. */
 export const stylesheetPathsOf = (options: RuleOptions): ReadonlyArray<string> => [
 	...Arr.map(options.stylesheet.scopedSheets, (sheet) => sheet.path),
-	...Arr.map(options.stylesheet.passthrough, (sheet) => sheet.path)
+	...Arr.map(options.stylesheet.passthrough, (sheet) => sheet.path),
+	...Arr.flatMap(options.stylesheet.libraryThemes, (theme) => [
+		theme.directory,
+		libraryEntryOf(theme)
+	])
 ]
 
 /** Every path an app's options name, the markup rule's doors and the exceptions' files among them: oxlint does not
@@ -198,7 +250,8 @@ const PASSTHROUGH_TEXT = '@import "../../support/theme.css";'
 
 /** The options the stylesheet fixtures run under: names that point into the rule's own fixture directory. The one layered
  * import is proven by the app sheets under stylesheet/app/layered/ and stylesheet/app/unordered/, and refused in a
- * scoped sheet under stylesheet/scoped/layered/. They name no runtime layer; RUNTIME_FIXTURE_OPTIONS name one. */
+ * scoped sheet under stylesheet/scoped/layered/. They name no runtime layer, RUNTIME_FIXTURE_OPTIONS name one, and no
+ * library theme, which LIBRARY_FIXTURE_OPTIONS name. */
 export const FIXTURE_OPTIONS: RuleOptions = {
 	stylesheet: {
 		imports: ["tailwindcss"],
@@ -228,7 +281,8 @@ export const FIXTURE_OPTIONS: RuleOptions = {
 			{ path: `${FIXTURES}/stylesheet/passthrough/violating.css`, text: PASSTHROUGH_TEXT },
 			{ path: `${FIXTURES}/stylesheet/passthrough/clean.css`, text: PASSTHROUGH_TEXT },
 			{ path: `${FIXTURES}/stylesheet/unnamed/clean.css`, text: PASSTHROUGH_TEXT }
-		]
+		],
+		libraryThemes: []
 	}
 }
 
@@ -236,4 +290,53 @@ export const FIXTURE_OPTIONS: RuleOptions = {
 export const RUNTIME_FIXTURE_OPTIONS: RuleOptions = {
 	...FIXTURE_OPTIONS,
 	stylesheet: { ...FIXTURE_OPTIONS.stylesheet, runtimeLayers: ["runtime"] }
+}
+
+const LIBRARY = `${FIXTURES}/stylesheet/library`
+
+/**
+ * The fixtures' options with two library themes, each in the directory of one case, whose two fixtures are the
+ * theme's entry and a part: stylesheet/library/entry/ is the widget theme, whose entry is its violating fixture and
+ * its clean fixture a part, beside dead.css, a part the entry never imports; stylesheet/library/part/ is the gadget
+ * theme, whose entry is its clean fixture and its violating fixture its one part. The app sheets under
+ * stylesheet/app/library/ import both entries, and the passthroughs under stylesheet/passthrough/library/, each its
+ * text exactly, import one entry or none. The gadget theme's token prefixes reach under `--color-` and `--spacing-` on purpose, so its part proves that
+ * the app's namespaces stay the app's even under a prefix of the theme's.
+ */
+export const LIBRARY_FIXTURE_OPTIONS: RuleOptions = {
+	stylesheet: {
+		...FIXTURE_OPTIONS.stylesheet,
+		layeredImports: [
+			...FIXTURE_OPTIONS.stylesheet.layeredImports,
+			{ module: "../../library/entry/violating.css", layer: "widget" },
+			{ module: "../../library/part/clean.css", layer: "gadget" }
+		],
+		passthrough: [
+			...FIXTURE_OPTIONS.stylesheet.passthrough,
+			{
+				path: `${FIXTURES}/stylesheet/passthrough/library/violating.css`,
+				text: '@import "../../library/part/clean.css"; /* // violation */'
+			},
+			{
+				path: `${FIXTURES}/stylesheet/passthrough/library/clean.css`,
+				text: '@import "../../app/library/clean.css";'
+			}
+		],
+		libraryThemes: [
+			{
+				directory: `${LIBRARY}/entry/`,
+				entry: "violating.css",
+				layer: "widget",
+				anchor: { attribute: "data-slot", prefix: "widget-" },
+				tokens: ["--widget-", "--kit-"]
+			},
+			{
+				directory: `${LIBRARY}/part/`,
+				entry: "clean.css",
+				layer: "gadget",
+				anchor: { attribute: "data-part", prefix: "gadget-" },
+				tokens: ["--gadget-", "--color-gadget-", "--spacing-gadget-"]
+			}
+		]
+	}
 }

@@ -302,3 +302,202 @@ export const selectorsOf = (selector: string): ReadonlyArray<string> => {
 	}
 	return Arr.filter([...selectors, Str.trim(current)], Str.isNonEmpty)
 }
+
+/** How a complex selector steps from one compound to the next: into the subtree before it (descendant, child) or
+ * across to a sibling (next, subsequent). */
+type Combinator = "descendant" | "child" | "next-sibling" | "subsequent-sibling"
+
+const COMBINATORS: ReadonlyMap<string, Combinator> = new Map([
+	[">", "child"],
+	["+", "next-sibling"],
+	["~", "subsequent-sibling"]
+])
+
+/** One compound of a complex selector, with the combinator that leads to it: none for the first compound, unless the
+ * selector is relative (`> span`, nested or inside `:has()`). */
+export type SelectorStep = Readonly<{ combinator: Option.Option<Combinator>; compound: string }>
+
+/** A complex selector's compounds, left to right, each with the combinator that leads to it. */
+export const stepsOf = (selector: string): ReadonlyArray<SelectorStep> => {
+	const steps: Array<SelectorStep> = []
+	let compound = ""
+	let combinator: Option.Option<Combinator> = Option.none()
+	let depth = 0
+	let quote: Option.Option<string> = Option.none()
+	for (const character of selector) {
+		const explicit = depth === 0 && Option.isNone(quote) ? COMBINATORS.get(character) : undefined
+		const breaks = depth === 0 && Option.isNone(quote) && isWhitespace(character)
+		if (explicit !== undefined || breaks) {
+			if (Str.isNonEmpty(compound)) {
+				steps.push({ combinator, compound })
+				compound = ""
+				combinator = Option.some("descendant")
+			}
+			combinator = explicit === undefined ? combinator : Option.some(explicit)
+		} else {
+			if (Option.isSome(quote)) {
+				quote = character === quote.value ? Option.none() : quote
+			} else {
+				depth += character === "(" || character === "[" ? 1 : 0
+				depth -= (character === ")" || character === "]") && depth > 0 ? 1 : 0
+				quote = character === '"' || character === "'" ? Option.some(character) : Option.none()
+			}
+			compound = `${compound}${character}`
+		}
+	}
+	return Str.isNonEmpty(compound) ? [...steps, { combinator, compound }] : steps
+}
+
+/** One attribute selector: the attribute's name and, when it matches a value, the operator, the value unquoted and
+ * the case flag. */
+export type AttributeSelector = Readonly<{
+	name: string
+	match: Option.Option<Readonly<{ operator: string; value: string; flag: Option.Option<string> }>>
+}>
+
+/** One simple selector of a compound: an attribute selector, a pseudo-class or pseudo-element with its argument, the
+ * nesting selector `&`, or a type, class, id or universal selector. */
+type SimpleSelector =
+	| Readonly<{ kind: "attribute"; attribute: AttributeSelector }>
+	| Readonly<{ kind: "pseudo"; name: string; argument: Option.Option<string> }>
+	| Readonly<{ kind: "nesting" }>
+	| Readonly<{ kind: "other"; text: string }>
+
+const ATTRIBUTE_OPERATORS: ReadonlyArray<string> = ["~=", "|=", "^=", "$=", "*=", "="]
+
+const isAttributeNameCharacter = (character: string): boolean =>
+	!isWhitespace(character) && !Arr.contains(["~", "|", "^", "$", "*", "="], character)
+
+/** A quoted value's text, unescaped, and what follows its closing quote. */
+const quotedOf = (text: string, quote: string): Readonly<{ value: string; rest: string }> => {
+	let value = ""
+	let rest = ""
+	let place: "value" | "escaped" | "after" = "value"
+	for (const character of Str.slice(1)(text)) {
+		if (place === "after") {
+			rest = `${rest}${character}`
+		} else if (place === "escaped") {
+			value = `${value}${character}`
+			place = "value"
+		} else if (character === "\\") {
+			place = "escaped"
+		} else if (character === quote) {
+			place = "after"
+		} else {
+			value = `${value}${character}`
+		}
+	}
+	return { value, rest: Str.trim(rest) }
+}
+
+/** An unquoted value, up to whitespace, and what follows it. */
+const unquotedOf = (text: string): Readonly<{ value: string; rest: string }> => {
+	const value = Arr.join(
+		Arr.takeWhile(Arr.fromIterable(text), (character) => !isWhitespace(character)),
+		""
+	)
+	return { value, rest: Str.trim(Str.slice(value.length)(text)) }
+}
+
+/** An attribute selector from the text between its brackets. */
+const attributeOf = (inner: string): AttributeSelector => {
+	const trimmed = Str.trim(inner)
+	const name = Arr.join(Arr.takeWhile(Arr.fromIterable(trimmed), isAttributeNameCharacter), "")
+	const rest = Str.trim(Str.slice(name.length)(trimmed))
+	return {
+		name,
+		match: Option.map(
+			Arr.findFirst(ATTRIBUTE_OPERATORS, (operator) => Str.startsWith(operator)(rest)),
+			(operator) => {
+				const operand = Str.trim(Str.slice(operator.length)(rest))
+				const opening = Str.charAt(0)(operand)
+				const quoted = Option.filter(opening, (character) => character === '"' || character === "'")
+				const { value, rest: after } = Option.match(quoted, {
+					onNone: () => unquotedOf(operand),
+					onSome: (quote) => quotedOf(operand, quote)
+				})
+				return {
+					operator,
+					value,
+					flag: Str.isNonEmpty(after) ? Option.some(after) : Option.none()
+				}
+			}
+		)
+	}
+}
+
+const PIECE_STARTS: ReadonlyArray<string> = ["[", ":", "&", ".", "#"]
+
+/** A compound's simple selectors as written, each starting where the one before ends. */
+const piecesOf = (compound: string): ReadonlyArray<string> => {
+	const pieces: Array<string> = []
+	let piece = ""
+	let depth = 0
+	let quote: Option.Option<string> = Option.none()
+	for (const character of compound) {
+		if (Option.isSome(quote)) {
+			quote = character === quote.value ? Option.none() : quote
+		} else {
+			const starts =
+				depth === 0 &&
+				Arr.contains(PIECE_STARTS, character) &&
+				!(character === ":" && piece === ":")
+			if (starts && Str.isNonEmpty(piece)) {
+				pieces.push(piece)
+				piece = ""
+			}
+			depth += character === "(" || character === "[" ? 1 : 0
+			depth -= (character === ")" || character === "]") && depth > 0 ? 1 : 0
+			quote = character === '"' || character === "'" ? Option.some(character) : Option.none()
+		}
+		piece = `${piece}${character}`
+	}
+	return Str.isNonEmpty(piece) ? [...pieces, piece] : pieces
+}
+
+const simpleOf = (piece: string): SimpleSelector => {
+	if (Str.startsWith("[")(piece)) {
+		return {
+			kind: "attribute",
+			attribute: attributeOf(Str.slice(1, Str.endsWith("]")(piece) ? -1 : piece.length)(piece))
+		}
+	}
+	if (Str.startsWith(":")(piece)) {
+		return Option.match(Str.indexOf("(")(piece), {
+			onNone: (): SimpleSelector => ({ kind: "pseudo", name: piece, argument: Option.none() }),
+			onSome: (open): SimpleSelector => ({
+				kind: "pseudo",
+				name: Str.slice(0, open)(piece),
+				argument: Option.some(
+					Str.slice(open + 1, Str.endsWith(")")(piece) ? -1 : piece.length)(piece)
+				)
+			})
+		})
+	}
+	return piece === "&" ? { kind: "nesting" } : { kind: "other", text: piece }
+}
+
+/** A compound's simple selectors, left to right. */
+export const simpleSelectorsOf = (compound: string): ReadonlyArray<SimpleSelector> =>
+	Arr.map(piecesOf(compound), simpleOf)
+
+/** Every attribute selector a selector holds, at any depth: inside `:is()`, `:where()`, `:not()` and `:has()` too. */
+export const attributeSelectorsOf = (selector: string): ReadonlyArray<AttributeSelector> =>
+	Arr.flatMap(selectorsOf(selector), (complex) =>
+		Arr.flatMap(stepsOf(complex), (step) =>
+			Arr.flatMap(simpleSelectorsOf(step.compound), (simple) => {
+				switch (simple.kind) {
+					case "attribute":
+						return [simple.attribute]
+					case "pseudo":
+						return Option.match(simple.argument, {
+							onNone: () => [],
+							onSome: attributeSelectorsOf
+						})
+					case "nesting":
+					case "other":
+						return []
+				}
+			})
+		)
+	)

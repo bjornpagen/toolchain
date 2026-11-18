@@ -1,0 +1,73 @@
+/* A part of the widget theme: every construct a part may hold. */
+
+@layer widget {
+	:root {
+		--widget-ink: oklch(0.2 0 0);
+		--kit-ring: var(--widget-ink);
+	}
+
+	:where(:root) {
+		--widget-paper: white;
+	}
+
+	[data-slot="widget-card"] {
+		--widget-gap: 1rem;
+		color: var(--widget-ink);
+		padding: var(--widget-gap) !important;
+	}
+
+	[data-slot^="widget-"][data-open] > [data-slot="button"],
+	:where([data-slot="widget-list"]) li + li,
+	[data-slot="widget-list"] > li ~ li span,
+	:is([data-slot="widget-a"], [data-slot^="widget-b"] .label),
+	:where([data-slot="widget-a"], [data-slot='widget-b']) img:not([data-slot]),
+	[data-slot="widget-a"]:has(+ [data-slot="widget-b"]):not(:first-child) {
+		margin: 0;
+	}
+
+	@media (forced-colors: active) {
+		[data-slot="widget-card"] {
+			outline: 1px solid;
+		}
+
+		@supports (display: grid) {
+			[data-slot="widget-grid"] {
+				display: grid;
+			}
+		}
+	}
+
+	@container (width > 30rem) {
+		[data-slot="widget-card"] {
+			padding: 2rem;
+		}
+	}
+
+	[data-slot="widget-nested"] {
+		color: red;
+
+		.label {
+			color: blue;
+		}
+
+		> span {
+			color: green;
+		}
+
+		& + & {
+			margin: 0;
+		}
+
+		@media (hover: hover) {
+			&:hover {
+				color: green;
+			}
+		}
+	}
+}
+
+@layer widget {
+	[data-slot="widget-more"] {
+		color: red;
+	}
+}

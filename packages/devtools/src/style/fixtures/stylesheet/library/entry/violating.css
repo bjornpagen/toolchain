@@ -1,0 +1,18 @@
+/* The widget theme's entry, which never imports dead.css, reported at the top. // violation */
+
+@import "./clean.css";
+@import "./clean.css"; /* // violation */
+@import "./missing.css"; /* // violation */
+@import "./violating.css"; /* // violation */
+@import "./clean.css" layer(widget); /* // violation */
+@import './clean.css'; /* // violation */
+@import url("./clean.css"); /* // violation */
+@import "../part/violating.css"; /* // violation */
+@import "tailwindcss"; /* // violation */
+@layer widget { /* // violation */
+	[data-slot="widget-card"] {
+		color: red;
+	}
+}
+[data-slot="widget-card"] { color: red; } /* // violation */
+@media (width > 40rem) {} /* // violation */

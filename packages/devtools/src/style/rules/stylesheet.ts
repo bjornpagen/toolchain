@@ -10,6 +10,15 @@ import {
 import type { DeclarationOption, ScopedSheetOption, StylesheetOption } from "#style/options.ts"
 import type { SheetExtension, SheetReport } from "#style/own.ts"
 import { isNamedBy } from "#style/paths.ts"
+import {
+	appImportReports,
+	entryReports,
+	isThemeSheet,
+	type LibraryTheme,
+	libraryOwnerOf,
+	partReports,
+	strayImportReports
+} from "#style/rules/library-theme.ts"
 
 /** The theme namespaces Tailwind reads besides colors: a scope's tokens under them belong to its sheet. */
 const THEME_NAMESPACES: ReadonlyArray<string> = [
@@ -37,11 +46,14 @@ const THEME_NAMESPACES: ReadonlyArray<string> = [
 ]
 
 /** The role the options give one stylesheet: the app's own, the home of the shared tokens and the one sheet that
- * imports; a scoped sheet, the home of its scope's tokens; or a passthrough, which holds exactly its text. */
+ * imports; a scoped sheet, the home of its scope's tokens; a passthrough, which holds exactly its text; or a library
+ * theme's entry or one of its parts, which draw one library's markup through its hooks alone. */
 export type SheetRole =
 	| Readonly<{ kind: "app" }>
 	| Readonly<{ kind: "scoped"; sheet: ScopedSheetOption }>
 	| Readonly<{ kind: "passthrough"; text: string }>
+	| Readonly<{ kind: "library-entry"; theme: LibraryTheme }>
+	| Readonly<{ kind: "library-part"; theme: LibraryTheme }>
 
 /** One maintained stylesheet as the contract reads it: the scope whose tokens it owns, none for the app's own
  * stylesheet, and the utilities and pages it alone may declare. */
@@ -397,8 +409,15 @@ const checkDeclaration = (
 		}
 	})
 
-/** A theme declaration outside its home: a scope's tokens in another sheet, the shared theme in a scoped one. */
+/** A theme declaration outside its home: a library theme's tokens in any sheet of the contract's, a scope's tokens in
+ * another sheet, the shared theme in a scoped one. */
 const placementViolation = (context: Context, node: Declaration): Option.Option<string> => {
+	const library = libraryOwnerOf(context.options.libraryThemes, node.property)
+	if (Option.isSome(library)) {
+		return Option.some(
+			`${library.value.prefix} tokens belong only in library theme ${library.value.theme.directory}.`
+		)
+	}
 	const owner = ownerOf(context, node.property)
 	const inPlace = Option.match(owner, {
 		onNone: () => Option.isNone(context.sheet.scope),
@@ -447,15 +466,20 @@ const paletteOf = (nodes: ReadonlyArray<CssNode>): ReadonlySet<string> =>
 		)
 	)
 
-/** What the rule says about a stylesheet the options give no role: the app's stylesheet, the scoped sheets and the
- * passthroughs are the only ones. */
+/** What the rule says about a stylesheet the options give no role: the app's stylesheet, the scoped sheets, the
+ * passthroughs and the library themes' sheets are the only ones. */
 export const SECOND_STYLESHEET =
 	"A maintained stylesheet must not create a second theme or component CSS owner."
 
 /** Every role the options give a stylesheet: none for a sheet they do not name, and more than one for a sheet they
  * name twice. */
 export const sheetRolesOf = (
-	input: Readonly<{ file: string; isApp: boolean; options: StylesheetOption }>
+	input: Readonly<{
+		file: string
+		isApp: boolean
+		options: StylesheetOption
+		libraries: ReadonlyArray<LibraryTheme>
+	}>
 ): ReadonlyArray<SheetRole> => {
 	const isNamed = (path: string): boolean => isNamedBy(path)(input.file)
 	const app: ReadonlyArray<SheetRole> = input.isApp ? [{ kind: "app" }] : []
@@ -468,11 +492,28 @@ export const sheetRolesOf = (
 			isNamed(entry.path)
 				? Result.succeed({ kind: "passthrough", text: entry.text })
 				: Result.failVoid
-		)
+		),
+		...Arr.filterMap(input.libraries, (theme): Result.Result<SheetRole, void> => {
+			if (!isThemeSheet(theme)(input.file)) {
+				return Result.failVoid
+			}
+			return Result.succeed(
+				input.file === theme.entry
+					? { kind: "library-entry", theme }
+					: { kind: "library-part", theme }
+			)
+		})
 	]
 }
 
 const LONGEST_FIRST = Order.mapInput(Order.flip(Order.Number), (scope: string) => scope.length)
+
+/** The theme namespaces, Tailwind's and the repository's own rules': a scope's tokens under them belong to its sheet,
+ * and a library theme declares none. */
+const namespacesOf = (extensions: Extensions): ReadonlyArray<string> => [
+	...THEME_NAMESPACES,
+	...extensions.namespaces
+]
 
 /** What the repository's own rules add to the stylesheet contract: their theme namespaces, which hold in every sheet,
  * and their additions to this sheet's contract. */
@@ -485,13 +526,13 @@ type Extensions = Readonly<{
  * over it. */
 const contractReports = (
 	input: Readonly<{
-		text: string
+		nodes: ReadonlyArray<CssNode>
 		sheet: Sheet
 		options: StylesheetOption
 		extensions: Extensions
 	}>
 ): ReadonlyArray<SheetReport> => {
-	const nodes = parseStylesheet(input.text)
+	const { nodes } = input
 	const context: Context = {
 		options: input.options,
 		sheet: input.sheet,
@@ -499,7 +540,7 @@ const contractReports = (
 			Arr.dedupe(Arr.map(input.options.scopedSheets, (sheet) => sheet.scope)),
 			LONGEST_FIRST
 		),
-		namespaces: [...THEME_NAMESPACES, ...input.extensions.namespaces],
+		namespaces: namespacesOf(input.extensions),
 		palette: paletteOf(nodes),
 		nodes,
 		extensions: input.extensions.sheets
@@ -523,43 +564,64 @@ const contractReports = (
 	]
 }
 
+/** What the repository's own rules say over a library theme's sheet: their reports, never their at-rules, since the
+ * theme's contract is its library's hooks alone. */
+const extensionReports = (
+	nodes: ReadonlyArray<CssNode>,
+	extensions: Extensions
+): ReadonlyArray<SheetReport> =>
+	Arr.flatMap(extensions.sheets, (extension) => extension.reports({ nodes, tokens: [] }))
+
 /**
- * The app's stylesheet (the one components.json names) and the scoped sheets the options name are the only
+ * The app's stylesheet (the one components.json names) and the scoped sheets the options name are the theme's only
  * maintained stylesheets, each the one home of its tokens; components compose utilities. A sheet holds the theme's
  * palette under the theme selectors, `@theme inline` aliases, the base layer's rules, and exactly the variants the
- * options admit; the app's stylesheet alone imports (its layered imports after the one layer order), and a scoped
- * sheet alone declares its utilities and pages. A passthrough holds exactly its text. The repository's own rules
- * extend the contract of the sheets they name: `extensions.sheets` are this sheet's.
+ * options admit; the app's stylesheet alone imports (its layered imports after the one layer order, each library
+ * theme's entry among them, once), and a scoped sheet alone declares its utilities and pages. A passthrough holds
+ * exactly its text, which imports no library theme. A library theme's sheets draw markup the app renders and does not
+ * write, through the library's hooks alone, in the library's layer (`#style/rules/library-theme.ts`). The repository's
+ * own rules extend the contract of the sheets they name: `extensions.sheets` are this sheet's. `file` is the sheet's
+ * path as the run holds it, which its imports are read beside.
  */
 export const stylesheet = (
 	input: Readonly<{
+		file: string
 		text: string
 		role: SheetRole
 		options: StylesheetOption
+		libraries: ReadonlyArray<LibraryTheme>
 		extensions: Extensions
 	}>
 ): ReadonlyArray<SheetReport> => {
-	const { text, role, options, extensions } = input
+	const { file, text, role, options, libraries, extensions } = input
+	const nodes = parseStylesheet(text)
 	switch (role.kind) {
 		case "passthrough":
-			return Str.trim(text) === Str.trim(role.text)
-				? []
-				: [
-						{
-							at: TOP,
-							message: "A passthrough stylesheet holds exactly the text the style options give it."
-						}
-					]
+			return [
+				...(Str.trim(text) === Str.trim(role.text)
+					? []
+					: [
+							{
+								at: TOP,
+								message:
+									"A passthrough stylesheet holds exactly the text the style options give it."
+							}
+						]),
+				...strayImportReports({ file, nodes, themes: libraries })
+			]
 		case "app":
-			return contractReports({
-				text,
-				options,
-				extensions,
-				sheet: { scope: Option.none(), utilities: [], pages: [] }
-			})
+			return [
+				...contractReports({
+					nodes,
+					options,
+					extensions,
+					sheet: { scope: Option.none(), utilities: [], pages: [] }
+				}),
+				...appImportReports({ file, nodes, themes: libraries })
+			]
 		case "scoped":
 			return contractReports({
-				text,
+				nodes,
 				options,
 				extensions,
 				sheet: {
@@ -568,5 +630,12 @@ export const stylesheet = (
 					pages: role.sheet.pages
 				}
 			})
+		case "library-entry":
+			return [...entryReports({ theme: role.theme, nodes }), ...extensionReports(nodes, extensions)]
+		case "library-part":
+			return [
+				...partReports({ theme: role.theme, namespaces: namespacesOf(extensions), nodes }),
+				...extensionReports(nodes, extensions)
+			]
 	}
 }
