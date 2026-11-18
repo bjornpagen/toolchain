@@ -470,8 +470,8 @@ const transaction = (template: DatabaseTemplate): DatabaseNeed<Transaction> =>
  * NeedFailed, as a need that does not open when readied fails its property once, never a case. Opened when readied,
  * every member of a choice built its template at once on the worker's one connection lease: grizzle's
  * test/pg/fin/capacity-table.test.ts, whose nine seat templates are one choice, died LeaseBudgetExhausted while its
- * needs opened, before any case, though each of its cases takes one (lane LAND-GZ-B, at width 11 under an 8-core quota
- * and 35 under a 32-core one).
+ * needs opened, before any case, though each of its cases takes one (lane LAND-GZ-B): nine template builds at once
+ * outgrow the lease a worker holds, testPoolMax + 3 connections, whatever the machine's width.
  */
 const chosen = <A>(need: DatabaseNeed<A>): DatabaseNeed<A> => ({
 	key: need.key,
