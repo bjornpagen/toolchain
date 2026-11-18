@@ -21,7 +21,7 @@ import { type RunnerConfig, SMALL_STACK } from "#runner/config.ts"
 import { runnerLimits } from "#runner/limits.ts"
 import { configOf, type Discovered, discover, type LoadFailed, matchedBy } from "#runner/load.ts"
 import { moduleClosureAt } from "#runner/module-closure.ts"
-import { type Pool, PoolFailed, placesOf, poolOf } from "#runner/pool.ts"
+import { type Pool, PoolFailed, placesOf, placesShared, poolOf } from "#runner/pool.ts"
 import type { Reach, Verdict } from "#runner/protocol.ts"
 import { ModuleClosure, WorkerIndex } from "#runner/services.ts"
 import { labelOf, runOfLabel, type Stack } from "#runner/stack.ts"
@@ -235,14 +235,29 @@ export const runPackage = (
 					return [labelOfWorkers(kind), kind] as const
 				})
 			)
+			const weighed = Arr.map(Arr.fromIterable(kinds), ([label, kind]) => ({
+				label,
+				kind,
+				properties: Arr.filter(
+					runs,
+					({ found, stack }) => labelOfWorkers(workersOf(stack, found)) === label
+				).length
+			}))
+			const shared = Arr.isReadonlyArrayNonEmpty(weighed)
+				? placesShared(
+						testWorkers,
+						Arr.map(weighed, ({ properties }) => properties)
+					)
+				: []
 			const pools = new Map<string, Pool>()
-			for (const [label, [stack, guide]] of kinds) {
+			for (const [{ label, kind }, places] of Arr.zip(weighed, shared)) {
+				const [stack, guide] = kind
 				const pool = yield* poolOf({
 					entry: WORKER_ENTRY,
 					root: request.root,
 					cwd: request.root,
 					env: {},
-					places: placesOf(testWorkers),
+					places,
 					execArgv: flagsOf(stack),
 					served: Option.none(),
 					guide,

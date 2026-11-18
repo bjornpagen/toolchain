@@ -44,7 +44,7 @@ import {
 	slowlyWorkingProperty,
 	unreadyRoot
 } from "#runner/pool.fixtures.ts"
-import { placesOf, poolOf } from "#runner/pool.ts"
+import { placesOf, placesShared, poolOf } from "#runner/pool.ts"
 import { runPackage, WORKER_ENTRY } from "#runner/run.ts"
 
 export const workersLeaveNoChild = property.exhaust(finite(leavings), {
@@ -676,3 +676,92 @@ export const workersEndWithTheirParent = property.exhaust(finite(boolean), {
 		}
 	]
 })
+
+/** A run's kinds of workers as drawn: the machine's width and each kind's weight, its properties. */
+type Shared = Readonly<{ width: number; weights: Arr.NonEmptyReadonlyArray<number> }>
+
+export const kindsShareTheWidth = property.explore(
+	(source): Shared => ({
+		width: source.draw(int(1, 96)),
+		weights: Arr.prepend(
+			source.draw(array(int(1, 500), { min: 0, max: 3 })),
+			source.draw(int(1, 500))
+		)
+	}),
+	{
+		needs: {},
+		situations: [
+			"a single kind",
+			"kinds fewer than the width",
+			"kinds as many as the width",
+			"kinds more than the width"
+		],
+		check: (_resources, c) => (shared) =>
+			Effect.sync(() => {
+				const kinds = shared.weights.length
+				if (kinds === 1) {
+					c.note("a single kind")
+				}
+				c.note(
+					kinds < shared.width
+						? "kinds fewer than the width"
+						: kinds === shared.width
+							? "kinds as many as the width"
+							: "kinds more than the width"
+				)
+				const places = placesShared(shared.width, shared.weights)
+				const taken = Arr.flatMap(places, ({ at }) => at)
+				const total = Arr.reduce(shared.weights, 0, (sum, weight) => sum + weight)
+				const extra = shared.width - kinds
+				deepStrictEqual(
+					{
+						kinds: places.length,
+						of: Arr.every(places, (one) => one.of === Math.max(1, shared.width)),
+						within: Arr.every(taken, (place) => place >= 0 && place < shared.width),
+						distinct: kinds > shared.width || new Set(taken).size === taken.length,
+						held: kinds > shared.width ? kinds : taken.length,
+						shares:
+							kinds > shared.width
+								? Arr.map(places, ({ at }) => at.length === 1)
+								: Arr.map(places, ({ at }, kind) => {
+										const quota = (Arr.getUnsafe(shared.weights, kind) * extra) / total
+										return at.length - 1 === Math.floor(quota) || at.length - 1 === Math.ceil(quota)
+									})
+					},
+					{
+						kinds,
+						of: true,
+						within: true,
+						distinct: true,
+						held: kinds > shared.width ? kinds : shared.width,
+						shares: Arr.map(places, () => true)
+					}
+				)
+			}),
+		oracle: {
+			kind: "specification",
+			name: "the kinds hold the width between them, at distinct places, at least one each, the rest in proportion to their weights within one place; a machine narrower than its kinds gives each one place"
+		},
+		kept: [],
+		kills: [
+			{
+				file: "packages/testing/src/runner/pool.ts",
+				original: "\t\tconst start = Arr.getUnsafe(starts, kind)",
+				replacement: "\t\tconst start = 0 * Arr.getUnsafe(starts, kind)",
+				why: "Every kind's workers start at the first place, so two kinds' workers take one place (one lease on grizzle's cluster family), as each kind's pool of the whole width did before."
+			},
+			{
+				file: "packages/testing/src/runner/pool.ts",
+				original: "1 + floor + (bonus.has(kind) ? 1 : 0)",
+				replacement: "1 + floor",
+				why: "The width's remainder after the floors goes to no kind, so the run holds fewer workers than the machine has."
+			},
+			{
+				file: "packages/testing/src/runner/pool.ts",
+				original: "(weight * extra) / total",
+				replacement: "extra / kinds",
+				why: "The width is split evenly whatever the kinds' weights, so a kind of one property holds as many workers as a kind of a thousand."
+			}
+		]
+	}
+)

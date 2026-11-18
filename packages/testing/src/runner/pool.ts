@@ -5,6 +5,7 @@ import {
 	Effect,
 	Fiber,
 	Option,
+	Order,
 	Queue,
 	Record as Rec,
 	Result,
@@ -123,6 +124,53 @@ const uncounted = "the pool gave back no answer for a count it was sent"
  * every place, and each lease of the mutator's pool holds places no other lease holds.
  */
 export type Places = Readonly<{ at: Arr.NonEmptyReadonlyArray<number>; of: number }>
+
+/**
+ * The places of a run whose pools are `weights.length` kinds of workers sharing one width (runner/run.ts: one pool for
+ * each stack and guide): disjoint runs of places, each kind's at least one, the width's rest shared in proportion to
+ * the kinds' weights (their properties) by largest remainder, the earlier kind first on a tie, so the run holds
+ * `width` workers in all and no two of its workers take one place (a grizzle worker's place is its lease on the
+ * cluster family). A machine narrower than its kinds gives each kind one place, the kinds sharing them in turn.
+ */
+export const placesShared = (
+	width: number,
+	weights: Arr.NonEmptyReadonlyArray<number>
+): Arr.NonEmptyReadonlyArray<Places> => {
+	const kinds = weights.length
+	if (kinds > width) {
+		return Arr.map(weights, (_, kind) => ({
+			at: [kind % Math.max(1, width)],
+			of: Math.max(1, width)
+		}))
+	}
+	const extra = width - kinds
+	const total = Arr.reduce(weights, 0, (sum, weight) => sum + weight)
+	const quotas = Arr.map(weights, (weight) =>
+		total === 0 ? extra / kinds : (weight * extra) / total
+	)
+	const floors = Arr.map(quotas, Math.floor)
+	const left = extra - Arr.reduce(floors, 0, (sum, floor) => sum + floor)
+	const ranked = Arr.sort(
+		Arr.map(quotas, (quota, kind) => ({ kind, part: quota - Math.floor(quota) })),
+		Order.combine(
+			Order.mapInput(Order.Number, ({ part }: Readonly<{ kind: number; part: number }>) => -part),
+			Order.mapInput(Order.Number, ({ kind }: Readonly<{ kind: number; part: number }>) => kind)
+		)
+	)
+	const bonus = new Set(Arr.map(Arr.take(ranked, left), ({ kind }) => kind))
+	const sizes = Arr.map(floors, (floor, kind) => 1 + floor + (bonus.has(kind) ? 1 : 0))
+	const starts = Arr.scan(sizes, 0, (start, size) => start + size)
+	return Arr.map(sizes, (size, kind) => {
+		const start = Arr.getUnsafe(starts, kind)
+		return {
+			at: Arr.prepend(
+				Array.from({ length: size - 1 }, (_, place) => start + place + 1),
+				start
+			),
+			of: width
+		}
+	})
+}
 
 /** Every place of `workers` processes, a pool's own, the first worker at the first. */
 export const placesOf = (workers: number): Places => ({
