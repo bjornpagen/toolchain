@@ -31,6 +31,7 @@ import { FromWorker, lostResult, ToWorker, type Work, workOf } from "#runner/pro
 import { ModuleClosure, WorkerIndex } from "#runner/services.ts"
 import { runOfLabel } from "#runner/stack.ts"
 import { childrenCpuNow, childrenSince } from "#runner/usage.ts"
+import { reportWaitsTo } from "#runner/work.ts"
 import { startProcessCoverage } from "#sense.ts"
 
 /**
@@ -90,6 +91,7 @@ const main = Effect.gen(function* () {
 	const scope = yield* Scope.Scope
 	const platform = yield* Effect.context<NodeServices.NodeServices>()
 	const closures = askedClosuresOf((module) => send({ kind: "closure", module }))
+	reportWaitsTo((waiting) => sendNow({ kind: waiting ? "waiting" : "waited" }))
 	const runner = Context.add(
 		Context.add(
 			Context.merge(Context.make(WorkerIndex, { index, workers }), platform),

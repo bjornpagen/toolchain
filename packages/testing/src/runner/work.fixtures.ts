@@ -1,6 +1,6 @@
 import { Duration, Effect, String as Str } from "effect"
 import { type Gen, int, map } from "#gen.ts"
-import { liveMillis, liveSleep } from "#live.ts"
+import { liveMillis, liveSleep, waitingOn } from "#live.ts"
 import { type Property, property } from "#property.ts"
 import { type Limits, runnerLimits } from "#runner/limits.ts"
 import { fullRun, type InnerRun } from "#runner/search.fixtures.ts"
@@ -166,6 +166,20 @@ export const deadlockedCase = (shape: Deadlock): Property =>
 		needs: {},
 		situations: [],
 		check: () => () => liveSleep(Duration.millis(shape.deadline * shape.deadlines)),
+		oracle: planted,
+		kept: [],
+		kills: []
+	})
+
+/**
+ * An inner search whose one case waits on the live clock for many deadlines, spending nothing, inside a declared wait
+ * (live.ts waitingOn), as a case waits on a lease another run holds, then passes.
+ */
+export const waitingCase = (shape: Deadlock): Property =>
+	property.explore(int(0, 9), {
+		needs: {},
+		situations: [],
+		check: () => () => Duration.millis(shape.deadline * shape.deadlines).pipe(liveSleep, waitingOn),
 		oracle: planted,
 		kept: [],
 		kills: []

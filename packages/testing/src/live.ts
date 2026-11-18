@@ -1,6 +1,16 @@
 import { isMainThread, Worker } from "node:worker_threads"
 import { Array as Arr, Clock, Duration, Effect, Fiber, Option, Record as Rec } from "effect"
-import { heldWork, judgeOf, ownCpu, type Reading, standingOf, type TreeWork } from "#runner/work.ts"
+import {
+	enterWait,
+	heldWork,
+	judgeOf,
+	leaveWait,
+	type Overrun,
+	ownCpu,
+	type Reading,
+	standingOf,
+	type TreeWork
+} from "#runner/work.ts"
 
 /**
  * How long the main thread may go without answering the watchdog once a case in flight has passed the moment its
@@ -463,22 +473,35 @@ export const liveNanos = Clock.currentTimeNanos.pipe(
 )
 
 /**
- * Ends once `work` has spent `deadline` milliseconds of CPU or its CPU has not moved over a whole `deadline` of wall time
- * (runner/work.ts standingOf). It reads the work only when its live-clock timer fires, at a window's end or when the CPU
- * left could run out sooner, so work that ends in time pays one timer and no reading.
+ * `effect` as a declared wait of this process (runner/work.ts Waits): a wait on a resource other processes hold or make,
+ * whose wall time no guard's stall leg counts, from before it starts to after it ends, however it ends. A need's open and
+ * every take of it are one (runner/case.ts NeedCache), the one place a case waits on resources it does not own.
  */
-export const overrun = (work: TreeWork, deadline: number): Effect.Effect<void> => {
-	const watch = (window: Reading, readAt: number): Effect.Effect<void> =>
+export const waitingOn = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+	Effect.acquireUseRelease(
+		Effect.flatMap(liveMillis, (wall) => Effect.sync(() => enterWait(wall))),
+		() => effect,
+		() => Effect.flatMap(liveMillis, (wall) => Effect.sync(() => leaveWait(wall)))
+	)
+
+/**
+ * Ends once `work` has spent `deadline` milliseconds of CPU or its CPU has not moved over a whole `deadline` of wall time
+ * outside its declared waits (runner/work.ts standingOf), with the leg that fired and what it measured (Overrun). It reads the work only when its
+ * live-clock timer fires, at a window's end or when the CPU left could run out sooner, so work that ends in time pays one
+ * timer and no reading.
+ */
+export const overrun = (work: TreeWork, deadline: number): Effect.Effect<Overrun> => {
+	const watch = (window: Reading, readAt: number): Effect.Effect<Overrun> =>
 		Effect.flatMap(Effect.andThen(liveSleepUntil(readAt), liveMillis), (wall) => {
 			const standing = standingOf({
 				began: work.began,
 				window,
-				now: { wall, cpu: work.cpu() },
+				now: { wall, cpu: work.cpu(), waited: work.waited(wall) },
 				deadline
 			})
 			return standing.kind === "working"
 				? watch(standing.window, standing.readAgainAt)
-				: Effect.void
+				: Effect.succeed(standing)
 		})
 	return watch(work.began, work.began.wall + deadline)
 }

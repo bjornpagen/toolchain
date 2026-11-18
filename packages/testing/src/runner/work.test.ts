@@ -10,6 +10,8 @@
  *   it, and it is hung, never passed.
  * - A deadlocked case is hung after one deadline of wall time: it waits on the live clock for many deadlines, spending
  *   nothing, and it is hung, never passed.
+ * - A case whose wait is a declared one (live.ts waitingOn), a wait on a resource other processes hold, is never hung
+ *   for it: the same wait as the deadlocked case's, declared, passes.
  *
  * Each inner case ends of itself well past its deadline (its search explores), so a guard that misjudges it lets it
  * pass.
@@ -36,7 +38,8 @@ import {
 	SLOW_DEADLINE,
 	slowCase,
 	slowShapes,
-	TICK_GRAIN_MILLIS
+	TICK_GRAIN_MILLIS,
+	waitingCase
 } from "#runner/work.fixtures.ts"
 
 export const slowIsNotHung = property.exhaust(finite(slowShapes), {
@@ -59,7 +62,7 @@ export const slowIsNotHung = property.exhaust(finite(slowShapes), {
 	kills: [
 		{
 			file: "packages/testing/src/runner/work.ts",
-			original: "\tif (whole && now.cpu - window.cpu < progressOver(deadline)) {",
+			original: "\tif (whole && moved < progress) {",
 			replacement: "\tif (whole) {",
 			why: "A case is hung once a deadline of wall time passes, as the live clock's old deadline judged it: the slow case, whose CPU moves and stays a tenth of its deadline, is hung; the slow-case property fails."
 		}
@@ -137,9 +140,43 @@ export const deadlockIsHung = property.exhaust(finite(deadlocks), {
 	kills: [
 		{
 			file: "packages/testing/src/runner/work.ts",
-			original: "\tif (whole && now.cpu - window.cpu < progressOver(deadline)) {",
-			replacement: "\tif (whole && now.cpu - window.cpu < 0) {",
+			original: "\tif (whole && moved < progress) {",
+			replacement: "\tif (whole && moved < 0) {",
 			why: "No window is ever stalled: a case that waits spends nothing and never reaches its CPU budget, so it waits to its end and passes; the deadlock property fails."
+		}
+	]
+})
+
+export const declaredWaitIsNoStall = property.exhaust(finite(deadlocks), {
+	box: "a deadlocked case's wait, declared, under each deadline",
+	needs: {},
+	situations: [],
+	check: () => (shape) =>
+		Effect.gen(function* () {
+			const verdict = yield* searchedAt(
+				waitingCase(shape),
+				innerRun("work/waiting", INNER_SEED, shape.deadline)
+			)
+			strictEqual(verdictKind(verdict), "explored")
+		}),
+	oracle: {
+		kind: "specification",
+		name: "a case that spends a whole deadline of wall time and more in a declared wait, spending nothing, is not hung"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/runner/work.ts",
+			original: "\tconst waited = now.waited - window.waited\n",
+			replacement: "\tconst waited = 0\n",
+			why: "A declared wait counted as a stall, as every wait was before (SELECTWHOLE's thirteen: a lease wait judged stalled), so the waiting case is hung; the property fails."
+		},
+		{
+			file: "packages/testing/src/live.ts",
+			original:
+				"\t\tEffect.flatMap(liveMillis, (wall) => Effect.sync(() => enterWait(wall))),\n\t\t() => effect,\n\t\t() => Effect.flatMap(liveMillis, (wall) => Effect.sync(() => leaveWait(wall)))",
+			replacement: "\t\tEffect.void,\n\t\t() => effect,\n\t\t() => Effect.void",
+			why: "waitingOn declares nothing, so a declared wait's wall time is a stall after all; the property fails."
 		}
 	]
 })

@@ -20,15 +20,7 @@ import { countWithin } from "#enumerate.ts"
 import { failureText } from "#failure.ts"
 import { keyOf, type Pending, pendingAt, type Reached } from "#features.ts"
 import type { Gen } from "#gen.ts"
-import {
-	abandon,
-	awaitWithinGrace,
-	liveMillis,
-	liveNanos,
-	liveSleep,
-	overrun,
-	watchedCase
-} from "#live.ts"
+import { abandon, awaitWithinGrace, liveMillis, liveNanos, overrun, watchedCase } from "#live.ts"
 import type { Need, NeedContext, Needs, NeedValue, Resources } from "#property.ts"
 import { fnv1a32 } from "#random.ts"
 import { type Drawn, replayTokenOf } from "#replay.ts"
@@ -53,7 +45,7 @@ import {
 } from "#runner/protocol.ts"
 import { seriesRun } from "#runner/series.ts"
 import { NeedFailed } from "#runner/services.ts"
-import { ownCpu, ownWork } from "#runner/work.ts"
+import { overrunText, ownCpu, ownWork } from "#runner/work.ts"
 import { type Observed, type Recording, recording, simplestChooser } from "#source.ts"
 
 /**
@@ -88,7 +80,9 @@ const needSlotOf = <A>(need: Need<A>) => Context.Service<NeedSlot<A>>(slotIdOf(n
 /**
  * The needs an evaluating process has opened. `opened` opens a need the first time the process asks for it (needs of
  * one key share it), in a scope of its own under the process's and with the process's services, on a fiber of its own,
- * within `bound` milliseconds on the live clock; every later ask gets what that open gave: the need's taker, or the
+ * within `bound` milliseconds of its work (live.ts overrun: its CPU, or its CPU's stall over a whole bound of wall time
+ * outside declared waits, so a wait on another process's lease or lock is no part of it); every later ask gets what
+ * that open gave: the need's taker, or the
  * NeedFailed it failed with (its open past the bound among them, and an open that died, its defect's text the
  * failure's message, so a defect opening a need refuses its property on that process, every case unopened, never
  * ending the process with nothing said), which no later ask retries. What a need keeps warm
@@ -136,14 +130,15 @@ export const needCacheOf = (
 											)
 										})
 								),
-								Effect.andThen(
-									liveSleep(Duration.millis(bound)),
-									Effect.fail(
-										NeedFailed.make({
-											need: need.key,
-											message: `its open ran past the open bound of ${Duration.format(Duration.millis(bound))} (needOpenMillis)`
-										})
-									)
+								Effect.flatMap(
+									Effect.flatMap(liveMillis, (wall) => overrun(ownWork(wall, ownCpu()), bound)),
+									(verdict) =>
+										Effect.fail(
+											NeedFailed.make({
+												need: need.key,
+												message: `its open ran past the open bound of ${Duration.format(Duration.millis(bound))} (needOpenMillis): ${overrunText(verdict)}`
+											})
+										)
 								)
 							),
 							(cause) => !Cause.hasInterruptsOnly(cause),

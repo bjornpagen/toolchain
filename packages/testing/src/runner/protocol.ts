@@ -629,8 +629,10 @@ export type ChildrenCpu = typeof ChildrenCpu.Type
  * far and its children's CPU while it ran; it gave back
  * these units, of those the parent revoked, none of which it had started; a case (a unit's `at`-th order) was used
  * after it ended, printed as it ran; it failed, and why (before it was ready, it cannot start; after, it ends, and the
- * unit it ran is lost with this as the last it wrote); or it asks for a module's closure hash, which the parent
- * computes once for the whole pool.
+ * unit it ran is lost with this as the last it wrote); it asks for a module's closure hash, which the parent
+ * computes once for the whole pool; or it began waiting on a resource other processes hold (`waiting`: its first
+ * declared wait opened, runner/work.ts Waits) or stopped (`waited`: its last one closed), whose wall time the parent's
+ * watch of it counts as no stall.
  */
 export const FromWorker = Schema.Union([
 	Schema.Struct({ kind: Schema.Literal("ready"), cpu: Schema.Finite, millis: Schema.Finite }),
@@ -659,7 +661,9 @@ export const FromWorker = Schema.Union([
 		printed: Printed
 	}),
 	Schema.Struct({ kind: Schema.Literal("failed"), message: Schema.String }),
-	Schema.Struct({ kind: Schema.Literal("closure"), module: Schema.String })
+	Schema.Struct({ kind: Schema.Literal("closure"), module: Schema.String }),
+	Schema.Struct({ kind: Schema.Literal("waiting") }),
+	Schema.Struct({ kind: Schema.Literal("waited") })
 ])
 
 export type FromWorker = typeof FromWorker.Type

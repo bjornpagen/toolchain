@@ -7,6 +7,7 @@ import {
 	type Scope,
 	String as Str
 } from "effect"
+import { waitingOn } from "#live.ts"
 import type { NeedContext } from "#property.ts"
 import {
 	type Owner,
@@ -308,10 +309,22 @@ export const identify = (
 	})
 
 /**
+ * `statement`, a session-level advisory lock the session waits in the server for while another process holds it, as a
+ * declared wait (live.ts waitingOn): the one place a template's build or use waits on another process, a builder or a
+ * collector, a guarded worker of this run or another, or a session PostgreSQL ends once its client is gone, so no
+ * guard counts the wait as its case's stall.
+ */
+const awaitAdvisory = (
+	session: Parameters<typeof run>[0],
+	statement: string,
+	params: Parameters<typeof run>[2]
+): ReturnType<typeof run> => waitingOn(run(session, statement, params))
+
+/**
  * Makes sure the identified template is built on `member`. A built template (a template refusing connections) is
  * taken as it is. Otherwise the builder waits in the server for the session-level advisory lock of the template's
  * digest, in the owner's database, on a session of its own: the one gate, so concurrent builders of one template on one
- * member, in any worker of any run, build it once and the rest find it built once the lock is theirs. Holding the lock,
+ * member, in any worker of any run, build it once and the rest find it built once the lock is theirs (awaitAdvisory). Holding the lock,
  * a database of the name that is not a built template is a builder's that ended mid-build, and is dropped. The build
  * copies the origin (built first, the same way), gives a copy of a template the template's settings and privileges,
  * which CREATE DATABASE does not copy (replayOf, as a clone is given its template's), so a template built from another
@@ -340,7 +353,7 @@ const ensureBuilt = (
 		yield* Effect.scoped(
 			Effect.gen(function* () {
 				const gate = yield* cluster.connect(member, cluster.maintenance)
-				yield* run(gate, `SELECT pg_catalog.pg_advisory_lock(${lockKey("$1")})::text`, [
+				yield* awaitAdvisory(gate, `SELECT pg_catalog.pg_advisory_lock(${lockKey("$1")})::text`, [
 					Str.slice(0, 16)(digest)
 				])
 				const state = yield* single(gate, stateQuery, [name])
@@ -387,7 +400,7 @@ const ensureBuilt = (
  * live worker opened, which the worker clones (and builds from) for as long as it runs, whichever run collects: a
  * concurrent run of other properties, or of other code, a kill trial's mutant included. Taken before the template is
  * built, so a collection that held a key first has dropped the template before the opener finds it absent and builds it
- * again.
+ * again, waiting on a collection that holds the key exclusively (awaitAdvisory).
  */
 const holdInUse = (owner: Owner, identified: Identified): Effect.Effect<void, NeedFailed> =>
 	Effect.andThen(
@@ -395,9 +408,11 @@ const holdInUse = (owner: Owner, identified: Identified): Effect.Effect<void, Ne
 			onNone: () => Effect.void,
 			onSome: (origin) => holdInUse(owner, origin)
 		}),
-		run(owner.session, `SELECT pg_catalog.pg_advisory_lock_shared(${useKey("$1")})::text`, [
-			Str.slice(0, 16)(identified.digest)
-		])
+		awaitAdvisory(
+			owner.session,
+			`SELECT pg_catalog.pg_advisory_lock_shared(${useKey("$1")})::text`,
+			[Str.slice(0, 16)(identified.digest)]
+		)
 	)
 
 /** A database template opened on the worker's member: its name there, how a clone of it is made, and what a clone gets again. */

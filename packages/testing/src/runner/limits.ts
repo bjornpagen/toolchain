@@ -101,8 +101,11 @@ const caseDeadlineMillis = 60_000
 /**
  * How long one need may take to open on a worker that has not opened it (runner/case.ts NeedCache): the open runs once
  * per worker per need key, when the worker readies the first property that needs it, before that property's first case
- * and outside every case's deadline. An open past it fails the property on that worker, once, as unopened; the parent
- * watches a readying worker for this long and its silence grace.
+ * and outside every case's deadline. It bounds the open's work, as a case's deadline bounds a case's (runner/work.ts):
+ * its CPU, or its CPU's stall over a whole bound of wall time outside declared waits, so an open that waits on another
+ * run's lease or a builder's lock is not cut short for it (2026-11-18: ten properties' opens waited past five minutes of
+ * wall time on lease slots MANIFEST's and SETSREAD's runs held, and failed as unopened). An open past it fails the
+ * property on that worker, once, as unopened; the parent watches a readying worker for this long and its silence grace.
  *
  * @limitKind measured
  * @owner the testing library's runner (runner/case.ts NeedCache, runner/worker.ts, runner/pool.ts)

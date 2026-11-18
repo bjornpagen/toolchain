@@ -1,6 +1,6 @@
 import { Array as Arr, Config, Duration, Effect, FileSystem, Option } from "effect"
 import { boolean, finite, type Gen, int, map } from "#gen.ts"
-import { liveMillis, liveSleep } from "#live.ts"
+import { liveMillis, liveSleep, waitingOn } from "#live.ts"
 import { type Need, property } from "#property.ts"
 import { Scratch } from "#resources/scratch.ts"
 import type { Batch } from "#runner/protocol.ts"
@@ -190,6 +190,99 @@ export const silencing = (nextNeeds: boolean) =>
 			? "src/runner/pool.fixtures.ts#passesWithANeed"
 			: "src/runner/pool.fixtures.ts#passesAtOnce"
 	}) as const
+
+/**
+ * How a planted property silences its worker once it retires: `spins`, its main thread held in a loop that spends CPU
+ * (silencesItsWorker), which the pool's CPU leg ends; or `blocks`, held in a wait that spends none (blocksItsWorker),
+ * which its stall leg ends.
+ */
+export type Silence = "spins" | "blocks"
+
+/** Both silences, a worker blocked or spinning. */
+export const silenceSpace: Gen<Silence> = map(boolean, (blocks): Silence =>
+	blocks ? "blocks" : "spins"
+)
+
+/** The identity of the planted property that silences its worker as `silence` says. */
+export const silencerOf = (silence: Silence): string => {
+	switch (silence) {
+		case "spins":
+			return "src/runner/pool.fixtures.ts#silencesItsWorker"
+		case "blocks":
+			return "src/runner/pool.fixtures.ts#blocksItsWorker"
+	}
+}
+
+/** What a lost unit's report says of the leg of the pool's watch that ended its worker, by silence (runner/work.ts overrunText). */
+export const legSaid = (silence: Silence): string => {
+	switch (silence) {
+		case "spins":
+			return "by the pool, past its bound and the grace: its process tree spent "
+		case "blocks":
+			return "by the pool, past its bound and the grace: its process tree's CPU moved "
+	}
+}
+
+/**
+ * A need whose release holds its worker's main thread forever in a wait that spends no CPU, outside any case: a futex
+ * wait on a cell nothing ever wakes, as a worker blocked on a lock or a pipe is held.
+ */
+const waitsOnRelease: Need<void> = {
+	key: "pool.fixtures.ts waits on release",
+	open: Effect.as(
+		Effect.addFinalizer(() =>
+			Effect.sync(() => {
+				const cell = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT))
+				Atomics.wait(cell, 0, 0)
+			})
+		),
+		Effect.void
+	)
+}
+
+/** A property planted to block its worker once it retires: its cases pass, holding a need whose release never wakes. */
+export const blocksItsWorker = property.exhaust(finite(int(0, 1)), {
+	box: "two values",
+	needs: { blocker: waitsOnRelease },
+	situations: [],
+	check: () => () => Effect.void,
+	oracle: {
+		kind: "specification",
+		name: "a property planted to block its worker in a wait that spends nothing once it retires"
+	},
+	kept: [],
+	kills: []
+})
+
+/** The identity of the planted property whose case waits, declared, past its deadline and the pool's silence grace. */
+export const WAITS_DECLARED = "src/runner/pool.fixtures.ts#waitsDeclared"
+
+/** The deadlines its case runs under, in milliseconds, each with the pool's bound and grace well within its wait. */
+export const declaredWaitDeadlines: Gen<number> = map(boolean, (longer) => (longer ? 2000 : 1000))
+
+/**
+ * Two of the pool's whole windows (the longer of declaredWaitDeadlines and the silence grace) and more: the case's own
+ * CPU before its wait may carry the first window, so only a wait past two of them would stall in the second.
+ */
+const DECLARED_WAIT = Duration.millis(40_000)
+
+/**
+ * A property planted to wait on a resource other processes hold, as a case's lease or lock wait does: its case spends
+ * nothing for DECLARED_WAIT, past its deadline and the pool's bound and grace, inside a declared wait (live.ts
+ * waitingOn), then passes.
+ */
+export const waitsDeclared = property.exhaust(finite(int(0, 1)), {
+	box: "two values",
+	needs: {},
+	situations: [],
+	check: () => () => DECLARED_WAIT.pipe(liveSleep, waitingOn),
+	oracle: {
+		kind: "specification",
+		name: "a property planted to wait, declared, past its deadline and its pool's bound and grace"
+	},
+	kept: [],
+	kills: []
+})
 
 /**
  * A need whose release holds its worker's main thread forever, outside any case (so no watchdog sees it), as a load

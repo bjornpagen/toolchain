@@ -40,7 +40,12 @@ import {
 	RUNAWAY,
 	SLOW_WORKER_DEADLINE,
 	shortCase,
+	declaredWaitDeadlines,
+	legSaid,
+	silenceSpace,
+	silencerOf,
 	silencing,
+	WAITS_DECLARED,
 	slowlyWorkingProperty,
 	unreadyRoot
 } from "#runner/pool.fixtures.ts"
@@ -224,8 +229,9 @@ export const slowWorkerKept = property.exhaust(finite(boolean), {
 	kills: [
 		{
 			file: "packages/testing/src/runner/pool.ts",
-			original: "\t\t\t\t\t\t\tprocessWork(Option.fromUndefinedOr(worker.child.pid), began),",
-			replacement: "\t\t\t\t\t\t\tprocessWork(Option.none(), began),",
+			original:
+				"\t\t\t\t\t\t\tprocessWork(Option.fromUndefinedOr(worker.child.pid), began, (wall) =>",
+			replacement: "\t\t\t\t\t\t\tprocessWork(Option.none(), began, (wall) =>",
 			why: "The parent reads no worker's CPU, so a worker silent past its bound and grace is killed whatever it is doing, as the live clock's watch killed it: the slow worker's unit is lost; the slow-worker property fails."
 		}
 	]
@@ -281,6 +287,145 @@ export const silentBeforeReadying = property.exhaust(finite(boolean), {
 				'\t\t\t\tQueue.offerUnsafe(events, { kind: "sent", worker, unit: Arr.headNonEmpty(sent).unit })\n',
 			replacement: "",
 			why: "A unit is watched only once its worker says it is readying it, as before: a worker that cannot get that word out (its main thread held, a load that never ends, a full channel) is never ended, so its unit is never reported and its search never returns (CATCH: a mutant's lease silent past an hour); this property's case hangs past its deadline."
+		}
+	]
+})
+
+export const lostNamesItsLeg = property.exhaust(finite(silenceSpace), {
+	box: "a worker silenced between units by a loop that spends CPU and by a wait that spends none",
+	needs: { checkout: Checkout.dir },
+	situations: [],
+	check:
+		({ checkout }) =>
+		(silence) =>
+			Effect.gen(function* () {
+				const root = yield* checkout
+				const outcomes = yield* Effect.scoped(
+					Effect.gen(function* () {
+						const pool = yield* poolOf({
+							entry: WORKER_ENTRY,
+							root,
+							cwd: root,
+							env: {},
+							places: placesOf(1),
+							execArgv: process.execArgv,
+							served: Option.none(),
+							guide: "notes",
+							open: runnerLimits.open
+						})
+						const silencer = silencerOf(silence)
+						const silenced = yield* pool.evaluator.evaluate(
+							[shortCase(silencer, runnerLimits.deadline, 1000)],
+							() => true
+						)
+						yield* pool.retire(silencer)
+						const next = yield* pool.evaluator.evaluate(
+							[shortCase("src/runner/pool.fixtures.ts#passesAtOnce", runnerLimits.deadline, 1000)],
+							() => true
+						)
+						return Arr.flatten([...silenced, ...next])
+					})
+				)
+				deepStrictEqual(
+					Arr.map(outcomes, (result) => result.outcome.kind),
+					["passed", "lost"]
+				)
+				const lost = Arr.flatMap(outcomes, (result) =>
+					result.outcome.kind === "lost" ? [result.outcome.report] : []
+				)
+				deepStrictEqual(
+					Arr.map(lost, (report) => Str.includes(legSaid(silence))(report)),
+					[true]
+				)
+				deepStrictEqual(
+					Arr.map(lost, (report) => Str.includes('its last message "done"')(report)),
+					[true]
+				)
+			}),
+	oracle: {
+		kind: "specification",
+		name: "a unit lost with a worker the pool ended names the leg of its watch that fired, the CPU its tree spent or how little it moved over how much wall time against which bound, and the last message the worker sent"
+	},
+	budget: { runs: 2, steered: 0 },
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/runner/pool.ts",
+			original: "\t\t\t\t\t\t\tworker.silenced = Option.some(event.overrun)\n",
+			replacement: "",
+			why: "The pool ends a silent worker without keeping the leg that fired, so its lost unit reads as a crash, as every lost report read before (SELECTWHOLE: thirteen kills unjudged, lost with nothing said); the property fails."
+		},
+		{
+			file: "packages/testing/src/runner/work.ts",
+			original: '\t\treturn { kind: "spent", spent, deadline }',
+			replacement:
+				'\t\treturn { kind: "stalled", moved: spent, over: now.wall - window.wall, waited: 0, progress: 0, deadline }',
+			why: "A CPU runaway reported as a stall, so the report names the wrong leg; the spinning worker's case fails."
+		},
+		{
+			file: "packages/testing/src/runner/pool.ts",
+			original: "\t\t\t\t\t\tworker.heard = Option.some({ kind: received.kind, at: now })\n",
+			replacement: "",
+			why: "The worker's last message is never kept, so a lost report says it sent none; the property fails."
+		}
+	]
+})
+
+export const declaredWaitKept = property.exhaust(finite(declaredWaitDeadlines), {
+	box: "a case that waits, declared, past its deadline and its pool's bound and grace, under two deadlines",
+	needs: { checkout: Checkout.dir },
+	situations: [],
+	check:
+		({ checkout }) =>
+		(deadline) =>
+			Effect.gen(function* () {
+				const root = yield* checkout
+				const outcomes = yield* Effect.scoped(
+					Effect.gen(function* () {
+						const pool = yield* poolOf({
+							entry: WORKER_ENTRY,
+							root,
+							cwd: root,
+							env: {},
+							places: placesOf(1),
+							execArgv: process.execArgv,
+							served: Option.none(),
+							guide: "notes",
+							open: runnerLimits.open
+						})
+						const results = yield* pool.evaluator.evaluate(
+							[shortCase(WAITS_DECLARED, deadline, 1000)],
+							() => true
+						)
+						return Arr.map(Arr.flatten(results), (result) => result.outcome.kind)
+					})
+				)
+				deepStrictEqual(outcomes, ["passed"])
+			}),
+	oracle: {
+		kind: "specification",
+		name: "a case that waits, declared, on a resource other processes hold spends no stall: past its deadline and its pool's bound and grace in wall time, spending nothing, it is neither hung by its own guard nor killed by its pool, and passes"
+	},
+	budget: { runs: 2, steered: 0 },
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/runner/pool.ts",
+			original: "\t\t\t\t\t\t\t\tworker.waits = waitEntered(worker.waits, now)\n",
+			replacement: "",
+			why: "The pool ignores a worker's declared waits, so it kills a worker whose case waits on another process's lease past its bound and grace, as the stall leg killed SELECTWHOLE's thirteen; the case is lost and the property fails."
+		},
+		{
+			file: "packages/testing/src/runner/work.ts",
+			original: "\tconst waited = now.waited - window.waited\n",
+			replacement: "\tconst waited = 0\n",
+			why: "No guard counts a declared wait out of its stall leg, so the waiting case is hung, or its worker lost; the property fails."
+		},
+		{
+			file: "packages/testing/src/runner/work.ts",
+			original: "\twaits.spent + (waits.open > 0 ? wall - waits.since : 0)",
+			replacement: "\twaits.spent",
+			why: "An open wait's span counts only once it closes, so a wait longer than a deadline is a stall while it lasts; the property fails."
 		}
 	]
 })

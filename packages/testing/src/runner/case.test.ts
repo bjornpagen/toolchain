@@ -326,8 +326,9 @@ export const unopenedOnce = property.explore(
 			},
 			{
 				file: "packages/testing/src/runner/case.ts",
-				original: "\t\t\t\t\t\t\t\tliveSleep(Duration.millis(bound)),",
-				replacement: "\t\t\t\t\t\t\t\tEffect.never,",
+				original:
+					"\t\t\t\t\t\t\t\t\tEffect.flatMap(liveMillis, (wall) => overrun(ownWork(wall, ownCpu()), bound)),",
+				replacement: "\t\t\t\t\t\t\t\t\tEffect.never,",
 				why: "A need's open has no bound, so one that never ends holds its process forever, and one past the bound opens late instead of failing its property; the outrunning need's property passes, and this property fails."
 			}
 		]
