@@ -137,7 +137,7 @@ export const lifeOfACluster = property.exhaust(lives, {
 	kills: [
 		{
 			file: "packages/testing/src/pg/make.ts",
-			original: 'flock($lock, LOCK_EX) or die "$!"; ',
+			original: "			yield* Effect.mapError(lockHeld(life.state.lock), lockFailed)\n",
 			replacement: "",
 			why: "The lock is never taken, so several bring-ups at once each make the cluster in the same directory on the same port; the property fails."
 		},

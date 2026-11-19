@@ -1,14 +1,16 @@
 /**
  * A cluster's lease (pg/lease.ts): runs that reserve more of a member's slots together than it has wait in a queue in
  * the kernel and all finish, never holding more slots at once than the member admits, each run's reservation held by
- * one holder process for the run's life. Each run holds its reservation until every run holds or waits in the kernel
- * (lease.fixtures.ts blockedOn), so the runs overlap as far as the lease lets them. Oracle: the specification, stated in
- * the check.
+ * one holder process for the run's life, the toolchain's holder of kernel locks (scripts/hold.pl), started from the
+ * checkout (Checkout.dir, so a mutant of the holder reaches it on disk). Each run holds its reservation until every run
+ * holds or waits in the kernel (lease.fixtures.ts blockedOn), so the runs overlap as far as the lease lets them. Oracle:
+ * the specification, stated in the check.
  */
 import { Array as Arr, Effect, FileSystem, Option, Ref } from "effect"
 import { deepStrictEqual } from "#assert.ts"
 import { awaitFact } from "#fact.ts"
 import { int } from "#gen.ts"
+import { Checkout } from "#mutate/checkout.ts"
 import { blockedOn } from "#pg/lease.fixtures.ts"
 import { reservationOf, reserved } from "#pg/lease.ts"
 import { spawnedBy } from "#pg/make.fixtures.ts"
@@ -21,7 +23,7 @@ export const runsWaitInLine = property.explore(
 		return { slots, need: source.draw(int(1, slots)), runs: source.draw(int(2, 4)) }
 	},
 	{
-		needs: { dir: Scratch.dir },
+		needs: { dir: Scratch.dir, checkout: Checkout.dir },
 		situations: ["more runs than fit at once", "runs that fit at once"],
 		check:
 			({ dir }, c) =>
@@ -82,9 +84,9 @@ export const runsWaitInLine = property.explore(
 		kept: [],
 		kills: [
 			{
-				file: "packages/testing/src/pg/lease.ts",
-				original: "if (flock($lock, LOCK_EX | LOCK_NB)) { push @mine, $lock; $taken{$at} = 1 }",
-				replacement: "if (1) { push @mine, $lock; $taken{$at} = 1 }",
+				file: "packages/testing/scripts/hold.pl",
+				original: "if (flock($files[$at], $claim->{lock} | LOCK_NB)) {",
+				replacement: "if (1) {",
 				why: "A reservation takes slots without locking them, so runs together hold more than the member admits, as two gates at once exhausted 5441; the property fails."
 			}
 		]

@@ -1,16 +1,7 @@
 import { regex } from "arkregex"
-import {
-	Array as Arr,
-	Effect,
-	FileSystem,
-	Option,
-	Schema,
-	type Scope,
-	Stream,
-	String as Str
-} from "effect"
-import { ChildProcess, ChildProcessSpawner } from "effect/process"
-import { waitingOn } from "#live.ts"
+import { Array as Arr, Effect, FileSystem, Schema, type Scope, String as Str } from "effect"
+import type { ChildProcessSpawner } from "effect/process"
+import { reservationHeld } from "#pg/hold.ts"
 
 /**
  * A cluster's lease: the one mechanism by which a run takes its share of each member's capacity, so however many runs
@@ -21,8 +12,8 @@ import { waitingOn } from "#live.ts"
  * another, and runs that wait on each other wait in a queue, never in a cycle: a run's slot holders wait for nothing,
  * and only the gate's holder waits for slots.
  *
- * A slot is a kernel lock, flock(2), on a file of its member's lease directory, beside the member's state, and the gate
- * is one beside the first member's: every member is local, made by this library on this machine, so every process that
+ * A slot is a kernel lock, flock(2), taken by the toolchain's one holder (hold.ts), on a file of its member's lease
+ * directory, beside the member's state, and the gate is one beside the first member's: every member is local, made by this library on this machine, so every process that
  * reaches it can take the lock. A run that waits waits in the kernel, not in the server: it holds no connection, no
  * transaction and no snapshot, so no waiter holds back the cluster's vacuum horizon or spends the capacity it waits for.
  */
@@ -128,41 +119,17 @@ export const reservationOf = (
 		}
 	})
 
-/**
- * The program that holds a run's reservation for its parent's life: it takes the gate (`$ARGV[0]`), then on each member
- * (a lease directory, its slots and its need, three arguments a member) the free slots without waiting and, waiting, the
- * rest it needs in order; lets the gate go; says `held`; and holds every slot until its standard input ends, which the
- * kernel ends with its parent however the parent ends. It says `waiting` before each wait. Only the gate's holder ever
- * waits on a slot, and a slot's holder waits on nothing, so no wait closes a cycle. Node has no flock; perl, which
- * Debian, Ubuntu and macOS all install, does.
- */
-const holdRun = Arr.join(
-	[
-		'use Fcntl ":flock";',
-		"my ($gate, @members) = @ARGV;",
-		"$| = 1;",
-		'open(my $held_gate, ">>", $gate) or die "$!";',
-		'unless (flock($held_gate, LOCK_EX | LOCK_NB)) { print "waiting\\n"; flock($held_gate, LOCK_EX) or die "$!" }',
-		"my @held;",
-		"while (@members) {",
-		"  my ($dir, $slots, $need) = splice(@members, 0, 3);",
-		"  my (@mine, %taken);",
-		'  for my $at (0 .. $slots - 1) { last if @mine >= $need; open(my $lock, ">>", "$dir/$at.lock") or die "$!"; if (flock($lock, LOCK_EX | LOCK_NB)) { push @mine, $lock; $taken{$at} = 1 } }',
-		'  for my $at (0 .. $slots - 1) { last if @mine >= $need; next if $taken{$at}; print "waiting\\n"; open(my $lock, ">>", "$dir/$at.lock") or die "$!"; flock($lock, LOCK_EX) or die "$!"; push @mine, $lock; $taken{$at} = 1 }',
-		"  push @held, @mine;",
-		"}",
-		"close($held_gate);",
-		'print "held\\n";',
-		"<STDIN>;"
-	],
-	" "
-)
+/** The slots of a member's lease, each a file of its lease directory. */
+const slotFiles = (member: Reservation["members"][number]): Arr.NonEmptyReadonlyArray<string> => [
+	`${member.lease}/0.lock`,
+	...Array.from({ length: member.slots - 1 }, (_, at) => `${member.lease}/${at + 1}.lock`)
+]
 
 /**
- * `reservation` held for the enclosing scope, a run's, by one holder process (holdRun) that lives exactly as long as the
- * scope: once this returns, the run holds a slot for each of its workers on every member it reaches. The wait is
- * declared to the runner's guards (live.ts waitingOn): the slots it waits for are other runs' whole reservations, which
- * end with their runs, so the wait ends.
+ * `reservation` held for the enclosing scope, a run's (hold.ts reservationHeld): its gate, then on each member the run's
+ * workers reach their need of its slots, those free now first and the rest waited for in order, the gate let go once
+ * they all hold, so only the gate's holder ever waits on a slot and a slot's holder waits on nothing. Once this returns,
+ * the run holds a slot for each of its workers on every member it reaches, until its scope closes.
  */
 export const reserved = (
 	reservation: Reservation
@@ -173,44 +140,21 @@ export const reserved = (
 > =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem
-		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
 		const failedWith = (error: { readonly message: string }) =>
-			LeaseFailed.make({ cluster: reservation.cluster, message: error.message })
+			LeaseFailed.make({
+				cluster: reservation.cluster,
+				message: `${reservation.gate}: ${error.message}`
+			})
 		yield* Effect.forEach(
 			reservation.members,
 			(member) => Effect.mapError(fs.makeDirectory(member.lease, { recursive: true }), failedWith),
 			{ discard: true }
 		)
-		const holder = yield* Effect.mapError(
-			spawner.spawn(
-				ChildProcess.make("perl", [
-					"-e",
-					holdRun,
-					reservation.gate,
-					...Arr.flatMap(reservation.members, (member) => [
-						member.lease,
-						`${member.slots}`,
-						`${member.need}`
-					])
-				])
+		yield* Effect.mapError(
+			reservationHeld(
+				reservation.gate,
+				Arr.map(reservation.members, (member) => ({ need: member.need, files: slotFiles(member) }))
 			),
 			failedWith
 		)
-		const said = yield* waitingOn(
-			Effect.mapError(
-				Stream.runHead(
-					Stream.filter(
-						Stream.splitLines(Stream.decodeText(holder.stdout)),
-						(line) => line === "held"
-					)
-				),
-				failedWith
-			)
-		)
-		if (Option.isNone(said)) {
-			return yield* LeaseFailed.make({
-				cluster: reservation.cluster,
-				message: `its holder ended before it held the run's slots under ${reservation.gate}`
-			})
-		}
 	})

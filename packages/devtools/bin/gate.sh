@@ -39,13 +39,16 @@
 #
 #   <key>/clones                 the common git directories of the clones that have run here, one a line
 #   <key>/commit.<n>, push.<n>   the snapshots' checkouts, n from 0     <key>/<mode>.<n>.git   their git directories
-#   <key>/<mode>.<n>.lock        flock(1)ed, exclusive, by the run that uses that snapshot
+#   <key>/<mode>.<n>.lock        locked, exclusive, by the run that uses that snapshot
 #   <key>/push.full              stamped when the daily check:full passed
 #   <key>/push.passed/<tree>     stamped when every check of the push gate passed on that tree
-#   .<key>.lock                  beside the key directory, flock(1)ed, shared, by every run of the repository
+#   .<key>.lock                  beside the key directory, locked, shared, by every run of the repository
 #
-# Every hold is a kernel lock on an open file (flock(1), util-linux): a run's shell and every process it starts keep it
-# open, and the kernel lets it go when the last of them exits, however it exits. No pid names a holder, so no live run
+# Every hold is a kernel lock on an open file (flock(2)), taken on the shell's own descriptor by the toolchain's one
+# holder of kernel locks (packages/testing/scripts/hold.pl, which takes the cluster maker's locks too): a run's shell
+# and every process it starts keep the file open, and the kernel lets the lock go when the last of them exits, however
+# it exits. The gates since 434ec12 hold the same locks with flock(1), which takes flock(2)'s, so a run of this gate and
+# one of theirs in one cache keep each other's. No pid names a holder, so no live run
 # is ever taken for a dead one, and no run reads a snapshot another run is filling. A run holds its repository's key
 # from before its first look at the cache until it and everything it started have exited, and a snapshot from its
 # claim until then too, so whatever holds a snapshot holds its key.
@@ -79,6 +82,7 @@ die() {
 	exit 2
 }
 
+holder="$(dirname -- "$(realpath -- "$0")")/../../testing/scripts/hold.pl"
 root=$(git rev-parse --show-toplevel)
 git_dir=$(git rev-parse --absolute-git-dir)
 common_dir=$(git rev-parse --path-format=absolute --git-common-dir)
@@ -147,12 +151,20 @@ fill() (
 	done
 )
 
+# hold <claim>...: takes the holder's claims (hold.pl's CLAIMs) on this shell's descriptors, which keep them until it
+# and everything it starts have exited; fails when a `try` claim's lock is taken, and dies on any other failure.
+hold() {
+	perl "$holder" "$@" && return 0 || exited=$?
+	[ "$exited" -eq 1 ] || die "the holder failed (exit $exited) on: $*"
+	return 1
+}
+
 # claim <mode>: holds the first snapshot of <mode> no live run holds, until this run and everything it starts have
 # exited, and names it $snapshot; when every one is held, the next number is a new snapshot, which fill makes. Each
 # look opens the snapshot's lock on descriptor 9, letting go of the one before, which this run could not take.
 claim() {
 	n=0
-	until exec 9>>"$cache/$1.$n.lock" && flock -n 9; do
+	until exec 9>>"$cache/$1.$n.lock" && hold try exclusive 1 9; do
 		n=$((n + 1))
 	done
 	snapshot="$cache/$1.$n"
@@ -179,7 +191,7 @@ $clones
 EOF
 		[ -z "$alive" ] || continue
 		exec 7>>"$cache_root/.$(basename -- "$dir").lock"
-		if flock -n -x 7; then
+		if hold try exclusive 1 7; then
 			mv "$dir" "$(mktemp -d "$cache_root/.gone.XXXXXX")/"
 		fi
 		exec 7>&-
@@ -236,7 +248,7 @@ report() {
 # part of it. It waits only while a collect renames a gone repository's directory away, and then makes a new one.
 mkdir -p "$cache_root"
 exec 8>>"$cache_root/.$key.lock"
-flock -s 8
+hold wait shared 1 8
 collect
 printf 'toolchain-gate: holds %s\n' "$cache" >&2
 

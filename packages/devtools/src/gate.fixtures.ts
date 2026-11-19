@@ -822,8 +822,9 @@ export const collectingFeatures = (
 ): ReadonlyArray<CollectingFeature> => Arr.flatMap(entries, entryFeatures)
 
 /**
- * Holds a lock on `file`, shared (-s) or exclusive (-x), as a run of the gate holds one: flock(1) in a child process
- * that keeps it until the case's scope closes. flock lets go of the file before it starts its command (-o), so killing
+ * Holds a lock on `file`, shared (-s) or exclusive (-x), as a run of a gate since 434ec12 holds one, with flock(1),
+ * which a run of this gate's holder (hold.pl) must keep as it keeps its own, the two gates sharing one cache while
+ * repositories repin: flock(1) in a child process that keeps it until the case's scope closes. flock lets go of the file before it starts its command (-o), so killing
  * it lets go of the lock, and its command, which only waits on its input, ends when the case's end closes that input.
  */
 const holding = Effect.fn("holding")(function* (sandbox: Sandbox, file: string, kind: "-s" | "-x") {

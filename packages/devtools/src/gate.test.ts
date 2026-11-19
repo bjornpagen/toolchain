@@ -190,7 +190,7 @@ export const claimedSnapshot = property.exhaust(finite(claimings), {
 		},
 		{
 			file: "packages/devtools/bin/gate.sh",
-			original: 'until exec 9>>"$cache/$1.$n.lock" && flock -n 9; do',
+			original: 'until exec 9>>"$cache/$1.$n.lock" && hold try exclusive 1 9; do',
 			replacement: 'until exec 9>>"$cache/$1.$n.lock"; do',
 			why: "A run takes the first snapshot without its lock, so it checks in one a live run is filling and checking; the claimed-snapshot property fails."
 		},
@@ -350,7 +350,7 @@ export const collectedSnapshots = property.exhaust(finite(collectings), {
 	kills: [
 		{
 			file: "packages/devtools/bin/gate.sh",
-			original: "if flock -n -x 7; then",
+			original: "if hold try exclusive 1 7; then",
 			replacement: "if true; then",
 			why: "A collect deletes a key directory a live run holds, under that run's snapshot, so the run checks a half-deleted tree; the collection property fails."
 		},
@@ -399,20 +399,21 @@ export const sweptRun = property.exhaust(finite(sweeps), {
 	kills: [
 		{
 			file: "packages/devtools/bin/gate.sh",
-			original: "if flock -n -x 7; then",
+			original: "if hold try exclusive 1 7; then",
 			replacement: "if true; then",
 			why: "The collect takes the registry alone as its test of a live run, as every gate before the flock(1) holds did: a key directory whose clones read gone is renamed away and removed under the run that holds it (effect-openapi-cli-generator's 930250a4b854, under four pushes in a row); the swept-run property fails."
 		},
 		{
 			file: "packages/devtools/bin/gate.sh",
-			original: "flock -s 8",
+			original: "hold wait shared 1 8",
 			replacement: ":",
 			why: "A run never holds its key, so a collect beside it takes the key alone and deletes the directory under the run, whatever phase it is in; the swept-run property fails."
 		},
 		{
 			file: "packages/devtools/bin/gate.sh",
 			original: '\tclaim "$1"\n',
-			replacement: '\tclaim "$1"\n\tflock -u 8\n',
+			replacement:
+				'\tclaim "$1"\n\tperl -e \'use Fcntl ":flock"; open(my $key, ">>&=", 8) or die; flock($key, LOCK_UN) or die\'\n',
 			why: "A run lets go of its key once it holds a snapshot, as if the snapshot's lock kept the directory, but the collect reads the key's lock alone, so it deletes the directory under a run filling or checking its snapshot and under a process the run left there; the swept-run property fails."
 		}
 	]

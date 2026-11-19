@@ -7,11 +7,10 @@ import {
 	Option,
 	Redacted,
 	Schema,
-	Stream,
 	String as Str
 } from "effect"
-import { ChildProcess, ChildProcessSpawner } from "effect/process"
-import { waitingOn } from "#live.ts"
+import type { ChildProcessSpawner } from "effect/process"
+import { lockHeld } from "#pg/hold.ts"
 import { capacityFile } from "#pg/lease.ts"
 import { freePort, portFree } from "#pg/ports.ts"
 import {
@@ -138,21 +137,12 @@ const lifeOf = (
 	})
 
 /**
- * The program that holds a cluster's lifecycle lock: it opens the lock file, takes flock(2)'s exclusive lock on it,
- * which the kernel grants one process at a time and frees when its holder ends, however it ends, says `held`, and
- * holds it until it is ended. Node has no flock; perl, which Debian, Ubuntu and macOS all install, does.
- */
-const holdLock =
-	'use Fcntl ":flock"; open(my $lock, ">>", $ARGV[0]) or die "$!"; flock($lock, LOCK_EX) or die "$!"; $| = 1; print "held\\n"; <STDIN>;'
-
-/**
- * Runs `operation` under the cluster's lock, so of every process that would make, start, stop or destroy the same
- * cluster at once (the runner's workers, each opening the cluster as a need, a person's command, another repository's
- * checkout of the same port), one at a time acts and the rest find what it left: a cluster made once, a server started
- * once. A waiter waits in the kernel, and the wait is declared to the runner's guards (live.ts waitingOn), the one
- * wait of a cluster's life on another process: under the lock every step is this process's own and stays watched, and
- * a server another process started already accepts connections when its starter lets the lock go (pg_ctl's --wait
- * ends first). A holder that dies frees the lock with it.
+ * Runs `operation` under the cluster's lock (hold.ts lockHeld), so of every process that would make, start, stop or
+ * destroy the same cluster at once (the runner's workers, each opening the cluster as a need, a person's command,
+ * another repository's checkout of the same port), one at a time acts and the rest find what it left: a cluster made
+ * once, a server started once. A waiter waits in the kernel, the one wait of a cluster's life on another process: under
+ * the lock every step is this process's own and stays watched, and a server another process started already accepts
+ * connections when its starter lets the lock go (pg_ctl's --wait ends first). A holder that dies frees the lock with it.
  */
 const underLock = <A, E, R>(
 	life: Life,
@@ -161,23 +151,10 @@ const underLock = <A, E, R>(
 	Effect.scoped(
 		Effect.gen(function* () {
 			const fs = yield* FileSystem.FileSystem
-			const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
 			const step = stepOf(life, `taking its lock ${life.state.lock}`)
 			const lockFailed = (error: { readonly message: string }) => failed(step, error.message)
 			yield* Effect.mapError(fs.makeDirectory(life.state.base, { recursive: true }), lockFailed)
-			const holder = yield* Effect.mapError(
-				spawner.spawn(ChildProcess.make("perl", ["-e", holdLock, life.state.lock])),
-				lockFailed
-			)
-			const said = yield* waitingOn(
-				Effect.mapError(
-					Stream.runHead(Stream.splitLines(Stream.decodeText(holder.stdout))),
-					lockFailed
-				)
-			)
-			if (Option.isNone(said)) {
-				return yield* failed(step, "its holder ended before it held the lock")
-			}
+			yield* Effect.mapError(lockHeld(life.state.lock), lockFailed)
 			return yield* operation
 		})
 	)

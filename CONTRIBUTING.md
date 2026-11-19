@@ -183,14 +183,17 @@ installed in the snapshot online by hand.
 | ------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
 | `clones`                 | The common git directories of the clones that ran here, one a line.                                                         |
 | `commit.<n>`, `push.<n>` | The snapshots' checkouts, numbered from 0; `<mode>.<n>.git` is each one's git directory.                                    |
-| `<mode>.<n>.lock`        | Locked (flock(1), exclusive) by the run that uses that snapshot, and by every process it starts.                            |
+| `<mode>.<n>.lock`        | Locked (flock(2), exclusive) by the run that uses that snapshot, and by every process it starts.                            |
 | `push.full`              | Stamped when the daily `check:full` passed.                                                                                 |
 | `push.passed/<tree>`     | Stamped when every check of the push gate passed on that tree: a push sending it again claims no snapshot and runs nothing. |
 
-Beside each key directory, `.<key>.lock` is locked (flock(1), shared) by every run of the repository, from before its
+Beside each key directory, `.<key>.lock` is locked (flock(2), shared) by every run of the repository, from before its
 first look at the cache (the push's stamps, a claim) until it and everything it started have exited, so whatever holds
 a snapshot holds its key. Every hold is the kernel's lock on an open file, which the run's shell and everything it
-starts keep open and which the kernel lets go of when the last of them exits, however it exits: no pid names a holder,
+starts keep open and which the kernel lets go of when the last of them exits, however it exits, taken on the shell's
+descriptor by the toolchain's one holder of kernel locks (`packages/testing/scripts/hold.pl`, which takes the cluster
+maker's lifecycle lock and a run's lease too; the gates since 434ec12 take the same locks with flock(1), so the two
+keep each other's while repositories repin): no pid names a holder,
 so a live run is never taken for a dead one, and no run reads a snapshot another is filling. A snapshot a killed run left half-filled is reset whole by the next run that claims it
 (`read-tree --reset -u` rewrites every tracked file whose stat differs, and `clean` removes the strays).
 
