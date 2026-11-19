@@ -12,6 +12,7 @@ import {
 	String as Str
 } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { liveMillis } from "#live.ts"
 import type { LocalCluster } from "#pg/spec.ts"
 import type { MemberState } from "#pg/state.ts"
 
@@ -118,19 +119,30 @@ export const processRuns = (pid: number): boolean =>
 	})
 
 /**
- * Whether `member`'s postmaster runs, as `pg_ctl status` reads its data directory's lock file: its process alive. A
- * member is started under its cluster's lock and its start waits until it accepts connections (`pg_ctl -w`), so one
- * that runs when the lock is taken accepts them, however loaded the machine; a ping of the server would wait on the
- * machine to fork it a backend, and read a slow answer as none.
+ * Whether `member`'s postmaster runs, read as `pg_ctl status` reads it, here in this process with no program run: its
+ * data directory's lock file, postmaster.pid, names a process that runs (processRuns), where a member that never
+ * started or stopped holds none. A member is started under its cluster's lock and its start waits until it accepts
+ * connections (`pg_ctl -w`), so one that runs accepts them, however loaded the machine; a ping of the server would wait
+ * on the machine to fork it a backend, and read a slow answer as none. A lock file whose first line is no process id is
+ * no postmaster's, and fails.
  */
 export const running = (
-	bin: string,
-	member: MemberState
-): Effect.Effect<boolean, ClusterFailed, ChildProcessSpawner.ChildProcessSpawner> =>
-	Effect.map(
-		ran(program(bin, "pg_ctl", ["status", "-D", member.data], {})),
-		(done) => done.code === 0
-	)
+	member: Readonly<{ data: string }>,
+	step: Step
+): Effect.Effect<boolean, ClusterFailed, FileSystem.FileSystem> =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		const file = `${member.data}/postmaster.pid`
+		const unread = (error: { readonly message: string }) => failed(step, error.message)
+		if (!(yield* Effect.mapError(fs.exists(file), unread))) {
+			return false
+		}
+		const text = yield* Effect.mapError(fs.readFileString(file), unread)
+		const pid = Number(Arr.headNonEmpty(Str.split("\n")(text)))
+		return Number.isSafeInteger(pid) && pid > 0
+			? processRuns(pid)
+			: yield* failed(step, `${file} names no process: ${Arr.headNonEmpty(Str.split("\n")(text))}`)
+	})
 
 /**
  * The port a member was to listen on was taken by another process between its finding and its start: the start's
@@ -418,25 +430,40 @@ export const issueTls = (
 		)
 	})
 
-/** Whether every certificate in a member's TLS directory is still valid: none has expired (openssl's -checkend 0). */
+/** Node's certificates: a member's TLS is read in this process, with no openssl run. */
+const { X509Certificate } = process.getBuiltinModule("node:crypto")
+
+/**
+ * Whether every certificate in a member's TLS directory is still valid, read here in this process with no program run:
+ * each is there, parses as a certificate and has not expired on the live clock (openssl's -checkend 0). One that is
+ * missing or does not parse is no current certificate, and the member's TLS is issued again.
+ */
 export const tlsCurrent = (
-	directory: string
-): Effect.Effect<boolean, ClusterFailed, ChildProcessSpawner.ChildProcessSpawner> =>
-	Effect.map(
-		Effect.forEach(["ca.crt", "server.crt", "wrong-ca.crt"], (name) =>
-			ran(
-				ChildProcess.make("openssl", [
-					"x509",
-					"-checkend",
-					"0",
-					"-noout",
-					"-in",
-					`${directory}/${name}`
-				])
-			)
-		),
-		(runs) => Arr.every(runs, (done) => done.code === 0)
-	)
+	directory: string,
+	step: Step
+): Effect.Effect<boolean, ClusterFailed, FileSystem.FileSystem> =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		const unread = (error: { readonly message: string }) => failed(step, error.message)
+		const now = yield* liveMillis
+		const current = yield* Effect.forEach(["ca.crt", "server.crt", "wrong-ca.crt"], (name) =>
+			Effect.gen(function* () {
+				const file = `${directory}/${name}`
+				if (!(yield* fs.exists(file))) {
+					return false
+				}
+				const pem = yield* fs.readFileString(file)
+				return Result.match(
+					Result.try({ try: () => new X509Certificate(pem), catch: (error) => error }),
+					{
+						onSuccess: (certificate) => certificate.validToDate.getTime() > now,
+						onFailure: () => false
+					}
+				)
+			}).pipe(Effect.mapError(unread))
+		)
+		return Arr.every(current, (valid) => valid)
+	})
 
 /** A fresh password for a member's owner: 24 random bytes, as hex. */
 export const freshPassword = (step: Step) =>

@@ -191,3 +191,34 @@ export const foreignCluster = (
 		yield* ran("pg_ctl", ["-D", data, "-m", "fast", "-w", "stop"])
 		return Arr.filter(Str.split(oids, "\n"), Str.isNonEmpty)
 	})
+
+/**
+ * The programs a bring-up runs only to do something to a cluster: perl holds its lock, pg_ctl and openssl read, start
+ * or issue a member's postmaster and TLS. Taking a running cluster runs none of them.
+ */
+export const TAKING_WORK: ReadonlyArray<string> = ["perl", "pg_ctl", "openssl"]
+
+/** The program a command runs, by its file's name: a pipe's first. */
+const programOf = (command: ChildProcess.Command): string => {
+	switch (command._tag) {
+		case "StandardCommand":
+			return Arr.lastNonEmpty(Str.split("/")(command.command))
+		case "PipedCommand":
+			return programOf(command.left)
+	}
+}
+
+/** `effect`'s result and the programs it ran, in the order it started them. */
+export const spawnedBy = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+	Effect.gen(function* () {
+		const real = yield* ChildProcessSpawner.ChildProcessSpawner
+		const spawned: Array<string> = []
+		const recording = ChildProcessSpawner.make((command) =>
+			Effect.andThen(
+				Effect.sync(() => spawned.push(programOf(command))),
+				real.spawn(command)
+			)
+		)
+		yield* Effect.provideService(effect, ChildProcessSpawner.ChildProcessSpawner, recording)
+		return spawned
+	})

@@ -565,7 +565,7 @@ const adoptMember = (
 			)
 		}
 		const foreign = { ...member, data }
-		if (yield* running(life.bin, foreign)) {
+		if (yield* running(foreign, step)) {
 			yield* stop(life.bin, foreign, "fast", {
 				...step,
 				doing: `${step.doing}: stopping its postmaster`
@@ -658,7 +658,7 @@ const removeMember = (
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem
 		const step = stepOf(life, `removing its member at ${member.state}`)
-		if (yield* running(life.bin, member)) {
+		if (yield* running(member, step)) {
 			yield* stop(life.bin, member, "immediate", step)
 		}
 		yield* Effect.mapError(fs.remove(member.state, { recursive: true, force: true }), (error) =>
@@ -728,8 +728,8 @@ const memberOf = (
 const upMember = (life: Life, member: MemberState): Effect.Effect<void, ClusterFailed, Platform> =>
 	Effect.gen(function* () {
 		const step = stepOf(life, `starting its member on port ${member.port}`)
-		const up = yield* running(life.bin, member)
-		if (!(yield* tlsCurrent(member.tls))) {
+		const up = yield* running(member, step)
+		if (!(yield* tlsCurrent(member.tls, step))) {
 			yield* issueTls(member.tls, step)
 			if (up) {
 				yield* reload(life.bin, member, step)
@@ -805,14 +805,56 @@ const upCluster = (
 	)
 
 /**
+ * `life`'s cluster when it runs whole, taken as it is without its lock: its manifest, which its making writes last, is
+ * this spec's (agreeing, which refuses another's) with its owner granted the parameters this spec names, and every
+ * member's postmaster runs with its TLS current, all read
+ * in this process (server.ts running, tlsCurrent), so taking a running cluster runs no program and waits on no other
+ * process; none when anything is to do, which the lock's holder does (upCluster). What a member's facts are read from
+ * is written before its making records it, so a concurrent maker's cluster is either taken whole or left to the lock.
+ */
+const takenRunning = (
+	life: Life
+): Effect.Effect<Option.Option<Arr.NonEmptyReadonlyArray<PgMember>>, ClusterFailed, Platform> =>
+	Effect.gen(function* () {
+		const recorded = yield* manifestOf(life)
+		if (Option.isNone(recorded)) {
+			return Option.none()
+		}
+		const manifest = yield* agreeing(life, recorded.value)
+		if (!grantsAgree(life.cluster, manifest)) {
+			return Option.none()
+		}
+		const members = membersIn(life, manifest)
+		const step = stepOf(life, `taking it as it runs at ${life.state.root}`)
+		const whole = yield* Effect.forEach(members, (member) =>
+			Effect.map(
+				Effect.all([running(member, step), tlsCurrent(member.tls, step)]),
+				([up, current]) => up && current
+			)
+		)
+		if (!Arr.every(whole, (up) => up)) {
+			return Option.none()
+		}
+		const facts = yield* Effect.forEach(members, (member) => memberOf(life, member))
+		return Option.some(facts)
+	})
+
+/**
  * `cluster` up and its members' facts, in member order: what a need of the runner opens the first time it reaches the
- * cluster, and `toolchain-pg start`. Made whole when it does not exist, its members started when they do not run, and a
- * running cluster taken as it is (upCluster), all under its lock.
+ * cluster, and `toolchain-pg start`. A running cluster is taken as it is, with no lock and no program run
+ * (takenRunning), so every worker and test file opening it at once reads it side by side; anything else is done under
+ * its lock (upCluster): made whole when it does not exist, its members started when they do not run, their TLS issued
+ * again when it expired.
  */
 export const clusterUp = (
 	cluster: LocalCluster
 ): Effect.Effect<Arr.NonEmptyReadonlyArray<PgMember>, ClusterFailed, Platform> =>
-	Effect.flatMap(lifeOf(cluster), upCluster)
+	Effect.flatMap(lifeOf(cluster), (life) =>
+		Effect.flatMap(
+			takenRunning(life),
+			Option.match({ onNone: () => upCluster(life), onSome: Effect.succeed })
+		)
+	)
 
 /** The members `cluster`'s manifest records, refused when it records none: what every command but init and start acts on. */
 const recordedMembers = (
@@ -959,7 +1001,7 @@ export const stopCluster = (cluster: LocalCluster): Effect.Effect<void, ClusterF
 				Effect.forEach(
 					members,
 					(member) =>
-						Effect.flatMap(running(life.bin, member), (up) =>
+						Effect.flatMap(running(member, stepOf(life, `stopping ${member.port}`)), (up) =>
 							up
 								? stop(life.bin, member, "fast", stepOf(life, `stopping ${member.port}`))
 								: Effect.void
@@ -980,7 +1022,10 @@ export const clusterStatus = (
 	Effect.flatMap(lifeOf(cluster), (life) =>
 		Effect.flatMap(recordedMembers(life, "reading its status"), (members) =>
 			Effect.forEach(members, (member) =>
-				Effect.map(running(life.bin, member), (up) => ({ port: member.port, running: up }))
+				Effect.map(running(member, stepOf(life, `reading ${member.port}'s status`)), (up) => ({
+					port: member.port,
+					running: up
+				}))
 			)
 		)
 	)

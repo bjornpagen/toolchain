@@ -18,8 +18,10 @@ import {
 	lives,
 	machineBin,
 	postmasters,
+	spawnedBy,
 	specOf,
-	stopEvery
+	stopEvery,
+	TAKING_WORK
 } from "#pg/make.fixtures.ts"
 import { clusterUp, destroyCluster, initCluster, stopCluster } from "#pg/make.ts"
 import { freePort } from "#pg/ports.ts"
@@ -88,9 +90,14 @@ export const lifeOfACluster = property.exhaust(lives, {
 				)
 			})
 			const before = yield* postmasters(root, ports)
-			yield* inCase(clusterUp(spec))
+			const spawned = yield* clusterUp(spec).pipe(inCase, spawnedBy)
 			const after = yield* postmasters(root, ports)
 			deepStrictEqual(after, before, "a running cluster is taken as it is")
+			deepStrictEqual(
+				Arr.filter(spawned, (program) => Arr.contains(TAKING_WORK, program)),
+				[],
+				"a running cluster is taken with no lock taken and no member's program run"
+			)
 			const other = yield* Effect.exit(inCase(clusterUp(specOf(life, port, "another_owner"))))
 			assertTrue(Exit.isFailure(other), "a spec of another owner on the same port is refused")
 			const destroyed = yield* Effect.exit(inCase(destroyCluster(spec)))
@@ -170,6 +177,12 @@ export const lifeOfACluster = property.exhaust(lives, {
 			original: `(name) => \`GRANT SET ON PARAMETER \${ident(name)} TO \${owner}\``,
 			replacement: "() => `SELECT 1`",
 			why: "The owner is granted none of the parameters its spec names, which the doctor checks; the property fails."
+		},
+		{
+			file: "packages/testing/src/pg/make.ts",
+			original: "takenRunning(life),",
+			replacement: "Effect.succeedNone,",
+			why: "A running cluster is taken under its lock, every member's pg_ctl status and TLS checked by programs, so every test file and worker opening it waits on the others in turn; the property fails."
 		}
 	]
 })
