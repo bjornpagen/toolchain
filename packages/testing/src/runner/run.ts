@@ -24,7 +24,15 @@ import type { DatabaseTemplate } from "#resources/template.ts"
 import { type RunnerConfig, SMALL_STACK } from "#runner/config.ts"
 import { runLeasesIn } from "#runner/leases.ts"
 import { runnerLimits } from "#runner/limits.ts"
-import { configOf, type Discovered, discover, type LoadFailed, matchedBy } from "#runner/load.ts"
+import {
+	configOf,
+	type Discovered,
+	discover,
+	LoadFailed,
+	matchedBy,
+	type Pointed,
+	pointedOf
+} from "#runner/load.ts"
 import { moduleClosureAt } from "#runner/module-closure.ts"
 import { type Pool, PoolFailed, placesOf, placesShared, poolOf } from "#runner/pool.ts"
 import type { Reach, Verdict } from "#runner/protocol.ts"
@@ -142,18 +150,100 @@ const flagsOf = (stack: Stack): ReadonlyArray<string> => {
 	}
 }
 
-/** Whether an argument names a property, by identity or by module. */
-const names = (argument: string, discovered: Discovered): boolean =>
-	Str.includes("#")(argument)
-		? discovered.id === argument || Str.startsWith(`${argument}/`)(discovered.id)
-		: Str.startsWith(argument)(discovered.module)
+/**
+ * An argument of a command, as it names properties: a module path or a directory of them, naming every property of
+ * each module whose path it begins (`modules`); or a property identity (`<module>#<export>`, load.ts pointedOf), naming
+ * its export's property and a family's every member (`identity`).
+ */
+type Argument =
+	| Readonly<{ kind: "modules"; text: string }>
+	| Readonly<{ kind: "identity"; text: string; pointed: Pointed }>
+
+/** An argument as it names properties: an identity when it is one, else a module or a directory of them. */
+const argumentOf = (text: string): Argument =>
+	Option.match(pointedOf(text), {
+		onNone: (): Argument => ({ kind: "modules", text }),
+		onSome: (pointed): Argument => ({ kind: "identity", text, pointed })
+	})
+
+/** Whether an argument reaches a module: a module or directory each module its path begins, an identity its module. */
+const reaches = (argument: Argument, module: string): boolean =>
+	argument.kind === "modules"
+		? Str.startsWith(argument.text)(module)
+		: module === argument.pointed.module
+
+/** Whether an argument names a property: every property of a module it reaches, or the one its identity names. */
+const names = (argument: Argument, found: Discovered): boolean =>
+	argument.kind === "modules"
+		? reaches(argument, found.module)
+		: found.id === argument.text || Str.startsWith(`${argument.text}/`)(found.id)
+
+/** The export an identity names, and a family's key after it: the identity past its module. */
+const exportOf = (pointed: Pointed): string =>
+	Option.match(pointed.key, {
+		onNone: () => pointed.name,
+		onSome: (key) => `${pointed.name}/${key}`
+	})
+
+/**
+ * Why `argument` names none of the `discovered` properties of the modules it reaches among the `included`: no included
+ * module is one it reaches, or the modules it reaches export none it names; none when it names one.
+ */
+const unnamedOf = (
+	argument: Argument,
+	included: ReadonlyArray<string>,
+	discovered: ReadonlyArray<Discovered>
+): Option.Option<string> =>
+	Arr.some(discovered, (found) => names(argument, found))
+		? Option.none()
+		: Option.some(
+				!Arr.some(included, (module) => reaches(argument, module))
+					? `${argument.text} is not in the runner config's include`
+					: argument.kind === "modules"
+						? `${argument.text} exports no property`
+						: `${argument.pointed.module} exports no property ${exportOf(argument.pointed)}`
+			)
+
+/**
+ * The properties `named` names among the `included` test modules under `root`, in discovery order: only the modules an
+ * argument reaches are imported. An argument that names none fails the load, naming it and why, so a run of a module
+ * left out of the include, or of a property its module does not export, is refused, never a pass of no property.
+ */
+const namedIn = (
+	root: string,
+	included: ReadonlyArray<string>,
+	named: Arr.NonEmptyReadonlyArray<Argument>
+): Effect.Effect<ReadonlyArray<Discovered>, LoadFailed, Path.Path> =>
+	Effect.gen(function* () {
+		const loaded = yield* discover(
+			root,
+			Arr.filter(included, (module) => Arr.some(named, (argument) => reaches(argument, module)))
+		)
+		const unnamed = Arr.flatMap(named, (argument) =>
+			Option.toArray(
+				Option.map(unnamedOf(argument, included, loaded), (why) => ({ argument, why }))
+			)
+		)
+		if (Arr.isReadonlyArrayNonEmpty(unnamed)) {
+			return yield* LoadFailed.make({
+				path: Arr.join(
+					Arr.map(unnamed, ({ argument }) => argument.text),
+					" "
+				),
+				message: `no property is named by ${Arr.join(
+					Arr.map(unnamed, ({ why }) => why),
+					"; "
+				)}`
+			})
+		}
+		return Arr.filter(loaded, (found) => Arr.some(named, (argument) => names(argument, found)))
+	})
 
 /** The module part of an argument: an identity's module, or the argument, a module or a directory. */
-const moduleOfArgument = (argument: string): string =>
-	Option.match(Str.indexOf("#")(argument), {
-		onNone: () => argument,
-		onSome: (hash) => Str.slice(0, hash)(argument)
-	})
+const moduleOfArgument = (argument: string): string => {
+	const parsed = argumentOf(argument)
+	return parsed.kind === "modules" ? parsed.text : parsed.pointed.module
+}
 
 /**
  * A package as a command loads it: its runner config, the properties the arguments name, in discovery order, and the
@@ -167,7 +257,7 @@ type Loaded = Readonly<{
 
 /**
  * Loads a package's runner config and the properties `selected` names (every property when it names none): only the
- * test modules an argument names are imported.
+ * test modules an argument reaches are imported, and an argument that names no property fails the load (namedIn).
  */
 export const loadPackage = (
 	root: string,
@@ -178,24 +268,13 @@ export const loadPackage = (
 		const modules = yield* matchedBy(root, config.include)
 		const smallModules = yield* matchedBy(root, config.smallStack)
 		const small = new Set(smallModules)
-		const wanted = Arr.isReadonlyArrayNonEmpty(selected)
-			? Arr.filter(modules, (module) =>
-					Arr.some(selected, (argument) => {
-						const named = moduleOfArgument(argument)
-						return Str.includes("#")(argument) ? module === named : Str.startsWith(named)(module)
-					})
-				)
-			: modules
-		const loaded = yield* discover(root, wanted)
+		const named = Arr.map(selected, argumentOf)
 		return {
 			config,
 			stackOf: (found) => (small.has(found.module) ? "small" : "default"),
-			discovered: Arr.filter(
-				loaded,
-				(found) =>
-					!Arr.isReadonlyArrayNonEmpty(selected) ||
-					Arr.some(selected, (argument) => names(argument, found))
-			)
+			discovered: yield* Arr.isReadonlyArrayNonEmpty(named)
+				? namedIn(root, modules, named)
+				: discover(root, modules)
 		}
 	})
 

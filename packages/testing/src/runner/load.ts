@@ -215,10 +215,10 @@ export const discover = (
 	)
 
 /** Where a property identity points: its module, its export, and a family's key. */
-type Pointed = Readonly<{ module: string; name: string; key: Option.Option<string> }>
+export type Pointed = Readonly<{ module: string; name: string; key: Option.Option<string> }>
 
 /** The module, export and key an identity names, none when it is no identity. */
-const pointedOf = (id: string): Option.Option<Pointed> =>
+export const pointedOf = (id: string): Option.Option<Pointed> =>
 	Option.flatMap(Str.indexOf("#")(id), (hash) => {
 		const module = Str.slice(0, hash)(id)
 		const rest = Str.slice(hash + 1)(id)
