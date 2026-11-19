@@ -47,6 +47,8 @@ import {
 	clusterState,
 	disagreements,
 	grantsAgree,
+	type MadeFor,
+	MadeForFile,
 	type Manifest,
 	ManifestFile,
 	madeAs,
@@ -167,28 +169,35 @@ const files = process.getBuiltinModule("node:fs")
  * It is read synchronously, the one file read, so a caller that runs it with Effect.runSync (a repository's config
  * building its connection: madeMembers) reads it as every bring-up does.
  */
-const manifestRead = (
-	state: ClusterState
-): Effect.Effect<Option.Option<Manifest>, ClusterFailed> => {
-	const step: Step = { cluster: state.port, doing: `reading its manifest ${state.manifest}` }
-	return Effect.flatMap(
-		Effect.try({
-			try: () =>
-				files.existsSync(state.manifest)
-					? Option.some(files.readFileSync(state.manifest, "utf8"))
-					: Option.none<string>(),
-			catch: (error) => failed(step, String(error))
-		}),
-		Option.match({
-			onNone: () => Effect.succeedNone,
-			onSome: (text) =>
-				Effect.mapBoth(Schema.decodeEffect(ManifestFile)(text), {
-					onFailure: (error) => failed(step, error.message),
-					onSuccess: Option.some
-				})
-		})
-	)
-}
+/** A cluster's manifest file read as `file` decodes it, none when no manifest is written. */
+const recordRead =
+	<A>(file: Schema.Codec<A, string>) =>
+	(state: ClusterState): Effect.Effect<Option.Option<A>, ClusterFailed> => {
+		const step: Step = { cluster: state.port, doing: `reading its manifest ${state.manifest}` }
+		return Effect.flatMap(
+			Effect.try({
+				try: () =>
+					files.existsSync(state.manifest)
+						? Option.some(files.readFileSync(state.manifest, "utf8"))
+						: Option.none<string>(),
+				catch: (error) => failed(step, String(error))
+			}),
+			Option.match({
+				onNone: () => Effect.succeedNone,
+				onSome: (text) =>
+					Effect.mapBoth(Schema.decodeEffect(file)(text), {
+						onFailure: (error) => failed(step, error.message),
+						onSuccess: Option.some
+					})
+			})
+		)
+	}
+
+/** A cluster's manifest, whole, in the format this library writes (ManifestFile). */
+const manifestRead = recordRead(ManifestFile)
+
+/** Whose a cluster is, read from its manifest in any format that wrote it (MadeForFile). */
+const madeForRead = recordRead(MadeForFile)
 
 /** The manifest of `life`'s cluster when one is written (manifestRead). */
 const manifestOf = (life: Life): Effect.Effect<Option.Option<Manifest>, ClusterFailed> =>
@@ -203,8 +212,11 @@ const familySize = (life: Life): number => membersOf(life.cluster.family, testWo
  * server's version (a repin), or another count of members (a machine of another width; `toolchain-pg init --adopt`
  * grows it).
  */
-/** The manifest of `life`'s cluster, refused when another spec made it (disagreements). */
-const agreeingMade = (life: Life, manifest: Manifest): Effect.Effect<Manifest, ClusterFailed> => {
+/** Whose `life`'s cluster is, or its manifest, refused when another spec made it (disagreements). */
+const agreeingMade = <M extends MadeFor>(
+	life: Life,
+	manifest: M
+): Effect.Effect<M, ClusterFailed> => {
 	const differences = disagreements(life.cluster, manifest)
 	return Arr.isReadonlyArrayNonEmpty(differences)
 		? Effect.fail(
@@ -1143,10 +1155,10 @@ const throwaway = (
 	doing: string
 ): Effect.Effect<void, ClusterFailed, FileSystem.FileSystem> =>
 	life.cluster.durability === "throwaway"
-		? Effect.flatMap(manifestOf(life), (recorded) =>
+		? Effect.flatMap(madeForRead(life.state), (recorded) =>
 				Option.match(recorded, {
 					onNone: () => Effect.void,
-					onSome: (manifest) => Effect.asVoid(agreeingMade(life, manifest))
+					onSome: (madeFor) => Effect.asVoid(agreeingMade(life, madeFor))
 				})
 			)
 		: Effect.fail(

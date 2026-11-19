@@ -69,20 +69,36 @@ export const clusterState = (port: ClusterPort): Effect.Effect<ClusterState> =>
 const Extension = Schema.Struct({ name: Schema.String, schema: Schema.String })
 
 /**
+ * Whose a cluster is, as every manifest has recorded it since the first: the owner, the template and its extensions,
+ * the peer logins and the durability, the fields `disagreements` reads. A manifest of an older format, which no reader
+ * of the whole manifest takes, still says whose cluster it is, so `init --force` and `destroy` remove a throwaway
+ * cluster of this spec's whatever format its manifest was written in, and never another spec's.
+ */
+const MadeFor = Schema.Struct({
+	owner: Schema.String,
+	template: Schema.String,
+	extensions: Schema.Array(Extension),
+	peerLogins: Schema.Array(Schema.String),
+	durability: Schema.Literals(["throwaway", "kept"])
+})
+
+/** Whose a cluster is (MadeFor). */
+export type MadeFor = typeof MadeFor.Type
+
+/** Whose a cluster is, read from its manifest's file text in any format (MadeFor). */
+export const MadeForFile = Schema.fromJsonString(MadeFor)
+
+/**
  * What a cluster was made as, written once its every member exists and read by every command and need that reaches it:
- * the server's version (`postgres --version` of the bin that made it, so a repinned server is refused rather than run
- * over data another made), the owner, the template and its extensions, the durability, and its members' ports in
+ * whose it is (MadeFor), the server's version (`postgres --version` of the bin that made it, so a repinned server is
+ * refused rather than run over data another made), the parameters its owner was granted, and its members' ports in
  * member order, the first the cluster's name. A member's port is whatever port was free when it was made, so every
  * reader of the family reads it here, never a formula.
  */
 const Manifest = Schema.Struct({
+	...MadeFor.fields,
 	server: Schema.String,
-	owner: Schema.String,
-	template: Schema.String,
-	extensions: Schema.Array(Extension),
 	ownerParameters: Schema.Array(Schema.String),
-	peerLogins: Schema.Array(Schema.String),
-	durability: Schema.Literals(["throwaway", "kept"]),
 	members: Schema.NonEmptyArray(Schema.Int)
 })
 
@@ -119,7 +135,7 @@ export const grantsAgree = (cluster: LocalCluster, manifest: Manifest): boolean 
  * Where a manifest differs from what `cluster` states (madeAs), one phrase a difference: a cluster made for another
  * repository's spec on the same port, or for this one's before its spec changed, is refused rather than taken as this.
  */
-export const disagreements = (cluster: LocalCluster, manifest: Manifest): ReadonlyArray<string> => {
+export const disagreements = (cluster: LocalCluster, manifest: MadeFor): ReadonlyArray<string> => {
 	const expected = madeAs(cluster)
 	const extensionsText = (extensions: Manifest["extensions"]) =>
 		Arr.join(

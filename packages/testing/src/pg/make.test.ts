@@ -7,7 +7,16 @@
  * refused. Each case's cluster is its own: its state under a home of the case's own and its name a port free when the
  * case began (TOOLCHAIN_PG_CLUSTER). Oracle: the specification, stated in the check.
  */
-import { Array as Arr, ConfigProvider, Effect, Exit, FileSystem, Option, Schema } from "effect"
+import {
+	Array as Arr,
+	ConfigProvider,
+	Effect,
+	Exit,
+	FileSystem,
+	Option,
+	Schema,
+	Struct
+} from "effect"
 import { assertTrue, deepStrictEqual, strictEqual } from "#assert.ts"
 import { doctor } from "#pg/doctor.ts"
 import {
@@ -35,6 +44,7 @@ type Feature =
 	| "made by one of several at once"
 	| "a family of two members"
 	| "a throwaway cluster destroyed"
+	| "a throwaway cluster of an older manifest made again"
 	| "a kept cluster's destroy refused"
 
 export const lifeOfACluster = property.exhaust(lives, {
@@ -44,6 +54,7 @@ export const lifeOfACluster = property.exhaust(lives, {
 		"made by one of several at once",
 		"a family of two members",
 		"a throwaway cluster destroyed",
+		"a throwaway cluster of an older manifest made again",
 		"a kept cluster's destroy refused"
 	] satisfies ReadonlyArray<Feature>,
 	check: (_resources, c) => (life) =>
@@ -136,6 +147,39 @@ export const lifeOfACluster = property.exhaust(lives, {
 			)
 			const other = yield* Effect.exit(inCase(clusterUp(specOf(life, port, "another_owner"))))
 			assertTrue(Exit.isFailure(other), "a spec of another owner on the same port is refused")
+			if (life.durability === "throwaway") {
+				const written = yield* Effect.flatMap(
+					fs.readFileString(`${root}/cluster.json`),
+					Schema.decodeEffect(ManifestFile)
+				)
+				const older = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(
+					Struct.omit(written, ["ownerParameters"])
+				)
+				yield* fs.writeFileString(`${root}/cluster.json`, older)
+				const remade = yield* Effect.exit(inCase(initCluster(spec, { kind: "force" })))
+				assertTrue(
+					Exit.isSuccess(remade),
+					"init --force makes a throwaway cluster again whose manifest predates its owner's parameters"
+				)
+				const rewritten = yield* Effect.flatMap(
+					fs.readFileString(`${root}/cluster.json`),
+					Schema.decodeEffect(ManifestFile)
+				)
+				deepStrictEqual(
+					rewritten.ownerParameters,
+					spec.ownerParameters,
+					"the cluster made again records its owner's parameters"
+				)
+				const rechecked = yield* inCase(doctor(spec, true))
+				Arr.forEach(rechecked, ({ port: member, verdicts }) => {
+					deepStrictEqual(
+						Arr.filter(verdicts, (verdict) => verdict.kind === "failed"),
+						[],
+						`member ${member} of the cluster made again passes the doctor's quick checks`
+					)
+				})
+				c.note("a throwaway cluster of an older manifest made again")
+			}
 			const destroyed = yield* Effect.exit(inCase(destroyCluster(spec)))
 			if (life.durability === "throwaway") {
 				assertTrue(Exit.isSuccess(destroyed), "a throwaway cluster is destroyed")
@@ -192,13 +236,14 @@ export const lifeOfACluster = property.exhaust(lives, {
 		},
 		{
 			file: "packages/testing/src/pg/make.ts",
-			original: 'life.cluster.durability === "throwaway"\n		? Effect.flatMap(manifestOf(life)',
-			replacement: "true\n		? Effect.flatMap(manifestOf(life)",
+			original:
+				'life.cluster.durability === "throwaway"\n		? Effect.flatMap(madeForRead(life.state)',
+			replacement: "true\n		? Effect.flatMap(madeForRead(life.state)",
 			why: "A kept cluster, a person's data, is destroyed; the property fails."
 		},
 		{
 			file: "packages/testing/src/pg/make.ts",
-			original: "onSome: (manifest) => Effect.asVoid(agreeingMade(life, manifest))",
+			original: "onSome: (madeFor) => Effect.asVoid(agreeingMade(life, madeFor))",
 			replacement: "onSome: () => Effect.void",
 			why: "A throwaway spec naming a kept cluster's port destroys it, a person's data; the property fails."
 		},
@@ -219,6 +264,12 @@ export const lifeOfACluster = property.exhaust(lives, {
 			original: "\t\t\tdescribedMember(cluster, state.member(member))\n",
 			replacement: `\t\t\t({ ...describedMember(cluster, state.member(member)), caFile: \`\${state.member(member).state}/ca.crt\` })\n`,
 			why: "The synchronous reader spells a member's CA file itself, beside the one description every reader takes it from, so a config built on it names a file the maker never wrote; the property fails."
+		},
+		{
+			file: "packages/testing/src/pg/make.ts",
+			original: "\t\t? Effect.flatMap(madeForRead(life.state), (recorded) =>",
+			replacement: "\t\t? Effect.flatMap(manifestRead(life.state), (recorded) =>",
+			why: "init --force and destroy read the whole manifest to tell whose cluster it is, so a throwaway cluster whose manifest predates a field (its owner's parameters) is refused, never made again: the documented migration cannot run; the property fails."
 		},
 		{
 			file: "packages/testing/src/pg/make.ts",
