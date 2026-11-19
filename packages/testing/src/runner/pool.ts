@@ -13,7 +13,7 @@ import {
 	Scope,
 	String as Str
 } from "effect"
-import { HUNG_CLEANUP_GRACE, liveMillis, overrun, WATCHDOG_GRACE_MILLIS } from "#live.ts"
+import { HUNG_CLEANUP_GRACE, liveMillis, overrun, watchdogGraceMillis } from "#live.ts"
 import { type Served, servedArgv } from "#mutate/pool.ts"
 import { withLateUses } from "#runner/case.ts"
 import { compileCacheDirectory, readsCoverage } from "#runner/compile-cache.ts"
@@ -309,7 +309,7 @@ type Event =
  * twice (its ping's, then its inspector's, should the main thread be blocked), and the cleanup grace a hung case's
  * guard waits; past that the worker's own guards have failed.
  */
-const SILENCE_GRACE_MILLIS = 2 * WATCHDOG_GRACE_MILLIS + Duration.toMillis(HUNG_CLEANUP_GRACE)
+const SILENCE_GRACE_MILLIS = 2 * watchdogGraceMillis + Duration.toMillis(HUNG_CLEANUP_GRACE)
 
 /**
  * A phase's bound for a unit: readying, its orders' open bound, within which each need opens on the worker (the

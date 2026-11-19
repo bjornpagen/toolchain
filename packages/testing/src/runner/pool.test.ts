@@ -15,7 +15,7 @@ import { Array as Arr, Effect, FileSystem, Option, String as Str } from "effect"
 import { deepStrictEqual } from "#assert.ts"
 import { countWithin } from "#enumerate.ts"
 import { array, boolean, finite, int } from "#gen.ts"
-import { WATCHDOG_GRACE_MILLIS } from "#live.ts"
+import { watchdogGraceMillis } from "#live.ts"
 import { Checkout } from "#mutate/checkout.ts"
 import { property } from "#property.ts"
 import { Scratch } from "#resources/scratch.ts"
@@ -83,7 +83,7 @@ export const workersLeaveNoChild = property.exhaust(finite(leavings), {
 						const written = yield* fs.readFileString(file)
 						const pids = Arr.map(Str.split("\n")(written), Number)
 						const gone = leaving.endsItsWorker
-							? yield* Effect.forEach(pids, (pid) => goneWithin(pid, WATCHDOG_GRACE_MILLIS))
+							? yield* Effect.forEach(pids, (pid) => goneWithin(pid, watchdogGraceMillis))
 							: []
 						return { results, pids, gone }
 					})
@@ -91,7 +91,7 @@ export const workersLeaveNoChild = property.exhaust(finite(leavings), {
 				yield* Effect.ensuring(
 					Effect.gen(function* () {
 						const closed = yield* Effect.forEach(open.pids, (pid) =>
-							goneWithin(pid, WATCHDOG_GRACE_MILLIS)
+							goneWithin(pid, watchdogGraceMillis)
 						)
 						deepStrictEqual(
 							{
@@ -797,7 +797,7 @@ export const workersEndWithTheirParent = property.exhaust(finite(boolean), {
 						Effect.ensuring(
 							Effect.andThen(
 								Effect.sync(() => process.kill(program, "SIGKILL")),
-								Effect.forEach(held, (pid) => goneWithin(pid, WATCHDOG_GRACE_MILLIS))
+								Effect.forEach(held, (pid) => goneWithin(pid, watchdogGraceMillis))
 							),
 							Effect.forEach(held, ended)
 						)

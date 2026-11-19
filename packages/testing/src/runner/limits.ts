@@ -1,6 +1,7 @@
 /**
  * How many independent cases a search's rotating stream runs (runner/limits.ts): the run's fresh sample, the only one
- * the residual estimates from, and its budget for finding failures under test.
+ * the residual estimates from, and its budget for finding failures under test. A deeper search is a fuzz run with a
+ * budget of its own.
  *
  * @limitKind provisional
  * @owner the testing library's runner (runner/search.ts)
@@ -150,38 +151,6 @@ const caseDeadlineMillis = 60_000
 const needOpenMillis = 300_000
 
 /**
- * How many independent cases a search's rotating stream runs: the run's fresh sample, the only one the residual
- * estimates from, and its budget for finding failures under test. A deeper search is a fuzz run with a budget of its
- * own.
- */
-const DEFAULT_RUNS = searchRuns
-
-/**
- * How many cases a search's floor stream runs: the witnesses the suite's identity fixes, the same on every run seed, a
- * quarter of the rotating stream's, as the library's explore ran them.
- */
-const FLOOR_CASES = floorCases
-
-/**
- * How many cases a search's steered phase may run while a required situation is still unreached: mutants of the floor's
- * finds, aimed at what is pending, on a stream the suite's identity fixes.
- */
-const STEERED_CASES = steeredCases
-
-/**
- * How many cases one steering window holds: the cases drawn under one snapshot of what is pending, so a window's cases
- * aim at distinct requirements and run at once. A constant of the runner, never of the machine, so the same seed draws
- * the same cases at any width.
- */
-const STEERING_WINDOW = steeringWindow
-
-/**
- * How much work one case may do before it is hung: the runner-wide case deadline, which replaces every suite's
- * caseHang, as CPU its process tree may spend and as the wall time over which that CPU must move (runner/work.ts).
- */
-const CASE_DEADLINE_MILLIS = caseDeadlineMillis
-
-/**
  * The share of one CPU a case's process tree must spend over a window of its deadline's wall time for its work to count
  * as moving (runner/work.ts progressOver): a tree that spends less over a whole deadline is stalled, blocked on
  * something that will not come, and its case is hung. A process that waits spends almost none, a case the machine
@@ -208,17 +177,7 @@ const CASE_DEADLINE_MILLIS = caseDeadlineMillis
  * @revalidate a worker that does more while it waits (a heartbeat, a poll), which raises the idle side; a suite whose
  *   working cases spend less of a CPU than 0.8 % under load; another machine
  */
-const stalledShareOfCpu = 0.001
-
-/** The share of one CPU a case's tree must spend over a deadline's wall time to be moving: stalledShareOfCpu. */
-export const stalledShare = stalledShareOfCpu
-
-/**
- * How long a property's needs may take to open on a process that has not opened them, before its first case there and
- * outside every case's deadline: a need's one-time cost (a template built or awaited, a module's import closure hashed,
- * an install planned) is the process's, never a case's. A need that outruns it fails the property, once.
- */
-const NEED_OPEN_MILLIS = needOpenMillis
+export const stalledShareOfCpu = 0.001
 
 /** The budgets one search runs under, and the bounds its cases' orders carry: a case's deadline and its needs' open. */
 export type Limits = Readonly<{
@@ -232,10 +191,10 @@ export type Limits = Readonly<{
 
 /** The runner's own budgets. */
 export const runnerLimits: Limits = {
-	runs: DEFAULT_RUNS,
-	floor: FLOOR_CASES,
-	steered: STEERED_CASES,
-	window: STEERING_WINDOW,
-	deadline: CASE_DEADLINE_MILLIS,
-	open: NEED_OPEN_MILLIS
+	runs: searchRuns,
+	floor: floorCases,
+	steered: steeredCases,
+	window: steeringWindow,
+	deadline: caseDeadlineMillis,
+	open: needOpenMillis
 }

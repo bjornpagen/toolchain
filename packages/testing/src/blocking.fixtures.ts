@@ -12,7 +12,7 @@ import {
 } from "effect"
 import { ChildProcess } from "effect/process"
 import { array, element, finite, type Gen, int } from "#gen.ts"
-import { liveMillis, liveSleep, WATCHDOG_GRACE_MILLIS, watchdogWakes } from "#live.ts"
+import { liveMillis, liveSleep, watchdogGraceMillis, watchdogWakes } from "#live.ts"
 import type { CheckoutDir } from "#mutate/checkout.ts"
 import { type Property, property } from "#property.ts"
 import { HARDENED_FLAGS } from "#runner/config.ts"
@@ -163,7 +163,7 @@ export const settledHere = (planted: Planted, seed: number) =>
  * then ends the process past the property's bound. It is no limit: any multiple of the grace from three up separates
  * the two, and four leaves the wait a grace.
  */
-const asleepDeadlineMillis = 4 * WATCHDOG_GRACE_MILLIS
+const asleepDeadlineMillis = 4 * watchdogGraceMillis
 
 /**
  * Waits, yielding a millisecond at a time, until the process's watchdog thread has said when it will next wake of
@@ -404,7 +404,7 @@ export const reportAt = (index: number): string => `<the report of case ${index}
 export const watchedAt = (inFlight: ReadonlyArray<InFlight>, now: number) =>
 	Arr.map(inFlight, (one, index) => ({
 		hangsAt: one.past ? now - one.by : now + one.by + 1,
-		graceMillis: WATCHDOG_GRACE_MILLIS,
+		graceMillis: watchdogGraceMillis,
 		report: () => reportAt(index),
 		over: () => one.over
 	}))

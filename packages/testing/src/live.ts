@@ -46,7 +46,7 @@ import {
  * @revalidate a Node or V8 upgrade; a different machine; a suite whose property holds the thread in one synchronous
  *   segment for seconds; a process the watchdog ended whose report shows a case that yields
  */
-const watchdogGraceMillis = 5000
+export const watchdogGraceMillis = 5000
 
 /**
  * How long a search waits on a hung case's cleanup, on the live clock, before it reports the hang or goes on to its next
@@ -422,13 +422,6 @@ export const watchdogWakes: Effect.Effect<Option.Option<number>> = Effect.sync((
 )
 
 /**
- * How long the main thread may go without answering the watchdog once a case in flight has passed the moment its
- * guard would have stopped it: watchdogGraceMillis, measured, whose evidence says why a case that
- * never yields ends its process here.
- */
-export const WATCHDOG_GRACE_MILLIS = watchdogGraceMillis
-
-/**
  * When a case's guard would stop it: its hang limit after it began, or its search's cut, the moment its deadline
  * leaves for reporting, whichever comes first.
  */
@@ -436,7 +429,7 @@ export type CaseLimits = Readonly<{ caseHang: Duration.Input; cut: Option.Option
 
 /**
  * `effect`, a case, watched by the process's watchdog for as long as it runs: should it hold the main thread without
- * yielding past the moment its guard would first judge it (CaseLimits) and WATCHDOG_GRACE_MILLIS more, with its work
+ * yielding past the moment its guard would first judge it (CaseLimits) and watchdogGraceMillis more, with its work
  * over its hang limit (its CPU spent, or not moving over a whole hang limit of wall time: runner/work.ts) or its
  * search's cut reached, the process ends with `report`, the case's hang verdict, on its stderr, since nothing on that
  * thread can stop it. A case that yields is the guard's to stop, and the watchdog never acts on it.
@@ -456,7 +449,7 @@ export const watchedCase = <A, E, R>(
 						onNone: () => now + hangMillis,
 						onSome: (cut) => Math.min(now + hangMillis, cut)
 					}),
-					graceMillis: WATCHDOG_GRACE_MILLIS,
+					graceMillis: watchdogGraceMillis,
 					report,
 					over: (at) => Option.exists(limits.cut, (cut) => at >= cut) || judge(at)
 				})

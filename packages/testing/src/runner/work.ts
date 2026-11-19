@@ -1,5 +1,5 @@
 import { Array as Arr, Option, Result, String as Str } from "effect"
-import { stalledShare } from "#runner/limits.ts"
+import { stalledShareOfCpu } from "#runner/limits.ts"
 
 /**
  * What a case's deadline measures: the work the case does, not the time the machine takes to let it. A case is hung when
@@ -345,11 +345,12 @@ export const overrunText = (overrun: Overrun): string => {
 }
 
 /**
- * How much a tree's CPU must move over a window of `deadline` wall milliseconds to be progress: stalledShare of one CPU
+ * How much a tree's CPU must move over a window of `deadline` wall milliseconds to be progress: stalledShareOfCpu of one CPU
  * over it, and never less than one clock tick, the smallest change Linux states of a child's CPU (and more than a timer's
  * wake-up and a reading cost a process that waits).
  */
-const progressOver = (deadline: number): number => Math.max(deadline * stalledShare, TICK_MILLIS)
+const progressOver = (deadline: number): number =>
+	Math.max(deadline * stalledShareOfCpu, TICK_MILLIS)
 
 /**
  * A case's standing at `now`, having begun at `began`, its current window begun at `window`, under `deadline`

@@ -30,7 +30,7 @@ import {
 	watchedAt
 } from "#blocking.fixtures.ts"
 import { aimed } from "#gen.ts"
-import { answerOf, WATCHDOG_GRACE_MILLIS } from "#live.ts"
+import { answerOf, watchdogGraceMillis } from "#live.ts"
 import { Checkout } from "#mutate/checkout.ts"
 import { property } from "#property.ts"
 import { replayOf } from "#replay.ts"
@@ -55,7 +55,7 @@ export const watchdog = property.explore(aimed(settlingRuns, bodyAims), {
 					onNone: () => Effect.die("the watchdog's report names no case to replay"),
 					onSome: (found) => replayOf(found)
 				})
-				const moment = planted.deadlineMillis + WATCHDOG_GRACE_MILLIS
+				const moment = planted.deadlineMillis + watchdogGraceMillis
 				deepStrictEqual(
 					{
 						ending: ran.ending,
@@ -73,7 +73,7 @@ export const watchdog = property.explore(aimed(settlingRuns, bodyAims), {
 						pastItsMoment: Option.map(ran.began, (began) => ran.ended - began >= moment),
 						withinAGraceMore: Option.map(
 							ran.began,
-							(began) => ran.ended - began <= moment + WATCHDOG_GRACE_MILLIS
+							(began) => ran.ended - began <= moment + watchdogGraceMillis
 						)
 					},
 					{
@@ -101,8 +101,8 @@ export const watchdog = property.explore(aimed(settlingRuns, bodyAims), {
 		},
 		{
 			file: "packages/testing/src/live.ts",
-			original: "\t\t\t\t\tgraceMillis: WATCHDOG_GRACE_MILLIS,",
-			replacement: "\t\t\t\t\tgraceMillis: WATCHDOG_GRACE_MILLIS * 2,",
+			original: "\t\t\t\t\tgraceMillis: watchdogGraceMillis,",
+			replacement: "\t\t\t\t\tgraceMillis: watchdogGraceMillis * 2,",
 			why: "The watchdog waits a grace twice the one it states before it ends a runaway's process; the property fails."
 		}
 	]

@@ -52,7 +52,7 @@ import {
 	awaitWithinGrace,
 	liveMillis,
 	liveSleepUntil,
-	WATCHDOG_GRACE_MILLIS,
+	watchdogGraceMillis,
 	watchedCase
 } from "#live.ts"
 import { mutate } from "#mutate.ts"
@@ -946,7 +946,7 @@ const blockedIn =
 		Arr.join(
 			[
 				seedLine(run, suite, "a case that blocked its process"),
-				`it held the process's main thread without yielding past its hang limit of ${hangOf(caseHang)}, or its search's deadline if that came first, and ${Duration.format(Duration.millis(WATCHDOG_GRACE_MILLIS))} more, so its hang guard could not stop it, and the watchdog ended the process: a hang`,
+				`it held the process's main thread without yielding past its hang limit of ${hangOf(caseHang)}, or its search's deadline if that came first, and ${Duration.format(Duration.millis(watchdogGraceMillis))} more, so its hang guard could not stop it, and the watchdog ended the process: a hang`,
 				`counterexample: ${Option.match(sketch, { onNone: () => "none yet: it hung while its generator drew it", onSome: literal })}`,
 				...Option.match(how, {
 					onNone: () => [],

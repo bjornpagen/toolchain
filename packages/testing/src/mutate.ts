@@ -39,24 +39,17 @@ const nudgeMax = 16
 /** The values a mutated case replays before its fresh decisions take over. */
 export type Mutant = Readonly<{ values: Float64Array; length: number }>
 
-/** How many decisions one mutation edits in place, at most, before its one structural edit:
- * pointEditsMax. */
-const MAX_POINT_EDITS = pointEditsMax
-
 /**
  * How many decisions a mutation edits in place: one half the time, two a quarter of the time, and so on up to the most,
  * so most mutants change one thing and keep every other value their seed found.
  */
 const pointEditsOf = (words: Words): number => {
 	let edits = 1
-	while (edits < MAX_POINT_EDITS && between(words, 0, 1) === 1) {
+	while (edits < pointEditsMax && between(words, 0, 1) === 1) {
 		edits += 1
 	}
 	return edits
 }
-
-/** How far a nudge moves a decision, at most: nudgeMax. */
-const MAX_NUDGE = nudgeMax
 
 /** A decision's value moved to one end of its range, nudged, or redrawn anywhere in it. */
 const pointEdit = (tape: Tape, values: Float64Array, words: Words) => {
@@ -64,7 +57,7 @@ const pointEdit = (tape: Tape, values: Float64Array, words: Words) => {
 	const lo = tape.lo[at] ?? 0
 	const hi = tape.hi[at] ?? 0
 	const value = values[at] ?? lo
-	const nudge = between(words, 1, MAX_NUDGE)
+	const nudge = between(words, 1, nudgeMax)
 	switch (between(words, 0, 4)) {
 		case 0:
 			values[at] = lo
