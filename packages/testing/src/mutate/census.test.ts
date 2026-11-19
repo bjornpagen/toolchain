@@ -9,6 +9,7 @@
  */
 import { Array as Arr, Effect } from "effect"
 import { Digest } from "effect/crypto"
+import type { ChildProcessSpawner } from "effect/process"
 import { assert } from "#assert.ts"
 import { array, element } from "#gen.ts"
 import { noFamilies } from "#mutants.ts"
@@ -16,6 +17,7 @@ import {
 	type Census,
 	checkGen,
 	checkoutOf,
+	expectedForeignOf,
 	expectedOf,
 	KILLS,
 	reportOf,
@@ -24,6 +26,7 @@ import {
 } from "#mutate/census.fixtures.ts"
 import { censusOf, productOf } from "#mutate/census.ts"
 import { Checkout } from "#mutate/checkout.ts"
+import { foreignPool, foreignSubject } from "#mutate/foreign.ts"
 import { imagesOf } from "#mutate/image.ts"
 import { checkProperty, processPool } from "#mutate/processes.fixtures.ts"
 import type { Subject } from "#mutate/schedule.ts"
@@ -137,6 +140,72 @@ export const censusOfChecks = property.explore(
 				original: '\t\t\t\tif (verdict.kind === "red") {',
 				replacement: "\t\t\t\tif (false) {",
 				why: "A check red with no mutant passes its coverage pass and is pursued with mutants, each of whose trials it fails for reasons of its own, so it is counted as catching."
+			}
+		]
+	}
+)
+
+/**
+ * A foreign test command's modules (mutate/foreign.ts: a Vitest file judged where it is, its run whole its witness, red
+ * on a non-zero exit) stand in the census as properties do: a module that runs the product strictly is caught by a
+ * mutant, one red with no mutant is unjudged, and one that runs the product without asserting it, or not at all,
+ * never caught a bug. Each check runs as `node check<n>.ts` in a fresh image's root.
+ */
+export const censusOfForeignModules = property.explore(
+	(source): Census => ({
+		checks: Arr.prepend(source.draw(array(checkGen, { min: 0, max: 1 })), source.draw(checkGen)),
+		loading: "tree"
+	}),
+	{
+		needs: { checkout: Checkout.dir, digest: digests },
+		situations: ["catches by mutant", "never-caught", "unjudged"],
+		check:
+			({ digest }, c) =>
+			(census) =>
+				Effect.gen(function* () {
+					const sha = yield* digest
+					const checkout = yield* checkoutOf(census)
+					const trees = yield* treesOf(checkout)
+					const images = yield* imagesOf(checkout, trees)
+					const spawning = yield* Effect.context<ChildProcessSpawner.ChildProcessSpawner>()
+					const counted = yield* censusOf(
+						foreignPool({ argv: ["node"], directory: "" }, spawning),
+						images,
+						{
+							witnesses: { seed: 1, limits: runnerLimits },
+							checkout,
+							pkg: checkout,
+							subjects: Arr.map(census.checks, (_, index) =>
+								foreignSubject(`check${String(index)}.ts`)
+							),
+							product: productOf(TRACKED),
+							sources: SOURCES,
+							families: noFamilies,
+							equivalent: [],
+							kills: noVerdicts.kills,
+							edits: noVerdicts.edits,
+							settled: () => Effect.void
+						}
+					).pipe(Effect.provideService(Digest.Digest, sha))
+					const reported = Arr.map(counted, reportOf)
+					for (const report of reported) {
+						if (report !== "catches by kill") {
+							c.note(report)
+						}
+					}
+					assert.deepEqual(reported, Arr.map(census.checks, expectedForeignOf))
+				}),
+		oracle: {
+			kind: "specification",
+			name: "a foreign module is unjudged when red with no mutant, caught by a mutant when it pins the product, else never-caught"
+		},
+		kept: [],
+		kills: [
+			{
+				file: "packages/testing/src/mutate/foreign.ts",
+				original: "return answered(code === 0, Str.slice(-2000)(printed))",
+				replacement: "return answered(true, Str.slice(-2000)(printed))",
+				why: "A foreign module's exit code is not read, so every run of it is green: one that pins the product survives every mutant and one red with no mutant is judged, both read as never having caught a bug."
 			}
 		]
 	}

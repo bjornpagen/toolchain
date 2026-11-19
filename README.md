@@ -27,7 +27,10 @@ back as a kill). Standard output is a table, a tab-separated row a property; sta
 standing as it settles and the counts; it exits 1 when any property never caught a bug or cannot be judged. A
 property's kills are judged first; only a property no product kill turned red faces mutants, each typed by the
 package and tried on a worker of its own until one turns it red, every property still looking sharing the pool's width.
-Database properties run the census through the machine's one database job, as any run of them does. Before you move
+Database properties run the census through the machine's one database job, as any run of them does. A test module
+another runner runs (a Vitest file) is judged where it is, never converted first: `--foreign-command '<command>'
+--foreign <module>...` runs each module as `<command> <module>` in the package root, a fresh worker tree under a mutant,
+its run whole its one witness, red on a non-zero exit (mutate/foreign.ts). Before you move
 `vendor/toolchain` past this section:
 
 1. **Test scope moved.** `TEST_SCOPE`, `TEST_SUFFIXES` and `isTestScope` are `@bjornpagen/testing/scope`

@@ -12,15 +12,18 @@ import {
 	Schema,
 	String as Str
 } from "effect"
+import type { ChildProcessSpawner } from "effect/process"
 import { liveMillis } from "#live.ts"
 import { applied, OPERATORS } from "#mutants.ts"
 import { type Catch, type Counted, censusOf, productOf, type Standing } from "#mutate/census.ts"
 import { loadingOf } from "#mutate/checkout.ts"
+import { foreignPool, foreignSubject } from "#mutate/foreign.ts"
 import { imagesOf } from "#mutate/image.ts"
 import { type Judged, killsOf, redText } from "#mutate/kills.ts"
 import { mutatorPool } from "#mutate/lease.ts"
 import { type RealPath, realPathOf } from "#mutate/mutated.ts"
 import { type Choice, type MutantJudged, mutationOf } from "#mutate/operators.ts"
+import type { MutantPool } from "#mutate/pool.ts"
 import type { Subject } from "#mutate/schedule.ts"
 import { treesOf } from "#mutate/tree.ts"
 import { gitOf, verdictsAt } from "#runner/affected.ts"
@@ -486,27 +489,79 @@ const censusRow = (module: string, counted: Counted): string => {
 	)
 }
 
+/** What `census` reads from its arguments: the properties it names, and a foreign command's modules. */
+type CensusArgs = Readonly<{
+	selected: ReadonlyArray<string>
+	foreign: Option.Option<
+		Readonly<{
+			command: Arr.NonEmptyReadonlyArray<string>
+			modules: Arr.NonEmptyReadonlyArray<string>
+		}>
+	>
+}>
+
+/** `census [paths | ids] [--foreign-command <command> --foreign <module>...]`. */
+const censusArgsOf = (args: ReadonlyArray<string>) =>
+	Effect.gen(function* () {
+		const usage = "census [paths | ids] [--foreign-command <command> --foreign <module>...]"
+		const { values, positionals } = yield* Effect.try({
+			try: () =>
+				parseArgs({
+					args: Arr.copy(args),
+					allowPositionals: true,
+					options: {
+						"foreign-command": { type: "string" },
+						foreign: { type: "string", multiple: true }
+					}
+				}),
+			catch: (cause) => MutatorRefused.make({ message: `${String(cause)}: ${usage}` })
+		})
+		const command = Arr.filter(Str.split(" ")(values["foreign-command"] ?? ""), Str.isNonEmpty)
+		const modules = values.foreign ?? []
+		if (Arr.isReadonlyArrayNonEmpty(command) !== Arr.isReadonlyArrayNonEmpty(modules)) {
+			return yield* MutatorRefused.make({
+				message: `--foreign-command and --foreign come together, the command and the modules it runs: ${usage}`
+			})
+		}
+		const parsed: CensusArgs = {
+			selected: positionals,
+			foreign:
+				Arr.isReadonlyArrayNonEmpty(command) && Arr.isReadonlyArrayNonEmpty(modules)
+					? Option.some({ command, modules })
+					: Option.none()
+		}
+		return parsed
+	})
+
 /**
- * `census [paths | ids]`: whether each property named (every one of the package when none is) has caught a bug
- * (mutate/census.ts), its kills of product source judged and, where none turned it red, the operator mutants of the
- * product source it runs tried until one does, on the pool, every verdict read from and kept in the verdict cache.
- * Product source is every file the checkout's repository holds outside test scope (scope.ts); the mutants are of its
- * TypeScript under the package root, by the library's operators and the config's families, but those it judges
- * equivalent. Standard output is the census as a table, a header and a tab-separated row a property; standard error
- * has each property's standing as it is settled and the counts. 1 when any property never caught a bug or could not be
- * judged.
+ * `census [paths | ids] [--foreign-command <command> --foreign <module>...]`: whether each property named (every one of
+ * the package when neither a property nor a foreign module is) has caught a bug (mutate/census.ts), its kills of
+ * product source judged and, where none turned it red, the operator mutants of the product source it runs tried until
+ * one does, on the pool, every verdict read from and kept in the verdict cache; and each module of a foreign test
+ * command (a Vitest file, run as `<command> <module>` in the package root: mutate/foreign.ts) judged the same way, its
+ * run whole its one witness. Product source is every file the checkout's repository holds outside test scope
+ * (scope.ts); the mutants are of its TypeScript under the package root, by the library's operators and the config's
+ * families, but those it judges equivalent. Standard output is the census as a table, a header and a tab-separated row
+ * a test; standard error has each test's standing as it is settled and the counts. 1 when any test never caught a bug
+ * or could not be judged.
  */
-export const censusCommand = (root: string, selected: ReadonlyArray<string>) =>
+export const censusCommand = (root: string, args: ReadonlyArray<string>) =>
 	Effect.scoped(
 		Effect.gen(function* () {
 			const path = yield* Path.Path
 			const began = yield* liveMillis
+			const parsed = yield* censusArgsOf(args)
 			const checkout = yield* checkoutOf(root)
 			const packageRoot = yield* realPathOf(root)
-			const { config, discovered } = yield* loadPackage(root, selected)
+			const runsProperties =
+				Arr.isReadonlyArrayNonEmpty(parsed.selected) || Option.isNone(parsed.foreign)
+			const { config, discovered } = yield* loadPackage(root, parsed.selected)
+			const properties = runsProperties ? discovered : []
 			const mutation = yield* loadedMutation(config)
-			const verdicts = yield* verdictsAt(root, config, discovered)
-			const tracked = yield* trackedIn(checkout)
+			const verdicts = yield* verdictsAt(root, config, properties)
+			const tracked = yield* Effect.mapError(trackedIn(checkout), (refused) =>
+				MutatorRefused.make({ message: refused.message })
+			)
 			const product = productOf(tracked)
 			const within = path.relative(checkout, packageRoot)
 			const sources = Arr.filter(
@@ -514,42 +569,53 @@ export const censusCommand = (root: string, selected: ReadonlyArray<string>) =>
 				(file) =>
 					product(file) && isMutable(file) && (within === "" || Str.startsWith(`${within}/`)(file))
 			)
-			const pool = mutatorPool(checkout, packageRoot)
 			const trees = yield* treesOf(checkout)
 			const images = yield* imagesOf(checkout, trees)
 			const digest = yield* Layer.build(layerDigest)
-			const counted = yield* censusOf(pool, images, {
-				witnesses: { seed: 0, limits: runnerLimits },
-				checkout,
-				pkg: packageRoot,
-				subjects: subjectsOf(discovered),
-				product,
-				sources,
-				families: mutation.families,
-				equivalent: mutation.equivalent,
-				kills: verdicts.kills,
-				edits: verdicts.edits,
-				settled: (one) => {
-					const { by, why } = shownBy(one.standing)
-					return Console.error(
-						Arr.join(Arr.filter([`${one.id}: ${one.standing.kind}`, by, why], Str.isNonEmpty), "; ")
+			const spawner = yield* Effect.context<ChildProcessSpawner.ChildProcessSpawner>()
+			const settled = (one: Counted) => {
+				const { by, why } = shownBy(one.standing)
+				return Console.error(
+					Arr.join(Arr.filter([`${one.id}: ${one.standing.kind}`, by, why], Str.isNonEmpty), "; ")
+				)
+			}
+			const census = <E>(pool: MutantPool<E>, subjects: ReadonlyArray<Subject>) =>
+				censusOf(pool, images, {
+					witnesses: { seed: 0, limits: runnerLimits },
+					checkout,
+					pkg: packageRoot,
+					subjects,
+					product,
+					sources,
+					families: mutation.families,
+					equivalent: mutation.equivalent,
+					kills: verdicts.kills,
+					edits: verdicts.edits,
+					settled
+				}).pipe(Effect.provide(digest))
+			const pool = mutatorPool(checkout, packageRoot)
+			const ofProperties = yield* census(pool, subjectsOf(properties))
+			const ofForeign = yield* Option.match(parsed.foreign, {
+				onNone: () => Effect.succeed([]),
+				onSome: ({ command, modules }) =>
+					census(
+						foreignPool({ argv: command, directory: within }, spawner),
+						Arr.map(modules, foreignSubject)
 					)
-				}
-			}).pipe(Effect.provide(digest))
+			})
+			const rows = [
+				...Arr.map(Arr.zip(properties, ofProperties), ([found, one]) =>
+					censusRow(found.module, one)
+				),
+				...Arr.map(ofForeign, (one) => censusRow(one.id, one))
+			]
+			const counted = [...ofProperties, ...ofForeign]
 			const ended = yield* liveMillis
 			const count = (kind: Counted["standing"]["kind"]) =>
 				Arr.filter(counted, (one) => one.standing.kind === kind).length
-			yield* Console.log(
-				Arr.join(
-					[
-						Arr.join(CENSUS_HEADER, "\t"),
-						...Arr.map(Arr.zip(discovered, counted), ([found, one]) => censusRow(found.module, one))
-					],
-					"\n"
-				)
-			)
+			yield* Console.log(Arr.join([Arr.join(CENSUS_HEADER, "\t"), ...rows], "\n"))
 			yield* Console.error(
-				`census: ${String(counted.length)} properties: ${String(count("catches"))} catch, ${String(count("never-caught"))} never caught, ${String(count("unjudged"))} unjudged; ${String(Arr.reduce(counted, 0, (sum, one) => sum + one.tried))} mutants tried over ${String(sources.length)} product files, in ${String(Math.round(ended - began))} ms on ${String(pool.width)} workers`
+				`census: ${String(counted.length)} tests: ${String(count("catches"))} catch, ${String(count("never-caught"))} never caught, ${String(count("unjudged"))} unjudged; ${String(Arr.reduce(counted, 0, (sum, one) => sum + one.tried))} mutants tried over ${String(sources.length)} product files, in ${String(Math.round(ended - began))} ms on ${String(pool.width)} workers`
 			)
 			return count("catches") === counted.length ? 0 : 1
 		})

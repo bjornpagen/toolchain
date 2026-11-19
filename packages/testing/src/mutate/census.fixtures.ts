@@ -72,7 +72,7 @@ const callsOf = (check: Check) => {
 		...(check.harness ? ["h(1) === 2"] : []),
 		...(check.broken ? ["false"] : [])
 	]
-	return `import { f } from "./src/f.ts"\nimport { h } from "./test/support/h.ts"\nconst held = [${Arr.join(asserted, ", ")}]\nconsole.log(held.every((x) => x) && [f, h].length === 2 ? "green" : "red")\n`
+	return `import { f } from "./src/f.ts"\nimport { h } from "./test/support/h.ts"\nconst held = [${Arr.join(asserted, ", ")}]\nconst ok = held.every((x) => x) && [f, h].length === 2\nconsole.log(ok ? "green" : "red")\nprocess.exitCode = ok ? 0 : 1\n`
 }
 
 /** The files of check `index`: itself, and the file its child runs when it runs one. */
@@ -82,7 +82,7 @@ const checkFiles = (check: Check, index: number): ReadonlyArray<readonly [string
 				[`run${String(index)}.ts`, callsOf(check)],
 				[
 					`check${String(index)}.ts`,
-					`import { spawnSync } from "node:child_process"\nconst ran = spawnSync(process.execPath, ["run${String(index)}.ts"], { encoding: "utf8" })\nconsole.log(ran.status === 0 ? ran.stdout.trim() : "red")\n`
+					`import { spawnSync } from "node:child_process"\nconst ran = spawnSync(process.execPath, ["run${String(index)}.ts"], { encoding: "utf8" })\nconsole.log(ran.status === 0 ? ran.stdout.trim() : "red")\nprocess.exitCode = ran.status ?? 1\n`
 				]
 			]
 		: [[`check${String(index)}.ts`, callsOf(check)]]
@@ -151,6 +151,18 @@ export const checkoutOf = (census: Census) =>
 		)
 		return checkout
 	})
+
+/**
+ * What the census must say of a check run as a foreign command's module (mutate/foreign.ts): its run whole is its one
+ * witness, from a worker tree, so a mutant reaches it wherever it runs the product, and it states no kill: unjudged when
+ * it goes red with no mutant, caught by a mutant when it runs the product strictly, never-caught otherwise.
+ */
+export const expectedForeignOf = (check: Check): Report => {
+	if (check.broken) {
+		return "unjudged"
+	}
+	return check.product === "strict" ? "catches by mutant" : "never-caught"
+}
 
 /** The census's sources in the checkout: the product file alone, the one TypeScript file of product source. */
 export const SOURCES: ReadonlyArray<string> = [PRODUCT]
