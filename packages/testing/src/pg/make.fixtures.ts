@@ -52,7 +52,10 @@ export const stopEvery = (root: string) =>
 		)
 	}).pipe(Effect.ignore)
 
-/** The spec of a case's cluster on `port`, owned by `owner`, at PostgreSQL's default sizes. */
+/**
+ * The spec of a case's cluster on `port`, owned by `owner`, at PostgreSQL's default sizes, its owner granted SET on two
+ * parameters only a superuser may set by default, as grizzle's is.
+ */
 export const specOf = (life: Life, port: number, owner: string): LocalCluster =>
 	localCluster({
 		port,
@@ -60,6 +63,7 @@ export const specOf = (life: Life, port: number, owner: string): LocalCluster =>
 		owner,
 		template: "lifecycle_template",
 		extensions: [],
+		ownerParameters: ["deadlock_timeout", "session_replication_role"],
 		peerLogins: [],
 		durability: life.durability,
 		family:

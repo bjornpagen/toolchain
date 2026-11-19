@@ -164,6 +164,12 @@ export const lifeOfACluster = property.exhaust(lives, {
 			original: '"hostssl all   all        127.0.0.1/32  scram-sha-256",',
 			replacement: '"hostssl all   all        127.0.0.1/32  trust",',
 			why: "Every role signs in over TCP with no password, which the doctor's SCRAM check refuses; the property fails."
+		},
+		{
+			file: "packages/testing/src/pg/make.ts",
+			original: `(name) => \`GRANT SET ON PARAMETER \${ident(name)} TO \${owner}\``,
+			replacement: "() => `SELECT 1`",
+			why: "The owner is granted none of the parameters its spec names, which the doctor checks; the property fails."
 		}
 	]
 })

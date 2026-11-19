@@ -46,6 +46,7 @@ export default localCluster({
 	owner: "toolchain_dev",
 	template: "toolchain_template",
 	extensions: [],
+	ownerParameters: [],
 	peerLogins: [],
 	durability: "throwaway",
 	family: { kind: "one" },

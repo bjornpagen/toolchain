@@ -78,6 +78,7 @@ const Manifest = Schema.Struct({
 	owner: Schema.String,
 	template: Schema.String,
 	extensions: Schema.Array(Extension),
+	ownerParameters: Schema.Array(Schema.String),
 	peerLogins: Schema.Array(Schema.String),
 	durability: Schema.Literals(["throwaway", "kept"]),
 	members: Schema.NonEmptyArray(Schema.Int)
@@ -92,13 +93,25 @@ export const ManifestFile = Schema.fromJsonString(Manifest)
 /** What `cluster` would record of itself, but for its server and members: what a manifest must agree with. */
 export const madeAs = (
 	cluster: LocalCluster
-): Pick<Manifest, "owner" | "template" | "extensions" | "peerLogins" | "durability"> => ({
+): Pick<
+	Manifest,
+	"owner" | "template" | "extensions" | "ownerParameters" | "peerLogins" | "durability"
+> => ({
 	owner: cluster.owner,
 	template: cluster.template,
 	extensions: cluster.extensions,
+	ownerParameters: cluster.ownerParameters,
 	peerLogins: cluster.peerLogins,
 	durability: cluster.durability
 })
+
+/**
+ * Whether the parameters `manifest` records its owner granted are the ones `cluster` names: a cluster whose spec came to
+ * name others is its own still, its grants made to agree under its lock (make.ts upCluster), never refused as another
+ * spec's.
+ */
+export const grantsAgree = (cluster: LocalCluster, manifest: Manifest): boolean =>
+	Arr.join(manifest.ownerParameters, ", ") === Arr.join(cluster.ownerParameters, ", ")
 
 /**
  * Where a manifest differs from what `cluster` states (madeAs), one phrase a difference: a cluster made for another

@@ -80,7 +80,9 @@ export type Sizing = Readonly<{
  * A repository's local PostgreSQL cluster, as it states it once: its name (the port), the server that runs it, the
  * owner role (which owns every database it makes, signs in over verify-full TLS with a password the cluster's state
  * holds, and whose own database holds the runner's sessions), the template database every database is made from and
- * the extensions it carries, the roles this user signs in as over a member's Unix socket by peer authentication
+ * the extensions it carries, the server parameters the owner may set though only a superuser may by default
+ * (`ownerParameters`, each granted as `GRANT SET ON PARAMETER`: grizzle's installation sets deadlock_timeout and
+ * session_replication_role), the roles this user signs in as over a member's Unix socket by peer authentication
  * beside the bootstrap superuser (`peerLogins`: an application's login, whose local sign-in then needs no secret),
  * its durability, its family and its sizing. Everything else of the cluster (TLS, SCRAM,
  * the settings every member holds, its state directory) is the same for every repository (make.ts), and the
@@ -93,6 +95,7 @@ export class LocalCluster {
 	readonly owner: string
 	readonly template: string
 	readonly extensions: ReadonlyArray<TemplateExtension>
+	readonly ownerParameters: ReadonlyArray<string>
 	readonly peerLogins: ReadonlyArray<string>
 	readonly durability: Durability
 	readonly family: Family
@@ -104,6 +107,7 @@ export class LocalCluster {
 		this.owner = fields.owner
 		this.template = fields.template
 		this.extensions = fields.extensions
+		this.ownerParameters = fields.ownerParameters
 		this.peerLogins = fields.peerLogins
 		this.durability = fields.durability
 		this.family = fields.family
@@ -118,6 +122,7 @@ export type LocalClusterFields = Readonly<{
 	owner: string
 	template: string
 	extensions: ReadonlyArray<TemplateExtension>
+	ownerParameters: ReadonlyArray<string>
 	peerLogins: ReadonlyArray<string>
 	durability: Durability
 	family: Family

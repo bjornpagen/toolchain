@@ -46,6 +46,7 @@ import {
 	type ClusterState,
 	clusterState,
 	disagreements,
+	grantsAgree,
 	type Manifest,
 	ManifestFile,
 	madeAs,
@@ -408,6 +409,21 @@ const heldOf = (
 			})
 	)
 
+/** The statements that give `life`'s owner SET on each parameter its spec names and on none that `granted` names alone. */
+const grantStatements = (life: Life, granted: ReadonlyArray<string>): ReadonlyArray<string> => {
+	const owner = ident(life.cluster.owner)
+	return [
+		...Arr.map(
+			Arr.filter(granted, (name) => !Arr.contains(life.cluster.ownerParameters, name)),
+			(name) => `REVOKE SET ON PARAMETER ${ident(name)} FROM ${owner}`
+		),
+		...Arr.map(
+			life.cluster.ownerParameters,
+			(name) => `GRANT SET ON PARAMETER ${ident(name)} TO ${owner}`
+		)
+	]
+}
+
 /**
  * What the bootstrap superuser makes in a started member, which every member holds: the owner role with `password`,
  * its grants, the template and its extensions, and the owner's own database, the template closed to connections. What
@@ -432,7 +448,7 @@ const owned = (
 			"postgres",
 			[
 				held.role ? `ALTER ROLE ${owner} ${attributes}` : `CREATE ROLE ${owner} ${attributes}`,
-				`GRANT SET ON PARAMETER deadlock_timeout TO ${owner}`,
+				...grantStatements(life, []),
 				`GRANT pg_read_all_stats TO ${owner} WITH ADMIN TRUE, INHERIT FALSE, SET TRUE`,
 				`GRANT pg_signal_backend TO ${owner}`,
 				...(held.template
@@ -733,7 +749,8 @@ const membersIn = (life: Life, manifest: Manifest): Arr.NonEmptyReadonlyArray<Me
 /**
  * `life`'s cluster up, under its lock: made whole when it has no manifest (a throwaway cluster a failed make left in
  * part made again from nothing, a kept one's refused, since its data may be a person's), else its manifest taken
- * (agreeing) and every member brought up as it is (upMember); its members' facts in member order.
+ * (agreeing) and every member brought up as it is (upMember), its owner's parameters granted as the spec names them
+ * when the manifest records others; its members' facts in member order.
  */
 const upCluster = (
 	life: Life
@@ -765,6 +782,24 @@ const upCluster = (
 			)
 			const members = membersIn(life, manifest)
 			yield* Effect.forEach(members, (member) => upMember(life, member), { discard: true })
+			if (!grantsAgree(life.cluster, manifest)) {
+				yield* Effect.forEach(
+					members,
+					(member) =>
+						Arr.match(grantStatements(life, manifest.ownerParameters), {
+							onEmpty: () => Effect.void,
+							onNonEmpty: (statements) =>
+								Effect.asVoid(
+									adminSql(life.bin, member, "postgres", statements, {
+										...step,
+										doing: `${step.doing}: its owner's parameters`
+									})
+								)
+						}),
+					{ discard: true }
+				)
+				yield* record(life, manifest.members)
+			}
 			return yield* Effect.forEach(members, (member) => memberOf(life, member))
 		})
 	)
@@ -831,7 +866,10 @@ const resizeMember = (
 						life.bin,
 						member,
 						"postgres",
-						Arr.map(nonEmpty, (setting) => `ALTER SYSTEM SET ${settingLine(setting)}`),
+						[
+							...Arr.map(nonEmpty, (setting) => `ALTER SYSTEM SET ${settingLine(setting)}`),
+							...grantStatements(life, [])
+						],
 						step
 					)
 				)
@@ -1085,6 +1123,7 @@ export type Examined = Readonly<{
 	owner: string
 	template: string
 	extensions: LocalCluster["extensions"]
+	ownerParameters: LocalCluster["ownerParameters"]
 }>
 
 /** `cluster` as the doctor examines it: up (clusterUp), with the settings each member must hold at this machine's width. */
@@ -1108,7 +1147,8 @@ export const examined = (cluster: LocalCluster): Effect.Effect<Examined, Cluster
 				fixed: fixedSettings(cluster),
 				owner: cluster.owner,
 				template: cluster.template,
-				extensions: cluster.extensions
+				extensions: cluster.extensions,
+				ownerParameters: cluster.ownerParameters
 			}
 		})
 	)

@@ -126,9 +126,11 @@ const quickChecks = (
 		ownerCheck(reached, `${owner} holds REPLICATION, CREATEDB and CREATEROLE`, "t|t|t", owner, [
 			"SELECT rolreplication, rolcreatedb, rolcreaterole FROM pg_catalog.pg_roles WHERE rolname = current_user"
 		]),
-		ownerCheck(reached, `${owner} holds SET on deadlock_timeout`, "t", owner, [
-			"SELECT pg_catalog.has_parameter_privilege('deadlock_timeout', 'SET')"
-		]),
+		...Arr.map(cluster.ownerParameters, (name) =>
+			ownerCheck(reached, `${owner} holds SET on ${name}`, "t", owner, [
+				`SELECT pg_catalog.has_parameter_privilege('${name}', 'SET')`
+			])
+		),
 		ownerCheck(
 			reached,
 			`${owner} holds pg_read_all_stats WITH ADMIN, SET, and no INHERIT`,

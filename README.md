@@ -14,6 +14,24 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: the owner's parameters (2026-11-19)
+
+A cluster's spec states the server parameters its owner role may set though only a superuser may by default,
+`ownerParameters`. The maker grants them (`GRANT SET ON PARAMETER`) when it makes a member and when `init --adopt` takes
+one, the doctor checks them, and the manifest records what was granted, so a spec that comes to name others has them
+granted, and the ones it dropped revoked, the next time the cluster is brought up under its lock; a running cluster
+whose grants agree is taken as it is. The maker granted SET on `deadlock_timeout` to every owner, grizzle's
+installation's need, and nothing else, so a repository granted the rest at run time as the bootstrap superuser. Before
+you move `vendor/toolchain` past this section:
+
+1. **pg.config.ts.** Add `ownerParameters`: `[]` where no test sets a superuser's parameter; grizzle's
+   `["deadlock_timeout", "session_replication_role"]`, and every repository whose tests install grizzle (den's, eocg's)
+   at least `["deadlock_timeout"]`.
+2. **Run-time grants.** Delete them (grizzle's ensureMemberSetUp's `GRANT SET ON PARAMETER`).
+3. **The manifest, once.** A manifest written before this section has no `ownerParameters` and is refused: run
+   `toolchain-pg init --force` on a throwaway cluster, and add `"ownerParameters": []` to a kept cluster's
+   `cluster.json` (superstarter's development cluster), whose next bring-up grants what its spec names.
+
 ## Consumer migration: packs keyed by name (2026-11-19)
 
 `toolchain.config.ts`'s `packs` is a record keyed by pack name, so no pack can be listed twice, where it was a list of
@@ -44,7 +62,7 @@ throwaway cluster). Its state is `$HOME/.local/var/toolchain-pg/<port>/`, its ma
 `vendor/toolchain` past this section:
 
 1. **The spec.** State the cluster once, as the default export of a `pg.config.ts` in the package that owns it:
-   `localCluster({ port, bin, owner, template, extensions, peerLogins, durability, family, sizing })`. `bin` is
+   `localCluster({ port, bin, owner, template, extensions, ownerParameters, peerLogins, durability, family, sizing })`. `bin` is
    `{ kind: "directory", directory }` (grizzle's pinned build: `` `${pin.GRIZZLE_PG_PREFIX}/bin` ``) or
    `{ kind: "pg_config" }` (the server the machine installed). `peerLogins` names the roles this user signs in as over
    a member's socket by peer beside the bootstrap superuser (an application's local login, which then needs no
