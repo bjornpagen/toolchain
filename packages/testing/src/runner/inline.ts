@@ -11,6 +11,7 @@ import {
 	stoppedOf,
 	withLateUses
 } from "#runner/case.ts"
+import { runLeasesIn } from "#runner/leases.ts"
 import { type Limits, runnerLimits } from "#runner/limits.ts"
 import { moduleClosureAt } from "#runner/module-closure.ts"
 import { Perception, perceptionOf } from "#runner/perceive.ts"
@@ -28,7 +29,7 @@ import {
 	type Work,
 	workOf
 } from "#runner/protocol.ts"
-import { ModuleClosure, WorkerIndex } from "#runner/services.ts"
+import { ModuleClosure, RunLease, WorkerIndex } from "#runner/services.ts"
 
 /**
  * What a search run in this process needs from its caller: every need's context but the worker index, which is 0, and
@@ -52,10 +53,15 @@ export const inlineEvaluator = (
 	Effect.gen(function* () {
 		const caller = yield* Effect.context<InlineContext | Scope.Scope>()
 		const closures = yield* moduleClosureAt(process.cwd(), Option.none())
+		const runScope = yield* Effect.scope
 		const context = Context.add(
-			Context.add(caller, WorkerIndex, { index: 0, workers: 1 }),
-			ModuleClosure,
-			closures
+			Context.add(
+				Context.add(caller, WorkerIndex, { index: 0, workers: 1 }),
+				ModuleClosure,
+				closures
+			),
+			RunLease,
+			runLeasesIn(runScope, caller)
 		)
 		const perception = yield* perceptionOf
 		const cache = needCacheOf(Effect.succeed(context))

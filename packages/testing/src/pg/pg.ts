@@ -20,6 +20,14 @@ export {
 	resetCluster,
 	stopCluster
 } from "#pg/make.ts"
+export {
+	type Demand,
+	LeaseFailed,
+	type Leased,
+	Reservation,
+	reservationOf,
+	reserved
+} from "#pg/lease.ts"
 export { freePort, LocalhostUnresolved } from "#pg/ports.ts"
 export { ClusterFailed } from "#pg/server.ts"
 export { clientCheckInterval } from "#pg/settings.ts"

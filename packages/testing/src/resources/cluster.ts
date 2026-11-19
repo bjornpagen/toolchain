@@ -12,9 +12,10 @@ import {
 	Scope,
 	String as Str
 } from "effect"
+import { reservationOf } from "#pg/lease.ts"
 import { clusterUp, type PgMember, type Platform } from "#pg/make.ts"
 import type { LocalCluster } from "#pg/spec.ts"
-import { NeedFailed, WorkerIndex } from "#runner/services.ts"
+import { NeedFailed, RunLease, WorkerIndex } from "#runner/services.ts"
 
 export type { PgMember } from "#pg/make.ts"
 
@@ -167,13 +168,15 @@ const openOwner = (
 ): Effect.Effect<Owner, NeedFailed> =>
 	Effect.gen(function* () {
 		const session = yield* Scope.provide(spec.connect(member, spec.cluster.owner), scope)
-		const key = ownerKey(
-			(yield* single(
-				session,
-				`SELECT k FROM (SELECT pg_catalog.substr(pg_catalog.md5(pg_catalog.gen_random_uuid()::text), 1, 16) AS k) AS fresh, LATERAL (SELECT pg_catalog.pg_advisory_lock(${lockKey("fresh.k")})) AS locked`,
-				[]
-			)) ?? ""
+		const drawn = yield* single(
+			session,
+			`SELECT k FROM (SELECT pg_catalog.substr(pg_catalog.md5(pg_catalog.gen_random_uuid()::text), 1, 16) AS k) AS fresh, LATERAL (SELECT pg_catalog.pg_advisory_lock(${lockKey("fresh.k")})) AS locked`,
+			[]
 		)
+		const text = yield* Effect.mapError(Effect.fromNullishOr(drawn), () =>
+			NeedFailed.make({ need: "pg", message: "the server drew no owner key" })
+		)
+		const key = ownerKey(text)
 		const serial = yield* Ref.make(0)
 		return { member, session, key, serial: Ref.updateAndGet(serial, (n) => n + 1) }
 	})
@@ -187,17 +190,45 @@ export class PgCluster extends Context.Service<PgCluster, PgClusterShape>()(
 	 * there opens a need: it reads nothing then, so a worker whose needs use no database never reaches the cluster; its
 	 * members are made and started when they are not and read the first time a need asks (pg/make.ts clusterUp, under
 	 * the cluster's lock, whose wait is declared to the worker's guards), and an owner per member opened when the worker
-	 * first reaches it, held until the worker ends.
+	 * first reaches it, held until the worker ends, once the run holds its lease on the cluster (pg/lease.ts reservationOf,
+	 * runner/leases.ts): a slot for each of its workers on every member, so no connection of the run is refused.
 	 */
-	static readonly layer = (spec: PgClusterSpec): Layer.Layer<PgCluster, never, Platform> =>
+	static readonly layer = (
+		spec: PgClusterSpec
+	): Layer.Layer<PgCluster, never, Platform | RunLease | WorkerIndex> =>
 		Layer.effect(
 			PgCluster,
 			Effect.gen(function* () {
 				const scope = yield* Effect.scope
 				const platform = yield* Effect.context<Platform>()
+				const lease = yield* RunLease
+				const ofTheRun = yield* WorkerIndex
 				const members = yield* Effect.cached(
 					Effect.mapError(Effect.provideContext(clusterUp(spec.cluster), platform), (failure) =>
 						NeedFailed.make({ need: "the local cluster", message: failure.message })
+					)
+				)
+				const leased = yield* Effect.cached(
+					Effect.flatMap(members, (all) =>
+						Effect.flatMap(
+							Effect.mapError(
+								Effect.provideContext(
+									reservationOf(
+										Arr.headNonEmpty(all).port,
+										all,
+										{
+											perLessee: spec.cluster.sizing.connections.perWorker,
+											outside: spec.cluster.sizing.connections.outside
+										},
+										ofTheRun.workers
+									),
+									platform
+								),
+								(failure) =>
+									NeedFailed.make({ need: "the local cluster's lease", message: failure.message })
+							),
+							lease.reserve
+						)
 					)
 				)
 				const owners = new Map<string, Deferred.Deferred<Owner, NeedFailed>>()
@@ -217,7 +248,7 @@ export class PgCluster extends Context.Service<PgCluster, PgClusterShape>()(
 									const opened = Deferred.makeUnsafe<Owner, NeedFailed>()
 									owners.set(member.name, opened)
 									return Effect.andThen(
-										Deferred.into(openOwner(spec, member, scope), opened),
+										Deferred.into(Effect.andThen(leased, openOwner(spec, member, scope)), opened),
 										Deferred.await(opened)
 									)
 								}

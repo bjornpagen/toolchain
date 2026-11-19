@@ -25,10 +25,11 @@ import {
 	stoppedOf
 } from "#runner/case.ts"
 import { askedClosuresOf } from "#runner/closure-requests.ts"
+import { askedLeasesOf } from "#runner/leases.ts"
 import { configOf, propertyAt } from "#runner/load.ts"
 import { Perception, perceptionOf } from "#runner/perceive.ts"
 import { FromWorker, lostResult, ToWorker, type Work, workOf } from "#runner/protocol.ts"
-import { ModuleClosure, WorkerIndex } from "#runner/services.ts"
+import { ModuleClosure, RunLease, WorkerIndex } from "#runner/services.ts"
 import { runOfLabel } from "#runner/stack.ts"
 import { childrenCpuNow, childrenSince } from "#runner/usage.ts"
 import { reportWaitsTo } from "#runner/work.ts"
@@ -91,12 +92,17 @@ const main = Effect.gen(function* () {
 	const scope = yield* Scope.Scope
 	const platform = yield* Effect.context<NodeServices.NodeServices>()
 	const closures = askedClosuresOf((module) => send({ kind: "closure", module }))
+	const leases = askedLeasesOf((reservation) => send({ kind: "lease", reservation }))
 	reportWaitsTo((waiting) => sendNow({ kind: waiting ? "waiting" : "waited" }))
 	const runner = Context.add(
 		Context.add(
-			Context.merge(Context.make(WorkerIndex, { index, workers }), platform),
-			ModuleClosure,
-			closures.service
+			Context.add(
+				Context.merge(Context.make(WorkerIndex, { index, workers }), platform),
+				ModuleClosure,
+				closures.service
+			),
+			RunLease,
+			leases.service
 		),
 		Scope.Scope,
 		scope
@@ -158,6 +164,9 @@ const main = Effect.gen(function* () {
 				}
 				case "closure":
 					yield* closures.answered(order.module, order.answer)
+					break
+				case "lease":
+					yield* leases.answered(order.gate, order.answer)
 					break
 				case "retire":
 					pending.push({ kind: "retire", property: order.property })

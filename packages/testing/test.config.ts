@@ -21,6 +21,7 @@ export default defineRunner({
 		"src/resources/resources.test.ts",
 		"src/pg/make.test.ts",
 		"src/pg/reached.test.ts",
+		"src/pg/lease.test.ts",
 		"src/core.test.ts",
 		"src/idioms.test.ts",
 		"src/shrink.test.ts",

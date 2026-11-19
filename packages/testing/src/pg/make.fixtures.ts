@@ -53,8 +53,9 @@ export const stopEvery = (root: string) =>
 	}).pipe(Effect.ignore)
 
 /**
- * The spec of a case's cluster on `port`, owned by `owner`, at PostgreSQL's default sizes, its owner granted SET on two
- * parameters only a superuser may set by default, as grizzle's is.
+ * The spec of a case's cluster on `port`, owned by `owner`, at PostgreSQL's default sizes but its connections, sized as
+ * the testing package's own cluster is (two a worker, three outside), its owner granted SET on two parameters only a
+ * superuser may set by default, as grizzle's is.
  */
 export const specOf = (life: Life, port: number, owner: string): LocalCluster =>
 	localCluster({
@@ -71,7 +72,7 @@ export const specOf = (life: Life, port: number, owner: string): LocalCluster =>
 				? { kind: "one" }
 				: { kind: "spread", workersPerMember: Math.ceil(testWorkers / 2) },
 		sizing: {
-			connections: { kind: "default" },
+			connections: { kind: "perWorker", perWorker: 2, outside: 3 },
 			replication: { kind: "default" },
 			sharedBuffers: { kind: "default" }
 		}

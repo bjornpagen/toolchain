@@ -12,6 +12,7 @@ import {
 } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { waitingOn } from "#live.ts"
+import { capacityFile } from "#pg/lease.ts"
 import { freePort, portFree } from "#pg/ports.ts"
 import {
 	adminSql,
@@ -71,6 +72,7 @@ export type PgMember = Readonly<{
 	ca: string
 	caFile: string
 	wrongCa: string
+	lease: string
 }>
 
 /** The platform a cluster's life runs on: its processes and its files. */
@@ -716,8 +718,41 @@ const memberOf = (
 			passwordFile: member.passwordFile,
 			ca,
 			caFile,
-			wrongCa
+			wrongCa,
+			lease: member.lease
 		}
+	})
+
+/**
+ * Records in `member`'s lease directory the connections its running server admits beside those it reserves
+ * (max_connections less superuser_reserved_connections and reserved_connections), read from the server, which every
+ * lessee of the member reads (lease.ts leaseOn): what a lease divides is the server's own number, never one the spec or
+ * a lessee assumes.
+ */
+const recordCapacity = (
+	life: Life,
+	member: MemberState,
+	step: Step
+): Effect.Effect<void, ClusterFailed, Platform> =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		const lines = yield* adminSql(
+			life.bin,
+			member,
+			"postgres",
+			[
+				"SELECT pg_catalog.current_setting('max_connections')::int4 - pg_catalog.current_setting('superuser_reserved_connections')::int4 - pg_catalog.current_setting('reserved_connections')::int4"
+			],
+			{ ...step, doing: `${step.doing}: reading its capacity` }
+		)
+		const capacity = yield* Option.match(Arr.head(lines), {
+			onNone: () => Effect.fail(failed(step, "its server answered no capacity")),
+			onSome: (line) => Effect.succeed(Str.trim(line))
+		})
+		yield* Effect.mapError(fs.makeDirectory(member.lease, { recursive: true }), (error) =>
+			failed(step, error.message)
+		)
+		yield* written(step, capacityFile(member), `${capacity}\n`, readable)
 	})
 
 /**
@@ -740,6 +775,7 @@ const upMember = (life: Life, member: MemberState): Effect.Effect<void, ClusterF
 				Effect.fail(failed(step, `another process holds its port: ${lost.message}`))
 			)
 		}
+		yield* recordCapacity(life, member, step)
 	})
 
 /** The members of `manifest` in member order, each as its state directory holds it. */
@@ -807,7 +843,7 @@ const upCluster = (
 /**
  * `life`'s cluster when it runs whole, taken as it is without its lock: its manifest, which its making writes last, is
  * this spec's (agreeing, which refuses another's) with its owner granted the parameters this spec names, and every
- * member's postmaster runs with its TLS current, all read
+ * member's postmaster runs with its TLS current and its capacity recorded for its lessees, all read
  * in this process (server.ts running, tlsCurrent), so taking a running cluster runs no program and waits on no other
  * process; none when anything is to do, which the lock's holder does (upCluster). What a member's facts are read from
  * is written before its making records it, so a concurrent maker's cluster is either taken whole or left to the lock.
@@ -826,10 +862,15 @@ const takenRunning = (
 		}
 		const members = membersIn(life, manifest)
 		const step = stepOf(life, `taking it as it runs at ${life.state.root}`)
+		const fs = yield* FileSystem.FileSystem
 		const whole = yield* Effect.forEach(members, (member) =>
 			Effect.map(
-				Effect.all([running(member, step), tlsCurrent(member.tls, step)]),
-				([up, current]) => up && current
+				Effect.all([
+					running(member, step),
+					tlsCurrent(member.tls, step),
+					Effect.mapError(fs.exists(capacityFile(member)), (error) => failed(step, error.message))
+				]),
+				([up, current, capacityRecorded]) => up && current && capacityRecorded
 			)
 		)
 		if (!Arr.every(whole, (up) => up)) {

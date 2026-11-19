@@ -14,6 +14,31 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: a run leases its cluster (2026-11-19)
+
+A run takes its share of a local cluster's capacity before any of its workers opens a connection there, so runs of
+several checkouts on one cluster wait in line rather than refuse each other's connections ("too many clients") or
+wait on each other's idle holders in a cycle. The first worker whose need reaches the cluster asks the run's parent
+(`RunLease`, from `@bjornpagen/testing/property`, which every worker and inline run has), and the parent reserves
+once for the whole run: on every member at once, under the cluster's gate, a slot for each of the run's workers there,
+each slot one worker's stated connections, out of the capacity the maker read from the member's server and recorded
+beside it (`<member>/lease/capacity`). A run that cannot have its whole set waits, holding none, in the kernel: the
+slots and the gate are flock(2) locks, so a waiter holds no connection, transaction or snapshot. A run never narrows to
+the slots that are free. Before you move `vendor/toolchain` past this section:
+
+1. **pg.config.ts.** `sizing.connections` is `{ kind: "perWorker", perWorker, outside }`, always: a lease divides a
+   member's capacity by what a worker holds, so `{ kind: "default" }` is gone for connections. State `perWorker` as what
+   one worker holds at most at once on a member (its owner session and one case's sessions) and `outside` as what no
+   worker holds, each with its evidence: a measurement of peak backends over a full run, as the testing package's own
+   (2 a worker, 3 outside) was measured.
+2. **Your own connections.** A need of yours that opens connections on the cluster outside PgCluster's (grizzle's
+   substrate) takes the run's lease first: `RunLease.reserve(reservationOf(port, members, demand, workers))`
+   (`@bjornpagen/testing/pg`). A process that is a run of its own outside the runner (a Vitest global setup) holds
+   `reserved(reservation)` for its life. Delete any lease of your own (grizzle's substrate lease tables, takeLease,
+   leaseSlots).
+3. **The cluster, once.** `toolchain-pg init --force` (throwaway) or `init --adopt` (kept), so each member's capacity is
+   recorded.
+
 ## Consumer migration: the owner's parameters (2026-11-19)
 
 A cluster's spec states the server parameters its owner role may set though only a superuser may by default,

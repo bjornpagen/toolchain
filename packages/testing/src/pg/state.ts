@@ -15,6 +15,7 @@ export type MemberState = Readonly<{
 	log: string
 	socket: string
 	passwordFile: string
+	lease: string
 }>
 
 /**
@@ -57,7 +58,8 @@ export const clusterState = (port: ClusterPort): Effect.Effect<ClusterState> =>
 					tls: `${state}/tls`,
 					log: `${state}/log`,
 					socket: `${state}/socket`,
-					passwordFile: `${state}/owner.password`
+					passwordFile: `${state}/owner.password`,
+					lease: `${state}/lease`
 				}
 			}
 		}

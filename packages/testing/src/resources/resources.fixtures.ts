@@ -16,7 +16,7 @@ import {
 } from "#resources/cluster.ts"
 import type { TemplateDatabase } from "#resources/database.ts"
 import { type DatabaseTemplate, Template } from "#resources/template.ts"
-import { ModuleClosure, type NeedFailed, WorkerIndex } from "#runner/services.ts"
+import { ModuleClosure, type NeedFailed, RunLease, WorkerIndex } from "#runner/services.ts"
 
 /** A database name the fixture read back from the cluster. */
 const databaseNameOf = Brand.nominal<DatabaseName>()
@@ -206,11 +206,22 @@ export const tokenTemplate = (
 		build
 	})
 
+/**
+ * The run's lease as a case inside the run sees it: the run that runs the case already holds its reservation on the
+ * fixture's cluster (runner/leases.ts), which covers the case's own connections, so a cluster a case builds for itself
+ * reserves nothing more, and never waits on the slots its own run holds.
+ */
+const leasedByTheRun = Layer.succeed(RunLease, RunLease.of({ reserve: () => Effect.void }))
+
 /** The cluster of the fixture's members under a prefix of a case's own, so a case's collection sees only its own. */
 export const ownCluster = (prefix: string): Layer.Layer<PgCluster> =>
 	Layer.provide(
 		PgCluster.layer({ ...fixtureCluster, prefix: DatabasePrefix(prefix) }),
-		NodeServices.layer
+		Layer.mergeAll(
+			NodeServices.layer,
+			leasedByTheRun,
+			Layer.succeed(WorkerIndex, { index: 0, workers: 1 })
+		)
 	)
 
 /** The runs a list of takers forms: each taker alone, but consecutive takers marked together run at once. */

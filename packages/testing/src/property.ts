@@ -35,7 +35,7 @@ import {
 import type { ModuleClosure, NeedFailed, WorkerIndex } from "#runner/services.ts"
 
 export type { Aimed, Case, FiniteSpace, Oracle, Space, Steered }
-export { ModuleClosure, NeedFailed, WorkerIndex } from "#runner/services.ts"
+export { ModuleClosure, NeedFailed, RunLease, WorkerIndex } from "#runner/services.ts"
 export type { Dictionary } from "#dictionary.ts"
 export type { CaseList } from "#gen.ts"
 

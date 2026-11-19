@@ -22,12 +22,13 @@ import { PgCluster } from "#resources/cluster.ts"
 import { collect, templatesOf } from "#resources/collect.ts"
 import type { DatabaseTemplate } from "#resources/template.ts"
 import { type RunnerConfig, SMALL_STACK } from "#runner/config.ts"
+import { runLeasesIn } from "#runner/leases.ts"
 import { runnerLimits } from "#runner/limits.ts"
 import { configOf, type Discovered, discover, type LoadFailed, matchedBy } from "#runner/load.ts"
 import { moduleClosureAt } from "#runner/module-closure.ts"
 import { type Pool, PoolFailed, placesOf, placesShared, poolOf } from "#runner/pool.ts"
 import type { Reach, Verdict } from "#runner/protocol.ts"
-import { ModuleClosure, WorkerIndex } from "#runner/services.ts"
+import { ModuleClosure, RunLease, WorkerIndex } from "#runner/services.ts"
 import { labelOf, runOfLabel, type Stack } from "#runner/stack.ts"
 import type { RunUsage } from "#runner/usage.ts"
 import { testWorkers } from "#workers.ts"
@@ -182,9 +183,13 @@ const collected = (
 					const platform = yield* Effect.context<NodeServices>()
 					const runner = Context.add(
 						Context.add(
-							Context.merge(Context.make(WorkerIndex, { index: 0, workers: 1 }), platform),
-							ModuleClosure,
-							closures
+							Context.add(
+								Context.merge(Context.make(WorkerIndex, { index: 0, workers: 1 }), platform),
+								ModuleClosure,
+								closures
+							),
+							RunLease,
+							runLeasesIn(scope, platform)
 						),
 						Scope.Scope,
 						scope

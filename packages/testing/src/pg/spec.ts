@@ -53,9 +53,15 @@ export type Family =
  * `outside` (a global setup, a doctor, an operator's psql), each the repository's number with its evidence beside its
  * spec. A member holds the sum over the workers it serves and the outside.
  */
-export type Sized =
-	| Readonly<{ kind: "default" }>
-	| Readonly<{ kind: "perWorker"; perWorker: number; outside: number }>
+export type Sized = Readonly<{ kind: "default" }> | PerWorker
+
+/**
+ * What each worker a member serves holds at most, `perWorker`, and what is held outside any worker, `outside`, each the
+ * repository's number with its evidence beside its spec: a member's connections are always sized so, since its lease
+ * divides the member's capacity by what a lessee holds (lease.ts leaseOn), and a demand never stated could not be
+ * divided.
+ */
+export type PerWorker = Readonly<{ kind: "perWorker"; perWorker: number; outside: number }>
 
 /**
  * The shared buffers a member is sized for: PostgreSQL's own default, or every page each worker the member serves
@@ -71,7 +77,7 @@ export type SizedBuffers =
  * source's slot and walsender), and its shared buffers.
  */
 export type Sizing = Readonly<{
-	connections: Sized
+	connections: PerWorker
 	replication: Sized
 	sharedBuffers: SizedBuffers
 }>

@@ -1,9 +1,11 @@
+import * as NodeServices from "@effect/platform-node/NodeServices"
 import {
 	Array as Arr,
 	Deferred,
 	Duration,
 	Effect,
 	Fiber,
+	Layer,
 	Option,
 	Order,
 	Queue,
@@ -17,6 +19,7 @@ import { HUNG_CLEANUP_GRACE, liveMillis, overrun, watchdogGraceMillis } from "#l
 import { type Served, servedArgv } from "#mutate/pool.ts"
 import { withLateUses } from "#runner/case.ts"
 import { compileCacheDirectory, readsCoverage } from "#runner/compile-cache.ts"
+import { runLeasesIn } from "#runner/leases.ts"
 import { moduleClosureAt } from "#runner/module-closure.ts"
 import {
 	type CountAnswer,
@@ -384,6 +387,8 @@ const compilingOf = (spec: PoolSpec) =>
 export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Scope> =>
 	Effect.gen(function* () {
 		const scope = yield* Scope.Scope
+		const platform = yield* Layer.build(NodeServices.layer)
+		const leases = runLeasesIn(scope, platform)
 		const closures = yield* moduleClosureAt(
 			spec.root,
 			Option.map(spec.served, (served) => served.mutant)
@@ -875,6 +880,25 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 												answer: Result.match(hashed, {
 													onSuccess: (hash) => ({ kind: "hashed", hash }),
 													onFailure: (failure) => ({ kind: "unhashed", message: failure.message })
+												})
+											})
+										})
+									),
+									scope
+								)
+								return
+							}
+							case "lease": {
+								const reservation = received.reservation
+								yield* Effect.forkIn(
+									Effect.flatMap(Effect.result(leases.reserve(reservation)), (held) =>
+										Effect.sync(() => {
+											send(worker, {
+												kind: "lease",
+												gate: reservation.gate,
+												answer: Result.match(held, {
+													onSuccess: () => ({ kind: "leased" }),
+													onFailure: (failure) => ({ kind: "refused", message: failure.message })
 												})
 											})
 										})
