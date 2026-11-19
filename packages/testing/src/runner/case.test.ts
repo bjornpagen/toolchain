@@ -33,7 +33,7 @@ import { Array as Arr, Clock, Effect, Option, Order, String as Str } from "effec
 import { TestClock } from "effect/testing"
 import { assertTrue, deepStrictEqual, strictEqual } from "#assert.ts"
 import { aimed, finite, int } from "#gen.ts"
-import { property } from "#property.ts"
+import { property, ReplayToken } from "#property.ts"
 import {
 	CASE_NEED_FAILURES,
 	CHECKINGS,
@@ -476,9 +476,9 @@ export const shrinkStopsAtNeed = property.explore(
 	}),
 	{
 		needs: {},
-		situations: [],
+		situations: ["the need met mid-shrink"],
 		check:
-			() =>
+			(_resources, c) =>
 			({ threshold, good, seed }) =>
 				Effect.gen(function* () {
 					const inner = failingMidShrink(threshold, good)
@@ -486,6 +486,18 @@ export const shrinkStopsAtNeed = property.explore(
 						...fullRun("shrink stops at need/inner", seed),
 						reach: "rotating"
 					})
+					if (inner.failures() <= good) {
+						return deepStrictEqual(
+							{
+								shrinking: Option.map(findingOf(verdict), (finding) =>
+									finding.kind === "falsified" ? finding.shrinking.kind : finding.kind
+								),
+								reached: inner.counts.reached
+							},
+							{ shrinking: Option.some("minimal"), reached: 0 }
+						)
+					}
+					c.note("the need met mid-shrink")
 					deepStrictEqual(
 						{
 							stopped: Option.flatMap(findingOf(verdict), (finding) =>
@@ -509,7 +521,14 @@ export const shrinkStopsAtNeed = property.explore(
 			kind: "specification",
 			name: "a shrink stops at the first candidate a need fails, reporting the failure as far as it shrank, with the need and why"
 		},
-		kept: [],
+		kept: [
+			{
+				token: ReplayToken("src/runner/case.test.ts#shrinkStopsAtNeed:-:0.2.1ju6vpw"),
+				reason:
+					"a shrink minimal before the need: its first failing case already at the threshold, 1, so it runs no failing candidate past the first and never reaches the need its fourth failing case would take (the push gate at 76aae86, case 123 of seed 0x831cc189)",
+				since: "2026-11-19"
+			}
+		],
 		kills: [
 			{
 				file: "packages/testing/src/runner/search.ts",

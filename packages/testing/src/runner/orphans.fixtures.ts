@@ -1,7 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices"
 import { Array as Arr, Effect, FileSystem, Option, String as Str } from "effect"
 import { ChildProcess } from "effect/process"
-import { liveMillis, liveSleep } from "#live.ts"
+import { liveSleep } from "#live.ts"
 import type { CheckoutDir } from "#mutate/checkout.ts"
 import { HARDENED_FLAGS } from "#runner/config.ts"
 import { CHILD_FILE } from "#runner/pool.fixtures.ts"
@@ -101,28 +101,25 @@ const writtenIn = (file: string) =>
 
 /**
  * The program started from `program` as `holding` says: the program's own process id and every process its pool's
- * worker holds (the worker, and the child its case started when it starts one), once their files hold them, within
- * `within` milliseconds, or none.
+ * worker holds (the worker, and the child its case started when it starts one), once their files hold them, however
+ * long its start takes: no clock decides, as one did (half a case deadline, which a start under load outran), and a
+ * program that never writes them holds its case, whose guard reports it hung.
  */
-export const heldProgram = (program: string, holding: Holding, within: number) =>
+export const heldProgram = (program: string, holding: Holding) =>
 	Effect.gen(function* () {
 		const handle = yield* ChildProcess.make(
 			process.execPath,
 			[...HARDENED_FLAGS, program, holding.root, holding.held, holding.pidFile, holding.childFile],
 			{ stdin: "ignore", stdout: "ignore", stderr: "ignore", detached: false }
 		)
-		const began = yield* liveMillis
 		for (;;) {
 			const worker = yield* writtenIn(holding.pidFile)
 			const child = holding.child ? yield* writtenIn(holding.childFile) : Option.some("")
 			if (Option.isSome(worker) && Option.isSome(child)) {
-				return Option.some({
+				return {
 					program: Number(handle.pid),
 					held: Arr.map(Arr.filter([worker.value, child.value], Str.isNonEmpty), Number)
-				})
-			}
-			if ((yield* liveMillis) - began >= within) {
-				return Option.none<Readonly<{ program: number; held: ReadonlyArray<number> }>>()
+				}
 			}
 			yield* liveSleep("50 millis")
 		}

@@ -1,6 +1,7 @@
-import { Array as Arr, Config, Duration, Effect, FileSystem, Option } from "effect"
+import { Array as Arr, Config, Duration, Effect, FileSystem } from "effect"
+import { ChildProcess } from "effect/process"
 import { boolean, finite, type Gen, int, map } from "#gen.ts"
-import { liveMillis, liveSleep, waitingOn } from "#live.ts"
+import { liveSleep, waitingOn } from "#live.ts"
 import { type Need, property } from "#property.ts"
 import { Scratch } from "#resources/scratch.ts"
 import type { Batch } from "#runner/protocol.ts"
@@ -135,23 +136,29 @@ const alive = (pid: number): boolean => {
 }
 
 /**
- * When the process `pid` was gone, polling it until `within` milliseconds have passed: the milliseconds it took, or
- * none if it is still alive then.
+ * Waits for the process `pid` to end, on the kernel's own notice, never on a clock: pidwait (procps-ng) waits on the
+ * process's pidfd, which is readable once the process exits, so a zombie nothing has reaped yet has ended, and answers
+ * at once, its status 1, for a process already gone. Its pid is handed over in a file of `directory`, its --pidfile. A
+ * signal 0, which reaches a zombie, read a killed child as running until init reaped it, which under load took longer
+ * than any grace a property gave it. A process that never ends holds its case, whose guard reports it hung.
  */
-export const goneWithin = (pid: number, within: number) =>
-	Effect.gen(function* () {
-		const began = yield* liveMillis
-		for (;;) {
-			const now = yield* liveMillis
-			if (!alive(pid)) {
-				return Option.some(now - began)
+export const exitOf = (pid: number, directory: string) =>
+	Effect.scoped(
+		Effect.gen(function* () {
+			const fs = yield* FileSystem.FileSystem
+			const file = `${directory}/exit-${pid}`
+			yield* fs.writeFileString(file, String(pid))
+			const waiting = yield* ChildProcess.make("pidwait", ["--pidfile", file], {
+				stdin: "ignore",
+				stdout: "ignore",
+				stderr: "ignore"
+			})
+			const status = yield* waiting.exitCode
+			if (status !== 0 && status !== 1) {
+				return yield* Effect.die(`pidwait --pidfile ${file} exited ${status}`)
 			}
-			if (now - began >= within) {
-				return Option.none<number>()
-			}
-			yield* liveSleep("20 millis")
-		}
-	})
+		})
+	)
 
 /** Ends the process `pid` should it still run, as the property's cleanup does for a child its worker left behind. */
 export const ended = (pid: number) =>

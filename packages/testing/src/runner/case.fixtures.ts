@@ -415,16 +415,19 @@ export const failingInCases = (
 /**
  * An inner search over 0..9 whose property fails when its own draw of a whole number up to 2^30 is `threshold` or
  * more, a failure a shrink lowers toward the threshold; from its failing case after the first `good` on, a case takes
- * the failing need first, as every clone fails once a template goes missing mid-run; and its counts.
+ * the failing need first, as every clone fails once a template goes missing mid-run; its counts; and how many of its
+ * cases failed (`failures`). A shrink that is minimal before it runs `good` failing candidates, its first failing case
+ * at the threshold already, never reaches the need.
  */
 export const failingMidShrink = (
 	threshold: number,
 	good: number
-): Readonly<{ counts: Reaches; property: Property }> => {
+): Readonly<{ counts: Reaches; failures: () => number; property: Property }> => {
 	const counts: Reaches = { reached: 0 }
 	let failures = 0
 	return {
 		counts,
+		failures: () => failures,
 		property: property.explore(int(0, 9), {
 			needs: failingTake(counts),
 			situations: [],

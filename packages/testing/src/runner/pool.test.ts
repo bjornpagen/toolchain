@@ -12,10 +12,9 @@
  * launchOf), even with its main thread held. Oracle: stated per property.
  */
 import { Array as Arr, Effect, FileSystem, Option, String as Str } from "effect"
-import { deepStrictEqual } from "#assert.ts"
+import { deepStrictEqual, strictEqual } from "#assert.ts"
 import { countWithin } from "#enumerate.ts"
 import { array, boolean, finite, int } from "#gen.ts"
-import { watchdogGraceMillis } from "#live.ts"
 import { Checkout } from "#mutate/checkout.ts"
 import { property } from "#property.ts"
 import { Scratch } from "#resources/scratch.ts"
@@ -33,7 +32,7 @@ import {
 	DIED_OPENING,
 	dyingProperty,
 	ended,
-	goneWithin,
+	exitOf,
 	leavings,
 	loopingProperty,
 	plantedCase,
@@ -62,7 +61,8 @@ export const workersLeaveNoChild = property.exhaust(finite(leavings), {
 			Effect.gen(function* () {
 				const fs = yield* FileSystem.FileSystem
 				const root = yield* checkout
-				const file = `${yield* directory}/children`
+				const scratch = yield* directory
+				const file = `${scratch}/children`
 				const open = yield* Effect.scoped(
 					Effect.gen(function* () {
 						const pool = yield* poolOf({
@@ -82,29 +82,29 @@ export const workersLeaveNoChild = property.exhaust(finite(leavings), {
 						)
 						const written = yield* fs.readFileString(file)
 						const pids = Arr.map(Str.split("\n")(written), Number)
-						const gone = leaving.endsItsWorker
-							? yield* Effect.forEach(pids, (pid) => goneWithin(pid, watchdogGraceMillis))
-							: []
-						return { results, pids, gone }
+						const endedWhileOpen = leaving.endsItsWorker
+							? (yield* Effect.forEach(pids, (pid) => exitOf(pid, scratch))).length
+							: 0
+						return { results, pids, endedWhileOpen }
 					})
 				)
 				yield* Effect.ensuring(
 					Effect.gen(function* () {
-						const closed = yield* Effect.forEach(open.pids, (pid) =>
-							goneWithin(pid, watchdogGraceMillis)
-						)
+						const endedOnceClosed = (yield* Effect.forEach(open.pids, (pid) =>
+							exitOf(pid, scratch)
+						)).length
 						deepStrictEqual(
 							{
 								outcomes: Arr.map(Arr.flatten(open.results), (result) => result.outcome.kind),
 								children: open.pids.length,
-								goneWhileOpen: Arr.map(open.gone, Option.isSome),
-								goneOnceClosed: Arr.map(closed, Option.isSome)
+								endedWhileOpen: open.endedWhileOpen,
+								endedOnceClosed
 							},
 							{
 								outcomes: [leaving.endsItsWorker ? "lost" : "passed"],
 								children: leaving.children,
-								goneWhileOpen: leaving.endsItsWorker ? Arr.map(open.pids, () => true) : [],
-								goneOnceClosed: Arr.map(open.pids, () => true)
+								endedWhileOpen: leaving.endsItsWorker ? leaving.children : 0,
+								endedOnceClosed: leaving.children
 							}
 						)
 					}),
@@ -113,7 +113,7 @@ export const workersLeaveNoChild = property.exhaust(finite(leavings), {
 			}),
 	oracle: {
 		kind: "specification",
-		name: "a worker leaves none of its children running, ended at once or at the pool's close"
+		name: "a worker leaves none of its children running, ended at once or at the pool's close: each child's exit, waited on, never timed"
 	},
 	kept: [],
 	kills: [
@@ -780,36 +780,25 @@ export const workersEndWithTheirParent = property.exhaust(finite(boolean), {
 			Effect.gen(function* () {
 				const dir = yield* checkout
 				const scratch = yield* directory
-				const found = yield* heldProgram(
-					orphansProgram(dir),
-					{
-						root: runsAway ? dir : yield* unreadyRoot(scratch),
-						held: runsAway ? RUNAWAY : loopingProperty(false),
-						pidFile: `${scratch}/worker`,
-						childFile: `${scratch}/child`,
-						child: runsAway
-					},
-					runnerLimits.deadline / 2
-				)
-				const gone = yield* Option.match(found, {
-					onNone: () => Effect.succeed([]),
-					onSome: ({ program, held }) =>
-						Effect.ensuring(
-							Effect.andThen(
-								Effect.sync(() => process.kill(program, "SIGKILL")),
-								Effect.forEach(held, (pid) => goneWithin(pid, watchdogGraceMillis))
-							),
-							Effect.forEach(held, ended)
-						)
+				const found = yield* heldProgram(orphansProgram(dir), {
+					root: runsAway ? dir : yield* unreadyRoot(scratch),
+					held: runsAway ? RUNAWAY : loopingProperty(false),
+					pidFile: `${scratch}/worker`,
+					childFile: `${scratch}/child`,
+					child: runsAway
 				})
-				deepStrictEqual(
-					{ held: Option.isSome(found), gone: Arr.filter(gone, Option.isSome).length },
-					{ held: true, gone: runsAway ? 2 : 1 }
+				yield* Effect.ensuring(
+					Effect.andThen(
+						Effect.sync(() => process.kill(found.program, "SIGKILL")),
+						Effect.forEach(found.held, (pid) => exitOf(pid, scratch))
+					),
+					Effect.forEach(found.held, ended)
 				)
+				strictEqual(found.held.length, runsAway ? 2 : 1)
 			}),
 	oracle: {
 		kind: "specification",
-		name: "a worker whose parent is killed ends within the watchdog's grace, with every process it started in its group, even with its main thread held"
+		name: "a worker whose parent is killed ends, with every process it started in its group, even with its main thread held: each one's exit, waited on, never timed"
 	},
 	kept: [],
 	kills: [
