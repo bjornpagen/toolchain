@@ -6,7 +6,7 @@
  * (Checkout.dir, so a mutant of scratch.ts reaches it). Oracle: the specification, stated in each check.
  */
 import { Effect, Exit, FileSystem, Option, Scope } from "effect"
-import { deepStrictEqual, strictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { array, int } from "#gen.ts"
 import { Checkout } from "#mutate/checkout.ts"
 import { property } from "#property.ts"
@@ -40,8 +40,8 @@ export const scratchOwn = property.explore(array(int(0, 3), { min: 0, max: 4 }),
 			yield* Scope.close(used, Exit.void)
 			const after = yield* fs.exists(dir)
 			yield* fs.remove(dir, { recursive: true, force: true })
-			deepStrictEqual(before, [])
-			strictEqual(after, false)
+			assert.deepEqual(before, [])
+			assert.equal(after, false)
 		}),
 	oracle: {
 		kind: "specification",
@@ -71,7 +71,7 @@ export const scratchOutlivesNoProcess = property.explore(madeGen, {
 				const fs = yield* FileSystem.FileSystem
 				const left = yield* fs.exists(directory)
 				yield* fs.remove(directory, { recursive: true, force: true })
-				deepStrictEqual({ removers, left }, { removers: 1, left: false })
+				assert.deepEqual({ removers, left }, { removers: 1, left: false })
 			}),
 	oracle: {
 		kind: "specification",

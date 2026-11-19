@@ -14,7 +14,7 @@
  * Features: a written list, an imported list, one value, an index of a list, a space that is no case list, a module of
  * test scope, a source module, a program of several properties.
  */
-import { deepStrictEqual } from "@bjornpagen/testing/assert"
+import { assert } from "@bjornpagen/testing/assert"
 import { property } from "@bjornpagen/testing/property"
 import { Effect, Option } from "effect"
 import { featuresOf, judged, programs } from "#oxlint/rules/no-case-list.fixtures.ts"
@@ -35,7 +35,7 @@ export const caseListSpaces = property.explore(programs, {
 	check: (_resources, c) => (program) =>
 		Effect.sync(() => {
 			c.noteAll(featuresOf(program))
-			deepStrictEqual(judged(program), Option.none())
+			assert.deepEqual(judged(program), Option.none())
 		}),
 	oracle: {
 		kind: "specification",

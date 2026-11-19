@@ -23,7 +23,7 @@ import {
 	Schema,
 	String as Str
 } from "effect"
-import { assertTrue, deepStrictEqual, strictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { everyCase, everyValue, type Fraction, fraction, shareOf } from "#chance.fixtures.ts"
 import { failureText } from "#failure.ts"
 import {
@@ -137,7 +137,10 @@ export const intOrder = property.exhaust(finite(smallBounds), {
 		() =>
 		([lo, hi]) =>
 			Effect.sync(() =>
-				deepStrictEqual(everyValue(int(lo, hi)), Arr.sort(wholeNumbers(lo, hi), byDistanceFromZero))
+				assert.deepEqual(
+					everyValue(int(lo, hi)),
+					Arr.sort(wholeNumbers(lo, hi), byDistanceFromZero)
+				)
 			),
 	oracle: {
 		kind: "specification",
@@ -163,7 +166,7 @@ export const bigintOrder = property.exhaust(finite(smallBounds), {
 		() =>
 		([lo, hi]) =>
 			Effect.sync(() =>
-				deepStrictEqual(
+				assert.deepEqual(
 					everyValue(bigint(BigInt(lo), BigInt(hi))),
 					Arr.map(Arr.sort(wholeNumbers(lo, hi), byDistanceFromZero), BigInt)
 				)
@@ -192,7 +195,7 @@ export const bigintBounds = property.explore(boundsOf(bigint(-(2n ** 100n), 2n *
 		([lo, hi]) =>
 			Effect.sync(() => {
 				const value = c.draw(bigint(lo, hi))
-				assertTrue(lo <= value && value <= hi, `${value} lies within ${lo}..${hi}`)
+				assert.ok(lo <= value && value <= hi, `${value} lies within ${lo}..${hi}`)
 			}),
 	oracle: { kind: "specification", name: "lo ≤ value ≤ hi, as bigint states" },
 	kept: [],
@@ -213,7 +216,7 @@ export const doubleBounds = property.explore(
 			([min, max]) =>
 				Effect.sync(() => {
 					const generator = double(min, max)
-					deepStrictEqual(
+					assert.deepEqual(
 						Rec.filter(
 							{ drawn: c.draw(generator), ...farDraws(generator) },
 							(value) => !(Number.isFinite(value) && min <= value && value <= max)
@@ -249,7 +252,7 @@ export const floatBounds = property.explore(boundsOf(float(-FLOAT_MAX, FLOAT_MAX
 		([min, max]) =>
 			Effect.sync(() => {
 				const generator = float(min, max)
-				deepStrictEqual(
+				assert.deepEqual(
 					Rec.filter(
 						{ drawn: c.draw(generator), ...farDraws(generator) },
 						(value) => !(Math.fround(value) === value && min <= value && value <= max)
@@ -298,7 +301,7 @@ export const doubleShrink = property.explore(seeds, {
 				(value) => Effect.succeed(fails(value)),
 				completeShrink
 			)
-			strictEqual(shrunk.best.failure, 11)
+			assert.equal(shrunk.best.failure, 11)
 		}),
 	oracle: {
 		kind: "specification",
@@ -325,7 +328,7 @@ export const randomReach = property.explore(reachCase, {
 			Effect.sync(() => {
 				c.note(kind)
 				const { generator, values, chance } = reaching(kind, parameters)
-				deepStrictEqual(
+				assert.deepEqual(
 					neverDrawn(
 						sample(generator, rotatingSeed(seed, floorSeed("random reach")), drawsFor(chance)),
 						values
@@ -355,8 +358,8 @@ export const uuidForm = property.explore(uuidVersion, {
 	check: (_resources, c) => (version) =>
 		Effect.sync(() => {
 			const value = c.draw(uuid(version))
-			assertTrue(CANONICAL_UUID.test(value), `${value} is a canonical UUID`)
-			deepStrictEqual(
+			assert.ok(CANONICAL_UUID.test(value), `${value} is a canonical UUID`)
+			assert.deepEqual(
 				{
 					version: Str.slice(14, 15)(value),
 					simplest: generate(recorder(), uuid(version), simplestChooser).value
@@ -431,7 +434,7 @@ export const uniqueArrays = property.explore(uniqueCase, {
 			const drawn = Result.try(() => fresh(unique.generator, seed))
 			if (size.min > keys) {
 				c.note("a length past the keys refused")
-				deepStrictEqual(
+				assert.deepEqual(
 					Result.match(drawn, {
 						onSuccess: () => Option.none(),
 						onFailure: (thrown) =>
@@ -460,7 +463,7 @@ export const uniqueArrays = property.explore(uniqueCase, {
 			if (items.length === keys) {
 				c.note("every key used")
 			}
-			deepStrictEqual(
+			assert.deepEqual(
 				{
 					status: tape.status,
 					distinct: Arr.dedupe(items).length === items.length,
@@ -545,7 +548,7 @@ export const cloneTwins = property.explore(cloneCase, {
 				]
 				const owned = Arr.map(twins, (twin) => new Set<object>(objectsOf(twin)))
 				const copies: typeof twins = Array.from({ length: count }, () => Arr.getUnsafe(twins, 0))
-				deepStrictEqual(
+				assert.deepEqual(
 					{
 						twins,
 						shared: Arr.some(owned, (objects, at) =>
@@ -579,7 +582,7 @@ export const productionShare = property.explore(smallValues, {
 	check: () => (small) =>
 		Effect.sync(() => {
 			const cases = everyCase(production(64, small))
-			deepStrictEqual(
+			assert.deepEqual(
 				[
 					shareOf(cases, (value) => value === 64),
 					...Arr.map(small, (value) => shareOf(cases, (drawnValue) => drawnValue === value))
@@ -623,7 +626,7 @@ export const elementOrder = property.explore(mixedList, {
 				if (Arr.dedupe(list).length < list.length) {
 					c.note("a literal repeated")
 				}
-				deepStrictEqual(everyValue(element(list)), list)
+				assert.deepEqual(everyValue(element(list)), list)
 			}),
 	oracle: { kind: "specification", name: "the list itself, each place once, in order" },
 	kept: [],
@@ -652,7 +655,7 @@ export const unicodeScalars = property.explore(scalarIndex, {
 						? "past the surrogates"
 						: "beyond the basic plane"
 			)
-			deepStrictEqual(
+			assert.deepEqual(
 				generate(recorder(), unicodeScalar, forcedChooser(Float64Array.of(index), 1)).value,
 				String.fromCodePoint(scalar)
 			)
@@ -699,7 +702,7 @@ export const proportionalShares = property.explore(computedWeights, {
 			const cases = everyCase(
 				proportional(nonEmpty(Arr.map(weights, (weight, at) => [weight, constant(at)] as const)))
 			)
-			deepStrictEqual(
+			assert.deepEqual(
 				{
 					shares: Arr.map(weights, (_weight, at) => shareOf(cases, (drawnAt) => drawnAt === at)),
 					decides: Arr.map(cases, (drawnCase) => drawnCase.tape.length > 0)
@@ -743,7 +746,7 @@ export const swarmDistribution = property.exhaust(finite(letterAlphabets), {
 				shareOf(cases, (drawnSwarm) => weightOf(drawnSwarm, feature) === 0)
 			const presenceAt = (feature: Letter, presence: 1 | 2 | 3) =>
 				shareOf(cases, (drawnSwarm) => weightOf(drawnSwarm, feature) === presence)
-			deepStrictEqual(
+			assert.deepEqual(
 				{
 					allOff: shareOf(cases, (drawnSwarm) =>
 						Arr.every(features, (feature) => weightOf(drawnSwarm, feature) === 0)
@@ -797,7 +800,7 @@ export const swarmWeights = property.exhaust(finite(swarmWeightsBox), {
 				const on = Arr.filter(options, (option) => weights[option] > 0)
 				const total = Arr.reduce(on, 0, (sum, option) => sum + weights[option])
 				const choices = everyCase(swarmChoice(drawnSwarm, options))
-				deepStrictEqual(
+				assert.deepEqual(
 					{
 						kept: Arr.map(options, (feature) =>
 							shareOf(everyCase(keep(drawnSwarm, feature)), (kept) => kept)
@@ -894,7 +897,7 @@ export const trees = property.exhaust(finite(int(1, 5)), {
 	check: () => (nodes) =>
 		Effect.gen(function* () {
 			const drawnTrees = everyValue(parents({ min: nodes, max: nodes }))
-			assertTrue(Arr.every(drawnTrees, isTree), "every drawn parent array is a tree")
+			assert.ok(Arr.every(drawnTrees, isTree), "every drawn parent array is a tree")
 			yield* agree(
 				[
 					["parents", drawnTrees],
@@ -987,7 +990,7 @@ export const lswShrink = property.explore(seeds, {
 				(values) => Effect.succeed(Arr.some(values, (value) => value.kind === "wild")),
 				completeShrink
 			)
-			deepStrictEqual(
+			assert.deepEqual(
 				{ value: shrunk.best.failure, list: shrunkList.best.failure },
 				{
 					value: { kind: "live", value: 0 },
@@ -1029,14 +1032,14 @@ export const wildData = property.exhaust(finite(map(wildKind, wildOf)), {
 				Schema.is(WildTouched)(failure) ? Option.some(failure) : Option.none()
 			)
 			const touched = Option.map(thrown, (failure) => failure.touch.kind)
-			deepStrictEqual(
+			assert.deepEqual<{ data: boolean; touched: Option.Option<string> }>(
 				{ data: WILD_IS_DATA[wildValue.kind], touched },
 				{
 					data: isData(handed),
 					touched: isData(handed) ? Option.none() : Option.some(wildValue.kind)
 				}
 			)
-			deepStrictEqual(
+			assert.deepEqual(
 				Option.map(thrown, (failure) => {
 					const report = failureText(Cause.die(failure))
 					return {
@@ -1085,7 +1088,7 @@ export const corruptedShares = property.explore(corruptionCase, {
 							)
 						: fraction(0n, 1n)
 				const siteOf = (rule: Rule, at: number) => `item ${rule === "unsorted" ? at + 1 : at}`
-				deepStrictEqual(
+				assert.deepEqual(
 					{
 						live: shareOf(cases, (drawnCase) => drawnCase.kind === "live"),
 						sites: Arr.map(RULES, (rule) =>
@@ -1132,7 +1135,7 @@ export const matchingPatterns = property.explore(honouredPattern, {
 		Effect.sync(() => {
 			const pattern = regex.as(source, "u")
 			const text = c.draw(matching(pattern))
-			assertTrue(pattern.test(text), `${text} matches ${pattern.source}`)
+			assert.ok(pattern.test(text), `${text} matches ${pattern.source}`)
 		}),
 	oracle: { kind: "universal", name: "the pattern's own RegExp accepts every string it generates" },
 	kept: [],
@@ -1162,8 +1165,8 @@ export const patternClasses = property.explore(writtenClass, {
 				(index) =>
 					generate(recorded, matching(pattern), forcedChooser(Float64Array.of(index), 1)).value
 			)
-			deepStrictEqual(byIndex, expected)
-			assertTrue(
+			assert.deepEqual<ReadonlyArray<string>>(byIndex, expected)
+			assert.ok(
 				Arr.every(byIndex, (text) => pattern.test(text)),
 				classSource(written)
 			)
@@ -1198,7 +1201,7 @@ export const patternGrammar = property.explore(patternPieces, {
 			const generated = Result.try(
 				() => generate(recorder(), matching(pattern), simplestChooser).value
 			)
-			deepStrictEqual(
+			assert.deepEqual(
 				{
 					refused: Result.isFailure(generated) && Schema.is(PatternRefused)(generated.failure),
 					shortest: Result.getSuccess(generated)
@@ -1229,11 +1232,11 @@ export const wideInts = property.explore(boundsOf(int(-(2 ** 50), 2 ** 50)), {
 			Effect.sync(() => {
 				const value = c.draw(int(lo, hi))
 				const farthest = generate(recorder(), int(lo, hi), greatestChooser).value
-				assertTrue(
+				assert.ok(
 					lo <= value && value <= hi && Number.isInteger(value),
 					`${value} lies within ${lo}..${hi}`
 				)
-				assertTrue(
+				assert.ok(
 					lo <= farthest && farthest <= hi,
 					`${farthest}, every decision at its greatest, lies within ${lo}..${hi}`
 				)

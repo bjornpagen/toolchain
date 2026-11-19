@@ -19,7 +19,7 @@
  * Oracles are stated per property.
  */
 import { Array as Arr, Effect, Order } from "effect"
-import { deepStrictEqual, strictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { element, int } from "#gen.ts"
 import { property } from "#property.ts"
 import {
@@ -64,7 +64,7 @@ export const everyCaseOnce = property.explore(
 						c.note("more modules than workers")
 					}
 					const ran = simulate(workload, forking)
-					deepStrictEqual(
+					assert.deepEqual(
 						{
 							finished: ran.finished,
 							runs: Arr.sort(Arr.dedupe(Arr.fromIterable(ran.runs.values())), Order.Number),
@@ -97,7 +97,7 @@ export const cheapReadiedOnce = property.explore(cheap, {
 	check: (_resources, c) => (workload) =>
 		Effect.sync(() => {
 			c.note(workload.workers === 1 ? "one worker" : "several workers")
-			strictEqual(simulate(workload, "whole").readiedBy.get("m0")?.size ?? 0, 1)
+			assert.equal(simulate(workload, "whole").readiedBy.get("m0")?.size ?? 0, 1)
 		}),
 	oracle: {
 		kind: "specification",
@@ -221,7 +221,7 @@ export const spreadPaysForItself = property.explore(
 					}
 					const forked = readying + starting.millis
 					const forkedCpu = readyingCpu + starting.cpu
-					deepStrictEqual(spreadIn(state, starting), {
+					assert.deepEqual(spreadIn(state, starting), {
 						outgrows: pays(readying, readyingCpu),
 						wanted: pays(forked, forkedCpu)
 							? Math.max(
@@ -329,7 +329,7 @@ export const messageFillsItsWork = property.explore(messageStates, {
 			if (expected === fair && fair < state.units.length) {
 				c.note("capped by the fair share")
 			}
-			strictEqual(messageTaken(state), Math.max(1, expected))
+			assert.equal(messageTaken(state), Math.max(1, expected))
 		}),
 	oracle: {
 		kind: "specification",
@@ -351,7 +351,7 @@ export const coldStaysPut = property.explore(coldCheap, {
 	situations: [],
 	check: () => (workload) =>
 		Effect.sync(() => {
-			strictEqual(simulate(workload, "lazily").readiedBy.get("m0")?.size ?? 0, 1)
+			assert.equal(simulate(workload, "lazily").readiedBy.get("m0")?.size ?? 0, 1)
 		}),
 	oracle: {
 		kind: "specification",
@@ -367,7 +367,7 @@ export const outgrowingSpreads = property.explore(outgrowing, {
 	check: () => (workload) =>
 		Effect.sync(() => {
 			const ran = simulate(workload, "whole")
-			strictEqual((ran.readiedBy.get("m0")?.size ?? 0) > 1, true)
+			assert.equal((ran.readiedBy.get("m0")?.size ?? 0) > 1, true)
 		}),
 	oracle: {
 		kind: "specification",
@@ -391,7 +391,7 @@ export const sizedToWork = property.explore(cheap, {
 	check: (_resources, c) => (workload) =>
 		Effect.sync(() => {
 			c.note(workload.workers === 1 ? "one worker" : "several workers")
-			strictEqual(simulate(workload, "lazily").forked, 1)
+			assert.equal(simulate(workload, "lazily").forked, 1)
 		}),
 	oracle: {
 		kind: "specification",
@@ -415,7 +415,7 @@ export const tripsSpread = property.explore(tripBound, {
 	check: () => (workload) =>
 		Effect.sync(() => {
 			const ran = simulate(workload, "whole")
-			strictEqual((ran.readiedBy.get("m0")?.size ?? 0) > 1, true)
+			assert.equal((ran.readiedBy.get("m0")?.size ?? 0) > 1, true)
 		}),
 	oracle: {
 		kind: "specification",

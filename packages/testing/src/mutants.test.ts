@@ -5,7 +5,7 @@
  * otherwise. Oracles are stated per property.
  */
 import { Array as Arr, Effect, Option, Result, String as Str } from "effect"
-import { deepStrictEqual, strictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import {
 	appliesToSql,
 	counted,
@@ -50,22 +50,22 @@ export const statementMutants = property.explore(programGen, {
 			const file = programFile(statements)
 			const mutants = yield* mutantsOf([{ file, text }], noFamilies)
 			for (const mutant of mutants) {
-				strictEqual(mutant.source, text)
-				strictEqual(mutant.file, file)
-				strictEqual(mutant.fn, "run")
-				strictEqual(Str.slice(mutant.start, mutant.end)(text), mutant.original)
-				strictEqual(
+				assert.equal(mutant.source, text)
+				assert.equal(mutant.file, file)
+				assert.equal(mutant.fn, "run")
+				assert.equal(Str.slice(mutant.start, mutant.end)(text), mutant.original)
+				assert.equal(
 					applied(mutant),
 					`${Str.slice(0, mutant.start)(text)}${mutant.replacement}${Str.slice(mutant.end)(text)}`
 				)
-				deepStrictEqual({ line: mutant.line, column: mutant.column }, placeOf(text, mutant.start))
+				assert.deepEqual({ line: mutant.line, column: mutant.column }, placeOf(text, mutant.start))
 			}
-			strictEqual(
+			assert.equal(
 				Arr.dedupe(Arr.map(mutants, (mutant) => mutant.id)).length,
 				mutants.length,
 				"every mutant's id is its own"
 			)
-			deepStrictEqual(
+			assert.deepEqual(
 				counted(Arr.map(mutants, (mutant): Counts => [[mutant.operator, 1]])),
 				counted(Arr.map(statements, (statement) => expectedOf(statement.shape))),
 				"the program's operators are its statements'"
@@ -132,7 +132,7 @@ export const familyMutants = property.explore(familyCase, {
 					Arr.map(files, (file) => ({ file: file.name, text: literalsText(file.literals) })),
 					[renamingFamily(appliesToSql, rules)]
 				)
-				deepStrictEqual(renamesOf(mutants), expected)
+				assert.deepEqual(renamesOf(mutants), expected)
 			}),
 	oracle: {
 		kind: "second-implementation",
@@ -166,7 +166,7 @@ export const killAppliedOnce = property.explore(killCase, {
 				if (places.length === 1) {
 					c.note("applied")
 					const [at = 0] = places
-					deepStrictEqual(
+					assert.deepEqual(
 						result,
 						Result.succeed(
 							`${Str.slice(0, at)(text)}<reverted>${Str.slice(at + original.length)(text)}`
@@ -174,7 +174,7 @@ export const killAppliedOnce = property.explore(killCase, {
 					)
 				} else {
 					c.note(places.length === 0 ? "nowhere" : "repeated")
-					deepStrictEqual(
+					assert.deepEqual(
 						Result.isFailure(result) ? Option.some(result.failure.found) : Option.none(),
 						Option.some(places.length)
 					)
@@ -230,12 +230,12 @@ export const elementMutants = property.explore(literalGen, {
 				original,
 				replacement
 			}))
-			deepStrictEqual(
+			assert.deepEqual(
 				edits,
 				Arr.map(elementEditsOf(literal, at), (edit) => ({ operator: "element", ...edit }))
 			)
 			const literalEnd = at + literalText(literal).length
-			deepStrictEqual(
+			assert.deepEqual(
 				Arr.map(mutants, (mutant) =>
 					unspaced(
 						Str.slice(

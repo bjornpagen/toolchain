@@ -12,7 +12,7 @@
  * the base and every other tree keep their text.
  */
 import { Array as Arr, Effect, FileSystem, Path, String as Str } from "effect"
-import { deepStrictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { realPathOf } from "#mutate/mutated.ts"
 import {
 	checkoutGen,
@@ -91,7 +91,7 @@ export const workerTree = property.explore(checkoutGen, {
 			const link = checkout.link ? [yield* fs.realPath(path.join(mutated.root, "linked.ts"))] : []
 			const workspace = yield* fs.realPath(path.join(mutated.root, "node_modules/@scope/pkg"))
 			const installed = yield* fs.realPath(path.join(mutated.root, "packages/pkg/node_modules/dep"))
-			deepStrictEqual(
+			assert.deepEqual(
 				{
 					files,
 					link,

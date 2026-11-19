@@ -12,7 +12,7 @@
  * live glob, a dead glob, an unreadable glob, a standard glob, a live exception, a dead exception; and, for the glob
  * forms alone, each way a live glob is built from its file.
  */
-import { deepStrictEqual } from "@bjornpagen/testing/assert"
+import { assert } from "@bjornpagen/testing/assert"
 import { property } from "@bjornpagen/testing/property"
 import { Array as Arr, Effect } from "effect"
 import { expectedOf, findingsOf, matched, repositories } from "#workspace/dead-paths.fixtures.ts"
@@ -32,7 +32,7 @@ export const deadPathsFound = property.explore(repositories, {
 	check: (_resources, c) => (repository) =>
 		Effect.sync(() => {
 			c.noteAll(Arr.map(repository.stated, (one) => one.feature))
-			deepStrictEqual(findingsOf(repository), expectedOf(repository))
+			assert.deepEqual(findingsOf(repository), expectedOf(repository))
 		}),
 	oracle: {
 		kind: "specification",
@@ -57,7 +57,7 @@ export const liveGlobMatchesItsFile = property.explore(matched, {
 	check: (_resources, c) => (one) =>
 		Effect.sync(() => {
 			c.note(one.built.form)
-			deepStrictEqual(globMatches(one.built.glob, one.file), true)
+			assert.deepEqual(globMatches(one.built.glob, one.file), true)
 		}),
 	oracle: {
 		kind: "specification",

@@ -10,7 +10,7 @@
  * WITH_PERMITS). Features: a lock made, a lock taken, a statement that is no lock, a lock in an owner, a program of
  * several statements.
  */
-import { deepStrictEqual } from "@bjornpagen/testing/assert"
+import { assert } from "@bjornpagen/testing/assert"
 import { property } from "@bjornpagen/testing/property"
 import { Effect, Option } from "effect"
 import { featuresOf, judged, programs } from "#oxlint/rules/single-permit-owners.fixtures.ts"
@@ -28,7 +28,7 @@ export const singlePermitLocksOutsideOwners = property.explore(programs, {
 	check: (_resources, c) => (program) =>
 		Effect.sync(() => {
 			c.noteAll(featuresOf(program))
-			deepStrictEqual(judged(program), Option.none())
+			assert.deepEqual(judged(program), Option.none())
 		}),
 	oracle: {
 		kind: "specification",

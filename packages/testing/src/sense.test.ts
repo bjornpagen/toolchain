@@ -6,7 +6,7 @@
  * a guided search needs.
  */
 import { Array as Arr, Effect, Equal, Option } from "effect"
-import { deepStrictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { array, boolean } from "#gen.ts"
 import { property } from "#property.ts"
 import { BRANCH_FILE, perceivedEach } from "#sense.fixtures.ts"
@@ -33,7 +33,7 @@ export const senseIndependence = property.explore(array(boolean, { min: 2, max: 
 				Arr.findFirst(traces, (_trace, at) => Arr.getUnsafe(takes, at) === taken)
 			const taken = firstOf(true)
 			const skipped = firstOf(false)
-			deepStrictEqual(
+			assert.deepEqual(
 				{
 					traces: Arr.map(traces, (trace) => Option.some(trace)),
 					apart:

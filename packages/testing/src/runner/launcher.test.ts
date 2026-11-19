@@ -5,7 +5,7 @@
  * Oracle: stated in the property.
  */
 import { Array as Arr, Effect, FileSystem, String as Str } from "effect"
-import { strictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { finite, int } from "#gen.ts"
 import { Checkout } from "#mutate/checkout.ts"
 import { property } from "#property.ts"
@@ -23,7 +23,7 @@ export const launcherHardened = property.exhaust(finite(int(0, HARDENED_FLAGS.le
 				const flag = Arr.getUnsafe(HARDENED_FLAGS, at)
 				const fs = yield* FileSystem.FileSystem
 				const script = yield* fs.readFileString(`${yield* checkout}/scripts/toolchain-test.sh`)
-				strictEqual(Str.includes(` ${flag} `)(` ${launcherFlagsOf(script)} `), true)
+				assert.equal(Str.includes(` ${flag} `)(` ${launcherFlagsOf(script)} `), true)
 			}),
 	oracle: {
 		kind: "specification",

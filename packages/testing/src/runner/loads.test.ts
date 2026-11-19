@@ -8,7 +8,7 @@
  * command's own entry in a child process. Oracle: the specification, stated per case (loads.fixtures.ts expectedOf).
  */
 import { Effect } from "effect"
-import { deepStrictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { Checkout } from "#mutate/checkout.ts"
 import { property } from "#property.ts"
 import { Scratch } from "#resources/scratch.ts"
@@ -25,7 +25,7 @@ export const loadsOnce = property.exhaust(packages, {
 				const scratch = yield* directory
 				const library = yield* checkout
 				const { first, second } = yield* loadedTwice(scratch, library, drawn)
-				deepStrictEqual(
+				assert.deepEqual(
 					[comparedOf(drawn, first), comparedOf(drawn, second)],
 					[expectedOf(drawn, "first"), expectedOf(drawn, "second")]
 				)

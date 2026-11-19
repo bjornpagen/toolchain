@@ -6,7 +6,7 @@
  * leaves nothing behind it, so the user's file checked as it is next is valid.
  */
 import { Effect, FileSystem, Path } from "effect"
-import { deepStrictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { realPathOf } from "#mutate/mutated.ts"
 import { edgesTo, filesOf, invalidOf, mutantText, packageGen } from "#mutate/typecheck.fixtures.ts"
 import { typecheckerOf } from "#mutate/typecheck.ts"
@@ -79,7 +79,7 @@ export const mistypedMutants = property.explore(packageGen, {
 			const user = yield* realPathOf(path.join(root, userFile))
 			const userText = yield* fs.readFileString(user)
 			const after = yield* mistyped({ target: user, text: userText })
-			deepStrictEqual({ invalid, after }, { invalid: invalidOf(pkg), after: false })
+			assert.deepEqual({ invalid, after }, { invalid: invalidOf(pkg), after: false })
 		}),
 	oracle: {
 		kind: "specification",

@@ -5,7 +5,7 @@
  * it is.
  */
 import { Effect } from "effect"
-import { deepStrictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { expectedOf, fileOf, pathOf, PLACES, rebasingGen } from "#mutate/pool.fixtures.ts"
 import { rebasedTo } from "#mutate/pool.ts"
 import { property } from "#property.ts"
@@ -16,7 +16,7 @@ export const rebasedFiles = property.explore(rebasingGen, {
 	check: (_resources, c) => (rebasing) =>
 		Effect.sync(() => {
 			c.note(rebasing.place)
-			deepStrictEqual(
+			assert.deepEqual(
 				rebasedTo(pathOf(rebasing.checkout), pathOf(rebasing.root))(pathOf(fileOf(rebasing))),
 				expectedOf(rebasing)
 			)

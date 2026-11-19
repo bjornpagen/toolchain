@@ -1,5 +1,5 @@
 import { Array as Arr, Effect, Exit, Option, Schema } from "effect"
-import { deepStrictEqual, strictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import {
 	type Answer,
 	accepted,
@@ -144,7 +144,7 @@ export const realOf = (
 	push: (value, _before, after) =>
 		Effect.sync((): Answer<QueueRefusal> => {
 			const tookIt = buffer.push(value)
-			strictEqual(buffer.size(), after.length)
+			assert.equal(buffer.size(), after.length)
 			return tookIt ? took : refused("full")
 		}),
 	pop: (_parameters, before) =>
@@ -153,17 +153,17 @@ export const realOf = (
 			if (Option.isNone(popped)) {
 				return refused("empty")
 			}
-			deepStrictEqual(popped, Arr.head(before))
+			assert.deepEqual<Option.Option<number>>(popped, Arr.head(before))
 			return took
 		}),
 	size: (_parameters, before) =>
 		Effect.sync((): Answer<QueueRefusal> => {
-			strictEqual(buffer.size(), before.length)
+			assert.equal(buffer.size(), before.length)
 			return took
 		}),
 	peek: (at, before) =>
 		Effect.sync((): Answer<QueueRefusal> => {
-			deepStrictEqual(Option.some(buffer.peek(at)), Arr.get(before, at))
+			assert.deepEqual(Option.some(buffer.peek(at)), Arr.get(before, at))
 			return took
 		})
 })

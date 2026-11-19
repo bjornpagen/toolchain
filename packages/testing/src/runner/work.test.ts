@@ -22,7 +22,7 @@
  * Oracles are stated per property.
  */
 import { Effect } from "effect"
-import { strictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { finite } from "#gen.ts"
 import { property } from "#property.ts"
 import { searchedAt, verdictKind } from "#runner/search.fixtures.ts"
@@ -52,7 +52,7 @@ export const slowIsNotHung = property.exhaust(finite(slowShapes), {
 				slowCase(shape),
 				innerRun("work/slow", INNER_SEED, SLOW_DEADLINE)
 			)
-			strictEqual(verdictKind(verdict), "explored")
+			assert.equal(verdictKind(verdict), "explored")
 		}),
 	oracle: {
 		kind: "specification",
@@ -76,7 +76,7 @@ export const childWorkCounts = property.exhaust(finite(childBurns), {
 	check: () => (burnMillis) =>
 		Effect.gen(function* () {
 			const seen = yield* childSeen(burnMillis)
-			strictEqual(seen.treeCpu >= seen.childCpu - TICK_GRAIN_MILLIS, true)
+			assert.equal(seen.treeCpu >= seen.childCpu - TICK_GRAIN_MILLIS, true)
 		}),
 	oracle: {
 		kind: "specification",
@@ -103,7 +103,7 @@ export const runawayIsHung = property.exhaust(finite(runaways), {
 				runawayCase(shape),
 				innerRun("work/runaway", INNER_SEED, shape.deadline)
 			)
-			strictEqual(verdictKind(verdict), "hung")
+			assert.equal(verdictKind(verdict), "hung")
 		}),
 	oracle: {
 		kind: "specification",
@@ -130,7 +130,7 @@ export const deadlockIsHung = property.exhaust(finite(deadlocks), {
 				deadlockedCase(shape),
 				innerRun("work/deadlock", INNER_SEED, shape.deadline)
 			)
-			strictEqual(verdictKind(verdict), "hung")
+			assert.equal(verdictKind(verdict), "hung")
 		}),
 	oracle: {
 		kind: "specification",
@@ -157,7 +157,7 @@ export const declaredWaitIsNoStall = property.exhaust(finite(deadlocks), {
 				waitingCase(shape),
 				innerRun("work/waiting", INNER_SEED, shape.deadline)
 			)
-			strictEqual(verdictKind(verdict), "explored")
+			assert.equal(verdictKind(verdict), "explored")
 		}),
 	oracle: {
 		kind: "specification",

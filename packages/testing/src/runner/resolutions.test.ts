@@ -6,7 +6,7 @@
  * Oracle: second-implementation, Node's own resolver, the first run's, whose every answer the second run gives.
  */
 import { Effect, Option } from "effect"
-import { deepStrictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { finite } from "#gen.ts"
 import { Checkout } from "#mutate/checkout.ts"
 import { property } from "#property.ts"
@@ -36,7 +36,7 @@ export const resolvedAsHanded = property.exhaust(finite(kindSets), {
 					onNone: () => Effect.succeedNone,
 					onSome: () => ranAs(program, graph, "worker")
 				})
-				deepStrictEqual(
+				assert.deepEqual(
 					{
 						first: Option.map(first, (ran) => ({
 							names: ran.names,

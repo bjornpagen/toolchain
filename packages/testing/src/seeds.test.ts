@@ -3,7 +3,7 @@
  * and a pick names only what was kept.
  */
 import { Array as Arr, Effect, Option } from "effect"
-import { assertTrue } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { array } from "#gen.ts"
 import { property } from "#property.ts"
 import { wordsOf } from "#random.ts"
@@ -38,7 +38,7 @@ export const seedCorpus = property.explore(array(perceived, { min: 0, max: 8 }),
 					c.note("a case new by its trace")
 				}
 				const keptNow = corpus.keep(tape, new Set(notes), Uint8Array.from(trace))
-				assertTrue(
+				assert.ok(
 					keptNow === novel,
 					`case ${index} was ${keptNow ? "kept" : "not kept"}, and it ${novel ? "is" : "is not"} new`
 				)
@@ -49,18 +49,18 @@ export const seedCorpus = property.explore(array(perceived, { min: 0, max: 8 }),
 					seenClasses.add(key)
 				}
 			}
-			assertTrue(
+			assert.ok(
 				corpus.size() === kept.length,
 				`the corpus holds ${corpus.size()} seeds, and ${kept.length} were kept`
 			)
 			const pick = corpus.picker([])(wordsOf(cases.length))
-			assertTrue(
+			assert.ok(
 				Option.isSome(pick) === kept.length > 0,
 				`a pick is ${Option.isSome(pick) ? "some" : "none"} over ${kept.length} kept seeds`
 			)
 			if (Option.isSome(pick)) {
 				const [seed, donor] = pick.value
-				assertTrue(
+				assert.ok(
 					Arr.contains(kept, seed) && Arr.contains(kept, donor),
 					"a pick is a kept seed and a kept donor"
 				)

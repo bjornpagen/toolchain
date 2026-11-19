@@ -5,7 +5,7 @@
  */
 import { Array as Arr, Effect, Exit, Option } from "effect"
 import { agreements, agreesOf, type Answer, COMPARISONS, equivalenceOf } from "#agree.fixtures.ts"
-import { deepStrictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { agree, type Side } from "#oracle.ts"
 import { property } from "#property.ts"
 
@@ -31,7 +31,7 @@ export const agreesBySide = property.explore(agreements, {
 					c.note("a later side disagreed")
 				}
 				const judged = yield* Effect.exit(agree(sides, equivalenceOf(comparison)))
-				deepStrictEqual(
+				assert.deepEqual(
 					Option.map(Exit.findErrorOption(judged), (disagreement) => [
 						disagreement.first,
 						disagreement.second

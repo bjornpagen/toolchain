@@ -13,7 +13,7 @@
  * holds the block as it should, a package that declares plugins, one that declares an empty list, a package with no
  * tsconfig, one that extends a tsconfig that is not there, and a root that does not declare the plugin once.
  */
-import { deepStrictEqual } from "@bjornpagen/testing/assert"
+import { assert } from "@bjornpagen/testing/assert"
 import { property } from "@bjornpagen/testing/property"
 import { Scratch } from "@bjornpagen/testing/resources"
 import { Array as Arr, Effect } from "effect"
@@ -43,7 +43,7 @@ export const pluginBlockFindings = property.explore(workspaces, {
 				const scratch = yield* dir
 				const root = yield* written(scratch, workspace)
 				const counted = yield* pluginBlockCounts(root, workspace)
-				deepStrictEqual(counted, [...Arr.map(directories, (one) => one.findings), 0])
+				assert.deepEqual(counted, [...Arr.map(directories, (one) => one.findings), 0])
 			}),
 	oracle: {
 		kind: "specification",

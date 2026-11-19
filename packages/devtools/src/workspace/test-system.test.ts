@@ -14,7 +14,7 @@
  * Vitest configuration, a worker flag, a file the gates leave alone, a repository with the properties pack, a
  * repository without it.
  */
-import { deepStrictEqual } from "@bjornpagen/testing/assert"
+import { assert } from "@bjornpagen/testing/assert"
 import { property } from "@bjornpagen/testing/property"
 import { Effect } from "effect"
 import { countsOf, expectedOf, featuresOf, repositories } from "#workspace/test-system.fixtures.ts"
@@ -34,7 +34,7 @@ export const repositoryFindings = property.explore(repositories, {
 	check: (_resources, c) => (repository) =>
 		Effect.sync(() => {
 			c.noteAll(featuresOf(repository))
-			deepStrictEqual(countsOf(repository), expectedOf(repository))
+			assert.deepEqual(countsOf(repository), expectedOf(repository))
 		}),
 	oracle: {
 		kind: "specification",

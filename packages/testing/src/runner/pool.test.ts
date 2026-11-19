@@ -12,7 +12,7 @@
  * launchOf), even with its main thread held. Oracle: stated per property.
  */
 import { Array as Arr, Effect, FileSystem, Option, String as Str } from "effect"
-import { deepStrictEqual, strictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { countWithin } from "#enumerate.ts"
 import { array, boolean, finite, int } from "#gen.ts"
 import { Checkout } from "#mutate/checkout.ts"
@@ -93,7 +93,7 @@ export const workersLeaveNoChild = property.exhaust(finite(leavings), {
 						const endedOnceClosed = (yield* Effect.forEach(open.pids, (pid) =>
 							exitOf(pid, scratch)
 						)).length
-						deepStrictEqual(
+						assert.deepEqual(
 							{
 								outcomes: Arr.map(Arr.flatten(open.results), (result) => result.outcome.kind),
 								children: open.pids.length,
@@ -166,7 +166,7 @@ export const loadsNever = property.exhaust(finite(boolean), {
 							pool.evaluator.evaluate([shortCase(loopingProperty(needs), 100, 1000)], () => true)
 					)
 				)
-				deepStrictEqual(
+				assert.deepEqual(
 					Arr.map(Arr.flatten(results), (result) =>
 						result.outcome.kind === "lost"
 							? Str.includes("the worker readying its property")(result.outcome.report)
@@ -219,7 +219,7 @@ export const slowWorkerKept = property.exhaust(finite(boolean), {
 						return Arr.map(Arr.flatten(results), (result) => result.outcome.kind)
 					})
 				)
-				deepStrictEqual(outcomes, ["passed"])
+				assert.deepEqual(outcomes, ["passed"])
 			}),
 	oracle: {
 		kind: "specification",
@@ -272,7 +272,7 @@ export const silentBeforeReadying = property.exhaust(finite(boolean), {
 						return Arr.map(Arr.flatten([...silenced, ...next]), (result) => result.outcome.kind)
 					})
 				)
-				deepStrictEqual(outcomes, ["passed", "lost"])
+				assert.deepEqual(outcomes, ["passed", "lost"])
 			}),
 	oracle: {
 		kind: "specification",
@@ -326,18 +326,18 @@ export const lostNamesItsLeg = property.exhaust(finite(silenceSpace), {
 						return Arr.flatten([...silenced, ...next])
 					})
 				)
-				deepStrictEqual(
+				assert.deepEqual(
 					Arr.map(outcomes, (result) => result.outcome.kind),
 					["passed", "lost"]
 				)
 				const lost = Arr.flatMap(outcomes, (result) =>
 					result.outcome.kind === "lost" ? [result.outcome.report] : []
 				)
-				deepStrictEqual(
+				assert.deepEqual(
 					Arr.map(lost, (report) => Str.includes(legSaid(silence))(report)),
 					[true]
 				)
-				deepStrictEqual(
+				assert.deepEqual(
 					Arr.map(lost, (report) => Str.includes('its last message "done"')(report)),
 					[true]
 				)
@@ -400,7 +400,7 @@ export const declaredWaitKept = property.exhaust(finite(declaredWaitDeadlines), 
 						return Arr.map(Arr.flatten(results), (result) => result.outcome.kind)
 					})
 				)
-				deepStrictEqual(outcomes, ["passed"])
+				assert.deepEqual(outcomes, ["passed"])
 			}),
 	oracle: {
 		kind: "specification",
@@ -463,7 +463,7 @@ export const countedOnAWorker = property.exhaust(finite(countsEvery), {
 					)
 				)
 				const here = yield* countWithin(countedValues, runnerLimits.deadline, every)
-				deepStrictEqual(
+				assert.deepEqual(
 					{
 						answer:
 							answer.kind === "counted"
@@ -538,7 +538,7 @@ export const openDiesUnopened = property.exhaust(finite(boolean), {
 						)
 					})
 				)
-				deepStrictEqual(outcomes, ["unopened: the open's defect", "passed"])
+				assert.deepEqual(outcomes, ["unopened: the open's defect", "passed"])
 			}),
 	oracle: {
 		kind: "specification",
@@ -576,7 +576,7 @@ export const closedOnReturn = property.exhaust(finite(boolean), {
 						}
 					})
 				)
-				deepStrictEqual(
+				assert.deepEqual(
 					{ failed: released.failed, released: released.released > 0 },
 					{ failed: 0, released: true }
 				)
@@ -632,7 +632,7 @@ export const workersTakeTheirPlaces = property.exhaust(
 								)
 						)
 					)
-					deepStrictEqual(
+					assert.deepEqual(
 						Arr.map(Arr.flatten(results), (result) => result.outcome.kind),
 						["passed"]
 					)
@@ -695,7 +695,7 @@ export const leasesTakeDistinctPlaces = property.explore(
 							),
 						{ concurrency: "unbounded", discard: true }
 					)
-					deepStrictEqual({ clashes, within: most <= width }, { clashes: [], within: true })
+					assert.deepEqual({ clashes, within: most <= width }, { clashes: [], within: true })
 				}),
 		oracle: {
 			kind: "specification",
@@ -746,7 +746,7 @@ export const startsNever = property.exhaust(finite(boolean), {
 							pool.evaluator.evaluate([shortCase(loopingProperty(needs), 100, 1000)], () => true)
 					)
 				)
-				deepStrictEqual(
+				assert.deepEqual(
 					Arr.map(Arr.flatten(results), (result) =>
 						result.outcome.kind === "lost"
 							? Str.includes("was not ready within the open bound")(result.outcome.report)
@@ -794,7 +794,7 @@ export const workersEndWithTheirParent = property.exhaust(finite(boolean), {
 					),
 					Effect.forEach(found.held, ended)
 				)
-				strictEqual(found.held.length, runsAway ? 2 : 1)
+				assert.equal(found.held.length, runsAway ? 2 : 1)
 			}),
 	oracle: {
 		kind: "specification",
@@ -847,7 +847,7 @@ export const kindsShareTheWidth = property.explore(
 				const taken = Arr.flatMap(places, ({ at }) => at)
 				const total = Arr.reduce(shared.weights, 0, (sum, weight) => sum + weight)
 				const extra = shared.width - kinds
-				deepStrictEqual(
+				assert.deepEqual(
 					{
 						kinds: places.length,
 						of: Arr.every(places, (one) => one.of === Math.max(1, shared.width)),

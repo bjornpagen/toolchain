@@ -3,7 +3,7 @@
  * (interleave.fixtures.ts), against what they promise. Oracles are stated per property.
  */
 import { Array as Arr, Effect, Option, Order, String as Str, Struct } from "effect"
-import { assertTrue, deepStrictEqual, strictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { aimed, finite } from "#gen.ts"
 import {
 	aftersGen,
@@ -44,8 +44,11 @@ export const sleepSetsSound = property.explore(sessionSets, {
 		Effect.gen(function* () {
 			const reduced = yield* resultsOf(sessions, "sleep-sets")
 			const full = yield* resultsOf(sessions, "none")
-			deepStrictEqual(Arr.sort(reduced.results, Order.String), Arr.sort(full.results, Order.String))
-			assertTrue(
+			assert.deepEqual(
+				Arr.sort(reduced.results, Order.String),
+				Arr.sort(full.results, Order.String)
+			)
+			assert.ok(
 				reduced.report.interleavings <= full.report.interleavings,
 				`sleep sets ran ${reduced.report.interleavings} orders, no more than the ${full.report.interleavings} without them`
 			)
@@ -75,7 +78,7 @@ export const commutingSessions = property.exhaust(finite(disjointSessions), {
 		Effect.gen(function* () {
 			const reduced = yield* resultsOf(sessions, "sleep-sets")
 			const full = yield* resultsOf(sessions, "none")
-			deepStrictEqual(
+			assert.deepEqual(
 				{
 					reduced: reduced.report.interleavings,
 					full: full.report.interleavings,
@@ -119,8 +122,8 @@ export const crossingDeadlock = property.exhaust(finite(crossingSessions), {
 	check: () => (sessions) =>
 		Effect.gen(function* () {
 			const { results, report } = yield* resultsOf(sessions, "sleep-sets")
-			assertTrue(report.blocked > 0, "some order made a session wait")
-			assertTrue(
+			assert.ok(report.blocked > 0, "some order made a session wait")
+			assert.ok(
 				Arr.some([...results], Str.includes("deadlock")),
 				`some order ended a session as the deadlock's victim, among ${Arr.join(results, " | ")}`
 			)
@@ -158,7 +161,7 @@ export const deadlocksRecorded = property.interleave(lockingSessions, {
 				end.kind === "ended" && end.key === "deadlock" ? [session] : []
 			)
 			const recorded = Arr.flatMap(run.deadlocks, (deadlock) => Option.toArray(deadlock.victim))
-			deepStrictEqual(Arr.sort(recorded, Order.String), Arr.sort(aborted, Order.String))
+			assert.deepEqual(Arr.sort(recorded, Order.String), Arr.sort(aborted, Order.String))
 			if (Arr.isReadonlyArrayNonEmpty(recorded)) {
 				c.note("a victim recorded")
 			}
@@ -219,13 +222,13 @@ export const afterCycles = property.exhaust(finite(aftersGen), {
 				if (Arr.some(Struct.keys(afters), (name) => Option.isSome(afters[name]))) {
 					c.note("a chain")
 				}
-				strictEqual(outcome._tag, "Success")
+				assert.equal(outcome._tag, "Success")
 				return
 			}
 			c.note("a cycle")
 			const refused = outcome._tag === "Failure" ? outcome.failure : undefined
-			assertTrue(isAfterCycle(refused), "the afters' cycle is refused")
-			deepStrictEqual(
+			assert.ok(isAfterCycle(refused), "the afters' cycle is refused")
+			assert.deepEqual(
 				{
 					ran,
 					named: Arr.some(loops, (loop) =>
@@ -264,7 +267,7 @@ export const scriptFollowed = property.interleave(scriptedCases, {
 	judge: (_resources, c) => (scripted) => (run) =>
 		Effect.sync(() => {
 			const walked = walkScript(scripted)
-			deepStrictEqual(followedOf(run), walked.followed)
+			assert.deepEqual(followedOf(run), walked.followed)
 			c.note(walked.situation)
 		}),
 	situations: [
@@ -305,7 +308,7 @@ export const drawnSchedulesSound = property.interleave(
 		judge: () => (drawn) => (run) =>
 			Effect.gen(function* () {
 				const every = yield* resultsOf(drawn.sessions, "none")
-				assertTrue(
+				assert.ok(
 					every.results.has(decidedBy(run)),
 					"a drawn schedule's result is one every order reaches"
 				)
@@ -330,12 +333,12 @@ export const drawnReplay = property.explore(sessionSets, {
 				sessions,
 				natureOf(recording(forcedChooser(taped.values, taped.length)))
 			)
-			deepStrictEqual(
+			assert.deepEqual(
 				{ replay: again.replay.kind, schedule: Arr.map(again.tape, (decision) => decision.choice) },
 				{ replay: "as-taped", schedule: Arr.map(once.tape, (decision) => decision.choice) }
 			)
-			strictEqual(once.replay.kind, "as-taped")
-			strictEqual(
+			assert.equal(once.replay.kind, "as-taped")
+			assert.equal(
 				Struct.keys(sessions).length,
 				Arr.filter([...once.sessions.values()], (end) => end.kind !== "unfinished").length
 			)
@@ -437,8 +440,8 @@ export const aMoveInFlightIsWaitedOutNotPolled = property.explore(turnSessions, 
 				{ kind: "every", reduction: "none" },
 				() => Effect.void
 			)
-			assertTrue(counting.issued() > 0)
-			assertTrue(
+			assert.ok(counting.issued() > 0)
+			assert.ok(
 				counting.asked() <= counting.issued(),
 				`the engine asked waitOf ${String(counting.asked())} times for ${String(counting.issued())} moves`
 			)

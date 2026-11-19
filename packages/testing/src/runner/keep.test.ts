@@ -4,7 +4,7 @@
  * arms whose simplest draws a target cannot tell apart, so only an arm's greedy completion shows which one draws it.
  */
 import { Effect, Formatter } from "effect"
-import { assertTrue } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { property } from "#property.ts"
 import { featuresOf, type KeepFeature, shapes, spaceOf } from "#runner/keep.fixtures.ts"
 import { keptOf } from "#runner/keep.ts"
@@ -21,7 +21,7 @@ export const everyDrawnValueHasATapeKeepFinds = property.explore(shapes, {
 			const target = c.draw(space)
 			c.noteAll(featuresOf(parts, target))
 			const kept = keptOf(space, target)
-			assertTrue(
+			assert.ok(
 				kept.kind === "found",
 				`keep finds a tape of ${Formatter.format(target)}: ${kept.kind === "unfound" ? kept.why : "found"}`
 			)

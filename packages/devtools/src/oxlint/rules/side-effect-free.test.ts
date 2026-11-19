@@ -18,7 +18,7 @@
  * an unmarked function, a misplaced mark, a program of several functions, and a proof's module, each claim kept or
  * broken.
  */
-import { deepStrictEqual } from "@bjornpagen/testing/assert"
+import { assert } from "@bjornpagen/testing/assert"
 import { property } from "@bjornpagen/testing/property"
 import { Effect, Option } from "effect"
 import {
@@ -61,7 +61,7 @@ export const markedFunctionRefusals = property.explore(programs, {
 	check: (_resources, c) => (program) =>
 		Effect.sync(() => {
 			c.noteAll(featuresOf(program))
-			deepStrictEqual(judgedProgram(program), Option.none())
+			assert.deepEqual(judgedProgram(program), Option.none())
 		}),
 	oracle: {
 		kind: "specification",
@@ -125,7 +125,7 @@ export const proofModuleClaims = property.explore(homes, {
 	check: (_resources, c) => (home) =>
 		Effect.sync(() => {
 			c.note(home.broken ? "a claim broken" : "a claim kept")
-			deepStrictEqual(judgedHome(home), Option.none())
+			assert.deepEqual(judgedHome(home), Option.none())
 		}),
 	oracle: {
 		kind: "specification",

@@ -15,7 +15,7 @@ import {
 	String as Str
 } from "effect"
 import { RuleTester } from "oxlint/plugins-dev"
-import { deepStrictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import {
 	array,
 	boolean,
@@ -1558,7 +1558,7 @@ export const ruleProperty = (
 					if (program.sites.length > 1) {
 						c.note("a program of several sites")
 					}
-					deepStrictEqual(judged(name, header, program), Option.none())
+					assert.deepEqual(judged(name, header, program), Option.none())
 				}),
 		oracle: {
 			kind: "specification",

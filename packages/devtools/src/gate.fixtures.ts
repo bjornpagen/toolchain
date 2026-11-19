@@ -1,4 +1,4 @@
-import { deepStrictEqual, fail } from "@bjornpagen/testing/assert"
+import { assert } from "@bjornpagen/testing/assert"
 import type { CheckoutDir } from "@bjornpagen/testing/checkout"
 import { boolean, element, type Gen, int } from "@bjornpagen/testing/gen"
 import { type Need, NeedFailed } from "@bjornpagen/testing/property"
@@ -150,7 +150,7 @@ const sh = Effect.fn("sh")(function* (
 	...args: ReadonlyArray<string>
 ) {
 	const done = yield* ran(sandbox, cwd, command, args)
-	deepStrictEqual(
+	assert.deepEqual(
 		done.status,
 		0,
 		`${command} ${Arr.join(args, " ")} exited ${String(done.status)} in ${cwd}: ${done.stderr}`
@@ -161,7 +161,7 @@ const sh = Effect.fn("sh")(function* (
 /** The gate's run of a shell script on HEAD's commit, in a clone, which must succeed. */
 const gated = Effect.fn("gated")(function* (sandbox: Sandbox, clone: string, script: string) {
 	const done = yield* ran(sandbox, clone, "sh", [sandbox.gate, "run", "HEAD", "sh", "-c", script])
-	deepStrictEqual(
+	assert.deepEqual(
 		done.status,
 		0,
 		`the gate's run in ${clone} exited ${String(done.status)}: ${done.stderr}`
@@ -374,7 +374,7 @@ export const onlyKey = Effect.fn("onlyKey")(function* (sandbox: Sandbox) {
 	const made = yield* keys(sandbox)
 	const [only, ...rest] = made
 	if (only === undefined || Arr.isReadonlyArrayNonEmpty(rest)) {
-		return fail(`the cache holds one key directory, not [${Arr.join(made, ", ")}]`)
+		return assert.fail(`the cache holds one key directory, not [${Arr.join(made, ", ")}]`)
 	}
 	return only
 })
@@ -837,7 +837,7 @@ const holding = Effect.fn("holding")(function* (sandbox: Sandbox, file: string, 
 		})
 	)
 	const said = yield* Stream.runHead(Stream.decodeText(handle.stdout))
-	deepStrictEqual(Option.map(said, Str.trim), Option.some("held"), `flock never held ${file}`)
+	assert.deepEqual(Option.map(said, Str.trim), Option.some("held"), `flock never held ${file}`)
 })
 
 /** Whether a lock file is free: flock(1) takes it at once and lets go. */
@@ -891,7 +891,7 @@ const madeSince = Effect.fn("madeSince")(function* (
 	const made = Arr.difference(after, before)
 	const [only, ...rest] = made
 	if (only === undefined || Arr.isReadonlyArrayNonEmpty(rest)) {
-		return fail(`one repository makes one key directory, not [${Arr.join(made, ", ")}]`)
+		return assert.fail(`one repository makes one key directory, not [${Arr.join(made, ", ")}]`)
 	}
 	return only
 })
@@ -1292,7 +1292,9 @@ export const sweptBeside = Effect.fn("sweptBeside")(function* (sandbox: Sandbox,
 			Effect.raceFirst(
 				Deferred.await(reached),
 				Effect.flatMap(Deferred.await(ended), (status) =>
-					Effect.sync(() => fail(`the run exited ${String(status)} before it was ${sweep.phase}`))
+					Effect.sync(() =>
+						assert.fail(`the run exited ${String(status)} before it was ${sweep.phase}`)
+					)
 				)
 			)
 	})

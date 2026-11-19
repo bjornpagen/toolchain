@@ -8,7 +8,7 @@
  * enclosing run takes first; no server is involved. Oracle: the specification, stated in the check.
  */
 import { Array as Arr, Effect, Option } from "effect"
-import { assertTrue, deepStrictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { Checkout } from "#mutate/checkout.ts"
 import { property } from "#property.ts"
 import { Scratch } from "#resources/scratch.ts"
@@ -44,7 +44,7 @@ export const nestedRunsDrawOnTheirRun = property.exhaust(nestedRuns, {
 					const verdict = yield* Effect.scoped(
 						searchInline(reservesOn(Effect.succeed(reservation)), inlineRun("nested inline", 1))
 					)
-					assertTrue(
+					assert.ok(
 						verdict.kind === "exhausted",
 						`an inline search under its case's held lease completes: ${verdict.kind}`
 					)
@@ -71,7 +71,7 @@ export const nestedRunsDrawOnTheirRun = property.exhaust(nestedRuns, {
 						return Arr.map(Arr.flatten(results), (result) => result.outcome.kind)
 					})
 				)
-				deepStrictEqual(
+				assert.deepEqual(
 					outcomes,
 					["passed"],
 					"a pool under its case's held lease completes its case"

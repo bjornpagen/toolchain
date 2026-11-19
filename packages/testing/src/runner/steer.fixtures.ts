@@ -1,5 +1,5 @@
 import { Array as Arr, Effect, Option } from "effect"
-import { assertTrue, deepStrictEqual, strictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { aimed, array, type Gen, int } from "#gen.ts"
 import { type Case, type Property, property } from "#property.ts"
 import type { Limits } from "#runner/limits.ts"
@@ -198,12 +198,12 @@ export const turnsKept = (
 	Arr.flatMap(windows, (window, at): ReadonlyArray<TurnFeature> => {
 		const { pending } = window
 		const aimedAt = Arr.flatMap(window.aims, Option.toArray)
-		strictEqual(aimedAt.length, Arr.isReadonlyArrayNonEmpty(pending) ? window.aims.length : 0)
-		assertTrue(
+		assert.equal(aimedAt.length, Arr.isReadonlyArrayNonEmpty(pending) ? window.aims.length : 0)
+		assert.ok(
 			Arr.every(aimedAt, (aim) => Arr.contains(pending, aim)),
 			`window ${at} aims at ${Arr.join(Arr.map(aimedAt, String), ",")}, which is not all pending (${Arr.join(Arr.map(pending, String), ",")})`
 		)
-		deepStrictEqual(Arr.dedupe(aimedAt).length, Math.min(pending.length, window.aims.length))
+		assert.deepEqual(Arr.dedupe(aimedAt).length, Math.min(pending.length, window.aims.length))
 		const span = Math.ceil(pending.length / width)
 		const sweep = windows.slice(at, at + span)
 		const swept =
@@ -213,7 +213,7 @@ export const turnsKept = (
 		if (swept) {
 			for (const place of pending) {
 				const stillPending = Arr.every(sweep, (later) => Arr.contains(later.pending, place))
-				assertTrue(
+				assert.ok(
 					!stillPending ||
 						Arr.some(sweep, (later) => Arr.some(later.aims, (aim) => Option.contains(aim, place))),
 					`requirement ${place} pending through ${sweep.length} windows of ${width} and never aimed at`

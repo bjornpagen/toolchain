@@ -3,7 +3,7 @@ import { Effect, Option, Ref } from "effect"
  * Awaiting a fact (fact.ts awaitFact): the value returned holds the fact and lies within what concurrent fibers made
  * true, waiting on no timer. Oracle: the specification, stated in the search.
  */
-import { deepStrictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { awaitFact } from "#fact.ts"
 import { int } from "#gen.ts"
 import { property } from "#property.ts"
@@ -49,7 +49,7 @@ export const awaitedFact = property.explore(
 					const reached = yield* awaitFact(
 						Effect.map(Ref.get(count), (n) => (n >= threshold ? Option.some(n) : Option.none()))
 					)
-					deepStrictEqual(
+					assert.deepEqual(
 						{ holds: reached >= threshold, within: reached <= total },
 						{ holds: true, within: true }
 					)

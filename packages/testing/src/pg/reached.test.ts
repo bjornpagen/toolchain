@@ -4,7 +4,7 @@
  * each misspelling refused rather than read as some port or as the spec's. Oracle: the specification.
  */
 import { ConfigProvider, Effect, Exit } from "effect"
-import { assertTrue, deepStrictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import testingCluster from "#pg.config.ts"
 import { reachedPort } from "#pg/make.ts"
 import { misspellings, names } from "#pg/reached.fixtures.ts"
@@ -30,7 +30,7 @@ export const reachedPorts = property.explore(names, {
 			)
 			switch (name.kind) {
 				case "unset":
-					deepStrictEqual(
+					assert.deepEqual(
 						Exit.map(reached, (port): number => port),
 						Exit.succeed(testingCluster.port),
 						"unset, the spec's cluster"
@@ -38,7 +38,7 @@ export const reachedPorts = property.explore(names, {
 					c.note("the spec's cluster, unset")
 					return
 				case "port":
-					deepStrictEqual(
+					assert.deepEqual(
 						Exit.map(reached, (port): number => port),
 						Exit.succeed(name.port),
 						"a canonical port names its cluster"
@@ -46,7 +46,7 @@ export const reachedPorts = property.explore(names, {
 					c.note("a port named")
 					return
 				case "misspelled":
-					assertTrue(Exit.isFailure(reached), `${name.misspelling} is refused`)
+					assert.ok(Exit.isFailure(reached), `${name.misspelling} is refused`)
 					c.note(name.misspelling)
 					return
 			}

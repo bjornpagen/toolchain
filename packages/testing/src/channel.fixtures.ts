@@ -1,5 +1,5 @@
 import { Array as Arr, Effect, Option } from "effect"
-import { deepStrictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import {
 	branch,
 	type Observation,
@@ -150,7 +150,7 @@ export const channelReal = (
 	},
 	holds: (after) =>
 		Effect.sync(() => {
-			deepStrictEqual(
+			assert.deepEqual(
 				{ held: channel.held(), size: channel.size() },
 				{ held: after, size: after.length }
 			)

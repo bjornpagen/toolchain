@@ -19,7 +19,7 @@ import {
 	Ref,
 	Scope
 } from "effect"
-import { assertTrue, deepStrictEqual, strictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { array, boolean, finite, int } from "#gen.ts"
 import { liveSleep } from "#live.ts"
 import { property } from "#property.ts"
@@ -102,12 +102,12 @@ export const freshIsolation = property.explore(array(int(-5, 5), { min: 0, max: 
 					}),
 					ctx
 				)
-				deepStrictEqual(seen.seeds, [["1"]])
-				deepStrictEqual(seen.origin, [["true", "true"]])
-				deepStrictEqual(seen.settings, [
+				assert.deepEqual(seen.seeds, [["1"]])
+				assert.deepEqual(seen.origin, [["true", "true"]])
+				assert.deepEqual(seen.settings, [
 					["serializable", '"$user", public, pg_catalog', "true", "false"]
 				])
-				deepStrictEqual(
+				assert.deepEqual(
 					seen.rows,
 					Arr.map(Arr.sort(values, Num.Order), (value) => [seen.token, String(value)])
 				)
@@ -181,7 +181,7 @@ export const derivedKeepsItsOrigin = property.explore(int(0, 3), {
 					}),
 					ctx
 				)
-				deepStrictEqual(seen, {
+				assert.deepEqual(seen, {
 					settings: [["serializable", '"$user", public, pg_catalog', "true", "false"]],
 					tables: "2"
 				})
@@ -263,9 +263,9 @@ export const builtOnce = property.explore(int(2, 8), {
 					ctx
 				)
 				const buildsRun = yield* Ref.get(builds)
-				strictEqual(buildsRun, 1)
-				strictEqual(outcome.built, "1")
-				strictEqual(new Set(outcome.names).size, builders)
+				assert.equal(buildsRun, 1)
+				assert.equal(outcome.built, "1")
+				assert.equal(new Set(outcome.names).size, builders)
 			}),
 	oracle: {
 		kind: "specification",
@@ -324,8 +324,8 @@ export const pooledOnce = property.explore(array(boolean, { min: 1, max: 12 }), 
 				)
 				const names = yield* Ref.get(taken)
 				const handedTwice = yield* Ref.get(twice)
-				assertTrue(!handedTwice)
-				strictEqual(new Set(names).size, names.length)
+				assert.ok(!handedTwice)
+				assert.equal(new Set(names).size, names.length)
 			}),
 	oracle: { kind: "specification", name: "a pool hands each clone to one case, never to two" },
 	kept: [],
@@ -371,7 +371,7 @@ export const clonedAsAsked = property.explore(int(0, 50), {
 					),
 					ctx
 				)
-				assertTrue(startedInCase <= 2)
+				assert.ok(startedInCase <= 2)
 			}),
 	oracle: {
 		kind: "specification",
@@ -466,9 +466,9 @@ export const staleCollected = property.explore(int(1, 3), {
 						return { collected, gone, kept }
 					})
 				)
-				assertTrue(Arr.every(outcome.gone, (gone) => gone))
-				assertTrue(outcome.kept)
-				strictEqual(Arr.flatMap(outcome.collected, (member) => member.dropped).length, clones + 1)
+				assert.ok(Arr.every(outcome.gone, (gone) => gone))
+				assert.ok(outcome.kept)
+				assert.equal(Arr.flatMap(outcome.collected, (member) => member.dropped).length, clones + 1)
 			}),
 	oracle: {
 		kind: "specification",
@@ -548,7 +548,7 @@ export const inUseKept = property.exhaust(
 						})
 					)
 					const chain = derived ? "2" : "1"
-					deepStrictEqual(outcome, { built: chain, kept: ended ? "0" : chain, left: "0" })
+					assert.deepEqual(outcome, { built: chain, kept: ended ? "0" : chain, left: "0" })
 				}),
 		oracle: {
 			kind: "specification",
@@ -651,8 +651,8 @@ export const cloneOutlivesNoTemplate = property.exhaust(
 							return { after, left: yield* present }
 						})
 					)
-					assertTrue(outcome.after.template || !outcome.after.clone)
-					deepStrictEqual(outcome.left, { template: false, clone: false })
+					assert.ok(outcome.after.template || !outcome.after.clone)
+					assert.deepEqual(outcome.left, { template: false, clone: false })
 				}),
 		oracle: {
 			kind: "specification",
@@ -705,7 +705,7 @@ export const seatOverUnpopulatedView = property.exhaust(finite(boolean), {
 					),
 					ctx
 				)
-				deepStrictEqual(seen, { left: refreshes, populated: [["false"]] })
+				assert.deepEqual(seen, { left: refreshes, populated: [["false"]] })
 			}),
 	oracle: {
 		kind: "specification",
@@ -793,13 +793,13 @@ export const seatSettles = property.explore(
 						),
 						ctx
 					)
-					strictEqual(Exit.isFailure(outcome.closed), leaks)
-					strictEqual(outcome.between, 0)
-					strictEqual(outcome.again.name !== outcome.first, leaks)
-					deepStrictEqual(outcome.again.items, [["0"]])
-					deepStrictEqual(outcome.again.ledger, [["seed"]])
-					deepStrictEqual(outcome.again.ticket, [["2"]])
-					deepStrictEqual(outcome.again.id, [["1"]])
+					assert.equal(Exit.isFailure(outcome.closed), leaks)
+					assert.equal(outcome.between, 0)
+					assert.equal(outcome.again.name !== outcome.first, leaks)
+					assert.deepEqual(outcome.again.items, [["0"]])
+					assert.deepEqual(outcome.again.ledger, [["seed"]])
+					assert.deepEqual(outcome.again.ticket, [["2"]])
+					assert.deepEqual(outcome.again.id, [["1"]])
 				}),
 		oracle: {
 			kind: "specification",
@@ -860,12 +860,12 @@ export const transactionsRollBack = property.explore(
 						),
 						ctx
 					)
-					strictEqual(Exit.isFailure(outcome.closed), commits)
-					strictEqual(
+					assert.equal(Exit.isFailure(outcome.closed), commits)
+					assert.equal(
 						Exit.match(outcome.closed, { onFailure: Cause.hasDies, onSuccess: () => false }),
 						commits
 					)
-					deepStrictEqual(outcome.items, [["0"]])
+					assert.deepEqual(outcome.items, [["0"]])
 				}),
 		oracle: {
 			kind: "specification",

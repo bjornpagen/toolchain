@@ -85,9 +85,9 @@ export default defineConfig(
 			{
 				files: ["packages/testing/src/assert.ts"],
 				rules: active({
-					/** The assert door keeps @effect/vitest/utils's and chai's signatures, whose message is optional, so a
-					 * test moving off Vitest renames its import's specifier and changes nothing else (TESTSYS, 2026-11-16). */
-					"devtools/no-optional-parameter": "off"
+					/** A boxed primitive is an object of its wrapper class, which no typeof check sees: `matchers.any(String)`
+					 * accepts both, and a pattern compares a boxed one whole. */
+					"unicorn/no-instanceof-builtins": "off"
 				})
 			},
 			{

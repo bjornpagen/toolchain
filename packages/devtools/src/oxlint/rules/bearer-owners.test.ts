@@ -10,7 +10,7 @@
  * Oracle: the specification, the rule's JSDoc: a bearer credential is presented only by its provider's adapter.
  * Features: a template, a concatenation, a call, a statement that is no credential, and a credential in an owner.
  */
-import { deepStrictEqual } from "@bjornpagen/testing/assert"
+import { assert } from "@bjornpagen/testing/assert"
 import { property } from "@bjornpagen/testing/property"
 import { Effect, Option } from "effect"
 import { drawnStatements, judged } from "#oxlint/rules/bearer-owners.fixtures.ts"
@@ -27,7 +27,7 @@ export const bearerCredentialOutsideOwners = property.explore(drawnStatements, {
 	check: (_resources, c) => (drawn) =>
 		Effect.sync(() => {
 			c.note(drawn.statement.kind)
-			deepStrictEqual(judged(drawn), Option.none())
+			assert.deepEqual(judged(drawn), Option.none())
 		}),
 	oracle: {
 		kind: "specification",

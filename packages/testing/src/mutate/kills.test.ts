@@ -9,7 +9,7 @@
  * so the property needs Checkout.dir.
  */
 import { Array as Arr, Effect } from "effect"
-import { deepStrictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { array, element } from "#gen.ts"
 import { Checkout } from "#mutate/checkout.ts"
 import { imagesOf } from "#mutate/image.ts"
@@ -56,7 +56,7 @@ export const killGate = property.explore(
 				const judged = yield* killsOf(pool, { seed: 1, limits: runnerLimits }, checkout, images, [
 					subject
 				])
-				deepStrictEqual(
+				assert.deepEqual(
 					Arr.map(judged, reportOf),
 					Arr.map(gate.kills, (name) => expectedOf(gate, name))
 				)

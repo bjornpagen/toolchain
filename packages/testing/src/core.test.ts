@@ -8,7 +8,7 @@
  * cases from its seed alone.
  */
 import { Array as Arr, Effect, Option, Order } from "effect"
-import { deepStrictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { everyCase, everyValue, fraction, shareOf } from "#chance.fixtures.ts"
 import {
 	busyCounts,
@@ -53,7 +53,7 @@ export const betweenDrawsItsRange = property.explore(seeds, {
 		Effect.sync(() => {
 			const words = wordsOf(seed)
 			const draws = Arr.makeBy(2000, () => between(words, 3, 7))
-			deepStrictEqual(Arr.dedupe(Arr.sort(draws, Order.Number)), [3, 4, 5, 6, 7])
+			assert.deepEqual(Arr.dedupe(Arr.sort(draws, Order.Number)), [3, 4, 5, 6, 7])
 		}),
 	oracle: { kind: "specification", name: "between draws exactly the values of its range" },
 	kept: [],
@@ -75,7 +75,7 @@ export const oneStreamPerSeed = property.explore(seeds, {
 		Effect.sync(() => {
 			const first = wordsOf(seed)
 			const second = wordsOf(seed)
-			deepStrictEqual(
+			assert.deepEqual(
 				Arr.makeBy(64, () => first.next()),
 				Arr.makeBy(64, () => second.next())
 			)
@@ -105,7 +105,7 @@ export const tapeReplaysItsCase = property.explore(seeds, {
 				composite,
 				forcedChooser(original.tape.values, original.tape.length)
 			)
-			deepStrictEqual(replay, original)
+			assert.deepEqual(replay, original)
 		}),
 	oracle: { kind: "universal", name: "round trip: a tape's values replay its case exactly" },
 	kept: [],
@@ -127,7 +127,10 @@ export const tokenCarriesItsValues = property.explore(array(int(0, 2 ** 52), { m
 		Effect.sync(() => {
 			c.note(tapeLengthOf(values))
 			const tape = Float64Array.from(values)
-			deepStrictEqual(Arr.fromIterable(valuesFromToken(tokenOf(tape, tape.length))), values)
+			assert.deepEqual<ReadonlyArray<number>>(
+				Arr.fromIterable(valuesFromToken(tokenOf(tape, tape.length))),
+				values
+			)
 		}),
 	oracle: { kind: "universal", name: "valuesFromToken ∘ tokenOf = id" },
 	kept: [],
@@ -161,7 +164,7 @@ export const replayTokenReadsBack = property.explore(replayTokens, {
 			Effect.gen(function* () {
 				c.noteAll(tokenFeaturesOf(suite, replayed))
 				const replay = yield* replayOf(replayTokenOf(suite, replayed))
-				deepStrictEqual(replay, { suite, replayed })
+				assert.deepEqual(replay, { suite, replayed })
 			}),
 	oracle: { kind: "universal", name: "replayOf ∘ replayTokenOf = id" },
 	kept: [],
@@ -193,7 +196,7 @@ export const replayRunsOutOnSimplest = property.explore(cutTapes, {
 					composite,
 					prefixChooser(original.tape.values, kept, simplestChooser)
 				)
-				deepStrictEqual(
+				assert.deepEqual(
 					{ value: replay.value, status: replay.tape.status },
 					{ value: continued.value, status: whole ? "complete" : "overrun" }
 				)
@@ -226,7 +229,7 @@ export const weightedShares = property.explore(weightLists, {
 			const cases = everyCase(
 				weighted(Arr.map(weights, (weight, at): Weighted<number> => [weight, constant(at)]))
 			)
-			deepStrictEqual(
+			assert.deepEqual(
 				Arr.map(weights, (_weight, at) => shareOf(cases, (drawnAt) => drawnAt === at)),
 				Arr.map(weights, (weight) => fraction(BigInt(weight), BigInt(total)))
 			)
@@ -254,7 +257,7 @@ export const chooserSpreads = property.explore(seededRanges, {
 		() =>
 		({ seed, lo, hi }) =>
 			Effect.sync(() => {
-				deepStrictEqual(
+				assert.deepEqual(
 					[
 						randomChooser(wordsOf(seed)).draw(lo, hi, 0, "uniform"),
 						randomChooser(wordsOf(seed)).draw(lo, hi, 0, "leaning")
@@ -289,7 +292,7 @@ export const enumerationOrder = property.explore(shapeOf(2), {
 			c.noteAll(shapeFeaturesOf(shape, false))
 			const expected = enumerationOf(shape)
 			const size = yield* sizeOf(generatorOf(shape))
-			deepStrictEqual(
+			assert.deepEqual(
 				{ values: everyValue(generatorOf(shape)), size },
 				{ values: expected, size: expected.length }
 			)
@@ -328,7 +331,7 @@ export const countedBesideBusyFibers = property.explore(busyCounts, {
 				],
 				{ concurrency: "unbounded" }
 			)
-			deepStrictEqual(
+			assert.deepEqual(
 				Option.map(counted, (count) => count.cases),
 				Option.some(busy.cases)
 			)
@@ -359,7 +362,7 @@ export const samplingFromSeed = property.explore(seededLengths, {
 		({ seed, length }) =>
 			Effect.sync(() => {
 				const stream = rotatingSeed(seed, floorSeed("sampling"))
-				deepStrictEqual(
+				assert.deepEqual(
 					sample(composite, stream, length),
 					Array.from({ length }, (_, index) => fresh(composite, caseSeed(stream, index)).value)
 				)

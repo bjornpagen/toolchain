@@ -6,7 +6,7 @@
  * statement in the roster (syntax.fixtures.ts).
  */
 import { Array as Arr, Effect, Option } from "effect"
-import { deepStrictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { property } from "#property.ts"
 import { firstRefusedOf, modules, situationsOf, textOf } from "#syntax.fixtures.ts"
 import { syntaxDiagnosticsOf } from "#syntax.ts"
@@ -26,7 +26,7 @@ export const syntaxDiagnostics = property.explore(modules, {
 			const diagnostics = yield* syntaxDiagnosticsOf("/module.ts", textOf(module))
 			const refused = firstRefusedOf(module)
 			const first = Option.map(Arr.head(diagnostics), (diagnostic) => diagnostic.pos)
-			deepStrictEqual(
+			assert.deepEqual(
 				Option.map(first, (pos) =>
 					Option.exists(refused, (lies) => pos >= lies.start && pos <= lies.end)
 				),

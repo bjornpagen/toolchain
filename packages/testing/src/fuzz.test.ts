@@ -3,7 +3,7 @@
  * or hours, every count of 1 to 3 in each unit. Oracle: the specification, Go's grammar.
  */
 import { Effect } from "effect"
-import { deepStrictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { DURATIONS, fuzzTimes } from "#fuzz.fixtures.ts"
 import { budgetOf } from "#fuzz.ts"
 import { finite } from "#gen.ts"
@@ -17,7 +17,7 @@ export const goFuzzTime = property.exhaust(finite(fuzzTimes), {
 		() =>
 		([count, unit]) =>
 			Effect.sync(() =>
-				deepStrictEqual(
+				assert.deepEqual(
 					budgetOf(`${count}${unit}`),
 					unit === "x"
 						? { kind: "cases", cases: count }

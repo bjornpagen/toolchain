@@ -33,7 +33,7 @@
  * Oracles are stated per property.
  */
 import { Array as Arr, Effect, Option, Order } from "effect"
-import { deepStrictEqual, strictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { boolean, characterOf, int, string } from "#gen.ts"
 import { type Case, property, ReplayToken } from "#property.ts"
 import { replayTokenOf } from "#replay.ts"
@@ -144,7 +144,7 @@ export const streams = property.explore(
 					},
 					width: shape.width
 				})
-				deepStrictEqual(
+				assert.deepEqual(
 					verdict.kind === "explored"
 						? Option.some({
 								cases: verdict.cases,
@@ -221,7 +221,7 @@ export const seriesPerWorker = property.explore(
 					limits,
 					width: shape.width
 				})
-				deepStrictEqual(
+				assert.deepEqual(
 					{
 						explored: cutsKey(explored.cuts),
 						exploredCases: explored.verdict.kind === "explored" ? explored.verdict.cases : -1,
@@ -284,19 +284,19 @@ export const batchedWindows = property.explore(batchedShapes, {
 			const { verdict, sent } = yield* evaluationsAt(split.property, run)
 			const once = yield* searchedAt(whole.property, run)
 			const larger = Arr.filter(split.checked(), (size) => size > group)
-			deepStrictEqual(
+			assert.deepEqual(
 				larger,
 				[],
 				`no batch holds more than ⌈${shape.window} / ${shape.batches}⌉ cases`
 			)
 			if (Arr.isReadonlyArrayNonEmpty(shape.kept)) {
-				deepStrictEqual(Arr.head(sent), Option.some(cutOf(shape.kept.length, group)))
+				assert.deepEqual(Arr.head(sent), Option.some(cutOf(shape.kept.length, group)))
 			}
 			const summary = (v: typeof verdict) => ({
 				kind: verdictKind(v),
 				cases: v.kind === "explored" ? v.cases : -1
 			})
-			deepStrictEqual(summary(verdict), summary(once))
+			assert.deepEqual(summary(verdict), summary(once))
 			if (split.checked().length > whole.checked().length) {
 				c.note("a window checked in several batches")
 			}
@@ -349,7 +349,7 @@ export const shrunkDraws = property.explore(
 						),
 						{ onNone: () => Effect.succeedNone, onSome: tokenValues }
 					)
-					deepStrictEqual(values, Option.some([0, threshold]))
+					assert.deepEqual(values, Option.some([0, threshold]))
 				}),
 		oracle: {
 			kind: "specification",
@@ -387,7 +387,7 @@ export const staleReplays = property.explore(
 						{ ...fullRun(id, seed), width },
 						replayTokenOf(id, replayed)
 					)
-					strictEqual(verdictKind(verdict), "stale")
+					assert.equal(verdictKind(verdict), "stale")
 				}),
 		oracle: {
 			kind: "specification",
@@ -426,7 +426,7 @@ export const keptNeverWitnesses = property.explore(
 						]),
 						{ ...fullRun(id, seed), limits: { ...runnerLimits, steered: 0 }, width }
 					)
-					deepStrictEqual(unreachedOf(verdict), Option.some(["rare"]))
+					assert.deepEqual(unreachedOf(verdict), Option.some(["rare"]))
 				}),
 		oracle: {
 			kind: "specification",
@@ -455,7 +455,7 @@ export const keptDrawsPrinted = property.explore(
 						rareDraw([keptOf(id, { drawn: { kind: "unsteered" }, values: [value, draw] })]),
 						fullRun(id, seed)
 					)
-					deepStrictEqual(
+					assert.deepEqual(
 						shownOf(verdict),
 						Option.some({
 							phase: "kept",
@@ -501,7 +501,7 @@ export const keptStale = property.explore(
 						rareDraw([keptOf(id, { drawn: { kind: "unsteered" }, values })]),
 						fullRun(id, seed)
 					)
-					deepStrictEqual(staleOf(verdict), Option.some("kept"))
+					assert.deepEqual(staleOf(verdict), Option.some("kept"))
 				}),
 		oracle: {
 			kind: "specification",
@@ -541,7 +541,7 @@ export const keptObservations = property.explore(
 						observing(decided, [keptOf(id, { drawn: { kind: "unsteered" }, values: [value] })]),
 						fullRun(id, seed)
 					)
-					strictEqual(verdictKind(verdict), "explored")
+					assert.equal(verdictKind(verdict), "explored")
 				}),
 		oracle: {
 			kind: "specification",
@@ -599,7 +599,7 @@ export const steeringPhases = property.explore(
 				if (shape.floor > shape.window) {
 					c.note("a floor past its first window")
 				}
-				deepStrictEqual(inner.aims, [
+				assert.deepEqual(inner.aims, [
 					false,
 					...copiesOf(true, aimedFloor),
 					...copiesOf(false, shape.floor - aimedFloor),
@@ -622,7 +622,7 @@ export const steeringPhases = property.explore(
 					),
 					{ onNone: () => Effect.succeedNone, onSome: tokenDrawn }
 				)
-				deepStrictEqual(drawn, Option.some({ kind: "unsteered" }))
+				assert.deepEqual(drawn, Option.some({ kind: "unsteered" }))
 			}),
 		oracle: {
 			kind: "specification",
@@ -653,7 +653,7 @@ export const rotatingSeries = property.explore(streamedShapes, {
 			if (shape.width > 1 && shape.runs > shape.window) {
 				c.note("several series at once")
 			}
-			deepStrictEqual(
+			assert.deepEqual(
 				verdict.kind === "explored"
 					? {
 							kind: "explored",
@@ -744,7 +744,7 @@ export const exhaustsEverything = property.explore(
 					...fullRun(id, 0),
 					width: shape.width
 				})
-				deepStrictEqual(
+				assert.deepEqual(
 					{
 						cases: exhausted.kind === "exhausted" ? exhausted.cases : -1,
 						ran: pairs.ran(),
@@ -759,7 +759,7 @@ export const exhaustsEverything = property.explore(
 					limits: { ...runnerLimits, deadline: shape.deadline },
 					width: shape.width
 				})
-				deepStrictEqual(
+				assert.deepEqual(
 					{ verdict: verdictKind(counted), ran: uncounted.ran() },
 					{ verdict: "uncountable", ran: 0 }
 				)
@@ -798,7 +798,7 @@ export const exhaustAtAnyWidth = property.explore(widthSketches, {
 				...fullRun(id, 0),
 				width: sketch.width
 			})
-			deepStrictEqual(many, one)
+			assert.deepEqual(many, one)
 			k.note(one.kind === "exhausted" ? "exhausted" : "falsified")
 			if (sketch.failing.length > 1) {
 				k.note("several failing values")
@@ -820,20 +820,20 @@ export const coverageVerdict = property.explore(verdictSketches, {
 			const [first, second] = sketch.runs
 			const one = yield* witnessRun(sketch, first)
 			const other = yield* witnessRun(sketch, second)
-			deepStrictEqual(other, one)
+			assert.deepEqual(other, one)
 			const limits = witnessLimits(sketch.budget)
 			const verdict = one.verdict
 			switch (floorDecides(sketch)) {
 				case "met":
 					c.note("met by the floor")
-					deepStrictEqual(
+					assert.deepEqual(
 						verdict.kind === "explored" ? Option.some(verdict.steered) : Option.none(),
 						Option.some(0)
 					)
 					break
 				case "unreachable":
 					c.note("unreachable")
-					deepStrictEqual(
+					assert.deepEqual(
 						findingOf(verdict),
 						Option.some({
 							kind: "unreached",
@@ -844,7 +844,7 @@ export const coverageVerdict = property.explore(verdictSketches, {
 					break
 				case "steered":
 					c.note("left to the steered phase")
-					deepStrictEqual(
+					assert.deepEqual(
 						verdict.kind === "explored"
 							? verdict.steered >= 1 && verdict.steered <= sketch.budget
 							: Option.exists(
@@ -884,7 +884,7 @@ export const aimedCase = property.explore(aimedSketches, {
 			const run = { ...fullRun(sketch.label, 0), width: sketch.width }
 			const printed = printedNumber(sketch.aimedAt)
 			const found = yield* searchedAt(aimedSearch(sketch, []), run)
-			deepStrictEqual(shownOf(found), Option.some({ phase: "floor", printed }))
+			assert.deepEqual(shownOf(found), Option.some({ phase: "floor", printed }))
 			const failed = falsifiedOf(found)
 			if (Option.isNone(failed)) {
 				return
@@ -897,9 +897,12 @@ export const aimedCase = property.explore(aimedSketches, {
 				]),
 				run
 			)
-			deepStrictEqual(
+			assert.deepEqual(
 				[shownOf(replayed), shownOf(kept)],
-				[Option.some({ phase: "replayed", printed }), Option.some({ phase: "kept", printed })]
+				[
+					Option.some({ phase: "replayed" as const, printed }),
+					Option.some({ phase: "kept" as const, printed })
+				]
 			)
 		}),
 	oracle: {
@@ -931,15 +934,15 @@ export const steeredCase = property.explore(steeredSketches, {
 			}
 			const everyOne = { kind: "drawn", value: Arr.join(situations, " "), draws: [] } as const
 			const found = yield* searchedAt(steeredSearch(situations), run)
-			deepStrictEqual(shownOf(found), Option.some({ phase: "floor", printed: everyOne }))
+			assert.deepEqual(shownOf(found), Option.some({ phase: "floor", printed: everyOne }))
 			const token = yield* Option.match(falsifiedOf(found), {
 				onNone: () => Effect.die("the steered search's floor case did not fail"),
 				onSome: (failed) => Effect.succeed(failed.token)
 			})
 			const replayed = yield* replayedAt(steeredSearch(situations), run, token)
-			deepStrictEqual(shownOf(replayed), Option.some({ phase: "replayed", printed: everyOne }))
+			assert.deepEqual(shownOf(replayed), Option.some({ phase: "replayed", printed: everyOne }))
 			const aimedFound = yield* searchedAt(aimedOneSearch(situations), run)
-			deepStrictEqual(
+			assert.deepEqual(
 				Option.map(unreachedOf(aimedFound), (missing) => missing.length),
 				Option.some(situations.length - 1)
 			)
@@ -973,7 +976,7 @@ export const replayFidelity = property.explore(fidelitySketches, {
 				fidelityRun(sketch, { seed: first.seed, width: second.width })
 			)
 			const failure = caseOf(found)
-			deepStrictEqual(caseOf(atOtherWidth), failure)
+			assert.deepEqual(caseOf(atOtherWidth), failure)
 			if (Option.isNone(failure)) {
 				return
 			}
@@ -984,7 +987,7 @@ export const replayFidelity = property.explore(fidelitySketches, {
 					inner,
 					fidelityRun(sketch, { seed: second.seed, width: first.width })
 				)
-				deepStrictEqual(caseOf(atOtherSeed), failure)
+				assert.deepEqual(caseOf(atOtherSeed), failure)
 			}
 			const replayed = yield* replayedAt(inner, fidelityRun(sketch, second), token)
 			const kept = yield* searchedAt(
@@ -993,7 +996,7 @@ export const replayFidelity = property.explore(fidelitySketches, {
 				]),
 				fidelityRun(sketch, second)
 			)
-			deepStrictEqual(
+			assert.deepEqual(
 				[caseOf(replayed), caseOf(kept)],
 				[Option.some(["replayed", token] as const), Option.some(["kept", token] as const)]
 			)
@@ -1046,7 +1049,7 @@ export const ownBudget = property.explore(
 				const run = { ...fullRun("own budget/inner", shape.seed), width: shape.width }
 				const unreached = yield* searchedAt(inner, run)
 				const passed = yield* searchedAt(passingInner, run)
-				deepStrictEqual(
+				assert.deepEqual(
 					{
 						witnessed: Option.map(findingOf(unreached), (finding) =>
 							finding.kind === "unreached" && finding.witnessed.kind === "streams"

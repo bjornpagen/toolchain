@@ -17,7 +17,7 @@ import {
 	String as Str
 } from "effect"
 import { ChildProcess } from "effect/process"
-import { deepStrictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { array, boolean, finite } from "#gen.ts"
 import {
 	childText,
@@ -78,7 +78,7 @@ export const ranSpans = property.explore(
 				const map = coverageMapOf([{ property: "the script", files: new Map([[file, spans]]) }])
 				const places = Array.from({ length: end + 2 }, (_, place) => place)
 				const byHand = Arr.filter(places, (place) => ranByHand(all, place))
-				deepStrictEqual(
+				assert.deepEqual(
 					{
 						ran: Arr.filter(places, (place) => inSpans(spans, place)),
 						covered: Arr.filter(places, (place) => map.covering(file, place).length > 0),
@@ -146,7 +146,7 @@ export const realProcessCoverage = property.exhaust(
 					Option.map(Str.indexOf(text)(moduleText), (place) =>
 						Arr.copy(map.covering(target, place))
 					)
-				deepStrictEqual(
+				assert.deepEqual(
 					{
 						touching: Arr.copy(map.touching(target)),
 						topLevel: ranAt("marker"),
@@ -199,7 +199,7 @@ export const lostCoverage = property.exhaust(finite(lostGen), {
 			}
 			yield* Effect.exit(handle.exitCode)
 			const read = yield* Effect.result(ranIn("the process", dumps, []))
-			deepStrictEqual(
+			assert.deepEqual(
 				read._tag === "Failure" && Schema.is(CoverageLost)(read.failure)
 					? Option.some(Arr.copy(read.failure.processes))
 					: Option.none(),

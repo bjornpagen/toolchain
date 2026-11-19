@@ -5,7 +5,7 @@
  * than linearly in its answers' size (over sizes 2h, 4h and 6h, the second step costs no more than the first).
  */
 import { Array as Arr, Effect, Option, Order } from "effect"
-import { assertTrue } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { element, finite, int, shuffled } from "#gen.ts"
 import { answersOf, CHANGES, distinct, ITEMS, sameItems, spentAt } from "#oracle.fixtures.ts"
 import { exact, set, structuralHash } from "#oracle.ts"
@@ -36,7 +36,7 @@ export const setComparison = property.exhaust(
 						distinct(first) &&
 						distinct(second) &&
 						sameItems(Arr.sort(first, Order.String), Arr.sort(second, Order.String))
-					assertTrue(
+					assert.ok(
 						agreed === same,
 						`the comparison ${agreed ? "agreed" : "disagreed"}, and the sides ${same ? "hold" : "do not hold"} the same items once each`
 					)
@@ -78,7 +78,7 @@ export const setComparisonCost = property.explore(
 					const [first, second, third] = Arr.map([1, 2, 3], (k) =>
 						spentAt(2 * k * half, change, k * at, k * rotate)
 					)
-					assertTrue(
+					assert.ok(
 						(third ?? 0) - (second ?? 0) <= (second ?? 0) - (first ?? 0),
 						`${first}, ${second} and ${third} comparisons and keys at ${2 * half}, ${4 * half} and ${6 * half} items`
 					)

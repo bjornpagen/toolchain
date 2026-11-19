@@ -8,7 +8,7 @@
  * argument in the roster.
  */
 import { Array as Arr, Effect } from "effect"
-import { deepStrictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { property } from "#property.ts"
 import { Scratch } from "#resources/scratch.ts"
 import {
@@ -46,7 +46,7 @@ export const namedArguments = property.explore(selections, {
 						(package_) => package_.discovered
 					)
 				)
-				deepStrictEqual(loadedOf(loaded), expectedOf(selection))
+				assert.deepEqual(loadedOf(loaded), expectedOf(selection))
 			}),
 	oracle: {
 		kind: "specification",

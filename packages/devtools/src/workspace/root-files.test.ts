@@ -13,7 +13,7 @@
  * package's file, a file of another kind, a glob in the include, a root lint script, another lint script, no lint
  * script.
  */
-import { deepStrictEqual } from "@bjornpagen/testing/assert"
+import { assert } from "@bjornpagen/testing/assert"
 import { property } from "@bjornpagen/testing/property"
 import { Effect } from "effect"
 import { expectedOf, featuresOf, outcomeOf, repositories } from "#workspace/root-files.fixtures.ts"
@@ -35,7 +35,7 @@ export const rootFileFindingsOf = property.explore(repositories, {
 		Effect.gen(function* () {
 			c.noteAll(featuresOf(repository))
 			const outcome = yield* outcomeOf(repository)
-			deepStrictEqual(outcome, expectedOf(repository))
+			assert.deepEqual(outcome, expectedOf(repository))
 		}),
 	oracle: {
 		kind: "specification",

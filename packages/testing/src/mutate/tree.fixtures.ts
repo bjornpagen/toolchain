@@ -9,7 +9,7 @@ import {
 	Stream
 } from "effect"
 import { ChildProcess } from "effect/process"
-import { deepStrictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { array, boolean, element, type Gen } from "#gen.ts"
 import type { RealPath } from "#mutate/mutated.ts"
 
@@ -85,7 +85,10 @@ const git = (directory: string, args: ReadonlyArray<string>) =>
 				[Stream.runDrain(handle.stdout), Stream.runDrain(handle.stderr), handle.exitCode],
 				{ concurrency: "unbounded" }
 			)
-			deepStrictEqual({ git: args, code }, { git: args, code: 0 })
+			assert.deepEqual<{ git: ReadonlyArray<string>; code: number }>(
+				{ git: args, code },
+				{ git: args, code: 0 }
+			)
 		})
 	)
 

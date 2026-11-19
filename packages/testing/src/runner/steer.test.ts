@@ -15,7 +15,7 @@
  * runner/search.test.ts's coverage verdict.
  */
 import { Effect, Option } from "effect"
-import { deepStrictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { property } from "#property.ts"
 import { fullRun, searchedAt, unreachedOf, verdictKind } from "#runner/search.fixtures.ts"
 import {
@@ -42,7 +42,7 @@ export const climbs = property.explore(magics, {
 				reach: "witnesses",
 				limits: steeredBy(Number.POSITIVE_INFINITY)
 			})
-			deepStrictEqual(
+			assert.deepEqual(
 				{ blind: unreachedOf(blind), steered: verdictKind(steered) },
 				{ blind: Option.some(["5 matched"]), steered: "explored" }
 			)

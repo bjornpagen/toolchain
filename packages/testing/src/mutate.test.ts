@@ -3,7 +3,7 @@
  * decision's range. Oracle: stated in the property.
  */
 import { Array as Arr, Effect, Option } from "effect"
-import { assertTrue, deepStrictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { lengthsOf, seeds, structured, tapeOf, withinRanges } from "#mutate.fixtures.ts"
 import { mutate } from "#mutate.ts"
 import { property } from "#property.ts"
@@ -25,11 +25,11 @@ export const tapeMutation = property.explore(seeds, {
 				const donorTape = tapeOf(donor)
 				const mutant = mutate(seedTape, Option.some(donorTape), wordsOf(words))
 				const again = mutate(seedTape, Option.some(donorTape), wordsOf(words))
-				deepStrictEqual(
+				assert.deepEqual(
 					Arr.fromIterable(again.values.subarray(0, again.length)),
 					Arr.fromIterable(mutant.values.subarray(0, mutant.length))
 				)
-				assertTrue(
+				assert.ok(
 					lengthsOf(seedTape, donorTape).has(mutant.length),
 					`a mutant of ${mutant.length} decisions, of a seed of ${seedTape.length}`
 				)
@@ -38,7 +38,7 @@ export const tapeMutation = property.explore(seeds, {
 					structured,
 					prefixChooser(mutant.values, mutant.length, randomChooser(wordsOf(words)))
 				).tape
-				assertTrue(withinRanges(replayed), "every replayed decision within its range")
+				assert.ok(withinRanges(replayed), "every replayed decision within its range")
 			}),
 	oracle: { kind: "specification", name: "the mutator's edits and every decision's range" },
 	kept: [],

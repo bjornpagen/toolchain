@@ -1,5 +1,5 @@
 import { Array as Arr, Effect, Option } from "effect"
-import { assertTrue } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { everyCase } from "#chance.fixtures.ts"
 import { array, boolean, element, type Gen, int, map, oneOf, span, weighted } from "#gen.ts"
 import {
@@ -544,7 +544,7 @@ const generatorOf = (
 		case "leaf":
 			return map(int(0, form.top), (leaf) => {
 				leaves.push(leaf)
-				assertTrue(!stops(leaves), "the case fails inside its draw")
+				assert.ok(!stops(leaves), "the case fails inside its draw")
 			})
 		case "list":
 			return array(generatorOf(form.item, leaves, stops), { min: form.min, max: form.max })

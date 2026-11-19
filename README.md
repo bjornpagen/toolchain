@@ -14,6 +14,34 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: one assertion vocabulary (2026-11-19)
+
+`@bjornpagen/testing/assert` speaks one vocabulary, grizzle's (UNIFY's census, row 12), where it spoke
+@effect/vitest/utils's names beside chai's `assert`: `assert.{ok, equal, notEqual, deepEqual, notDeepEqual, match,
+doesNotMatch, throws, throwsAny, rejects, fail}`; the matchers (`matchers`, `like`, `matchesObject`, `containsEqual`);
+the collections (`contains`, `lacks` over an array or a set, `containsText`, `lacksText`, `unorderedEqual`); the narrowers
+that return their value (`defined`, `nonEmpty`, `assertVariant`, `assertNot`) and `deepEquals`; `failureOf`; and
+`assertionFailed`, which a repository's own assertions fail through. Every expected value is typed by the actual one
+(`NoInfer<T>`) and a reason is a trailing `...why: Why` tuple, never an optional parameter. Before you move
+`vendor/toolchain` past this section:
+
+1. **Rename every call.** `deepStrictEqual(a, b)` is `assert.deepEqual(a, b)`, `strictEqual` `assert.equal`,
+   `assertTrue(x)` `assert.ok(x)`, `assertFalse(x)` `assert.equal(x, false)`, `assertSome(o, v)`
+   `assert.deepEqual(o, Option.some(v))`, `assertNone(o)` `assert.deepEqual(o, Option.none())`, `assertInstanceOf(v, C)`
+   `assert.ok(v instanceof C)`, `assertExitSuccess(e, v)` `assert.deepEqual(e, Exit.succeed(v))`, `fail(m)`
+   `assert.fail(m)`; chai's `assert.deepStrictEqual` `assert.deepEqual`, `assert.strictEqual` `assert.equal`,
+   `assert.isTrue(x)` `assert.ok(x)`, `assert.isFalse(x)` `assert.equal(x, false)`, `assert.isDefined` `defined`,
+   `assert.isAtMost(a, b)` `assert.ok(a <= b)` (and isAtLeast, isAbove, isBelow), `assert.lengthOf(x, n)`
+   `assert.equal(x.length, n)`, `assert.notMatch` `assert.doesNotMatch`, `assert.include` on a text `containsText` and on
+   a list `contains`; `assertSameMembers`, `sameMembers` and `sameDeepMembers` are `unorderedEqual`, which refuses a
+   repeated element: a comparison of lists that hold repeats sorts both sides first.
+2. **State a comparison's type where its sides differ.** An expected value no longer widens the comparison: a brand
+   against its base type, a mutable array against a readonly one, a literal widened to `string` is a type error. Give
+   the comparison its type (`assert.deepEqual<ReadonlyArray<string>>(...)`, `assert.deepEqual<typeof expected>(...)`)
+   or pin the literal (`Option.some("unopened" as const)`).
+3. **grizzle** keeps its own assertions, those that read its types (succeeded, refused, throwsDefect and the rest), in
+   test/support/assert.ts, built on `assertionFailed` and `Why`; everything else it imports from the door.
+
 ## Consumer migration: a check that every test module loads (2026-11-19)
 
 `toolchain-test load` loads every test module a package's runner config includes, each apart in a process of its own

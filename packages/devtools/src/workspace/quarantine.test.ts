@@ -13,7 +13,7 @@
  * a quarantine at no package's root, an unreadable list, an exemption of a quarantined module, an exemption of another,
  * a root commit; and, for the list, an empty one, several entries, a comment, an entry holding a list's punctuation.
  */
-import { deepStrictEqual } from "@bjornpagen/testing/assert"
+import { assert } from "@bjornpagen/testing/assert"
 import { property } from "@bjornpagen/testing/property"
 import { Effect, Result } from "effect"
 import {
@@ -44,7 +44,7 @@ export const commitFindings = property.explore(commits, {
 	check: (_resources, c) => (commit) =>
 		Effect.sync(() => {
 			c.noteAll(featuresOf(commit))
-			deepStrictEqual(findingsOf(commit), expectedOf(commit))
+			assert.deepEqual(findingsOf(commit), expectedOf(commit))
 		}),
 	oracle: {
 		kind: "specification",
@@ -66,7 +66,7 @@ export const listReadBack = property.explore(lists, {
 	check: (_resources, c) => (list) =>
 		Effect.sync(() => {
 			c.noteAll(writtenOf(list))
-			deepStrictEqual(
+			assert.deepEqual(
 				includedOf(textOf(list.entries, list.commented)),
 				Result.succeed(list.entries)
 			)

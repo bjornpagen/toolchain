@@ -13,7 +13,7 @@
  * stated in the property.
  */
 import { Array as Arr, Effect, Option, String as Str } from "effect"
-import { deepStrictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import {
 	BODY_SITUATIONS,
 	bodyAims,
@@ -46,7 +46,7 @@ export const watchdog = property.explore(aimed(settlingRuns, bodyAims), {
 				c.note(`a body that ${planted.body}`)
 				if (!runsAway(planted.body)) {
 					const ending = yield* settledHere(planted, seed)
-					deepStrictEqual(Option.some(ending), endingOf(planted))
+					assert.deepEqual<Option.Option<string>>(Option.some(ending), endingOf(planted))
 					return
 				}
 				const dir = yield* checkout
@@ -56,7 +56,7 @@ export const watchdog = property.explore(aimed(settlingRuns, bodyAims), {
 					onSome: (found) => replayOf(found)
 				})
 				const moment = planted.deadlineMillis + watchdogGraceMillis
-				deepStrictEqual(
+				assert.deepEqual(
 					{
 						ending: ran.ending,
 						exitCode: ran.exitCode,
@@ -145,13 +145,13 @@ export const answersBlockedPastAMoment = property.explore(inFlights, {
 			const now = 1_800_000_000_000
 			const answer = answerOf(watchedAt(inFlight, now), now)
 			const indices = Arr.map(inFlight, (_one, index) => index)
-			deepStrictEqual(
+			assert.deepEqual(
 				{
 					kind: answer.kind,
 					named:
 						answer.kind === "blocked"
 							? Arr.filter(indices, (index) => Str.includes(reportAt(index))(answer.report))
-							: [],
+							: Arr.empty<number>(),
 					alone:
 						answer.kind === "blocked" && inFlight.length === 1
 							? Option.some(answer.report)

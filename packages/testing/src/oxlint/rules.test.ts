@@ -11,7 +11,7 @@
  * here. Situations, required for every rule: a site reported, a site left alone, and a program of several sites.
  */
 import { Array as Arr, Effect, Option } from "effect"
-import { deepStrictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { placesIn } from "#mutants.fixtures.ts"
 import {
 	booleanSites,
@@ -228,7 +228,7 @@ export const noStaleKill = property.explore(staleKillCases, {
 				staleKillCase,
 				(kill) => !kill.held || places(kill) !== 1
 			)
-			deepStrictEqual(judged, Option.none())
+			assert.deepEqual(judged, Option.none())
 		}),
 	oracle: {
 		kind: "second-implementation",

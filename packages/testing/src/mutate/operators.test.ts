@@ -10,7 +10,7 @@
  * Checkout.dir.
  */
 import { Array as Arr, Effect, Order, Schema } from "effect"
-import { deepStrictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { array, element } from "#gen.ts"
 import { noFamilies, OPERATORS } from "#mutants.ts"
 import { Checkout } from "#mutate/checkout.ts"
@@ -90,7 +90,7 @@ export const operatorMutation = property.explore(
 					if (run.judged.stale === "this file") {
 						c.note("a stale judgment refused")
 					}
-					deepStrictEqual(
+					assert.deepEqual(
 						{ refused: Schema.is(MutationRefused)(measured.failure), expected: refuses },
 						{ refused: true, expected: true }
 					)
@@ -101,7 +101,7 @@ export const operatorMutation = property.explore(
 				if (run.judged.stale === "another file") {
 					c.note("another file's judgment unread")
 				}
-				deepStrictEqual(
+				assert.deepEqual(
 					{
 						refused: false,
 						population: Arr.sort(

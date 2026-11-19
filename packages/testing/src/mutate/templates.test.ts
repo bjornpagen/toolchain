@@ -10,7 +10,7 @@
  * run in a worker tree. Oracle: the specification, stated in the check.
  */
 import { Array as Arr, Effect, FileSystem, Option, Schema } from "effect"
-import { deepStrictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { Checkout } from "#mutate/checkout.ts"
 import { imagesOf } from "#mutate/image.ts"
 import { realPathOf } from "#mutate/mutated.ts"
@@ -91,7 +91,7 @@ export const trialTemplatesApart = property.exhaust(runPairs, {
 								[markedCase(runnerLimits.deadline, runnerLimits.open)],
 								() => true
 							)
-							deepStrictEqual(
+							assert.deepEqual(
 								Arr.map(Arr.flatten(results), (result) => result.outcome),
 								[
 									{
@@ -114,7 +114,7 @@ export const trialTemplatesApart = property.exhaust(runPairs, {
 					),
 					ctx
 				)
-				deepStrictEqual(
+				assert.deepEqual(
 					{
 						marks: Arr.map(opened, (run) => ({ loaded: run.loaded, built: run.built })),
 						oneTemplate: Arr.dedupe(Arr.map(opened, (run) => run.template)).length === 1

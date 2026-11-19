@@ -10,7 +10,7 @@
  *   earlier, over every sequence of up to 5 cases. Oracle: the identity, by exact enumeration.
  */
 import { Array as Arr, Effect, Option } from "effect"
-import { assertTrue, deepStrictEqual, strictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { fraction, plus, times } from "#chance.fixtures.ts"
 import {
 	BOUND_RUNS,
@@ -67,7 +67,7 @@ export const residualCounts = property.explore(notedCases, {
 						: "seen once"
 			)
 			const residual = residualOf(tally.tally())
-			deepStrictEqual(
+			assert.deepEqual(
 				{
 					cases: residual.cases,
 					observed: residual.observed,
@@ -110,7 +110,7 @@ export const residualBound = property.exhaust(finite(weightings), {
 	check: () => (weights) =>
 		Effect.sync(() => {
 			for (const [at, missed] of missesOf(weights, BOUND_RUNS).entries()) {
-				assertTrue(
+				assert.ok(
 					missed <= RISK_BOUND_MISS,
 					`after ${at + 1} cases the bound is exceeded with chance ${missed}`
 				)
@@ -154,7 +154,7 @@ export const goodTuring = property.exhaust(
 								tally.add(new Set([Arr.getUnsafe(NOTED, situation)]))
 							}
 							const { risk } = residualOf(tally.tally())
-							strictEqual(risk.kind, "estimated", "every case notes a situation")
+							assert.equal(risk.kind, "estimated", "every case notes a situation")
 							const estimate = risk.kind === "estimated" ? risk.estimate : Number.NaN
 							return plus(sum, times(chance, fraction(BigInt(Math.round(estimate * n)), BigInt(n))))
 						}
@@ -178,7 +178,7 @@ export const goodTuring = property.exhaust(
 								)
 							)
 					)
-					deepStrictEqual(expectedRisk, missingMass)
+					assert.deepEqual(expectedRisk, missingMass)
 				}),
 		oracle: {
 			kind: "universal",

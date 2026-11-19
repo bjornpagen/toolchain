@@ -9,7 +9,7 @@
  * Oracle: the specification, the rule's JSDoc read over the tag and headers its module exports (PLANT_TAG,
  * PLANT_HEADERS). Features: a tag cited, a prose header cited, a comment that cites none, a program of several comments.
  */
-import { deepStrictEqual } from "@bjornpagen/testing/assert"
+import { assert } from "@bjornpagen/testing/assert"
 import { property } from "@bjornpagen/testing/property"
 import { Effect, Option } from "effect"
 import { featuresOf, judged, programs } from "#oxlint/rules/no-plant.fixtures.ts"
@@ -26,7 +26,7 @@ export const plantCitations = property.explore(programs, {
 	check: (_resources, c) => (program) =>
 		Effect.sync(() => {
 			c.noteAll(featuresOf(program))
-			deepStrictEqual(judged(program), Option.none())
+			assert.deepEqual(judged(program), Option.none())
 		}),
 	oracle: {
 		kind: "specification",

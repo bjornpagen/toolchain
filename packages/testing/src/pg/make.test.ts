@@ -19,7 +19,7 @@ import {
 	Schema,
 	Struct
 } from "effect"
-import { assertTrue, deepStrictEqual, strictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { doctor } from "#pg/doctor.ts"
 import {
 	admittedOf,
@@ -78,13 +78,13 @@ export const lifeOfACluster = property.exhaust(lives, {
 			const inCase = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
 				Effect.provideService(effect, ConfigProvider.ConfigProvider, environment)
 			const unmade = madeSynchronously(spec, environment)
-			assertTrue(
+			assert.ok(
 				Exit.isFailure(unmade) && Exit.hasFails(unmade),
 				"an unmade cluster's members are refused"
 			)
-			deepStrictEqual(
+			assert.deepEqual(
 				Option.map(Exit.findErrorOption(unmade), (error) => error._tag),
-				Option.some("ClusterUnmade"),
+				Option.some("ClusterUnmade" as const),
 				"an unmade cluster's members are refused as unmade"
 			)
 			const brought = yield* inCase(
@@ -98,20 +98,20 @@ export const lifeOfACluster = property.exhaust(lives, {
 				Schema.decodeEffect(ManifestFile)
 			)
 			const ports = Arr.map(Arr.headNonEmpty(brought), (member) => member.port)
-			strictEqual(ports.length, membersOfLife(life), "the family has the members its spec asks")
-			strictEqual(ports[0], port, "its first member is its name's")
-			strictEqual(new Set(ports).size, ports.length, "each member is on a port of its own")
-			deepStrictEqual(manifest.members, ports, "the manifest records the members in member order")
+			assert.equal(ports.length, membersOfLife(life), "the family has the members its spec asks")
+			assert.equal(ports[0], port, "its first member is its name's")
+			assert.equal(new Set(ports).size, ports.length, "each member is on a port of its own")
+			assert.deepEqual(manifest.members, ports, "the manifest records the members in member order")
 			Arr.forEach(brought, (members) => {
-				deepStrictEqual(
+				assert.deepEqual(
 					Arr.map(members, (member) => member.port),
 					ports,
 					"every bring-up at once reaches the one cluster"
 				)
 			})
 			const made = madeSynchronously(spec, environment)
-			assertTrue(Exit.isSuccess(made), "a made cluster's members are read synchronously")
-			deepStrictEqual(
+			assert.ok(Exit.isSuccess(made), "a made cluster's members are read synchronously")
+			assert.deepEqual(
 				Arr.map(made.value, (member) => ({
 					name: member.name,
 					port: member.port,
@@ -136,7 +136,7 @@ export const lifeOfACluster = property.exhaust(lives, {
 			)
 			const checked = yield* inCase(doctor(spec, true))
 			Arr.forEach(checked, ({ port: member, verdicts }) => {
-				deepStrictEqual(
+				assert.deepEqual(
 					Arr.filter(verdicts, (verdict) => verdict.kind === "failed"),
 					[],
 					`member ${member} passes the doctor's quick checks`
@@ -155,7 +155,7 @@ export const lifeOfACluster = property.exhaust(lives, {
 					{ cluster: port, doing: "reading the connections a member admits" }
 				)
 			)
-			deepStrictEqual(
+			assert.deepEqual(
 				admitted,
 				Arr.map(ports, () => [`${admittedOf(life)}`]),
 				`every member admits the connections its sizing states (${life.sizedBy.kind})`
@@ -163,14 +163,14 @@ export const lifeOfACluster = property.exhaust(lives, {
 			const before = yield* postmasters(root, ports)
 			const spawned = yield* clusterUp(spec).pipe(inCase, spawnedBy)
 			const after = yield* postmasters(root, ports)
-			deepStrictEqual(after, before, "a running cluster is taken as it is")
-			deepStrictEqual(
+			assert.deepEqual(after, before, "a running cluster is taken as it is")
+			assert.deepEqual(
 				Arr.filter(spawned, (program) => Arr.contains(TAKING_WORK, program)),
 				[],
 				"a running cluster is taken with no lock taken and no member's program run"
 			)
 			const other = yield* Effect.exit(inCase(clusterUp(specOf(life, port, "another_owner"))))
-			assertTrue(Exit.isFailure(other), "a spec of another owner on the same port is refused")
+			assert.ok(Exit.isFailure(other), "a spec of another owner on the same port is refused")
 			if (life.durability === "throwaway") {
 				const written = yield* Effect.flatMap(
 					fs.readFileString(`${root}/cluster.json`),
@@ -181,7 +181,7 @@ export const lifeOfACluster = property.exhaust(lives, {
 				)
 				yield* fs.writeFileString(`${root}/cluster.json`, older)
 				const remade = yield* Effect.exit(inCase(initCluster(spec, { kind: "force" })))
-				assertTrue(
+				assert.ok(
 					Exit.isSuccess(remade),
 					"init --force makes a throwaway cluster again whose manifest predates its owner's parameters"
 				)
@@ -189,14 +189,14 @@ export const lifeOfACluster = property.exhaust(lives, {
 					fs.readFileString(`${root}/cluster.json`),
 					Schema.decodeEffect(ManifestFile)
 				)
-				deepStrictEqual(
+				assert.deepEqual(
 					rewritten.ownerParameters,
 					spec.ownerParameters,
 					"the cluster made again records its owner's parameters"
 				)
 				const rechecked = yield* inCase(doctor(spec, true))
 				Arr.forEach(rechecked, ({ port: member, verdicts }) => {
-					deepStrictEqual(
+					assert.deepEqual(
 						Arr.filter(verdicts, (verdict) => verdict.kind === "failed"),
 						[],
 						`member ${member} of the cluster made again passes the doctor's quick checks`
@@ -206,23 +206,23 @@ export const lifeOfACluster = property.exhaust(lives, {
 			}
 			const destroyed = yield* Effect.exit(inCase(destroyCluster(spec)))
 			if (life.durability === "throwaway") {
-				assertTrue(Exit.isSuccess(destroyed), "a throwaway cluster is destroyed")
+				assert.ok(Exit.isSuccess(destroyed), "a throwaway cluster is destroyed")
 				const left = yield* fs.exists(root)
-				strictEqual(left, false, "nothing of it is left")
+				assert.equal(left, false, "nothing of it is left")
 				c.note("a throwaway cluster destroyed")
 			} else {
-				assertTrue(Exit.isFailure(destroyed), "a kept cluster's destroy is refused")
+				assert.ok(Exit.isFailure(destroyed), "a kept cluster's destroy is refused")
 				const throwawaySpec = yield* Effect.exit(
 					inCase(
 						destroyCluster(specOf({ ...life, durability: "throwaway" }, port, "lifecycle_owner"))
 					)
 				)
-				assertTrue(
+				assert.ok(
 					Exit.isFailure(throwawaySpec),
 					"a throwaway spec on a kept cluster's port destroys nothing"
 				)
 				const stays = yield* fs.exists(`${root}/cluster.json`)
-				strictEqual(stays, true, "the kept cluster stays")
+				assert.equal(stays, true, "the kept cluster stays")
 				yield* inCase(stopCluster(spec))
 				c.note("a kept cluster's destroy refused")
 			}
@@ -354,7 +354,7 @@ export const adoptingACluster = property.exhaust(holdings, {
 			const [member] = yield* inCase(initCluster(spec, { kind: "adoptFrom", data }))
 			const checked = yield* inCase(doctor(spec, false))
 			Arr.forEach(checked, ({ port: at, verdicts }) => {
-				deepStrictEqual(
+				assert.deepEqual(
 					Arr.filter(verdicts, (verdict) => verdict.kind === "failed"),
 					[],
 					`member ${at} of a cluster adopted holding ${holding} passes the doctor`
@@ -369,7 +369,7 @@ export const adoptingACluster = property.exhaust(holdings, {
 				["SELECT datname || '=' || oid FROM pg_catalog.pg_database ORDER BY 1"],
 				{ cluster: port, doing: "reading its databases" }
 			)
-			assertTrue(
+			assert.ok(
 				Arr.every(before, (database) => Arr.contains(after, database)),
 				`every database the adopted cluster held is kept: ${Arr.join(before, ", ")} against ${Arr.join(after, ", ")}`
 			)

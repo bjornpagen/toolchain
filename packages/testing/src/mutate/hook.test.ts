@@ -7,7 +7,7 @@
  */
 import { Array as Arr, Effect, FileSystem, Option, Path, Stream, String as Str } from "effect"
 import { ChildProcess } from "effect/process"
-import { deepStrictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { boolean, element, int, shuffled } from "#gen.ts"
 import { Checkout } from "#mutate/checkout.ts"
 import { type Hooked, mainOf, valueModule, WAYS } from "#mutate/hook.fixtures.ts"
@@ -88,7 +88,7 @@ export const hookedImage = property.explore(
 					{ concurrency: "unbounded" }
 				)
 				const read = hooked.hooked ? hooked.mutant : hooked.own
-				deepStrictEqual(
+				assert.deepEqual(
 					{ read: Arr.map(Str.split(" ")(Str.trim(printed)), Number), failure },
 					{ read: [500, ...Arr.map(hooked.ways, () => read)], failure: "" }
 				)

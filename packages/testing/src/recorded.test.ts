@@ -7,7 +7,7 @@
  */
 import { isDeepStrictEqual } from "node:util"
 import { Array as Arr, Effect, Option } from "effect"
-import { assertTrue, deepStrictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { everyValue } from "#chance.fixtures.ts"
 import { array, clone, int, uniqueKeys } from "#gen.ts"
 import { mutate } from "#mutate.ts"
@@ -46,7 +46,7 @@ export const nothingDrawnReachesARecordedValue = property.explore(recordedCases,
 				randomChooser(words)
 			).value
 			const twins = generate(recorder(), clone(lists, 2), randomChooser(words)).value
-			deepStrictEqual(
+			assert.deepEqual(
 				{
 					drawn: isRecordedList(drawn.value),
 					mutated: isRecordedList(mutated.value),
@@ -97,7 +97,7 @@ export const anEnumerationCountsTheSpaceAlone = property.explore(recordedCases, 
 	situations: [],
 	check: () => (c) =>
 		Effect.sync(() => {
-			deepStrictEqual(everyValue(listsOf(c)), everyValue(array(int(0, c.top), { min: 0, max: 3 })))
+			assert.deepEqual(everyValue(listsOf(c)), everyValue(array(int(0, c.top), { min: 0, max: 3 })))
 		}),
 	oracle: {
 		kind: "specification",
@@ -133,7 +133,7 @@ export const aTokenDrawsItsRecordedValue = property.explore(recordedCases, {
 					status: generated.tape.status
 				}
 			})
-			deepStrictEqual(replayed, [
+			assert.deepEqual(replayed, [
 				...Arr.map(recordedNumbers(c.count), (n, at) => ({
 					value: [n],
 					values: [at + 1],
@@ -188,7 +188,7 @@ export const aShrinkMovesARecalledDecisionTowardZero = property.explore(recorded
 					({ best }) => ({ value: best.failure, values: valuesOf(best.tape) })
 				)
 			)
-			deepStrictEqual(shrunk, [
+			assert.deepEqual(shrunk, [
 				{ value: [-1], values: [1] },
 				{ value: [], values: [0, 0] }
 			])
@@ -219,10 +219,10 @@ export const keepFindsEveryRecordedValue = property.explore(recordedCases, {
 			const targets = [...Arr.map(recordedNumbers(c.count), (n) => [n]), [c.top, 0]]
 			const found = Arr.map(targets, (target) => {
 				const kept = keptOf(space, target)
-				assertTrue(kept.kind === "found", `keep finds ${String(target)}`)
+				assert.ok(kept.kind === "found", `keep finds ${String(target)}`)
 				return Arr.fromIterable(kept.values)
 			})
-			deepStrictEqual(
+			assert.deepEqual(
 				Arr.map(found, (values) => values[0]),
 				[...Arr.map(recordedNumbers(c.count), (_, at) => at + 1), 0]
 			)

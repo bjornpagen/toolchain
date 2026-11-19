@@ -10,7 +10,7 @@
  * stated per property.
  */
 import { Array as Arr, Effect } from "effect"
-import { assertTrue, deepStrictEqual, fail, strictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { int } from "#gen.ts"
 import { property } from "#property.ts"
 import {
@@ -74,7 +74,7 @@ export const shrinksToTheLeast = property.explore(judgedProblems, {
 				const judged = yield* shrunkUnder(judging, start, run, completeShrink)
 				c.noteAll(judgingFeaturesOf(judged.rounds))
 				const accepted = yield* acceptedMovesOf(alone.shrunk.best.tape, run)
-				deepStrictEqual(
+				assert.deepEqual(
 					{
 						fails: fails(alone.shrunk.best.failure),
 						noLarger:
@@ -101,7 +101,7 @@ export const shrinksToTheLeast = property.explore(judgedProblems, {
 					}
 				)
 				if (reachesLeast(problem.shape, problem.predicate)) {
-					deepStrictEqual(valuesOf(alone.shrunk.best.tape), valuesOf(leastOf(failing).tape))
+					assert.deepEqual(valuesOf(alone.shrunk.best.tape), valuesOf(leastOf(failing).tape))
 				}
 			}),
 	oracle: {
@@ -157,7 +157,7 @@ export const shrinksByItsMoves = property.explore(formedProblems, {
 				c.noteAll(judgingFeaturesOf(judged.rounds))
 				const replayed = yield* attempt(judged.shrunk.best.tape.values)
 				const accepted = yield* acceptedMovesOf(judged.shrunk.best.tape, run)
-				deepStrictEqual(
+				assert.deepEqual(
 					{
 						fails: fails(judged.shrunk.best.failure),
 						noLarger:
@@ -228,25 +228,30 @@ export const shrinkSpendsItsBudget = property.explore(budgetedProblems, {
 				if (widthPastRoom(bounded.rounds, budget)) {
 					c.note("a width past its remaining budget")
 				}
-				assertTrue(
+				assert.ok(
 					bounded.shrunk.candidates <= budget,
 					`${bounded.shrunk.candidates} candidates within ${budget}`
 				)
-				deepStrictEqual(
+				assert.deepEqual(
 					{ judged: outcomeOf(bounded), seen: bounded.seen },
 					{ judged: outcomeOf(alone), seen: reachedOf(bounded) }
 				)
 				switch (bounded.shrunk.ended) {
 					case "budget":
 						c.note("stopped by its budget")
-						strictEqual(bounded.shrunk.candidates, budget)
+						assert.equal(bounded.shrunk.candidates, budget)
 						break
 					case "minimal":
 						c.note("minimal within its budget")
-						deepStrictEqual(valuesOf(bounded.shrunk.best.tape), valuesOf(complete.shrunk.best.tape))
+						assert.deepEqual(
+							valuesOf(bounded.shrunk.best.tape),
+							valuesOf(complete.shrunk.best.tape)
+						)
 						break
 					case "unjudged":
-						fail("a shrink whose judge judged every candidate stopped at one it could not judge")
+						assert.fail(
+							"a shrink whose judge judged every candidate stopped at one it could not judge"
+						)
 				}
 			}),
 	oracle: {
@@ -292,7 +297,7 @@ export const shrinkStopsUnjudged = property.explore(unjudgedProblems, {
 						? "stopped at an unjudged candidate"
 						: "ended before any unjudged candidate"
 				)
-				deepStrictEqual(stopOf(stopped), expected)
+				assert.deepEqual(stopOf(stopped), expected)
 			}),
 	oracle: {
 		kind: "second-implementation",

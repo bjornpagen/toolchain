@@ -13,7 +13,7 @@
  * script with no generic task, a generic task with no root script, a package's own task, a repository with no
  * turbo.json.
  */
-import { deepStrictEqual } from "@bjornpagen/testing/assert"
+import { assert } from "@bjornpagen/testing/assert"
 import { property } from "@bjornpagen/testing/property"
 import { Effect } from "effect"
 import { expectedOf, featuresOf, outcomeOf, repositories } from "#workspace/root-tasks.fixtures.ts"
@@ -34,7 +34,7 @@ export const rootTaskFindingsOf = property.explore(repositories, {
 		Effect.gen(function* () {
 			c.noteAll(featuresOf(repository))
 			const outcome = yield* outcomeOf(repository)
-			deepStrictEqual(outcome, expectedOf(repository))
+			assert.deepEqual(outcome, expectedOf(repository))
 		}),
 	oracle: {
 		kind: "specification",

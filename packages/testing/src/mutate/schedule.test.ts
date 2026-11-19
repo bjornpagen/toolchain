@@ -7,7 +7,7 @@
  * and image released at the end.
  */
 import { Array as Arr, Effect, Option, Ref } from "effect"
-import { deepStrictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { realPathOf } from "#mutate/mutated.ts"
 import {
 	expectedOf,
@@ -93,7 +93,7 @@ export const scheduledTrials = property.explore(scheduleGen, {
 			const after = yield* Ref.get(seen)
 			const share = schedule.sharing === "spread" ? shareOf(schedule.width, n) : 1
 			const atOnce = Math.min(n, schedule.width)
-			deepStrictEqual(
+			assert.deepEqual(
 				{
 					verdicts: Arr.copy(verdicts),
 					peak: after.most,

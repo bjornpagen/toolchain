@@ -16,7 +16,7 @@ import {
 	plainMixes,
 	rightAccount
 } from "#account.fixtures.ts"
-import { assertTrue, deepStrictEqual, strictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { everyCase, everyValue, type Fraction, fraction, plus, shareOf } from "#chance.fixtures.ts"
 import {
 	CHANNEL,
@@ -88,7 +88,7 @@ export const writablePrograms = property.exhaust(
 						(steps) => Formatter.format(steps)
 					)
 				)
-				deepStrictEqual(drawn.size, writable(machine, box.values, machine.initial, box.steps))
+				assert.deepEqual(drawn.size, writable(machine, box.values, machine.initial, box.steps))
 			}),
 		oracle: {
 			kind: "second-implementation",
@@ -138,10 +138,10 @@ export const verdicts = property.explore(swarmedPrograms(QUEUE, { min: 0, max: 8
 			if (Option.isSome(firstLie)) {
 				c.note("diverges")
 				const failed = Exit.findErrorOption(exit)
-				assertTrue(Option.isSome(failed), "a lie fails the run")
+				assert.ok(Option.isSome(failed), "a lie fails the run")
 				const step = Arr.getUnsafe(steps, firstLie.value)
 				const verdict = Arr.getUnsafe(folded.verdicts, firstLie.value)
-				deepStrictEqual(
+				assert.deepEqual(
 					Option.map(failed, (error) =>
 						error._tag === "VerdictDiverged"
 							? [error.at, error.command, error.allowed, error.answered]
@@ -157,7 +157,7 @@ export const verdicts = property.explore(swarmedPrograms(QUEUE, { min: 0, max: 8
 				return
 			}
 			c.note("agrees")
-			deepStrictEqual(
+			assert.deepEqual(
 				exit,
 				Exit.succeed({
 					model: folded.model,
@@ -260,7 +260,7 @@ export const commandWeights = property.explore(
 									fraction(effective(command), total),
 									fraction(effective("peek") * effective(command), total * writableTotal)
 								)
-					deepStrictEqual(
+					assert.deepEqual(
 						Arr.map(Struct.keys(EVEN), (command) =>
 							shareOf(cases, (steps) => Arr.some(steps, (step) => step.command === command))
 						),
@@ -316,12 +316,12 @@ export const shrinksToShortest = property.exhaust(finite(builds), {
 				inlineRun(id, fnv1a32(id))
 			)
 			if (isRight(build)) {
-				strictEqual(verdict.kind, "explored")
+				assert.equal(verdict.kind, "explored")
 				c.note("a right buffer passes")
 				return
 			}
 			const shrunk = yield* shrunkOf(verdict, space)
-			deepStrictEqual(shortestFailing(build, shrunk.length), Option.some(shrunk.length))
+			assert.deepEqual(shortestFailing(build, shrunk.length), Option.some(shrunk.length))
 			c.note("a wrong buffer's failure shrinks to a shortest one")
 		}),
 	oracle: {
@@ -356,7 +356,7 @@ export const inapplicableRefused = property.explore(anyProgram, {
 				})
 			)
 			const ran = yield* Effect.exit(runProgram(QUEUE, realOf(ringBuffer(rightly)), steps))
-			deepStrictEqual(
+			assert.deepEqual(
 				{
 					ranToItsEnd: Exit.isSuccess(ran),
 					refusedAt: Option.map(Exit.findErrorOption(ran), (failure) =>
@@ -467,11 +467,11 @@ export const wrongChannelsCaught = property.exhaust(finite(channelBuilds), {
 				inlineRun(id, fnv1a32(id))
 			)
 			if (isRightChannel(build)) {
-				strictEqual(verdict.kind, "explored")
+				assert.equal(verdict.kind, "explored")
 				c.note("a right channel passes")
 				return
 			}
-			strictEqual(verdict.kind === "failed" ? verdict.finding.kind : verdict.kind, "falsified")
+			assert.equal(verdict.kind === "failed" ? verdict.finding.kind : verdict.kind, "falsified")
 			c.note("a wrong channel is falsified")
 		}),
 	oracle: {
@@ -570,7 +570,7 @@ export const steeredMixCatchesExact = property.exhaust(finite(accountBuilds), {
 			}
 			const verdict = yield* searchInline(searched(accountMixes), run)
 			if (isRightAccount(build)) {
-				strictEqual(verdict.kind, "explored")
+				assert.equal(verdict.kind, "explored")
 				c.note("a right account passes")
 				return
 			}
@@ -579,7 +579,7 @@ export const steeredMixCatchesExact = property.exhaust(finite(accountBuilds), {
 				onSome: Effect.succeed
 			})
 			const replayed = yield* replayInline(searched(accountMixes), run, falsified.token)
-			deepStrictEqual(
+			assert.deepEqual(
 				shownOf(replayed),
 				Option.some({ phase: "replayed", printed: falsified.printed })
 			)

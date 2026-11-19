@@ -1,5 +1,5 @@
 import { Effect, Option } from "effect"
-import { strictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import {
 	type Branch,
 	branch,
@@ -182,7 +182,7 @@ export const accountReal = (
 	},
 	holds: (after) =>
 		Effect.sync(() => {
-			strictEqual(account.balance(), after.balance)
+			assert.equal(account.balance(), after.balance)
 		})
 })
 

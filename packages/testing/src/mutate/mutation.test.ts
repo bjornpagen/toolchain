@@ -6,7 +6,7 @@
  * mutation module records its import. Oracle: the specification, stated in the property.
  */
 import { Array as Arr, Effect, FileSystem, Schema } from "effect"
-import { deepStrictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { loadedMutation, MutatorRefused } from "#mutate/commands.ts"
 import { expectedOf, IMPORTED, writtenGen, writtenPackage } from "#mutate/mutation.fixtures.ts"
 import { property } from "#property.ts"
@@ -55,7 +55,7 @@ export const mutationLoadsOnlyForMutate = property.explore(writtenGen, {
 				) {
 					c.note("nothing added")
 				}
-				deepStrictEqual(
+				assert.deepEqual(
 					{ importedByConfig, importedByMutate, ...read },
 					{ importedByConfig: false, importedByMutate: true, ...expectedOf(written) }
 				)

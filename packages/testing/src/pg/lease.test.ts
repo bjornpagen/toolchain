@@ -7,7 +7,7 @@
  * the specification, stated in the check.
  */
 import { Array as Arr, Effect, FileSystem, Option, Ref } from "effect"
-import { deepStrictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { awaitFact } from "#fact.ts"
 import { int } from "#gen.ts"
 import { Checkout } from "#mutate/checkout.ts"
@@ -68,7 +68,7 @@ export const runsWaitInLine = property.explore(
 							{ concurrency: "unbounded", discard: true }
 						)
 					)
-					deepStrictEqual(
+					assert.deepEqual(
 						{
 							finished: yield* Ref.get(finished),
 							withinTheSlots: (yield* Ref.get(most)) <= slots,

@@ -31,7 +31,7 @@
  */
 import { Array as Arr, Clock, Effect, Option, Order, String as Str } from "effect"
 import { TestClock } from "effect/testing"
-import { assertTrue, deepStrictEqual, strictEqual } from "#assert.ts"
+import { assert } from "#assert.ts"
 import { aimed, finite, int } from "#gen.ts"
 import { property, ReplayToken } from "#property.ts"
 import {
@@ -93,9 +93,9 @@ export const hangsOnTheLiveClock = property.explore(
 						...fullRun("hangs/inner", seed),
 						limits: { ...runnerLimits, deadline }
 					}).pipe(Effect.provideService(Clock.Clock, testClock))
-					strictEqual(verdictKind(verdict), "hung")
+					assert.equal(verdictKind(verdict), "hung")
 					const finding = yield* Effect.fromOption(findingOf(verdict))
-					assertTrue(
+					assert.ok(
 						finding.kind === "hung" && Str.startsWith("its process tree")(finding.leg),
 						`the hung finding names the leg its guard read, its CPU spent or its stall: ${finding.kind === "hung" ? finding.leg : finding.kind}`
 					)
@@ -135,7 +135,7 @@ export const lateUse = property.explore(
 				Effect.gen(function* () {
 					c.note(use)
 					const verdict = yield* searchedInline(usingLate(use), fullRun("late use/inner", seed))
-					strictEqual(verdictKind(verdict), "misused")
+					assert.equal(verdictKind(verdict), "misused")
 				}),
 		oracle: {
 			kind: "specification",
@@ -170,7 +170,7 @@ export const synchronousCases = property.explore(
 					const twice = yield* scheduledBy(
 						searchedAt(syncExhaustion(kind, 2 * cases), fullRun("inline/inner", 0))
 					)
-					deepStrictEqual(
+					assert.deepEqual(
 						{
 							timersPerCase: Math.floor(Math.max(0, twice.timers - once.timers) / cases),
 							hopsPerCase: Math.floor(Math.max(0, twice.hops - once.hops) / cases)
@@ -230,7 +230,7 @@ export const caseLifetimes = property.explore(
 					},
 					width: shape.width
 				})
-				deepStrictEqual(
+				assert.deepEqual(
 					{ verdict: verdictKind(verdict), released: inner.counts.released },
 					{ verdict: "hung", released: inner.counts.acquired }
 				)
@@ -264,7 +264,7 @@ export const opensOutsideTheCase = property.explore(slowOpens, {
 					...fullRun("opens outside the case/inner", 0),
 					limits: { ...runnerLimits, deadline }
 				})
-				deepStrictEqual(
+				assert.deepEqual(
 					{ verdict: verdictKind(verdict), opens: inner.counts.opens },
 					{ verdict: "explored", opens: 1 }
 				)
@@ -304,7 +304,7 @@ export const unopenedOnce = property.explore(
 						limits: { ...runnerLimits, open: bound }
 					})
 					const found = findingOf(verdict)
-					deepStrictEqual(
+					assert.deepEqual(
 						{
 							finding: Option.map(found, (finding) =>
 								finding.kind === "unopened"
@@ -318,7 +318,11 @@ export const unopenedOnce = property.explore(
 							checks: inner.counts.checks
 						},
 						{
-							finding: Option.some({ kind: "unopened", need: "drawn", failed: ending === "fails" }),
+							finding: Option.some({
+								kind: "unopened" as const,
+								need: "drawn",
+								failed: ending === "fails"
+							}),
 							checks: 0
 						}
 					)
@@ -371,7 +375,7 @@ export const heldUntilRetired = property.explore(holdingHistories, {
 					)
 				}
 			}
-			deepStrictEqual(
+			assert.deepEqual(
 				Arr.map(released, (keys) => Arr.sort(keys, Order.String)),
 				Arr.map(expected, (keys) => Arr.sort(keys, Order.String))
 			)
@@ -399,7 +403,7 @@ export const releasedNeedsClose = property.explore(
 		check: () => (shape) =>
 			Effect.gen(function* () {
 				const cycled = yield* cycledReleases(shape.cycles, shape.kept)
-				deepStrictEqual(cycled, {
+				assert.deepEqual(cycled, {
 					after: Array.from({ length: shape.cycles }, (_, at) => ({
 						opens: at + 1,
 						releases: at + 1,
@@ -444,10 +448,14 @@ export const needFailsInCase = property.explore(
 						...fullRun("need fails in case/inner", seed),
 						reach: "rotating"
 					})
-					deepStrictEqual(
+					assert.deepEqual(
 						{ finding: findingOf(verdict), reached: inner.counts.reached },
 						{
-							finding: Option.some({ kind: "unopened", need: FAILING_NEED, message: FAILED_CASE }),
+							finding: Option.some({
+								kind: "unopened" as const,
+								need: FAILING_NEED,
+								message: FAILED_CASE
+							}),
 							reached: 1
 						}
 					)
@@ -487,18 +495,18 @@ export const shrinkStopsAtNeed = property.explore(
 						reach: "rotating"
 					})
 					if (inner.failures() <= good) {
-						return deepStrictEqual(
+						return assert.deepEqual(
 							{
 								shrinking: Option.map(findingOf(verdict), (finding) =>
 									finding.kind === "falsified" ? finding.shrinking.kind : finding.kind
 								),
 								reached: inner.counts.reached
 							},
-							{ shrinking: Option.some("minimal"), reached: 0 }
+							{ shrinking: Option.some("minimal" as const), reached: 0 }
 						)
 					}
 					c.note("the need met mid-shrink")
-					deepStrictEqual(
+					assert.deepEqual(
 						{
 							stopped: Option.flatMap(findingOf(verdict), (finding) =>
 								finding.kind === "falsified" && finding.shrinking.kind === "unopened"
@@ -554,7 +562,7 @@ export const choiceOpensWhenTaken = property.exhaust(finite(takenMembers), {
 			}
 			const inner = choosing(taken)
 			yield* searchedAt(inner.property, fullRun("choice opens when taken/inner", 0))
-			deepStrictEqual(inner.opens, {
+			assert.deepEqual(inner.opens, {
 				first: taken.includes("first") ? 1 : 0,
 				second: taken.includes("second") ? 1 : 0,
 				third: taken.includes("third") ? 1 : 0

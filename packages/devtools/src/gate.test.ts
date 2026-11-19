@@ -16,7 +16,7 @@
  * every other key directory whose repository is gone and that no live run holds, and never one a run of its
  * repository holds in any phase of its life, from before it claims a snapshot to the last process it started.
  */
-import { deepStrictEqual } from "@bjornpagen/testing/assert"
+import { assert } from "@bjornpagen/testing/assert"
 import { Checkout } from "@bjornpagen/testing/checkout"
 import { finite } from "@bjornpagen/testing/gen"
 import { property } from "@bjornpagen/testing/property"
@@ -95,10 +95,10 @@ export const sharedSnapshot = property.exhaust(finite(sharings), {
 					Effect.gen(function* () {
 						const clone = Arr.getUnsafe(clones, run.clone)
 						const seen = yield* looked(sandbox, clone, index, { stamp: run.stamps, stray: false })
-						deepStrictEqual(seen.stamps, stampsBefore(sharing, index))
+						assert.deepEqual(seen.stamps, stampsBefore(sharing, index))
 						const key = yield* onlyKey(sandbox)
 						const listed = yield* clonesListed(sandbox, key)
-						deepStrictEqual(
+						assert.deepEqual(
 							listed,
 							Arr.map(clonesRunBy(sharing, index), (at) =>
 								commonDirectory(Arr.getUnsafe(clones, at))
@@ -164,13 +164,13 @@ export const claimedSnapshot = property.exhaust(finite(claimings), {
 					)
 					const claimed = claimedSlot(slots)
 					const run = yield* claimedBy(sandbox, clone)
-					deepStrictEqual(run.snapshot, `push.${String(claimed)}`)
+					assert.deepEqual(run.snapshot, `push.${String(claimed)}`)
 					const tree = yield* treeOf(sandbox, clone)
-					deepStrictEqual(run.seen.files, tree)
+					assert.deepEqual(run.seen.files, tree)
 					const freed = yield* Effect.forEach(slots, (_, at) =>
 						free(sandbox, pushLock(sandbox, key, at))
 					)
-					deepStrictEqual(
+					assert.deepEqual(
 						freed,
 						Arr.map(slots, (slot) => slot !== "live")
 					)
@@ -227,10 +227,10 @@ export const checkedCommit = property.exhaust(finite(checkings), {
 						const clone = Arr.getUnsafe(clones, run.clone)
 						const seen = yield* looked(sandbox, clone, index, { stamp: false, stray: run.strays })
 						const tree = yield* treeOf(sandbox, clone)
-						deepStrictEqual(seen.files, tree)
+						assert.deepEqual(seen.files, tree)
 						const key = yield* onlyKey(sandbox)
 						const borrowed = yield* alternatesOf(sandbox, key)
-						deepStrictEqual(borrowed, objectsOf(clone))
+						assert.deepEqual(borrowed, objectsOf(clone))
 					})
 				)
 			}),
@@ -280,11 +280,11 @@ export const filledSubmodule = property.exhaust(finite(fillings), {
 					Effect.gen(function* () {
 						const clone = Arr.getUnsafe(clones, at)
 						const seen = yield* looked(sandbox, clone, index, { stamp: false, stray: false })
-						deepStrictEqual(versionFilesOf(seen), [
+						assert.deepEqual(versionFilesOf(seen), [
 							versionFile(Arr.getUnsafe(filling.clones, at).committed)
 						])
 						const tree = yield* treeOf(sandbox, clone)
-						deepStrictEqual(seen.files, tree)
+						assert.deepEqual(seen.files, tree)
 					})
 				)
 			}),
@@ -332,14 +332,14 @@ export const collectedSnapshots = property.exhaust(finite(collectings), {
 					yield* looked(sandbox, Arr.headNonEmpty(clones), 0, { stamp: false, stray: false })
 					const left = yield* keys(sandbox)
 					const entryKeys = Arr.map(made, (one) => one.key)
-					deepStrictEqual(
+					assert.deepEqual(
 						Arr.filter(left, (key) => Arr.contains(entryKeys, key)),
 						Arr.sort(
 							Arr.flatMap(made, (one) => (kept(one.entry) ? [one.key] : [])),
 							Order.String
 						)
 					)
-					deepStrictEqual(Arr.filter(left, (key) => !Arr.contains(entryKeys, key)).length, 1)
+					assert.deepEqual(Arr.filter(left, (key) => !Arr.contains(entryKeys, key)).length, 1)
 				})
 			),
 	oracle: {
@@ -385,10 +385,10 @@ export const sweptRun = property.exhaust(finite(sweeps), {
 					const workspace = yield* lockfile
 					const sandbox = sandboxOf(scratch, gateCheckout, workspace)
 					const run = yield* sweptBeside(sandbox, sweep)
-					deepStrictEqual(run.left, keptThrough(sweep))
-					deepStrictEqual(run.status, 0)
-					deepStrictEqual(run.seen.files, run.tree)
-					deepStrictEqual(run.seen.stamps, ["stamp-warm"])
+					assert.deepEqual(run.left, keptThrough(sweep))
+					assert.deepEqual(run.status, 0)
+					assert.deepEqual(run.seen.files, run.tree)
+					assert.deepEqual(run.seen.stamps, ["stamp-warm"])
 				})
 			),
 	oracle: {
@@ -441,7 +441,7 @@ export const pushCall = property.exhaust(finite(pushCalls), {
 				const { origin, clones } = yield* clonedRepository(sandbox, 1)
 				const done = yield* pushedAs(sandbox, Arr.headNonEmpty(clones), origin, call)
 				const refused = done.status === 2 && Str.includes(REFUSED_CALL)(done.stderr)
-				deepStrictEqual(refused, !takesCall(call))
+				assert.deepEqual(refused, !takesCall(call))
 			}),
 	oracle: {
 		kind: "specification",
