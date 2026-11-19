@@ -54,6 +54,8 @@ export type Module = Readonly<{
 	constants: ReadonlyMap<string, ts.Expression>
 	api: Api
 	locals: Locals
+	/** The commit the module is converted at (its repository's HEAD), which a carried budget cites. */
+	base: string
 }>
 
 /** A converted test: its export's name and text, the setup lifted to module scope above it, its imports and notes. */
@@ -1047,7 +1049,51 @@ type Parts = Readonly<{
 	callback: Callback
 	provisions: ReadonlyArray<Provision>
 	kept: ReadonlyArray<KeptCase>
+	budget: Option.Option<OldBudget>
 }>
+
+/**
+ * The budget an explored search stated: its runs, and its coverage's cases, each as written, the steered cases being
+ * the runner's own where its coverage stated none; none for a search that stated no runs (an exhaustion counts its
+ * space). A converted property carries it as its own budget, so it does the work its search did.
+ */
+type OldBudget = Readonly<{ runs: ts.Expression; cases: Option.Option<ts.Expression> }>
+
+/** The steered cases the runner runs when a property states no budget (runner/limits.ts steeredCases). */
+const RUNNER_STEERED = "200"
+
+/** An explored search's stated budget (OldBudget), read off its spec's fields. */
+const budgetOf = (
+	module: Module,
+	kind: Kind,
+	fields: ReadonlyMap<string, ts.Expression>
+): Option.Option<OldBudget> => {
+	const runs = fields.get("runs")
+	if (kind !== "explore" || runs === undefined) {
+		return Option.none()
+	}
+	const coverage = Option.map(Option.fromNullishOr(fields.get("coverage")), (c) =>
+		definitionOf(module, c)
+	)
+	const options = Option.flatMap(coverage, (c) =>
+		ts.isCallExpression(c) && c.arguments[1] !== undefined
+			? Option.some(definitionOf(module, c.arguments[1]))
+			: Option.none()
+	)
+	const cases = Option.flatMap(options, (o) =>
+		ts.isObjectLiteralExpression(o)
+			? Arr.findFirst(
+					Arr.filterMap(o.properties, (p): Result.Result<ts.Expression, void> =>
+						ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) && p.name.text === "cases"
+							? Result.succeed(p.initializer)
+							: Result.failVoid
+					),
+					() => true
+				)
+			: Option.none()
+	)
+	return Option.some({ runs, cases })
+}
 
 /**
  * Converts one test: its search's spec into the property's space, situations, oracle and box; its setup into module
@@ -1106,7 +1152,8 @@ export const propertyOf = (module: Module, test: Test, taken: ReadonlySet<string
 							),
 				callback: callbackOf(module, property),
 				provisions: provisionsOf(module, test),
-				kept: keptOf(module, fields)
+				kept: keptOf(module, fields),
+				budget: Result.succeed(budgetOf(module, search.kind, fields))
 			}
 			const refusals = Arr.flatMap(Rec.values(steps), (step: Step<unknown>) =>
 				Result.isFailure(step) ? step.failure : []
@@ -1146,7 +1193,14 @@ const builtOf = (
 			...parts.situations.reads,
 			...identifiersUnder(parts.oracle),
 			...Option.match(parts.box, { onNone: () => [], onSome: (box) => box.reads }),
-			...Arr.flatMap(parts.kept, (k) => identifiersUnder(k.value))
+			...Arr.flatMap(parts.kept, (k) => identifiersUnder(k.value)),
+			...Option.match(parts.budget, {
+				onNone: () => [],
+				onSome: (b) => [
+					...identifiersUnder(b.runs),
+					...Option.match(b.cases, { onNone: () => [], onSome: identifiersUnder })
+				]
+			})
 		],
 		(name) => split.perCase.has(name) || Arr.contains(workerNames, name)
 	)
@@ -1384,6 +1438,16 @@ const builtOf = (
 		`check: ${check}`,
 		`oracle: ${textOf(parts.oracle)}`,
 		...Option.toArray(Option.map(parts.box, (box) => `box: ${box.text}`)),
+		...Option.toArray(
+			Option.map(
+				parts.budget,
+				(b) =>
+					`budget: { runs: ${textOf(b.runs)}, steered: ${Option.match(b.cases, {
+						onNone: () => RUNNER_STEERED,
+						onSome: textOf
+					})} }`
+			)
+		),
 		"kept: []",
 		"kills: []"
 	]
@@ -1394,7 +1458,14 @@ const builtOf = (
 		lifted: split.lifted,
 		need: Option.map(need, (n) => ({ name: n.name, text: n.text, wanted: n.wanted })),
 		kept: parts.kept,
-		text: `/** ${sentenceOf(test)} */\nexport const ${name} = ${module.locals.property}.${search.kind}(${parts.space.text}, {\n${Arr.join(fields, ",\n")}\n})`,
+		text: `/**\n * ${sentenceOf(test)}${Option.match(parts.budget, {
+			onNone: () => "",
+			onSome: (b) =>
+				`\n *\n * Its pre-conversion budget: runs ${textOf(b.runs)}, ${Option.match(b.cases, {
+					onNone: () => `no coverage cases, so the runner's ${RUNNER_STEERED} steered`,
+					onSome: (c) => `coverage cases ${textOf(c)}`
+				})} (${parsed.file} at ${module.base}).`
+		})}\n */\nexport const ${name} = ${module.locals.property}.${search.kind}(${parts.space.text}, {\n${Arr.join(fields, ",\n")}\n})`,
 		wanted: [
 			{ module: module.api.property, name: "property", local: module.locals.property, type: false },
 			...parts.space.wanted,

@@ -87,10 +87,12 @@ const convertOne = (
 	file: string,
 	text: string,
 	place: Place,
-	since: string
+	since: string,
+	base: string
 ) =>
 	Effect.try({
-		try: (): Outcome => convert(parser, PLUGINS[plugin], parser.parse(file, text), place, since),
+		try: (): Outcome =>
+			convert(parser, PLUGINS[plugin], parser.parse(file, text), place, since, base),
 		catch: () => ModuleUnread.make({ file })
 	})
 
@@ -145,6 +147,10 @@ const run = Effect.fn("codemod.run")(function* (input: {
 	})
 	const now = yield* DateTime.now
 	const since = DateTime.formatIsoDateUtc(now)
+	const head = yield* spawner.lines(
+		ChildProcess.make("git", ["rev-parse", "--short=9", "HEAD"], { cwd: repo })
+	)
+	const base = Arr.join(head, "")
 	const parser = yield* Effect.acquireRelease(
 		Effect.sync(() => openParser(repo)),
 		(opened) => Effect.sync(() => opened.close())
@@ -153,7 +159,7 @@ const run = Effect.fn("codemod.run")(function* (input: {
 		Effect.gen(function* () {
 			const text = yield* fs.readFileString(path.join(repo, file))
 			const place = yield* placeOf(file)
-			return yield* convertOne(parser, input.plugin, file, text, place, since)
+			return yield* convertOne(parser, input.plugin, file, text, place, since, base)
 		})
 	)
 	const written = yield* Effect.forEach(outcomes, (o) =>

@@ -363,7 +363,8 @@ export const convert = (
 	plugin: Plugin,
 	parsed: Parsed,
 	place: Place,
-	since: string
+	since: string,
+	base: string
 ): Outcome => {
 	const imports: ReadonlyMap<string, Binding> = importsOf(parsed)
 	const api = apiOf(imports)
@@ -383,7 +384,8 @@ export const convert = (
 		imports,
 		constants: constantsOf(parsed, pieces.success),
 		api,
-		locals
+		locals,
+		base
 	}
 	const built = Arr.reduce(
 		pieces.success,
