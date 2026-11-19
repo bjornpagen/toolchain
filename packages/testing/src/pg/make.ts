@@ -1,0 +1,1063 @@
+import { regex } from "arkregex"
+import {
+	Array as Arr,
+	Config,
+	Effect,
+	FileSystem,
+	Option,
+	Redacted,
+	Schema,
+	Stream,
+	String as Str
+} from "effect"
+import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { waitingOn } from "#live.ts"
+import { freePort, portFree } from "#pg/ports.ts"
+import {
+	adminSql,
+	type ClusterFailed,
+	failed,
+	PortLost,
+	freshPassword,
+	issueTls,
+	osUser,
+	program,
+	reload,
+	restart,
+	running,
+	serverBin,
+	serverVersion,
+	type Step,
+	start,
+	stop,
+	succeeded,
+	tlsCurrent
+} from "#pg/server.ts"
+import {
+	fixedSettings,
+	membersOf,
+	type Setting,
+	settingLine,
+	shareOf,
+	sizedSettings
+} from "#pg/settings.ts"
+import { ClusterPort, type LocalCluster } from "#pg/spec.ts"
+import {
+	type ClusterState,
+	clusterState,
+	disagreements,
+	type Manifest,
+	ManifestFile,
+	madeAs,
+	type MemberState
+} from "#pg/state.ts"
+import { testWorkers } from "#workers.ts"
+
+/**
+ * A member of a cluster as a client reaches it: its name (its port, unique among its cluster's members), its port on
+ * localhost and its Unix socket's directory (where the bootstrap superuser connects by peer authentication), the owner
+ * role and its password (and the file that holds it, for a script's PGPASSWORD), and the PEM text of the local CA every verify-full connection chains the server's certificate
+ * to, with its file for a client that reads one (psql, a connection URL's sslrootcert), and of an unrelated CA that
+ * signed nothing the server presents, for the refusal checks.
+ */
+export type PgMember = Readonly<{
+	name: string
+	port: number
+	socket: string
+	owner: string
+	password: Redacted.Redacted
+	passwordFile: string
+	ca: string
+	caFile: string
+	wrongCa: string
+}>
+
+/** The platform a cluster's life runs on: its processes and its files. */
+export type Platform = ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem
+
+/**
+ * The variable that names a cluster other than the spec's for a process and every child it starts: a port in canonical
+ * decimal, a private cluster of the same spec on a port of its own (a lane's experiment, a run that must not share).
+ * Unset, a process reaches its spec's cluster (spec.ts LocalCluster port), the one documented default; a name that is
+ * no port, or a port spelled otherwise (a sign, a leading zero), fails rather than reaching the spec's.
+ */
+export const clusterVariable = "TOOLCHAIN_PG_CLUSTER"
+
+/** The cluster `cluster`'s spec reaches in this process's environment (clusterVariable). */
+export const reachedPort = (cluster: LocalCluster): Effect.Effect<ClusterPort, ClusterFailed> =>
+	Effect.flatMap(
+		Effect.mapError(
+			Config.option(
+				Config.all({ port: Config.Port(clusterVariable), text: Config.String(clusterVariable) })
+			),
+			(error) =>
+				failed({ cluster: cluster.port, doing: `reading ${clusterVariable}` }, error.message)
+		),
+		Option.match({
+			onNone: () => Effect.succeed(cluster.port),
+			onSome: ({ port, text }) =>
+				String(port) === text && port > 0
+					? Effect.succeed(ClusterPort(port))
+					: Effect.fail(
+							failed(
+								{ cluster: cluster.port, doing: `reading ${clusterVariable}` },
+								`"${text}" names no cluster: a port in canonical decimal it must be`
+							)
+						)
+		})
+	)
+
+/** A cluster's life, as every operation reads it: its spec, its state, the server's bin directory and version. */
+type Life = Readonly<{
+	cluster: LocalCluster
+	state: ClusterState
+	bin: string
+	server: string
+}>
+
+/** The step `doing` of the cluster `life` is. */
+const stepOf = (life: Life, doing: string): Step => ({ cluster: life.state.port, doing })
+
+/** `cluster`'s life in this process: the cluster it reaches (reachedPort), its state, its server's bin and version. */
+const lifeOf = (
+	cluster: LocalCluster
+): Effect.Effect<Life, ClusterFailed, ChildProcessSpawner.ChildProcessSpawner> =>
+	Effect.gen(function* () {
+		const port = yield* reachedPort(cluster)
+		const step: Step = { cluster: port, doing: "finding its server" }
+		const bin = yield* serverBin(cluster, step)
+		return {
+			cluster,
+			state: yield* clusterState(port),
+			bin,
+			server: yield* serverVersion(bin, step)
+		}
+	})
+
+/**
+ * The program that holds a cluster's lifecycle lock: it opens the lock file, takes flock(2)'s exclusive lock on it,
+ * which the kernel grants one process at a time and frees when its holder ends, however it ends, says `held`, and
+ * holds it until it is ended. Node has no flock; perl, which Debian, Ubuntu and macOS all install, does.
+ */
+const holdLock =
+	'use Fcntl ":flock"; open(my $lock, ">>", $ARGV[0]) or die "$!"; flock($lock, LOCK_EX) or die "$!"; $| = 1; print "held\\n"; <STDIN>;'
+
+/**
+ * Runs `operation` under the cluster's lock, so of every process that would make, start, stop or destroy the same
+ * cluster at once (the runner's workers, each opening the cluster as a need, a person's command, another repository's
+ * checkout of the same port), one at a time acts and the rest find what it left: a cluster made once, a server started
+ * once. A waiter waits in the kernel, and the wait is declared to the runner's guards (live.ts waitingOn), the one
+ * wait of a cluster's life on another process: under the lock every step is this process's own and stays watched, and
+ * a server another process started already accepts connections when its starter lets the lock go (pg_ctl's --wait
+ * ends first). A holder that dies frees the lock with it.
+ */
+const underLock = <A, E, R>(
+	life: Life,
+	operation: Effect.Effect<A, E, R>
+): Effect.Effect<A, E | ClusterFailed, R | Platform> =>
+	Effect.scoped(
+		Effect.gen(function* () {
+			const fs = yield* FileSystem.FileSystem
+			const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+			const step = stepOf(life, `taking its lock ${life.state.lock}`)
+			const lockFailed = (error: { readonly message: string }) => failed(step, error.message)
+			yield* Effect.mapError(fs.makeDirectory(life.state.base, { recursive: true }), lockFailed)
+			const holder = yield* Effect.mapError(
+				spawner.spawn(ChildProcess.make("perl", ["-e", holdLock, life.state.lock])),
+				lockFailed
+			)
+			const said = yield* waitingOn(
+				Effect.mapError(
+					Stream.runHead(Stream.splitLines(Stream.decodeText(holder.stdout))),
+					lockFailed
+				)
+			)
+			if (Option.isNone(said)) {
+				return yield* failed(step, "its holder ended before it held the lock")
+			}
+			return yield* operation
+		})
+	)
+
+/** The manifest of `life`'s cluster when one is written, decoded; a file that is no manifest fails. */
+const manifestOf = (
+	life: Life
+): Effect.Effect<Option.Option<Manifest>, ClusterFailed, FileSystem.FileSystem> =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		const step = stepOf(life, `reading its manifest ${life.state.manifest}`)
+		const present = yield* Effect.mapError(fs.exists(life.state.manifest), (error) =>
+			failed(step, error.message)
+		)
+		if (!present) {
+			return Option.none()
+		}
+		const text = yield* Effect.mapError(fs.readFileString(life.state.manifest), (error) =>
+			failed(step, error.message)
+		)
+		const manifest = yield* Effect.mapError(Schema.decodeEffect(ManifestFile)(text), (error) =>
+			failed(step, error.message)
+		)
+		return Option.some(manifest)
+	})
+
+/** The members a run of this machine's width asks of `life`'s cluster (settings.ts membersOf). */
+const familySize = (life: Life): number => membersOf(life.cluster.family, testWorkers)
+
+/**
+ * The manifest of `life`'s cluster, refused unless it is one this spec and server made at this machine's width: an
+ * owner, template, extensions or durability of another spec (another repository's cluster on this port), another
+ * server's version (a repin), or another count of members (a machine of another width; `toolchain-pg init --adopt`
+ * grows it).
+ */
+/** The manifest of `life`'s cluster, refused when another spec made it (disagreements). */
+const agreeingMade = (life: Life, manifest: Manifest): Effect.Effect<Manifest, ClusterFailed> => {
+	const differences = disagreements(life.cluster, manifest)
+	return Arr.isReadonlyArrayNonEmpty(differences)
+		? Effect.fail(
+				failed(
+					stepOf(life, `taking the cluster at ${life.state.root}`),
+					`it was made for another spec: ${Arr.join(differences, "; ")}. Name a cluster of its own with ${clusterVariable}=<port>`
+				)
+			)
+		: Effect.succeed(manifest)
+}
+
+const agreeing = (life: Life, manifest: Manifest): Effect.Effect<Manifest, ClusterFailed> => {
+	const step = stepOf(life, `taking the cluster at ${life.state.root}`)
+	const differences = disagreements(life.cluster, manifest)
+	if (Arr.isReadonlyArrayNonEmpty(differences)) {
+		return Effect.flatMap(agreeingMade(life, manifest), () =>
+			Effect.fail(failed(step, "it was made for another spec"))
+		)
+	}
+	if (manifest.server !== life.server) {
+		return Effect.fail(
+			failed(
+				step,
+				`it was made by ${manifest.server}, and its bin directory ${life.bin} runs ${life.server}: make it again with toolchain-pg init --force`
+			)
+		)
+	}
+	if (manifest.members.length !== familySize(life)) {
+		return Effect.fail(
+			failed(
+				step,
+				`it has ${manifest.members.length} member(s), and this machine's width asks ${familySize(life)}: toolchain-pg init --adopt sizes it`
+			)
+		)
+	}
+	return Effect.succeed(manifest)
+}
+
+/** The settings each member of `life`'s cluster holds at a share of `share` workers, on pages of `blockSize` bytes. */
+const settingsOf = (life: Life, share: number, blockSize: number): ReadonlyArray<Setting> => [
+	...sizedSettings(life.cluster, share, blockSize),
+	...fixedSettings(life.cluster)
+]
+
+/** A statement's identifier, quoted: in double quotes, each double quote doubled. */
+const ident = (name: string): string => `"${Str.replaceAll('"', '""')(name)}"`
+
+/** A statement's text literal, quoted: in single quotes, each single quote doubled. */
+const literal = (text: string): string => `'${Str.replaceAll("'", "''")(text)}'`
+
+/** `text` written to `file` for `step`, readable and writable by this user alone when `secret`. */
+const written = (step: Step, file: string, text: string, mode: number) =>
+	Effect.flatMap(FileSystem.FileSystem, (fs) =>
+		Effect.mapError(fs.writeFileString(file, text, { mode }), (error) =>
+			failed(step, error.message)
+		)
+	)
+
+/** The file mode of what only this user may read: the owner's password, a member's state directory. */
+const ownerOnly = 0o600
+
+/** The file mode of what anyone may read: a member's configuration files. */
+const readable = 0o644
+
+/**
+ * A member's state directory made ready for its data: this user's alone, its TLS material (issueTls), and the owner's
+ * password, fresh, which it returns for the owner role's making (owned).
+ */
+const prepared = (
+	member: MemberState,
+	step: Step
+): Effect.Effect<string, ClusterFailed, Platform> =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		const filesFailed = (error: { readonly message: string }) => failed(step, error.message)
+		yield* Effect.forEach(
+			[member.tls, member.log, member.socket],
+			(directory) => Effect.mapError(fs.makeDirectory(directory, { recursive: true }), filesFailed),
+			{ discard: true }
+		)
+		yield* Effect.mapError(fs.chmod(member.state, 0o700), filesFailed)
+		yield* issueTls(member.tls, step)
+		const password = yield* freshPassword(step)
+		yield* written(step, member.passwordFile, `${password}\n`, ownerOnly)
+		return password
+	})
+
+/**
+ * A member's data directory configured as every member's is, sized to a share of `share` workers: its
+ * postgresql.conf given localhost alone, its socket in its state directory, TLS on, its logs in its state directory,
+ * and every setting it holds, after what the file held (a later line wins); its hba, the bootstrap superuser and each
+ * of the spec's peer logins by peer over the socket mapped from this user, every role over hostssl by SCRAM; and its
+ * ident map.
+ */
+const configured = (
+	life: Life,
+	member: MemberState,
+	share: number,
+	step: Step
+): Effect.Effect<void, ClusterFailed, Platform> =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		const filesFailed = (error: { readonly message: string }) => failed(step, error.message)
+		const blockText = yield* succeeded(
+			{ ...step, doing: `${step.doing}: reading its block size` },
+			program(life.bin, "postgres", ["-D", member.data, "-C", "block_size"], {})
+		)
+		const blockSize = Number(Str.trim(blockText))
+		const configuration = Arr.join(
+			[
+				"",
+				"# A local cluster of the toolchain's (@bjornpagen/testing/pg, make.ts). Everything else is PostgreSQL's default.",
+				...Arr.map(
+					[
+						["port", `${member.port}`],
+						["listen_addresses", "localhost"],
+						["unix_socket_directories", member.socket],
+						["ssl", "on"],
+						["ssl_cert_file", `${member.tls}/server.crt`],
+						["ssl_key_file", `${member.tls}/server.key`],
+						["logging_collector", "on"],
+						["log_directory", member.log],
+						["log_filename", "postgresql-%Y-%m-%d.log"]
+					] satisfies ReadonlyArray<Setting>,
+					settingLine
+				),
+				...Arr.map(settingsOf(life, share, blockSize), settingLine),
+				""
+			],
+			"\n"
+		)
+		const conf = `${member.data}/postgresql.conf`
+		const initial = yield* Effect.mapError(fs.readFileString(conf), filesFailed)
+		yield* written(step, conf, `${initial}${configuration}`, ownerOnly)
+		const peers = ["postgres", ...life.cluster.peerLogins]
+		yield* written(
+			step,
+			`${member.data}/pg_hba.conf`,
+			Arr.join(
+				[
+					...Arr.map(peers, (role) => `local   all   ${role}   peer map=admin`),
+					"hostssl all   all        127.0.0.1/32  scram-sha-256",
+					"hostssl all   all        ::1/128       scram-sha-256",
+					""
+				],
+				"\n"
+			),
+			ownerOnly
+		)
+		yield* written(
+			step,
+			`${member.data}/pg_ident.conf`,
+			Arr.join([...Arr.map(peers, (role) => `admin   ${osUser()}   ${role}`), ""], "\n"),
+			ownerOnly
+		)
+	})
+
+/**
+ * What the bootstrap superuser makes in a started member, which every member holds: the owner role with `password`,
+ * its grants, the template and its extensions, and the owner's own database, the template closed to connections.
+ */
+const owned = (
+	life: Life,
+	member: MemberState,
+	password: string,
+	step: Step
+): Effect.Effect<void, ClusterFailed, Platform> =>
+	Effect.gen(function* () {
+		const owner = ident(life.cluster.owner)
+		const template = ident(life.cluster.template)
+		yield* adminSql(
+			life.bin,
+			member,
+			"postgres",
+			[
+				`CREATE ROLE ${owner} LOGIN CREATEDB CREATEROLE REPLICATION PASSWORD ${literal(password)}`,
+				`GRANT SET ON PARAMETER deadlock_timeout TO ${owner}`,
+				`GRANT pg_read_all_stats TO ${owner} WITH ADMIN TRUE, INHERIT FALSE, SET TRUE`,
+				`GRANT pg_signal_backend TO ${owner}`,
+				`CREATE DATABASE ${template} OWNER ${owner} TEMPLATE template0 ENCODING 'UTF8' LOCALE_PROVIDER builtin BUILTIN_LOCALE 'C.UTF-8' LOCALE 'C.UTF-8' IS_TEMPLATE true`
+			],
+			{ ...step, doing: `${step.doing}: its owner and template` }
+		)
+		yield* Arr.match(
+			Arr.flatMap(life.cluster.extensions, ({ name, schema }) => [
+				`CREATE SCHEMA ${ident(schema)} AUTHORIZATION ${owner}`,
+				`CREATE EXTENSION ${ident(name)} SCHEMA ${ident(schema)}`
+			]),
+			{
+				onEmpty: () => Effect.void,
+				onNonEmpty: (statements) =>
+					Effect.asVoid(
+						adminSql(life.bin, member, life.cluster.template, statements, {
+							...step,
+							doing: `${step.doing}: its template's extensions`
+						})
+					)
+			}
+		)
+		yield* adminSql(
+			life.bin,
+			member,
+			"postgres",
+			[
+				`CREATE DATABASE ${owner} OWNER ${owner} TEMPLATE ${template}`,
+				`ALTER DATABASE ${template} ALLOW_CONNECTIONS false`
+			],
+			{ ...step, doing: `${step.doing}: its owner's database` }
+		)
+	})
+
+/**
+ * Makes one member of `life`'s cluster at `member`, sized to a share of `share` workers, on its port, which must be
+ * free: its state (prepared), its data directory (initdb: UTF-8, the builtin C.UTF-8 locale, peer authentication on
+ * the socket and none over TCP until its hba), its configuration (configured), its start, and what the superuser makes
+ * in it (owned).
+ */
+const makeMember = (
+	life: Life,
+	member: MemberState,
+	share: number
+): Effect.Effect<void, ClusterFailed | PortLost, Platform> =>
+	Effect.gen(function* () {
+		const step = stepOf(life, `making its member on port ${member.port} at ${member.state}`)
+		yield* Effect.mapError(portFree(member.port), (error) => failed(step, error.message))
+		const password = yield* prepared(member, step)
+		yield* succeeded(
+			{ ...step, doing: `${step.doing}: initdb` },
+			program(
+				life.bin,
+				"initdb",
+				[
+					"-D",
+					member.data,
+					"-U",
+					"postgres",
+					"-E",
+					"UTF8",
+					"--locale-provider=builtin",
+					"--builtin-locale=C.UTF-8",
+					"--locale=C.UTF-8",
+					"--auth-local=peer",
+					"--auth-host=reject"
+				],
+				{}
+			)
+		)
+		yield* configured(life, member, share, step)
+		yield* start(life.bin, member, { ...step, doing: `${step.doing}: starting it` })
+		yield* owned(life, member, password, step)
+	})
+
+/** A server's major version as `postgres --version` prints it ("postgres (PostgreSQL) 18.6 ..."), none if it prints none. */
+const majorOf = (server: string): Option.Option<string> =>
+	Option.flatMap(Option.fromNullishOr(regex("\\(PostgreSQL\\) ([0-9]+)").exec(server)), (found) =>
+		Option.fromUndefinedOr(found[1])
+	)
+
+/**
+ * Adopts a cluster another maker made as `life`'s first member, its data kept where it lies: the data directory
+ * `data` of the spec's major version (its PG_VERSION) is refused otherwise; its postmaster, when it runs, is stopped
+ * (pg_ctl's fast mode, its sessions rolled back); the member's state is made (prepared) with its `data` a symbolic link
+ * to `data`; the directory is configured as every member is (configured), its hba and ident replaced; it is started on
+ * the cluster's port, and the superuser makes in it what every member holds (owned). Nothing of its databases, roles or
+ * rows is touched. A member's data that lies outside its state directory is never removed by these commands: a
+ * removal takes the link alone.
+ */
+const adoptMember = (
+	life: Life,
+	data: string,
+	share: number
+): Effect.Effect<void, ClusterFailed, Platform> =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		const member = life.state.member(life.state.port)
+		const step = stepOf(life, `adopting ${data} as its member on port ${member.port}`)
+		const filesFailed = (error: { readonly message: string }) => failed(step, error.message)
+		const versionText = yield* Effect.mapError(fs.readFileString(`${data}/PG_VERSION`), filesFailed)
+		const version = Str.trim(versionText)
+		if (!Option.exists(majorOf(life.server), (major) => major === version)) {
+			return yield* failed(
+				step,
+				`its data is PostgreSQL ${version}'s, and its bin directory runs ${life.server}`
+			)
+		}
+		const foreign = { ...member, data }
+		if (yield* running(life.bin, foreign)) {
+			yield* stop(life.bin, foreign, "fast", {
+				...step,
+				doing: `${step.doing}: stopping its postmaster`
+			})
+		}
+		const password = yield* prepared(member, step)
+		yield* Effect.mapError(fs.symlink(data, member.data), filesFailed)
+		yield* configured(life, member, share, step)
+		yield* Effect.catchTag(
+			start(life.bin, member, { ...step, doing: `${step.doing}: starting it` }),
+			"PortLost",
+			(lost) => Effect.fail(failed(step, `another process holds its port: ${lost.message}`))
+		)
+		yield* owned(life, member, password, step)
+	})
+
+/** Writes `life`'s manifest for its members `ports`, the first its name: the last step of a cluster's making. */
+const record = (
+	life: Life,
+	ports: Arr.NonEmptyReadonlyArray<number>
+): Effect.Effect<void, ClusterFailed, FileSystem.FileSystem> =>
+	Effect.flatMap(
+		Effect.mapError(
+			Schema.encodeEffect(ManifestFile)({
+				...madeAs(life.cluster),
+				server: life.server,
+				members: ports
+			}),
+			(error) => failed(stepOf(life, "writing its manifest"), error.message)
+		),
+		(text) =>
+			written(stepOf(life, "writing its manifest"), life.state.manifest, `${text}\n`, readable)
+	)
+
+/**
+ * Makes members of `life`'s cluster after `made`, the members it already has, until it has `size`: each on a port free
+ * at that moment and none of the others' (ports.ts freePort), none derived from another, each sized to its share of the
+ * family; then records the family (record). A port another process took between its finding and the member's start
+ * (PortLost) is let go, the member's directory removed, and another found: no port is the member's name but its own.
+ */
+const grow = (
+	life: Life,
+	made: Arr.NonEmptyReadonlyArray<number>,
+	size: number
+): Effect.Effect<void, ClusterFailed, Platform> => {
+	const share = shareOf(testWorkers, size)
+	const more = (
+		ports: Arr.NonEmptyReadonlyArray<number>
+	): Effect.Effect<Arr.NonEmptyReadonlyArray<number>, ClusterFailed, Platform> =>
+		ports.length >= size
+			? Effect.succeed(ports)
+			: Effect.flatMap(
+					Effect.mapError(freePort(ports), (error) =>
+						failed(stepOf(life, "finding a free port for a member"), error.message)
+					),
+					(port) =>
+						Effect.matchEffect(makeMember(life, life.state.member(port), share), {
+							onFailure: (failure) =>
+								failure._tag === "PortLost"
+									? Effect.andThen(removeMember(life, life.state.member(port)), more(ports))
+									: Effect.fail(failure),
+							onSuccess: () => more(Arr.append(ports, port))
+						})
+				)
+	return Effect.flatMap(more(made), (ports) => record(life, ports))
+}
+
+/**
+ * Makes `life`'s whole cluster: its first member on its name's port, then the rest of its family (grow). The first
+ * member's port is the cluster's name, so another process holding it fails the making.
+ */
+const makeCluster = (life: Life): Effect.Effect<void, ClusterFailed, Platform> =>
+	Effect.andThen(
+		Effect.catchTag(
+			makeMember(life, life.state.member(life.state.port), shareOf(testWorkers, familySize(life))),
+			"PortLost",
+			(lost) =>
+				Effect.fail(
+					failed(stepOf(life, `starting its first member on its port ${lost.port}`), lost.message)
+				)
+		),
+		grow(life, [life.state.port], familySize(life))
+	)
+
+/** Removes one member's state directory, its postmaster stopped at once when it runs. */
+const removeMember = (
+	life: Life,
+	member: MemberState
+): Effect.Effect<void, ClusterFailed, Platform> =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		const step = stepOf(life, `removing its member at ${member.state}`)
+		if (yield* running(life.bin, member)) {
+			yield* stop(life.bin, member, "immediate", step)
+		}
+		yield* Effect.mapError(fs.remove(member.state, { recursive: true, force: true }), (error) =>
+			failed(step, error.message)
+		)
+	})
+
+/**
+ * Removes `life`'s cluster whole, whatever it holds: each member directory's postmaster stopped at once (pg_ctl's
+ * immediate mode) and its state directory removed, the members a failed make left among them, which no manifest
+ * records.
+ */
+const removeCluster = (life: Life): Effect.Effect<void, ClusterFailed, Platform> =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		const step = stepOf(life, `removing ${life.state.root}`)
+		const filesFailed = (error: { readonly message: string }) => failed(step, error.message)
+		if (!(yield* Effect.mapError(fs.exists(life.state.root), filesFailed))) {
+			return
+		}
+		const names = yield* Effect.mapError(fs.readDirectory(life.state.root), filesFailed)
+		yield* Effect.forEach(
+			Arr.filter(names, (name) => `${Number(name)}` === name),
+			(name) => removeMember(life, life.state.member(Number(name))),
+			{ discard: true }
+		)
+		yield* Effect.mapError(
+			fs.remove(life.state.root, { recursive: true, force: true }),
+			filesFailed
+		)
+	})
+
+/** Reads `member`'s facts as a client reaches it (PgMember) from its state directory. */
+const memberOf = (
+	life: Life,
+	member: MemberState
+): Effect.Effect<PgMember, ClusterFailed, FileSystem.FileSystem> =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		const step = stepOf(life, `reading its member on port ${member.port}`)
+		const read = (file: string) =>
+			Effect.mapError(fs.readFileString(file), (error) => failed(step, error.message))
+		const caFile = `${member.tls}/ca.crt`
+		const [password, ca, wrongCa] = yield* Effect.all([
+			read(member.passwordFile),
+			read(caFile),
+			read(`${member.tls}/wrong-ca.crt`)
+		])
+		return {
+			name: `${member.port}`,
+			port: member.port,
+			socket: member.socket,
+			owner: life.cluster.owner,
+			password: Redacted.make(Str.trim(password)),
+			passwordFile: member.passwordFile,
+			ca,
+			caFile,
+			wrongCa
+		}
+	})
+
+/**
+ * Brings `member` up as it is: its TLS material issued again once any certificate has expired (read again by a running
+ * postmaster at a reload), and its postmaster started when it does not run (server.ts running). A member another
+ * process started is taken as it is.
+ */
+const upMember = (life: Life, member: MemberState): Effect.Effect<void, ClusterFailed, Platform> =>
+	Effect.gen(function* () {
+		const step = stepOf(life, `starting its member on port ${member.port}`)
+		const up = yield* running(life.bin, member)
+		if (!(yield* tlsCurrent(member.tls))) {
+			yield* issueTls(member.tls, step)
+			if (up) {
+				yield* reload(life.bin, member, step)
+			}
+		}
+		if (!up) {
+			yield* Effect.catchTag(start(life.bin, member, step), "PortLost", (lost) =>
+				Effect.fail(failed(step, `another process holds its port: ${lost.message}`))
+			)
+		}
+	})
+
+/** The members of `manifest` in member order, each as its state directory holds it. */
+const membersIn = (life: Life, manifest: Manifest): Arr.NonEmptyReadonlyArray<MemberState> =>
+	Arr.map(manifest.members, life.state.member)
+
+/**
+ * `life`'s cluster up, under its lock: made whole when it has no manifest (a throwaway cluster a failed make left in
+ * part made again from nothing, a kept one's refused, since its data may be a person's), else its manifest taken
+ * (agreeing) and every member brought up as it is (upMember); its members' facts in member order.
+ */
+const upCluster = (
+	life: Life
+): Effect.Effect<Arr.NonEmptyReadonlyArray<PgMember>, ClusterFailed, Platform> =>
+	underLock(
+		life,
+		Effect.gen(function* () {
+			const fs = yield* FileSystem.FileSystem
+			const step = stepOf(life, `bringing it up at ${life.state.root}`)
+			const recorded = yield* manifestOf(life)
+			if (Option.isNone(recorded)) {
+				const partial = yield* Effect.mapError(fs.exists(life.state.root), (error) =>
+					failed(step, error.message)
+				)
+				if (partial && life.cluster.durability === "kept") {
+					return yield* failed(
+						step,
+						"it holds members but no manifest, a make that did not finish: toolchain-pg init --force makes it again"
+					)
+				}
+				yield* removeCluster(life)
+				yield* makeCluster(life)
+			}
+			const manifest = yield* Effect.flatMap(manifestOf(life), (made) =>
+				Option.match(made, {
+					onNone: () => Effect.fail(failed(step, "it has no manifest after its making")),
+					onSome: (found) => agreeing(life, found)
+				})
+			)
+			const members = membersIn(life, manifest)
+			yield* Effect.forEach(members, (member) => upMember(life, member), { discard: true })
+			return yield* Effect.forEach(members, (member) => memberOf(life, member))
+		})
+	)
+
+/**
+ * `cluster` up and its members' facts, in member order: what a need of the runner opens the first time it reaches the
+ * cluster, and `toolchain-pg start`. Made whole when it does not exist, its members started when they do not run, and a
+ * running cluster taken as it is (upCluster), all under its lock.
+ */
+export const clusterUp = (
+	cluster: LocalCluster
+): Effect.Effect<Arr.NonEmptyReadonlyArray<PgMember>, ClusterFailed, Platform> =>
+	Effect.flatMap(lifeOf(cluster), upCluster)
+
+/** The members `cluster`'s manifest records, refused when it records none: what every command but init and start acts on. */
+const recordedMembers = (
+	life: Life,
+	doing: string
+): Effect.Effect<Arr.NonEmptyReadonlyArray<MemberState>, ClusterFailed, FileSystem.FileSystem> =>
+	Effect.flatMap(manifestOf(life), (made) =>
+		Option.match(made, {
+			onNone: () =>
+				Effect.fail(
+					failed(
+						stepOf(life, doing),
+						`no cluster is recorded at ${life.state.manifest}: toolchain-pg start makes one`
+					)
+				),
+			onSome: (manifest) => Effect.succeed(membersIn(life, manifest))
+		})
+	)
+
+/**
+ * How `toolchain-pg init` makes a cluster: `create` one where none exists; `force` one again over what exists;
+ * `adopt` the recorded members, sized again, the family grown; or `adoptFrom` a cluster another maker made, its data
+ * directory kept where it lies (adoptMember).
+ */
+export type InitMode =
+	| Readonly<{ kind: "create" }>
+	| Readonly<{ kind: "force" }>
+	| Readonly<{ kind: "adopt" }>
+	| Readonly<{ kind: "adoptFrom"; data: string }>
+
+/**
+ * Sizes the running `member` to a share of `share` workers and gives it the settings every member holds, then
+ * restarts it, since max_connections and shared_buffers take effect only at a start: so a family that grows keeps the
+ * memory it had, divided over more members, never a kept member's old share beside the new members' smaller ones.
+ */
+const resizeMember = (
+	life: Life,
+	member: MemberState,
+	share: number
+): Effect.Effect<void, ClusterFailed, Platform> =>
+	Effect.gen(function* () {
+		const step = stepOf(life, `sizing its member on port ${member.port}`)
+		yield* upMember(life, member)
+		const [blockSize] = yield* adminSql(life.bin, member, "postgres", ["SHOW block_size"], step)
+		const settings = settingsOf(life, share, Number(blockSize))
+		yield* Arr.match(settings, {
+			onEmpty: () => Effect.void,
+			onNonEmpty: (nonEmpty) =>
+				Effect.asVoid(
+					adminSql(
+						life.bin,
+						member,
+						"postgres",
+						Arr.map(nonEmpty, (setting) => `ALTER SYSTEM SET ${settingLine(setting)}`),
+						step
+					)
+				)
+		})
+		yield* restart(life.bin, member, step)
+	})
+
+/**
+ * `toolchain-pg init`: makes `cluster` whole, under its lock. `create` refuses a cluster that exists, recorded or in
+ * part; `force` removes what exists first, refused unless it and the spec are throwaway (throwaway); `adoptFrom` takes
+ * a cluster another maker made as its first member, its data where it lies (adoptMember), and grows its family;
+ * `adopt` keeps the recorded members, their data
+ * untouched, sizes each to its share of this machine's family (resizeMember) and makes the members the family's size
+ * asks beyond them (grow): how a family made on a narrower machine, or before a spec's sizing changed, becomes this
+ * machine's. A family recorded with more members than its size is refused.
+ */
+export const initCluster = (
+	cluster: LocalCluster,
+	mode: InitMode
+): Effect.Effect<Arr.NonEmptyReadonlyArray<PgMember>, ClusterFailed, Platform> =>
+	Effect.flatMap(lifeOf(cluster), (life) =>
+		Effect.andThen(
+			underLock(
+				life,
+				Effect.gen(function* () {
+					const fs = yield* FileSystem.FileSystem
+					const step = stepOf(life, `init (${mode.kind}) at ${life.state.root}`)
+					const exists = yield* Effect.mapError(fs.exists(life.state.root), (error) =>
+						failed(step, error.message)
+					)
+					switch (mode.kind) {
+						case "create": {
+							if (exists) {
+								return yield* failed(
+									step,
+									"a cluster exists there: pass --force to remove and make it again, or --adopt to keep it"
+								)
+							}
+							return yield* makeCluster(life)
+						}
+						case "force": {
+							yield* throwaway(life, step.doing)
+							yield* removeCluster(life)
+							return yield* makeCluster(life)
+						}
+						case "adoptFrom": {
+							if (exists) {
+								return yield* failed(step, "a cluster exists there already: nothing to adopt it as")
+							}
+							const size = familySize(life)
+							yield* adoptMember(life, mode.data, shareOf(testWorkers, size))
+							return yield* grow(life, [life.state.port], size)
+						}
+						case "adopt": {
+							const members = yield* recordedMembers(life, step.doing)
+							const size = familySize(life)
+							if (members.length > size) {
+								return yield* failed(
+									step,
+									`it records ${members.length} members, more than this machine's family of ${size}`
+								)
+							}
+							yield* Effect.forEach(
+								members,
+								(member) => resizeMember(life, member, shareOf(testWorkers, size)),
+								{ discard: true }
+							)
+							return yield* grow(
+								life,
+								Arr.map(members, (member) => member.port),
+								size
+							)
+						}
+					}
+				})
+			),
+			upCluster(life)
+		)
+	)
+
+/** `toolchain-pg stop`: stops every recorded member that runs, under the cluster's lock. */
+export const stopCluster = (cluster: LocalCluster): Effect.Effect<void, ClusterFailed, Platform> =>
+	Effect.flatMap(lifeOf(cluster), (life) =>
+		underLock(
+			life,
+			Effect.flatMap(recordedMembers(life, "stopping it"), (members) =>
+				Effect.forEach(
+					members,
+					(member) =>
+						Effect.flatMap(running(life.bin, member), (up) =>
+							up
+								? stop(life.bin, member, "fast", stepOf(life, `stopping ${member.port}`))
+								: Effect.void
+						),
+					{ discard: true }
+				)
+			)
+		)
+	)
+
+/** A member's state as `toolchain-pg status` reports it: its port, and whether its postmaster runs. */
+export type MemberStatus = Readonly<{ port: number; running: boolean }>
+
+/** `toolchain-pg status`: whether each recorded member's postmaster runs, in member order. */
+export const clusterStatus = (
+	cluster: LocalCluster
+): Effect.Effect<ReadonlyArray<MemberStatus>, ClusterFailed, Platform> =>
+	Effect.flatMap(lifeOf(cluster), (life) =>
+		Effect.flatMap(recordedMembers(life, "reading its status"), (members) =>
+			Effect.forEach(members, (member) =>
+				Effect.map(running(life.bin, member), (up) => ({ port: member.port, running: up }))
+			)
+		)
+	)
+
+/**
+ * Refuses an operation that drops data unless the spec is throwaway and the cluster recorded on its port was made for
+ * it (agreeingMade), a throwaway one: so no spec on a kept cluster's port (TOOLCHAIN_PG_CLUSTER naming it) drops a
+ * person's data, whatever durability it states. A port with no manifest holds at most a make that did not finish, whose data
+ * removeCluster may remove: a kept cluster's adopted data lies outside its state, behind a link a removal takes alone.
+ */
+const throwaway = (
+	life: Life,
+	doing: string
+): Effect.Effect<void, ClusterFailed, FileSystem.FileSystem> =>
+	life.cluster.durability === "throwaway"
+		? Effect.flatMap(manifestOf(life), (recorded) =>
+				Option.match(recorded, {
+					onNone: () => Effect.void,
+					onSome: (manifest) => Effect.asVoid(agreeingMade(life, manifest))
+				})
+			)
+		: Effect.fail(
+				failed(stepOf(life, doing), "a kept cluster's data is never dropped by these commands")
+			)
+
+/** `toolchain-pg destroy`: removes a throwaway cluster whole (removeCluster), under its lock. */
+export const destroyCluster = (
+	cluster: LocalCluster
+): Effect.Effect<void, ClusterFailed, Platform> =>
+	Effect.flatMap(lifeOf(cluster), (life) =>
+		underLock(life, Effect.andThen(throwaway(life, "destroying it"), removeCluster(life)))
+	)
+
+/**
+ * `toolchain-pg reset`: returns every member of a throwaway cluster to what its making left: every database but
+ * PostgreSQL's own, the template and the owner's dropped, sessions and all, and every role but the bootstrap
+ * superuser, the owner and PostgreSQL's own, what it owns in every database dropped first.
+ */
+export const resetCluster = (cluster: LocalCluster): Effect.Effect<void, ClusterFailed, Platform> =>
+	Effect.flatMap(lifeOf(cluster), (life) =>
+		Effect.andThen(
+			underLock(life, throwaway(life, "resetting it")),
+			Effect.flatMap(recordedMembers(life, "resetting it"), (members) =>
+				Effect.forEach(
+					members,
+					(member) =>
+						Effect.gen(function* () {
+							const step = stepOf(life, `resetting ${member.port}`)
+							const kept = Arr.join(
+								Arr.map(
+									["postgres", "template0", "template1", life.cluster.template, life.cluster.owner],
+									literal
+								),
+								", "
+							)
+							const databases = yield* adminSql(
+								life.bin,
+								member,
+								"postgres",
+								[`SELECT datname FROM pg_catalog.pg_database WHERE datname NOT IN (${kept})`],
+								step
+							)
+							yield* Effect.forEach(
+								databases,
+								(database) =>
+									adminSql(
+										life.bin,
+										member,
+										"postgres",
+										[`DROP DATABASE ${ident(database)} WITH (FORCE)`],
+										step
+									),
+								{ discard: true }
+							)
+							const roles = yield* adminSql(
+								life.bin,
+								member,
+								"postgres",
+								[
+									`SELECT rolname FROM pg_catalog.pg_roles WHERE NOT pg_catalog.starts_with(rolname, 'pg_') AND rolname NOT IN ('postgres', ${literal(life.cluster.owner)})`
+								],
+								step
+							)
+							const connectable = yield* adminSql(
+								life.bin,
+								member,
+								"postgres",
+								["SELECT datname FROM pg_catalog.pg_database WHERE datallowconn"],
+								step
+							)
+							yield* Effect.forEach(
+								roles,
+								(role) =>
+									Effect.andThen(
+										Effect.forEach(
+											connectable,
+											(database) =>
+												adminSql(
+													life.bin,
+													member,
+													database,
+													[`DROP OWNED BY ${ident(role)}`],
+													step
+												),
+											{ discard: true }
+										),
+										adminSql(life.bin, member, "postgres", [`DROP ROLE ${ident(role)}`], step)
+									),
+								{ discard: true }
+							)
+						}),
+					{ discard: true }
+				)
+			)
+		)
+	)
+
+/** What a command that runs psql on the first member needs: the server's bin directory, and the member's facts. */
+export type FirstMember = Readonly<{ bin: string; member: PgMember; state: MemberState }>
+
+/** The first recorded member of `cluster`, up, with the server's bin directory: what psql, admin and env act on. */
+export const firstMember = (
+	cluster: LocalCluster
+): Effect.Effect<FirstMember, ClusterFailed, Platform> =>
+	Effect.flatMap(lifeOf(cluster), (life) =>
+		Effect.map(upCluster(life), (members) => ({
+			bin: life.bin,
+			member: Arr.headNonEmpty(members),
+			state: life.state.member(Arr.headNonEmpty(members).port)
+		}))
+	)
+
+/** What the doctor checks of `cluster`: its life, its recorded members, each up, and the settings each must hold. */
+export type Examined = Readonly<{
+	bin: string
+	server: string
+	members: Arr.NonEmptyReadonlyArray<Readonly<{ state: MemberState; member: PgMember }>>
+	sized: ReadonlyArray<Setting>
+	fixed: Arr.NonEmptyReadonlyArray<Setting>
+	owner: string
+	template: string
+	extensions: LocalCluster["extensions"]
+}>
+
+/** `cluster` as the doctor examines it: up (clusterUp), with the settings each member must hold at this machine's width. */
+export const examined = (cluster: LocalCluster): Effect.Effect<Examined, ClusterFailed, Platform> =>
+	Effect.flatMap(lifeOf(cluster), (life) =>
+		Effect.gen(function* () {
+			const members = yield* upCluster(life)
+			const first = life.state.member(Arr.headNonEmpty(members).port)
+			const [blockSize] = yield* adminSql(
+				life.bin,
+				first,
+				"postgres",
+				["SHOW block_size"],
+				stepOf(life, "reading its block size")
+			)
+			return {
+				bin: life.bin,
+				server: life.server,
+				members: Arr.map(members, (member) => ({ state: life.state.member(member.port), member })),
+				sized: sizedSettings(cluster, shareOf(testWorkers, members.length), Number(blockSize)),
+				fixed: fixedSettings(cluster),
+				owner: cluster.owner,
+				template: cluster.template,
+				extensions: cluster.extensions
+			}
+		})
+	)

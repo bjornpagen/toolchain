@@ -6,6 +6,7 @@
 	"sideEffects": false,
 	"imports": {
 		"#package.json": "./package.json",
+		"#pg.config.ts": "./pg.config.ts",
 		"#codemod/*": "./scripts/codemod/*",
 		"#*": "./src/*"
 	},
@@ -41,6 +42,8 @@
 		"./vitest/reporter": "./src/vitest/reporter.ts",
 		"./vitest/run": "./src/vitest/run.ts",
 		"./pattern": "./src/pattern.ts",
+		"./pg": "./src/pg/pg.ts",
+		"./pg-session": "./src/pg/session.ts",
 		"./property": "./src/property.ts",
 		"./runner": "./src/runner/config.ts",
 		"./resources": "./src/resources/resources.ts",
@@ -49,6 +52,7 @@
 		"./vitest.config": "./vitest.config.ts"
 	},
 	"bin": {
+		"toolchain-pg": "./scripts/toolchain-pg.sh",
 		"toolchain-test": "./scripts/toolchain-test.sh"
 	},
 	"scripts": {
@@ -57,6 +61,7 @@
 		"test": "toolchain-test run",
 		"bench": "vitest bench --run",
 		"mutate": "toolchain-test mutate",
+		"pg": "toolchain-pg",
 		"codemod": "node scripts/codemod/main.ts"
 	},
 	"dependencies": {
@@ -71,12 +76,16 @@
 	},
 	"peerDependencies": {
 		"oxlint": "^1.93.0",
+		"pg": "^8.23.1",
 		"typescript": "^7.1.0-beta",
 		"vite": "^8.3.8",
 		"vitest": "^5.1.0"
 	},
 	"peerDependenciesMeta": {
 		"oxlint": {
+			"optional": true
+		},
+		"pg": {
 			"optional": true
 		},
 		"typescript": {

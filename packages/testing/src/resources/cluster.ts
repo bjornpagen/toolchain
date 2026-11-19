@@ -12,18 +12,11 @@ import {
 	Scope,
 	String as Str
 } from "effect"
+import { clusterUp, type PgMember, type Platform } from "#pg/make.ts"
+import type { LocalCluster } from "#pg/spec.ts"
 import { NeedFailed, WorkerIndex } from "#runner/services.ts"
 
-/**
- * A member of a repository's PostgreSQL cluster: one postmaster, where templates are built and cloned. A cluster is one
- * member or a family of them (grizzle's), and a worker reaches one member for its life. A repository whose checks
- * connect to a case's database by more than the member's name (a port, a CA, a password) adds those fields by
- * augmenting this interface: `declare module "@bjornpagen/testing/resources" { interface PgMember { port: number } }`.
- */
-export interface PgMember {
-	/** The member's name, unique among its cluster's members for the member's life (grizzle: its port). */
-	readonly name: string
-}
+export type { PgMember } from "#pg/make.ts"
 
 /**
  * A session on one member as the cluster's owner role (the role that may CREATE DATABASE and owns what it creates),
@@ -63,16 +56,16 @@ export type DatabaseName = string & Brand.Brand<"DatabaseName">
 
 /**
  * What a repository states about its cluster, which `PgCluster.layer` turns into the runner service its databases come
- * from: the prefix of every name this library mints there; its members (the first a worker of index i reaches is
- * member i mod their count, so a run's workers spread over them evenly); the database a template built from the
- * cluster itself copies (IS_TEMPLATE, never connected to, grizzle_template); the owner's own database, where this
- * library's sessions and advisory locks live; and how to open a session as the owner on a member in a database.
+ * from: the prefix of every name this library mints there; its local cluster (@bjornpagen/testing/pg's LocalCluster),
+ * which the layer makes and starts the first time a need reaches it, whose members a run's workers spread over (the
+ * first a worker of index i reaches is member i mod their count), whose template every template built from the cluster
+ * itself copies (IS_TEMPLATE, never connected to), and in whose owner's own database this library's sessions and
+ * advisory locks live; and how to open a session as the owner on a member in a database, over the repository's own
+ * client, from the member's facts (its port, CA and owner's password).
  */
 export type PgClusterSpec = Readonly<{
 	prefix: DatabasePrefix
-	members: Effect.Effect<Arr.NonEmptyReadonlyArray<PgMember>, NeedFailed>
-	base: string
-	maintenance: string
+	cluster: LocalCluster
 	connect: (member: PgMember, database: string) => Effect.Effect<PgSession, NeedFailed, Scope.Scope>
 }>
 
@@ -101,7 +94,7 @@ export type PgClusterShape = Readonly<{
 	base: string
 	maintenance: string
 	connect: PgClusterSpec["connect"]
-	/** The cluster's members, read once, the first time a need asks. */
+	/** The cluster's members, made and started when they are not (pg/make.ts clusterUp) and read once, the first time a need asks. */
 	members: Effect.Effect<Arr.NonEmptyReadonlyArray<PgMember>, NeedFailed>
 	/** The member a worker reaches: worker i of a run on member i mod the members' count. */
 	memberOf: (
@@ -173,7 +166,7 @@ const openOwner = (
 	scope: Scope.Scope
 ): Effect.Effect<Owner, NeedFailed> =>
 	Effect.gen(function* () {
-		const session = yield* Scope.provide(spec.connect(member, spec.maintenance), scope)
+		const session = yield* Scope.provide(spec.connect(member, spec.cluster.owner), scope)
 		const key = ownerKey(
 			(yield* single(
 				session,
@@ -192,20 +185,26 @@ export class PgCluster extends Context.Service<PgCluster, PgClusterShape>()(
 	/**
 	 * The service a repository's runner config provides (its `layer`), built once per worker the first time a case
 	 * there opens a need: it reads nothing then, so a worker whose needs use no database never reaches the cluster; its
-	 * members are read the first time a need asks, and an owner per member opened when the worker first reaches it,
-	 * held until the worker ends.
+	 * members are made and started when they are not and read the first time a need asks (pg/make.ts clusterUp, under
+	 * the cluster's lock, whose wait is declared to the worker's guards), and an owner per member opened when the worker
+	 * first reaches it, held until the worker ends.
 	 */
-	static readonly layer = (spec: PgClusterSpec): Layer.Layer<PgCluster> =>
+	static readonly layer = (spec: PgClusterSpec): Layer.Layer<PgCluster, never, Platform> =>
 		Layer.effect(
 			PgCluster,
 			Effect.gen(function* () {
 				const scope = yield* Effect.scope
-				const members = yield* Effect.cached(spec.members)
+				const platform = yield* Effect.context<Platform>()
+				const members = yield* Effect.cached(
+					Effect.mapError(Effect.provideContext(clusterUp(spec.cluster), platform), (failure) =>
+						NeedFailed.make({ need: "the local cluster", message: failure.message })
+					)
+				)
 				const owners = new Map<string, Deferred.Deferred<Owner, NeedFailed>>()
 				return {
 					prefix: spec.prefix,
-					base: spec.base,
-					maintenance: spec.maintenance,
+					base: spec.cluster.template,
+					maintenance: spec.cluster.owner,
 					connect: spec.connect,
 					members,
 					memberOf: (worker) =>

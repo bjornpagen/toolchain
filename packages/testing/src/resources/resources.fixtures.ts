@@ -1,24 +1,12 @@
-import { regex } from "arkregex"
-import {
-	Array as Arr,
-	Brand,
-	Config,
-	Context,
-	Effect,
-	type Layer,
-	Option,
-	Ref,
-	Result,
-	type Scope,
-	String as Str
-} from "effect"
-import pg from "pg"
+import * as NodeServices from "@effect/platform-node/NodeServices"
+import { Array as Arr, Brand, Context, Effect, Layer, Option, Ref, type Scope } from "effect"
+import testingCluster from "#pg.config.ts"
+import { pgOwnerSession } from "#pg/session.ts"
 import type { Need } from "#property.ts"
 import {
 	DatabasePrefix,
 	PgCluster,
 	type PgClusterSpec,
-	type PgSession,
 	quoteIdent,
 	required,
 	run,
@@ -28,144 +16,23 @@ import {
 } from "#resources/cluster.ts"
 import type { TemplateDatabase } from "#resources/database.ts"
 import { type DatabaseTemplate, Template } from "#resources/template.ts"
-import { ModuleClosure, NeedFailed, WorkerIndex } from "#runner/services.ts"
+import { ModuleClosure, type NeedFailed, WorkerIndex } from "#runner/services.ts"
 
 /** A database name the fixture read back from the cluster. */
 const databaseNameOf = Brand.nominal<DatabaseName>()
 
-/** A failure of the fixture cluster's driver, as the need it failed. */
-const failed = (cause: unknown): NeedFailed =>
-	NeedFailed.make({
-		need: "fixture cluster",
-		message: Error.isError(cause) ? cause.message : String(cause)
-	})
-
 /**
- * A host libpq's environment may name for the fixture's cluster: one only this machine answers on, a Unix socket's
- * directory (an absolute path) or a loopback address (localhost, ::1, or an IPv4 address in 127.0.0.0/8). Parsed once
- * from PGHOST before anything connects, so no stray environment can point a property, or collection, at another
- * machine's server.
- */
-export type LocalHost =
-	| Readonly<{ kind: "socket"; directory: string }>
-	| Readonly<{ kind: "loopback"; address: string }>
-
-/** An IPv4 address in dotted decimal, its four octets captured. */
-const dottedQuad = regex("^([0-9]{1,3})\\.([0-9]{1,3})\\.([0-9]{1,3})\\.([0-9]{1,3})$")
-
-/**
- * Whether `host` is an IPv4 address in 127.0.0.0/8: four decimal octets, none above 255, the first 127.
- *
- * @formatConstant IPv4's dotted decimal: four octets of 0 to 255; 127.0.0.0/8 is loopback (RFC 1122, 3.2.1.3)
- */
-const loopbackQuad = (host: string): boolean =>
-	Option.exists(Option.fromNullishOr(dottedQuad.exec(host)), (match) => {
-		const octets = Arr.map([match[1], match[2], match[3], match[4]], Number)
-		return (
-			octets[0] === 127 && Arr.every(octets, (octet) => Number.isInteger(octet) && octet <= 255)
-		)
-	})
-
-/** The local host `host` names, or NeedFailed naming it when it names any other machine's server. */
-export const localHostOf = (host: string): Result.Result<LocalHost, NeedFailed> => {
-	if (Str.startsWith("/")(host)) {
-		return Result.succeed({ kind: "socket", directory: host })
-	}
-	if (host === "localhost" || host === "::1" || loopbackQuad(host)) {
-		return Result.succeed({ kind: "loopback", address: host })
-	}
-	return Result.fail(
-		NeedFailed.make({
-			need: "fixture cluster",
-			message: `PGHOST names ${host === "" ? "no host" : host}, which is no Unix socket directory and no loopback address: the fixture's cluster is this machine's alone`
-		})
-	)
-}
-
-/** Where the fixture's cluster is, from libpq's environment: a local host, the port, and the role to log in as. */
-type Target = Readonly<{ host: LocalHost; port: string; user: string }>
-
-/**
- * The fixture's cluster as libpq's environment names it, read and refused (localHostOf) before every member's reading
- * and every connection.
- */
-const target: Effect.Effect<Target, NeedFailed> = Effect.gen(function* () {
-	const host = yield* Config.String("PGHOST")
-	const port = yield* Config.String("PGPORT")
-	const user = yield* Config.String("PGUSER")
-	return { host, port, user }
-}).pipe(
-	Effect.mapError((error) =>
-		NeedFailed.make({
-			need: "fixture cluster",
-			message: `the resource properties run against the PostgreSQL libpq's environment names (PGHOST, PGPORT, PGUSER): ${error.message}`
-		})
-	),
-	Effect.flatMap(({ host, port, user }) =>
-		Effect.map(Effect.fromResult(localHostOf(host)), (local) => ({ host: local, port, user }))
-	)
-)
-
-/** The host a pg client connects to for a local host: the socket's directory or the loopback address. */
-const hostText = (host: LocalHost): string =>
-	host.kind === "socket" ? host.directory : host.address
-
-/**
- * A session over the pg driver to the local host libpq's environment names (target), as its PGUSER, in pg's pipeline
- * mode: a statement sent while another runs follows it on the wire, each its own exchange ending in a Sync, so
- * concurrent callers take turns in the server, and each statement goes out on the extended protocol with its rows
- * positional. The host, port and role are given to the client from the parsed target, never left to the client's own
- * reading of the environment.
- */
-const connect = (database: string): Effect.Effect<PgSession, NeedFailed, Scope.Scope> =>
-	Effect.map(
-		Effect.acquireRelease(
-			Effect.flatMap(
-				Effect.map(
-					target,
-					({ host, port, user }) =>
-						new pg.Client({
-							host: hostText(host),
-							port: Number(port),
-							user,
-							database,
-							pipeline: true
-						})
-				),
-				(client) =>
-					Effect.tap(Effect.succeed(client), () =>
-						Effect.tryPromise({ try: () => client.connect(), catch: failed })
-					)
-			),
-			(client) => Effect.ignore(Effect.tryPromise({ try: () => client.end(), catch: failed }))
-		),
-		(client): PgSession => ({
-			query: (sql, params) =>
-				Effect.map(
-					Effect.tryPromise({
-						try: () =>
-							client.query<Array<unknown>>({ text: sql, values: [...params], rowMode: "array" }),
-						catch: failed
-					}),
-					(result) => result.rows
-				)
-		})
-	)
-
-/**
- * The cluster the library's own resource properties run against: one member, the PostgreSQL on this machine that libpq's
- * environment names (PGHOST, a socket directory or a loopback address, refused otherwise; PGPORT; PGUSER, a superuser),
- * databases under `tc_`, templates built from template0, and the owner's sessions in `postgres`.
+ * The cluster the library's own resource properties run against: the testing package's local cluster (its
+ * pg.config.ts), which the layer makes and starts the first time a need reaches it, databases under `tc_`, every
+ * session the owner's over node-postgres (pg/session.ts).
  */
 const fixtureCluster: PgClusterSpec = {
 	prefix: DatabasePrefix("tc_"),
-	members: Effect.map(target, ({ host, port }) => [{ name: `${hostText(host)}:${port}` }] as const),
-	base: "template0",
-	maintenance: "postgres",
-	connect: (_member, database) => connect(database)
+	cluster: testingCluster,
+	connect: pgOwnerSession("toolchain fixtures")
 }
 
-/** The fixture's runner services: the cluster libpq's environment names; the runner gives the closure hashes. */
+/** The fixture's runner services: the testing package's cluster; the runner gives the closure hashes. */
 export const fixtureServices = PgCluster.layer(fixtureCluster)
 
 /** The services a property about the resources themselves runs their internals under, from its worker's need context. */
@@ -341,7 +208,10 @@ export const tokenTemplate = (
 
 /** The cluster of the fixture's members under a prefix of a case's own, so a case's collection sees only its own. */
 export const ownCluster = (prefix: string): Layer.Layer<PgCluster> =>
-	PgCluster.layer({ ...fixtureCluster, prefix: DatabasePrefix(prefix) })
+	Layer.provide(
+		PgCluster.layer({ ...fixtureCluster, prefix: DatabasePrefix(prefix) }),
+		NodeServices.layer
+	)
 
 /** The runs a list of takers forms: each taker alone, but consecutive takers marked together run at once. */
 export const runsOf = (together: ReadonlyArray<boolean>): ReadonlyArray<ReadonlyArray<boolean>> => {

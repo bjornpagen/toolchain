@@ -3,7 +3,7 @@ import { defineRunner, noMutation } from "#runner/config.ts"
 
 /**
  * The testing library's runner config: the test modules toolchain-test runs, every property module of the package; no
- * export conditions; the PostgreSQL cluster libpq's environment names (resources.fixtures.ts; CONTRIBUTING.md,
+ * export conditions; the package's own local cluster (pg.config.ts, resources.fixtures.ts; CONTRIBUTING.md,
  * "Properties that need a database"), built only when a case first opens a need; and the library's operators alone
  * for mutation.
  */
@@ -19,7 +19,8 @@ export default defineRunner({
 		"src/runner/consumer.test.ts",
 		"src/resources/scratch.test.ts",
 		"src/resources/resources.test.ts",
-		"src/resources/local.test.ts",
+		"src/pg/make.test.ts",
+		"src/pg/reached.test.ts",
 		"src/core.test.ts",
 		"src/idioms.test.ts",
 		"src/shrink.test.ts",

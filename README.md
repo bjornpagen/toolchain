@@ -14,6 +14,46 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: one local cluster maker (2026-11-18)
+
+A repository's PostgreSQL test cluster is made by the testing library, one implementation for every repository
+(`@bjornpagen/testing/pg`, `packages/testing/src/pg`): `PgCluster.layer` makes and starts it the first time a need
+reaches it, under the port's lock (whose wait is declared to the runner's guards), and takes a running one as it is;
+`toolchain-pg` runs its life from a shell. One cluster per repository, each on its own port. Every member gets TLS 1.3
+(a local CA, the server's certificate it signed and an unrelated CA, each EC P-256, issued again at a start once any
+has expired), SCRAM, hostssl-only hba, an owner role with its password in the member's state, a template database
+with the repository's extensions, the owner's own database, and the settings every member holds
+(`client_connection_check_interval`, `max_pred_locks_per_transaction = 2048`, logical WAL, UTC, and fsync off for a
+throwaway cluster). Its state is `$HOME/.local/var/toolchain-pg/<port>/`, its manifest `cluster.json` there, its lock
+`<port>.lock` beside it; `TOOLCHAIN_PG_CLUSTER=<port>` names a private cluster of the same spec. Before you move
+`vendor/toolchain` past this section:
+
+1. **The spec.** State the cluster once, as the default export of a `pg.config.ts` in the package that owns it:
+   `localCluster({ port, bin, owner, template, extensions, peerLogins, durability, family, sizing })`. `bin` is
+   `{ kind: "directory", directory }` (grizzle's pinned build: `` `${pin.GRIZZLE_PG_PREFIX}/bin` ``) or
+   `{ kind: "pg_config" }` (the server the machine installed). `peerLogins` names the roles this user signs in as over
+   a member's socket by peer beside the bootstrap superuser (an application's local login, which then needs no
+   secret); `durability` is `throwaway` (fsync off; reset and destroy admitted) or `kept` (a person's data: fsync on,
+   never reset, destroyed or made again). `family` is `{ kind: "one" }`, or
+   `{ kind: "spread", workersPerMember }` for a repository whose measurement shows a member's shared costs grow with
+   its workers. Each of `sizing`'s `connections`, `replication` and `sharedBuffers` is PostgreSQL's default
+   (`{ kind: "default" }`) or what one worker holds at most and what is held outside any worker, each the repository's
+   number with its evidence beside the spec.
+2. **The runner layer.** `PgCluster.layer({ prefix, cluster, connect })`, where it took `members`, `base` and
+   `maintenance`: the template is the spec's, the owner's database the owner's own. The layer needs the platform
+   (`ChildProcessSpawner`, `FileSystem`), which the runner provides. `connect` opens the owner's session from the
+   member's facts: `PgMember` is the library's, `{ name, port, socket, owner, password, passwordFile, ca, caFile,
+   wrongCa }`, and no longer augmented. A repository whose code reaches the cluster over node-postgres passes
+   `pgOwnerSession(applicationName)` (`@bjornpagen/testing/pg-session`).
+3. **The old maker goes.** Delete the repository's cluster scripts (`init.sh`, `ctl.sh`, `doctor.sh`, `pg.sh`, a
+   lifecycle module) and its cluster glue; a script that brought the cluster up calls `clusterUp`, `stopCluster`,
+   `destroyCluster` or `doctor`, or runs `toolchain-pg start | stop | status | doctor | psql | admin | reset | env |
+   destroy | init [--force | --adopt | --adopt-from <data directory>]`; `--adopt-from` takes a cluster an old maker
+   made as the first member, its data directory kept where it lies (linked from the member's state), its hba, ident
+   and settings made every member's. A shell that read the cluster's port, CA or password from a pin reads
+   `toolchain-pg env` (`TOOLCHAIN_PG_PORT`, `TOOLCHAIN_PG_SOCKET`, `TOOLCHAIN_PG_OWNER`, `TOOLCHAIN_PG_TEMPLATE`,
+   `TOOLCHAIN_PG_CA`, `TOOLCHAIN_PG_PASSWORD_FILE`).
+
 ## Consumer migration: one typecheck script (2026-11-18)
 
 A package states its typecheck once: `"typecheck": "toolchain-typecheck"`. The from-scratch run, which reads no build

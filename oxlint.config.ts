@@ -167,6 +167,14 @@ export default defineConfig(
 				})
 			},
 			{
+				files: ["packages/testing/src/pg/cli.ts"],
+				rules: active({
+					/** toolchain-pg's one load of a package's pg.config.ts, whose path it learns only at run time, as the
+					 * runner loads test.config.ts (lane CLUSTERPORT, 2026-11-18). */
+					"devtools/no-dynamic-imports": "off"
+				})
+			},
+			{
 				files: ["packages/testing/src/runner/load.ts"],
 				rules: active({
 					/** The runner's one load of a package's test.config.ts and test modules, whose paths it learns only at run

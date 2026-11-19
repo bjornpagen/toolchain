@@ -251,22 +251,11 @@ of the file it mutates, and the kill gate's seed policy. A kill that turned its 
 ### Properties that need a database
 
 The testing library's database resources (`@bjornpagen/testing/resources`) are proven against a real PostgreSQL:
-`packages/testing/test.config.ts`'s layer provides their cluster (`resources.fixtures.ts`) from the standard libpq
-environment, `PGHOST` (a socket directory or a host), `PGPORT` and `PGUSER`, with `PGPASSWORD` and `PGSSLMODE` where
-the server asks for them. `PGHOST` must name this machine: a Unix socket's directory (an absolute path) or a loopback
-address (`localhost`, `::1`, or an address in 127.0.0.0/8). The fixture refuses any other host, naming it, before it
-connects, builds or collects anything (`localHostOf`, proven by `src/resources/local.test.ts`), so no stray environment
-can point the properties, or collection, at another machine's server.
-
-The push gate passes the pusher's environment through to `toolchain-test`. No shell profile or machine configuration
-sets these variables, and none is to: they are unset in this machine's shells, and you set them on each push that needs
-them. Without them, a database property's need fails closed, naming the variable it lacks, so a push whose change
-reaches `src/resources/resources.test.ts`'s closure fails for anyone who does not set them. On cassowary the cluster is
-grizzle's default one, reached as its bootstrap superuser by peer authentication over its socket:
-
-```sh
-PGHOST=$HOME/.local/var/grizzle/pg19rc2/socket PGPORT=5433 PGUSER=postgres git push --no-thin
-```
+`packages/testing/test.config.ts`'s layer provides their cluster (`resources.fixtures.ts`), the testing package's own
+local cluster (`packages/testing/pg.config.ts`: port 5441, the server the `pg_config` on PATH names), which the layer
+makes and starts the first time a case opens a need, as every repository's cluster is made (`src/pg`). No environment
+is needed: a push whose change reaches `src/resources/resources.test.ts`'s closure brings the cluster up itself. From
+`packages/testing`, `pnpm pg <command>` runs its life by hand (`pnpm pg doctor`, `pnpm pg destroy`).
 
 The properties make databases only under the prefix `tc_` (templates `tc_tpl_<digest>`, clones `tc_c_<owner>_<n>`)
 and, for the property about collection, a prefix of each case's own (`tcs<hex>_`); each case drops what it made, and
