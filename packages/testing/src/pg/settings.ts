@@ -42,7 +42,7 @@ import type { Durability, Family, LocalCluster, Sized } from "#pg/spec.ts"
  * @revalidate a PostgreSQL repin or major version; a poll's cost measured above the runs' spread; a test that waits
  *   behind an orphan for less than the interval; another machine
  */
-const clientCheckInterval = 1000
+export const clientCheckInterval = 1000
 
 /**
  * The predicate locks PostgreSQL's table holds for each connection a member admits, max_pred_locks_per_transaction:

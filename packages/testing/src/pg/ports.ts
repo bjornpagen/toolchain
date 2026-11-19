@@ -11,7 +11,7 @@ class PortTaken extends Schema.TaggedError<PortTaken, { readonly brand: unique s
 ) {}
 
 /** localhost's addresses cannot be read. */
-class LocalhostUnresolved extends Schema.TaggedError<
+export class LocalhostUnresolved extends Schema.TaggedError<
 	LocalhostUnresolved,
 	{ readonly brand: unique symbol }
 >()("LocalhostUnresolved", { message: Schema.String }) {}
