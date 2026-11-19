@@ -297,7 +297,7 @@ export const runSeedLogged: Effect.Effect<RunSeed, Config.ConfigError | Schema.S
  */
 export const runPackage = (
 	request: RunRequest
-): Effect.Effect<RunOutcome, LoadFailed | PoolFailed, NodeServices> =>
+): Effect.Effect<RunOutcome, LoadFailed | PoolFailed, NodeServices | RunLease> =>
 	Effect.scoped(
 		Effect.gen(function* () {
 			const began = yield* liveMillis
@@ -410,7 +410,7 @@ export const replayToken = (
 ): Effect.Effect<
 	Readonly<{ id: string; oracle: Oracle; verdict: Verdict }>,
 	LoadFailed | PoolFailed,
-	Scope.Scope | FileSystem.FileSystem | Path.Path
+	Scope.Scope | FileSystem.FileSystem | Path.Path | RunLease
 > =>
 	Effect.gen(function* () {
 		yield* configOf(root)

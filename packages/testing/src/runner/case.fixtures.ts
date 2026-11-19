@@ -14,10 +14,11 @@ import {
 import { Database } from "#resources/database.ts"
 import { type DatabaseTemplate, Template } from "#resources/template.ts"
 import { needCacheOf } from "#runner/case.ts"
+import { runLeasesIn } from "#runner/leases.ts"
 import { runnerLimits } from "#runner/limits.ts"
 import { moduleClosureAt } from "#runner/module-closure.ts"
 import { widths } from "#runner/search.fixtures.ts"
-import { ModuleClosure, WorkerIndex } from "#runner/services.ts"
+import { ModuleClosure, RunLease, WorkerIndex } from "#runner/services.ts"
 
 /**
  * What the meta-tests of a case's evaluation (runner/case.ts) share: inner properties that hang, that use their case
@@ -550,7 +551,7 @@ const countedNeed = (key: string, counts: HeldCounts): Need<number> => ({
 
 /**
  * A need cache of this process, as a worker of one keeps it, its needs opening in `scope` (a case's) with the platform,
- * worker 0 of 1 and this package's module closures.
+ * worker 0 of 1, this package's module closures and a lease of its own, held in that scope.
  */
 const processNeedCache = Effect.gen(function* () {
 	const scope = yield* Scope.Scope
@@ -558,9 +559,13 @@ const processNeedCache = Effect.gen(function* () {
 	const closures = yield* moduleClosureAt(process.cwd(), Option.none())
 	const context = Context.add(
 		Context.add(
-			Context.add(platform, WorkerIndex, { index: 0, workers: 1 }),
-			ModuleClosure,
-			closures
+			Context.add(
+				Context.add(platform, WorkerIndex, { index: 0, workers: 1 }),
+				ModuleClosure,
+				closures
+			),
+			RunLease,
+			runLeasesIn(scope, platform)
 		),
 		Scope.Scope,
 		scope

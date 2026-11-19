@@ -1,11 +1,9 @@
-import * as NodeServices from "@effect/platform-node/NodeServices"
 import {
 	Array as Arr,
 	Deferred,
 	Duration,
 	Effect,
 	Fiber,
-	Layer,
 	Option,
 	Order,
 	Queue,
@@ -19,7 +17,7 @@ import { HUNG_CLEANUP_GRACE, liveMillis, overrun, watchdogGraceMillis } from "#l
 import { type Served, servedArgv } from "#mutate/pool.ts"
 import { withLateUses } from "#runner/case.ts"
 import { compileCacheDirectory, readsCoverage } from "#runner/compile-cache.ts"
-import { runLeasesIn } from "#runner/leases.ts"
+import { drawnLease } from "#runner/leases.ts"
 import { moduleClosureAt } from "#runner/module-closure.ts"
 import {
 	type CountAnswer,
@@ -50,6 +48,7 @@ import {
 	schedulerOf,
 	type View
 } from "#runner/schedule.ts"
+import type { RunLease } from "#runner/services.ts"
 import type { ChildrenStated, PoolUsage, PropertyUsage } from "#runner/usage.ts"
 import {
 	noWaits,
@@ -382,13 +381,14 @@ const compilingOf = (spec: PoolSpec) =>
  * nothing to run boots no worker): closing it disconnects each worker and waits for it to exit on its own (its
  * finalizers run, a coverage dump is written), then ends its process group (endGroup), which kills a worker still alive
  * past SILENCE_GRACE_MILLIS, a finalizer that hangs, and whatever it left running. A worker that ends while the pool is
- * open, however it ends, has its group ended too.
+ * open, however it ends, has its group ended too. Its workers' leases are the run's (RunLease): a run of its own holds
+ * them (runner/leases.ts runLeasesIn, which its command provides), and a pool a case starts, a nested run, draws on the
+ * lease of the run the case runs in, so it never reserves again what that run holds and waits on it forever.
  */
-export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Scope> =>
+export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Scope | RunLease> =>
 	Effect.gen(function* () {
 		const scope = yield* Scope.Scope
-		const platform = yield* Layer.build(NodeServices.layer)
-		const leases = runLeasesIn(scope, platform)
+		const leases = yield* drawnLease
 		const closures = yield* moduleClosureAt(
 			spec.root,
 			Option.map(spec.served, (served) => served.mutant)

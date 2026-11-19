@@ -11,7 +11,7 @@ import {
 	stoppedOf,
 	withLateUses
 } from "#runner/case.ts"
-import { runLeasesIn } from "#runner/leases.ts"
+import { drawnLease } from "#runner/leases.ts"
 import { type Limits, runnerLimits } from "#runner/limits.ts"
 import { moduleClosureAt } from "#runner/module-closure.ts"
 import { Perception, perceptionOf } from "#runner/perceive.ts"
@@ -53,7 +53,7 @@ export const inlineEvaluator = (
 	Effect.gen(function* () {
 		const caller = yield* Effect.context<InlineContext | Scope.Scope>()
 		const closures = yield* moduleClosureAt(process.cwd(), Option.none())
-		const runScope = yield* Effect.scope
+		const lease = yield* drawnLease
 		const context = Context.add(
 			Context.add(
 				Context.add(caller, WorkerIndex, { index: 0, workers: 1 }),
@@ -61,7 +61,7 @@ export const inlineEvaluator = (
 				closures
 			),
 			RunLease,
-			runLeasesIn(runScope, caller)
+			lease
 		)
 		const perception = yield* perceptionOf
 		const cache = needCacheOf(Effect.succeed(context))

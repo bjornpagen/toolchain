@@ -9,6 +9,7 @@
 		"packages/testing/src/pg/cli.ts",
 		"packages/testing/src/runner/cli-entry.ts",
 		"packages/testing/src/runner/loops.fixtures.ts",
+		"packages/testing/src/runner/nested.fixtures.ts",
 		"packages/testing/src/runner/orphans.fixtures.ts",
 		"packages/testing/src/runner/pool.fixtures.ts",
 		"packages/testing/src/runner/worker-entry.ts",

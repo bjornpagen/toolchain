@@ -4,6 +4,7 @@ import { type MutantPool, Unstarted, type WorkerImage } from "#mutate/pool.ts"
 import type { Property, PropertyId } from "#property.ts"
 import type { Limits } from "#runner/limits.ts"
 import type { Evaluator, Finding } from "#runner/protocol.ts"
+import type { RunLease } from "#runner/services.ts"
 
 /**
  * A property as the mutator runs it: its identity, the property, and how its workers load the repository's code
@@ -81,7 +82,7 @@ const trialOn = <E, L>(
 	run: WitnessRun,
 	workers: number,
 	stages: ReadonlyArray<Stage<E, L>>
-): Effect.Effect<TrialVerdict<L>, E> => {
+): Effect.Effect<TrialVerdict<L>, E, RunLease> => {
 	const [stage, ...rest] = stages
 	return stage === undefined
 		? Effect.succeed({ kind: "green" })
@@ -153,7 +154,7 @@ export const trialsOn = <E, L>(
 	run: WitnessRun,
 	trials: ReadonlyArray<Trial<E, L>>,
 	sharing: Sharing
-): Effect.Effect<ReadonlyArray<TrialVerdict<L>>, E> => {
+): Effect.Effect<ReadonlyArray<TrialVerdict<L>>, E, RunLease> => {
 	const workers = LEASED[sharing](pool.width, trials.length)
 	return Effect.forEach(trials, (stages) => trialOn(pool, run, workers, stages), {
 		concurrency: pool.width

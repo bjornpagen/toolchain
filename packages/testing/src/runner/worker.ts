@@ -243,6 +243,7 @@ const main = Effect.gen(function* () {
 			yield* send({ kind: "started", unit: unit.unit })
 			const children = childrenCpuNow()
 			const done = yield* doneOf(made, unit.work).pipe(
+				Effect.provideService(RunLease, leases.service),
 				Effect.provideService(NeedCache, cache),
 				Effect.provideService(Perception, perception),
 				Effect.provideService(Stopped, stopped),

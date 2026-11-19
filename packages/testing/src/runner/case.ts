@@ -21,7 +21,7 @@ import { failureText } from "#failure.ts"
 import { keyOf, type Pending, pendingAt, type Reached } from "#features.ts"
 import type { Gen } from "#gen.ts"
 import { abandon, awaitWithinGrace, liveMillis, liveNanos, overrun, watchedCase } from "#live.ts"
-import type { Need, NeedContext, Needs, NeedValue, Resources } from "#property.ts"
+import type { CheckContext, Need, NeedContext, Needs, NeedValue, Resources } from "#property.ts"
 import { fnv1a32 } from "#random.ts"
 import { type Drawn, replayTokenOf } from "#replay.ts"
 import type { RunnerServicesFailed } from "#runner/config.ts"
@@ -45,7 +45,7 @@ import {
 	type Work
 } from "#runner/protocol.ts"
 import { seriesRun } from "#runner/series.ts"
-import { NeedFailed } from "#runner/services.ts"
+import { NeedFailed, type RunLease } from "#runner/services.ts"
 import { type Overrun, overrunText, ownCpu, ownWork } from "#runner/work.ts"
 import { type Observed, type Recording, recording, simplestChooser } from "#source.ts"
 
@@ -220,10 +220,11 @@ export const needKeysOf = (needs: Needs): ReadonlyArray<string> =>
 	Arr.dedupe(Arr.map(Rec.values(needs), (need) => need.key))
 
 /**
- * What an evaluating process provides every case of a property it readied: its opened needs, its perception and the
- * platform, and where it reports a late use and holds a stopped case.
+ * What an evaluating process provides every case of a property it readied: its opened needs, its perception, the
+ * platform and the lease of the run it serves (RunLease, which a run a case starts draws on), and where it reports a late
+ * use and holds a stopped case.
  */
-export type CaseEnv = NeedCache | Perception | LateUses | Stopped | NodeServices
+export type CaseEnv = NeedCache | Perception | LateUses | Stopped | NodeServices | RunLease
 
 /**
  * A property's needs opened on this process, all at once, each within `bound` milliseconds (NeedCache.opened), before
@@ -713,14 +714,14 @@ export const doneOf = (readied: Readied, work: Work): Effect.Effect<Done, never,
 export type CaseCheck<S, F extends string, N extends Needs, E> = (
 	resources: Resources<N>,
 	c: Case<F>
-) => (value: S) => Effect.Effect<void, E, Scope.Scope | NodeServices>
+) => (value: S) => Effect.Effect<void, E, CheckContext>
 
 /** A batched property's check of a batch: each case's own effect is its verdict. */
 export type BatchCheck<S, F extends string, N extends Needs, E> = (
 	resources: Resources<N>
 ) => (
 	cases: Arr.NonEmptyReadonlyArray<readonly [S, Case<F>]>
-) => Effect.Effect<ReadonlyArray<Effect.Effect<void, E>>, E, Scope.Scope | NodeServices>
+) => Effect.Effect<ReadonlyArray<Effect.Effect<void, E>>, E, CheckContext>
 
 /** One case once drawn: its order, recording, value and handle, its sketch's decisions, and its place among its
  * batch's drawn cases, where a batched check's verdict for it is. */

@@ -1,12 +1,16 @@
-import { type Context, Deferred, Effect, type FileSystem, Scope } from "effect"
+import { Context, Deferred, Effect, type FileSystem, Scope } from "effect"
 import type { ChildProcessSpawner } from "effect/process"
 import { type Reservation, reserved } from "#pg/lease.ts"
 import { NeedFailed, RunLease } from "#runner/services.ts"
 
 /**
  * A run's leases on the clusters its needs reach (pg/lease.ts): one reservation a cluster, by its gate, held for the
- * run's life however many of its workers ask, each asker its answer. The run's parent holds them (pool.ts) and answers
- * its workers' asks, so the run, not a worker, holds what its workers use; an inline run holds its own.
+ * run's life however many of its workers ask, each asker its answer. A run of its own (a command, a program: runOfItsOwn)
+ * holds them, and its pool's parent answers its workers' asks with them (pool.ts), so the run, not a worker, holds what
+ * its workers use. A run a case starts (a pool, an inline search) is no run of its own: it draws on the lease of the run
+ * the case runs in, its worker's (askedLeasesOf), which asks that run's parent, so a nested run never reserves again
+ * what its enclosing run holds, where it waited on those slots for ever (trialTemplatesApart's kill trials under a gate
+ * run that held every slot of 5441).
  */
 
 /** A lease's answer, as the parent sends it to a worker: held, or refused and why. */
@@ -67,6 +71,33 @@ export const runLeasesIn = (
 			)
 	})
 }
+
+/**
+ * The lease a pool or an inline search draws on: its context's RunLease, the lease of the run it is started in (a
+ * command's own, runOfItsOwn; a worker's, askedLeasesOf, when a case starts it), never one of its own, so a run nested in
+ * another's case is answered from what that run holds and never waits on it.
+ */
+export const drawnLease = Effect.service(RunLease)
+
+/**
+ * `effect` as a run of its own: the RunLease it, and every run it starts, draws on, held in a scope of its own that ends
+ * with it (runLeasesIn). A command's and a program's run is one; a run a case starts never is: it draws on the lease of
+ * the run the case runs in (CheckContext's RunLease).
+ */
+export const runOfItsOwn = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+	Effect.scoped(
+		Effect.flatMap(
+			Effect.context<
+				Scope.Scope | FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner
+			>(),
+			(context) =>
+				Effect.provideService(
+					effect,
+					RunLease,
+					runLeasesIn(Context.get(context, Scope.Scope), context)
+				)
+		)
+	)
 
 /** A worker's RunLease, and where its message loop hands it the parent's answers. */
 export type AskedLeases = Readonly<{
