@@ -167,7 +167,12 @@ const globbed = (
 		const rest = Arr.drop(segments, base.length)
 		const directory = Arr.join([root, ...base], "/")
 		const fs = yield* FileSystem.FileSystem
-		const exists = yield* Effect.orElseSucceed(fs.exists(directory), () => false)
+		const exists = yield* Effect.mapError(fs.exists(directory), (failed) =>
+			LoadFailed.make({
+				path: directory,
+				message: `${directory} could not be read: ${failed.message}`
+			})
+		)
 		if (!exists) {
 			return []
 		}

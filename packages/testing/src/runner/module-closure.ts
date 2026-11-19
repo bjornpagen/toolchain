@@ -53,9 +53,11 @@ const conditionsOf = (flags: ReadonlyArray<string>): ReadonlyArray<string> =>
 const workspaceOf = (
 	fs: FileSystem.FileSystem,
 	directory: string
-): Effect.Effect<Option.Option<string>> =>
+): Effect.Effect<Option.Option<string>, NeedFailed> =>
 	Effect.flatMap(
-		Effect.orElseSucceed(fs.exists(`${directory}/pnpm-lock.yaml`), () => false),
+		Effect.mapError(fs.exists(`${directory}/pnpm-lock.yaml`), (error) =>
+			NeedFailed.make({ need: "ModuleClosure", message: error.message })
+		),
 		(found) => {
 			if (found) {
 				return Effect.succeedSome(directory)

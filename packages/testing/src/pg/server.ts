@@ -3,6 +3,7 @@ import {
 	Array as Arr,
 	Effect,
 	FileSystem,
+	Option,
 	Predicate,
 	type Redacted,
 	Result,
@@ -173,22 +174,16 @@ export const start = (
 		(failure) =>
 			Effect.flatMap(FileSystem.FileSystem, (fs) =>
 				Effect.flatMap(
-					Effect.orElseSucceed(fs.readFileString(`${member.log}/startup.log`), () => ""),
-					(log): Effect.Effect<never, ClusterFailed | PortLost> =>
-						Str.includes(noSocket)(log)
-							? Effect.fail(
-									PortLost.make({
-										cluster: step.cluster,
-										port: member.port,
-										message: `${failure.message}\n${log}`
-									})
-								)
-							: Effect.fail(
-									ClusterFailed.make({
-										cluster: step.cluster,
-										message: `${failure.message}\n${log}`
-									})
-								)
+					Effect.option(fs.readFileString(`${member.log}/startup.log`)),
+					(log): Effect.Effect<never, ClusterFailed | PortLost> => {
+						const message = Option.match(log, {
+							onNone: () => failure.message,
+							onSome: (written) => `${failure.message}\n${written}`
+						})
+						return Option.exists(log, Str.includes(noSocket))
+							? Effect.fail(PortLost.make({ cluster: step.cluster, port: member.port, message }))
+							: Effect.fail(ClusterFailed.make({ cluster: step.cluster, message }))
+					}
 				)
 			)
 	)
