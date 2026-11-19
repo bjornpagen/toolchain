@@ -3,6 +3,7 @@ import type { Loading } from "#mutate/checkout.ts"
 import type { MutatedFile, RealPath } from "#mutate/mutated.ts"
 import type { WorkerImage } from "#mutate/pool.ts"
 import { mutantIn, type TreeFailed, type Trees } from "#mutate/tree.ts"
+import { processScratch } from "#resources/scratch.ts"
 
 /** A string as a JavaScript string literal that decodes to it: its URI encoding holds no quote and no backslash. */
 const literal = (text: string) => `decodeURIComponent("${encodeURIComponent(text)}")`
@@ -51,7 +52,7 @@ export const imagesOf = Effect.fn("testing.mutate.imagesOf")(function* (
 	const fs = yield* FileSystem.FileSystem
 	const path = yield* Path.Path
 	const services = yield* Effect.context<FileSystem.FileSystem | Path.Path>()
-	const texts = yield* fs.makeTempDirectoryScoped({ prefix: "toolchain-mutants-" })
+	const texts = yield* processScratch("toolchain-mutants-")
 	const written = yield* Ref.make(0)
 	const textFile = (text: string) =>
 		Effect.gen(function* () {

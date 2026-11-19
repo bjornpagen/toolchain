@@ -3,7 +3,9 @@ import {
 	Array as Arr,
 	Effect,
 	FileSystem,
+	Predicate,
 	type Redacted,
+	Result,
 	Schema,
 	Stream,
 	String as Str
@@ -103,6 +105,16 @@ export const serverVersion = (
 	step: Step
 ): Effect.Effect<string, ClusterFailed, ChildProcessSpawner.ChildProcessSpawner> =>
 	Effect.map(succeeded(step, program(bin, "postgres", ["--version"], {})), Str.trim)
+
+/**
+ * Whether a process of `pid` runs on this machine: signal 0 reaches it, or reaches a process of another user, which
+ * refuses it (EPERM). Only an answer that no such process exists (ESRCH) says it has ended.
+ */
+export const processRuns = (pid: number): boolean =>
+	Result.match(Result.try({ try: () => process.kill(pid, 0), catch: (error) => error }), {
+		onSuccess: () => true,
+		onFailure: (error) => !(Predicate.hasProperty(error, "code") && error.code === "ESRCH")
+	})
 
 /**
  * Whether `member`'s postmaster runs, as `pg_ctl status` reads its data directory's lock file: its process alive. A

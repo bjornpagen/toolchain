@@ -28,6 +28,7 @@ import type { TreeFailed } from "#mutate/tree.ts"
 import { type TypecheckRefused, typecheckerOf } from "#mutate/typecheck.ts"
 import type { PropertyId } from "#property.ts"
 import { fnv1a32, mix } from "#random.ts"
+import { processScratch } from "#resources/scratch.ts"
 
 /**
  * A mutation run refused to measure: an equivalent judgment names a mutant its file no longer has, a property is red
@@ -128,7 +129,7 @@ const coverageOf = <E>(
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem
 		const path = yield* Path.Path
-		const root = yield* fs.makeTempDirectoryScoped({ prefix: "toolchain-coverage-" })
+		const root = yield* processScratch("toolchain-coverage-")
 		const passes = Arr.map(subjects, (subject, index) => ({
 			subject,
 			directory: path.join(root, String(index))

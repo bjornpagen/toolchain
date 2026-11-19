@@ -13,6 +13,7 @@ import {
 } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { type MutatedFile, type RealPath, realPathOf } from "#mutate/mutated.ts"
+import { processScratch } from "#resources/scratch.ts"
 
 /**
  * A worker tree: a copy of a repository's checkout at `root`, for a property whose check runs the repository's code in
@@ -233,9 +234,9 @@ export const treesOf = Effect.fn("testing.mutate.treesOf")(function* (checkout: 
 	const services = yield* Effect.context<
 		FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
 	>()
-	const directory = yield* fs
-		.makeTempDirectoryScoped({ prefix: "toolchain-trees-" })
-		.pipe(Effect.mapError(failed("making the trees' directory")))
+	const directory = yield* processScratch("toolchain-trees-").pipe(
+		Effect.mapError(failed("making the trees' directory"))
+	)
 	const home = yield* realPathOf(directory).pipe(Effect.mapError(failed(`reading ${directory}`)))
 	const free = yield* Ref.make<ReadonlyArray<Tree>>([])
 	const made = yield* Ref.make(0)
