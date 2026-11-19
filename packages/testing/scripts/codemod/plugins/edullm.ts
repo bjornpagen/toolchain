@@ -33,9 +33,13 @@ const unwrap = (body: ts.Expression): Option.Option<ts.Expression> => {
 		: Option.none()
 }
 
-/** edullm's platform and data packages (github.com/superbuilders/edullm); qti-pie is lane PANTRY's and PLATE's. */
+/** edullm (github.com/superbuilders/edullm): its platform, data and qti-pie packages. */
 export const edullm: Plugin = {
-	include: ["packages/platform/**/*.test.ts", "packages/data/**/*.test.ts"],
+	include: [
+		"packages/platform/**/*.test.ts",
+		"packages/data/**/*.test.ts",
+		"packages/qti-pie/**/*.test.ts"
+	],
 	provision: provisionsBy(ambient),
 	stages: [],
 	builders: [],

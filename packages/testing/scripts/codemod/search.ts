@@ -39,6 +39,7 @@ export type Locals = Readonly<{
 	Reached: string
 	finite: string
 	aimed: string
+	steered: string
 }>
 
 /**
@@ -511,7 +512,30 @@ const required = (
 		: Result.succeed(value)
 }
 
-/** What an exploration's draw becomes: drawn(g) is g, aimed(g, aims) stays aimed, sketched(g, resolve) is g resolved. */
+/** Whether a resolve is the identity: `Function.identity`, or an arrow returning its one parameter. */
+const isIdentity = (resolve: ts.Expression): boolean => {
+	const bare = unparenthesized(resolve)
+	if (textOf(bare) === "Function.identity") {
+		return true
+	}
+	if (!ts.isArrowFunction(bare) || bare.parameters.length !== 1 || ts.isBlock(bare.body)) {
+		return false
+	}
+	const [parameter] = bare.parameters
+	const body = unparenthesized(bare.body)
+	return (
+		parameter !== undefined &&
+		ts.isIdentifier(parameter.name) &&
+		ts.isIdentifier(body) &&
+		body.text === parameter.name.text
+	)
+}
+
+/**
+ * What an exploration's draw becomes: drawn(g) is g, aimed(g, aims) stays aimed, sketched(g, resolve) is g resolved,
+ * and steered(g, resolve) is the space read of its case's steering, steered(g), resolved unless its resolve is the
+ * identity.
+ */
 const spaceOfDraw = (module: Module, draw: ts.Expression): Step<Space> => {
 	const bare = definitionOf(module, draw)
 	const refused = refuse("draw-shape", lineAt(module, bare), Str.slice(0, 60)(textOf(bare)))
@@ -542,6 +566,16 @@ const spaceOfDraw = (module: Module, draw: ts.Expression): Step<Space> => {
 			reads: identifiersUnder(generator),
 			resolve: Option.some(textOf(second)),
 			wanted: []
+		})
+	}
+	if (is("steered") && second !== undefined && bare.arguments.length === 2) {
+		return Result.succeed({
+			text: `${module.locals.steered}(${text})`,
+			reads: identifiersUnder(generator),
+			resolve: isIdentity(second) ? Option.none() : Option.some(textOf(second)),
+			wanted: [
+				{ module: module.api.gen, name: "steered", local: module.locals.steered, type: false }
+			]
 		})
 	}
 	return refused

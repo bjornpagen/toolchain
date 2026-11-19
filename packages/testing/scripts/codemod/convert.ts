@@ -394,7 +394,8 @@ export const convert = (
 				locals.Case,
 				locals.Reached,
 				locals.finite,
-				locals.aimed
+				locals.aimed,
+				locals.steered
 			]),
 			steps: []
 		},
@@ -486,7 +487,14 @@ export const convert = (
 	const hasFixtures = Str.isNonEmpty(Str.trim(shared.body))
 	const testDoor = doorOf(imports, testReads, api)
 	const fixturesDoor = doorOf(imports, fixturesReads, api)
-	const fresh = new Set([locals.property, locals.Case, locals.Reached, locals.finite, locals.aimed])
+	const fresh = new Set([
+		locals.property,
+		locals.Case,
+		locals.Reached,
+		locals.finite,
+		locals.aimed,
+		locals.steered
+	])
 	const leftovers = [
 		...oldApiOf(
 			imports,

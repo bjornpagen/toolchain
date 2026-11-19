@@ -230,14 +230,23 @@ const testServicesOf = (walk: Walk, options: ts.Expression | undefined): Step<bo
 	)
 }
 
-/** A registration's name, a string literal, or a refusal. */
-const nameOf = (walk: Walk, name: ts.Expression | undefined, at: ts.Node): Step<string> =>
-	name === undefined
-		? shapeOf(walk, at, "a registration without a name")
-		: Option.match(stringValueOf(name), {
-				onNone: () => shapeOf(walk, name, `a computed name ${textOf(name)}`),
-				onSome: Result.succeed
-			})
+/**
+ * A registration's name: a string literal's text, or a template's as written between its backticks (its substitutions
+ * kept as `${...}`, so the export's JSDoc reads as the test's title did); anything else is a refusal.
+ */
+const nameOf = (walk: Walk, name: ts.Expression | undefined, at: ts.Node): Step<string> => {
+	if (name === undefined) {
+		return shapeOf(walk, at, "a registration without a name")
+	}
+	const bare = unparenthesized(name)
+	return Option.match(stringValueOf(bare), {
+		onNone: () =>
+			ts.isTemplateExpression(bare)
+				? Result.succeed(Str.slice(1, -1)(textOf(bare)))
+				: shapeOf(walk, name, `a computed name ${textOf(name)}`),
+		onSome: Result.succeed
+	})
+}
 
 /** A block's statements: declarations lifted to module scope, registrations read, anything else refused. */
 const blockPieces = (

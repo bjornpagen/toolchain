@@ -263,6 +263,7 @@ export const localsOf = (
 		Case: local("Case"),
 		Reached: local("Reached"),
 		finite: local("finite"),
-		aimed: local("aimed")
+		aimed: local("aimed"),
+		steered: local("steered")
 	}
 }
