@@ -86,8 +86,8 @@ export const statementMutants = property.explore(programGen, {
 		},
 		{
 			file: "packages/testing/src/mutants.ts",
-			original: `at: path.join(root, \`source-\${index}\${path.extname(source.file)}\`)`,
-			replacement: `at: path.join(root, \`source-\${index}.ts\`)`,
+			original: `syntaxOf(\`/\${source.file}\`, `,
+			replacement: `syntaxOf(\`/\${source.file}.ts\`, `,
 			why: "Every source is parsed as a TypeScript module, so a TSX module's markup is read as type assertions and comparisons and its mutants are not its code's, as every .tsx file given to `mutate` was; the property fails."
 		}
 	]

@@ -1,9 +1,8 @@
 import { regex } from "arkregex"
-import { Array as Arr, Effect, Option, Path, Result, Schema, String as Str } from "effect"
+import { Array as Arr, Effect, Option, Result, Schema, String as Str } from "effect"
 import * as ts from "typescript/ast"
-import { createFileSystem } from "typescript/fs"
-import { API } from "typescript/sync"
 import type { Kill } from "#property.ts"
+import { syntaxOf } from "#syntax.ts"
 
 /**
  * Source mutation, for measuring whether a suite catches a wrong change: each operator rewrites one span of a source
@@ -56,7 +55,7 @@ export type Mutant<O extends string> = Readonly<{
 export const applied = <O extends string>(mutant: Mutant<O>): string =>
 	`${Str.slice(0, mutant.start)(mutant.source)}${mutant.replacement}${Str.slice(mutant.end)(mutant.source)}`
 
-/** The native compiler did not admit a source it was asked to read. */
+/** The native parser did not read a source it was asked to read. */
 export class MutationSourceRefused extends Schema.TaggedError<
 	MutationSourceRefused,
 	{ readonly brand: unique symbol }
@@ -599,66 +598,25 @@ const idOf = (key: string): string => {
 }
 
 /**
- * Every mutant of `sources` (each a file's name and its text) by the library's operators and those of `families`,
- * read through TypeScript 7's native compiler in a file system of their own, so nothing on disk but the compiler is
- * read, each source parsed as its file's kind (its extension's: a .tsx file's markup is TSX). Each mutant's id is its key's idOf: its file, operator, enclosing function, original and replacement, and its
- * place among the mutants of one key, so it is stable across runs and across edits elsewhere in its file.
+ * Every mutant of `sources` (each a file's name and its text) by the library's operators and those of `families`, each
+ * source's syntax read through the library's one door to it (syntax.ts) as its file's kind (its extension's: a .tsx
+ * file's markup is TSX), so nothing on disk but the compiler is read. Each mutant's id is its key's idOf: its file,
+ * operator, enclosing function, original and replacement, and its place among the mutants of one key, so it is stable
+ * across runs and across edits elsewhere in its file.
  */
 export const mutantsOf = Effect.fn("testing.mutants.of")(function* <O extends string>(
 	sources: ReadonlyArray<Readonly<{ file: string; text: string }>>,
 	families: ReadonlyArray<Family<O>>
 ) {
-	const path = yield* Path.Path
-	const root = path.resolve(".testing-mutants")
-	const config = path.join(root, "tsconfig.json")
-	const entries = Arr.map(sources, (source, index) => ({
-		source,
-		at: path.join(root, `source-${index}${path.extname(source.file)}`)
-	}))
-	const located = yield* Effect.try({
-		try: (): Result.Result<ReadonlyArray<Located<Operator | O>>, MutationSourceRefused> => {
-			const fileSystem = createFileSystem([
-				[
-					config,
-					`{"compilerOptions":{"target":"esnext","noLib":true,"noResolve":true,"types":[]},"files":[${Arr.join(
-						Arr.map(entries, ({ at }) => `"${at}"`),
-						","
-					)}]}`
-				],
-				...Arr.map(
-					entries,
-					({ source, at }) => [at, Str.replace(BYTE_ORDER_MARK, " ")(source.text)] as const
-				)
-			])
-			using session = {
-				api: new API({ cwd: root }),
-				[Symbol.dispose]() {
-					this.api.close()
-				}
-			}
-			using snapshot = session.api.createSnapshot({ openProjects: [config], fileSystem })
-			const project = snapshot.getConfiguredProject(config)
-			const all: Array<Located<Operator | O>> = []
-			for (const { source, at } of entries) {
-				const parsed = project?.program.getSourceFile(at)
-				if (parsed === undefined) {
-					return Result.fail(MutationSourceRefused.make({ file: source.file }))
-				}
-				for (const mutant of locatedOf(source.file, source.text, parsed, families)) {
-					all.push(mutant)
-				}
-			}
-			return Result.succeed(all)
-		},
-		catch: () =>
-			MutationSourceRefused.make({
-				file: Arr.join(
-					Arr.map(sources, (s) => s.file),
-					", "
-				)
-			})
-	}).pipe(Effect.flatMap(Effect.fromResult))
-	return Arr.map(located, ({ key, ...mutant }): Mutant<Operator | O> => ({
+	const located = yield* Effect.forEach(sources, (source) =>
+		Effect.mapError(
+			syntaxOf(`/${source.file}`, Str.replace(BYTE_ORDER_MARK, " ")(source.text), (tree) =>
+				locatedOf(source.file, source.text, tree, families)
+			),
+			() => MutationSourceRefused.make({ file: source.file })
+		)
+	)
+	return Arr.map(Arr.flatten(located), ({ key, ...mutant }): Mutant<Operator | O> => ({
 		id: idOf(key),
 		...mutant
 	}))

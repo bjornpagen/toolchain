@@ -20,7 +20,7 @@ import {
 	type ClosureFailure,
 	closuresOf,
 	ModuleSyntax,
-	nativeSyntax,
+	moduleSyntax,
 	type RepoPath,
 	repoPathOf,
 	type Files,
@@ -731,14 +731,12 @@ export const closuresIn = (
 /** The native parser and Node's SHA-256, opened once per evaluating process. */
 export const hashing: Need<Hashing> = {
 	key: "@bjornpagen/testing/runner/closure.fixtures/hashing",
-	open: Effect.mapBoth(Layer.build(Layer.merge(nativeSyntax, layerDigest)), {
-		onFailure: (failure) => NeedFailed.make({ need: "hashing", message: failure.message }),
-		onSuccess: (built) =>
-			Effect.succeed({
-				syntax: Context.get(built, ModuleSyntax),
-				digest: Context.get(built, Digest.Digest)
-			})
-	})
+	open: Effect.map(Layer.build(Layer.merge(moduleSyntax, layerDigest)), (built) =>
+		Effect.succeed({
+			syntax: Context.get(built, ModuleSyntax),
+			digest: Context.get(built, Digest.Digest)
+		})
+	)
 }
 
 /** A directory of the case's own, removed when the case ends. */

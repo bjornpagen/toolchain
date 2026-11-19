@@ -31,7 +31,7 @@ import { ModuleClosure, NeedFailed } from "#runner/services.ts"
  * the checkout's, or a worker tree's.
  *
  * Nothing here loads the compiler until a hash is first asked for: closure.ts, and TypeScript's native parser with it
- * (an optional peer of the library), are imported then; the parser is the process's (closure.ts processSyntax), shared
+ * (an optional peer of the library), are imported then; the parser is the process's (syntax.ts, read through closure.ts moduleSyntax), shared
  * by every pool, so a module's text is parsed once a process whichever mutant a pool serves. A module's walk is the
  * process's too (`sharedWalk`): a pool reads every file the walk read, and where only modules' bytes differ, its served
  * mutant's or a worker tree's, and each loads what it did, hashes the walk with those bytes (closure.ts walkHolds)
@@ -162,9 +162,8 @@ export const moduleClosureAt = (
 							message: `the closure hasher did not load (TypeScript 7, an optional peer, must be installed): ${Predicate.isError(cause) ? cause.message : Inspectable.toStringUnknown(cause)}`
 						})
 				})
-				const services = yield* Effect.mapError(
-					Scope.provide(scope)(Layer.build(Layer.merge(closure.processSyntax, layerDigest))),
-					(cause) => NeedFailed.make({ need: "ModuleClosure", message: cause.message })
+				const services = yield* Scope.provide(scope)(
+					Layer.build(Layer.merge(closure.moduleSyntax, layerDigest))
 				)
 				return { closure, services }
 			})

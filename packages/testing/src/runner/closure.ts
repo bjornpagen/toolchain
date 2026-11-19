@@ -19,8 +19,8 @@ import {
 import { Digest } from "effect/crypto"
 import { Yaml } from "effect/encoding"
 import * as ts from "typescript/ast"
-import { API } from "typescript/sync"
 import type { ClosureHash } from "#runner/closure-hash.ts"
+import { type SyntaxUnread, syntaxOf } from "#syntax.ts"
 
 /**
  * A module's import closure as one content hash: the module's own bytes, and those of every module it loads, as Node
@@ -28,7 +28,8 @@ import type { ClosureHash } from "#runner/closure-hash.ts"
  * bytes, the same external packages at the same lockfile entries, the same built-ins, under the same conditions and
  * runtime. A cached verdict keyed by it is a known answer for as long as nothing the module can load has changed.
  *
- * What a module loads is read from its syntax alone (TypeScript 7's native parser, one parse per file per run): every
+ * What a module loads is read from its syntax alone (the library's one door to TypeScript's syntax, syntax.ts, one
+ * parse per file per process): every
  * static import and re-export, and every dynamic import of a literal, except `import type` and `export type`, which
  * Node's type stripping erases (`import { type A }` keeps its module, as Node does). A specifier resolves as Node
  * resolves it: relative paths exactly (no extension or index probing), a package's `imports` map for `#` specifiers, a
@@ -94,12 +95,6 @@ class TreeUnreadable extends Schema.TaggedError<
 	TreeUnreadable,
 	{ readonly brand: unique symbol }
 >()("TreeUnreadable", { path: Schema.String, cause: Schema.Defect() }) {}
-
-/** The native parser did not start, or did not read a module. */
-class SyntaxUnread extends Schema.TaggedError<SyntaxUnread, { readonly brand: unique symbol }>()(
-	"SyntaxUnread",
-	{ module: Schema.Option(Schema.String), cause: Schema.Defect() }
-) {}
 
 /** Why a closure could not be hashed. */
 export type ClosureFailure =
@@ -227,15 +222,12 @@ const runtimeSpecifierOf = (node: ts.Node): Option.Option<string> => {
 	return Option.none()
 }
 
-/** The native parser could not be started. */
-const parserUnstarted = (cause: unknown) => SyntaxUnread.make({ module: Option.none(), cause })
-
 /**
- * ModuleSyntax on a native compiler process: each module parsed from the text the closure hashed, so its bytes and its
- * imports are read from the same text, and each parse kept by the module's path and content for the parser's life, so a
- * text is parsed once however many closures read it.
+ * What each module's text loads, read through the library's syntax door (syntax.ts) from the text the closure hashed,
+ * so its bytes and its imports are read from the same text, and each read kept by the module's path and content for
+ * the process's life, so a text is parsed once however many closures read it.
  */
-const parserOn = (api: API): Context.Service.Shape<typeof ModuleSyntax> => {
+const specifiersRead = (): Context.Service.Shape<typeof ModuleSyntax> => {
 	const parsed = new Map<RepoPath, Map<ContentHash, ReadonlyArray<string>>>()
 	return ModuleSyntax.of({
 		runtimeSpecifiers: (module, content, text) =>
@@ -246,52 +238,32 @@ const parserOn = (api: API): Context.Service.Shape<typeof ModuleSyntax> => {
 				if (held !== undefined) {
 					return Effect.succeed(held)
 				}
-				return Effect.try({
-					try: () => {
-						using retained = api.createSourceFile(`/${module}`, text)
-						const specifiers = Arr.getSomes(
-							Arr.map(retained.sourceFile.imports, runtimeSpecifierOf)
-						)
+				return Effect.map(
+					syntaxOf(`/${module}`, text, (tree) =>
+						Arr.getSomes(Arr.map(tree.imports, runtimeSpecifierOf))
+					),
+					(specifiers) => {
 						texts.set(content, specifiers)
 						return specifiers
-					},
-					catch: (cause) => SyntaxUnread.make({ module: Option.some(module), cause })
-				})
+					}
+				)
 			})
 	})
 }
-
-/** ModuleSyntax on TypeScript 7's native parser: one compiler process for the layer's life (`parserOn`). */
-export const nativeSyntax: Layer.Layer<ModuleSyntax, SyntaxUnread> = Layer.effect(
-	ModuleSyntax,
-	Effect.map(
-		Effect.acquireRelease(Effect.try({ try: () => new API(), catch: parserUnstarted }), (api) =>
-			Effect.ignore(Effect.try({ try: () => api.close(), catch: parserUnstarted }))
-		),
-		parserOn
-	)
-)
 
 declare global {
 	var bjornpagenTestingSyntax: Context.Service.Shape<typeof ModuleSyntax> | undefined
 }
 
 /**
- * ModuleSyntax on this process's native parser (`parserOn`): one compiler process for the process's life, started at
- * the first closure the process hashes, so every pool of a run, each kill trial's included, parses a module's text once
- * (runner/module-closure.ts), where each pool's own parser parsed its whole closure again, the parent's one thread
- * blocked in each parse. The compiler process is unreferenced, so it holds no process open, and it ends with its pipes.
+ * ModuleSyntax for this process (`specifiersRead`), made at the first closure the process hashes, so every pool of a
+ * run, each kill trial's included, parses a module's text once (runner/module-closure.ts), where each pool's own
+ * parser parsed its whole closure again, the parent's one thread blocked in each parse.
  */
-export const processSyntax: Layer.Layer<ModuleSyntax, SyntaxUnread> = Layer.effect(
-	ModuleSyntax,
-	Effect.try({
-		try: () => {
-			globalThis.bjornpagenTestingSyntax ??= parserOn(new API())
-			return globalThis.bjornpagenTestingSyntax
-		},
-		catch: parserUnstarted
-	})
-)
+export const moduleSyntax: Layer.Layer<ModuleSyntax> = Layer.sync(ModuleSyntax, () => {
+	globalThis.bjornpagenTestingSyntax ??= specifiersRead()
+	return globalThis.bjornpagenTestingSyntax
+})
 
 /** What an `imports` or `exports` key maps to, as Node reads it. */
 type Target =

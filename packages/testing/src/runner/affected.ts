@@ -35,7 +35,7 @@ import {
 	closuresOf,
 	contentHashOf,
 	jointClosureOf,
-	nativeSyntax,
+	moduleSyntax,
 	type RepoPath,
 	repoPathOf,
 	type Files,
@@ -262,7 +262,7 @@ const weighingOf = (packageRoot: string, repository: string, selected: ReadonlyA
 		const home = yield* Config.String("HOME")
 		const cacheHome = yield* Config.withDefault(Config.String("XDG_CACHE_HOME"), `${home}/.cache`)
 		const { config, discovered } = yield* loadPackage(packageRoot, selected)
-		const hashing = yield* Layer.build(Layer.merge(nativeSyntax, layerDigest))
+		const hashing = yield* Layer.build(Layer.merge(moduleSyntax, layerDigest))
 		const tree = yield* workingTree(repository)
 		const packageFile = (path: string) => underRepository(repository, `${packageRoot}/${path}`)
 		const runnerRoots = yield* runnerRootsOf(repository)
