@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util"
+import { regex } from "arkregex"
 import { Array as Arr, Formatter, Option, Order, String as Str } from "effect"
 import type { Gen } from "#gen.ts"
 import {
@@ -18,8 +19,21 @@ import {
  * to the target. Nothing in it is a budget: every candidate set is finite by construction.
  */
 
-/** Every number the target's structure holds: its numbers, its strings' lengths and character codes, its collections'
- * sizes, and its booleans as 0 and 1. */
+/** A run of decimal digits, with its sign: an integer a string spells. */
+const SPELLED_INTEGER = regex("-?[0-9]+", "g")
+
+/**
+ * The integers a string spells, each with its sign and without it: a generator that draws an integer and prints it into
+ * its text (`${int(1, 9)}e${int(-400, 400)}`) leaves only its digits, which no length or character code pins.
+ */
+const spelledIntegersOf = (text: string): ReadonlyArray<number> =>
+	Arr.flatMap(Arr.fromIterable(Str.matchAll(SPELLED_INTEGER)(text)), ([spelled]) => {
+		const value = Number(spelled)
+		return Number.isSafeInteger(value) ? [value, Math.abs(value)] : []
+	})
+
+/** Every number the target's structure holds: its numbers, its strings' lengths, character codes and the integers they
+ * spell, its collections' sizes, and its booleans as 0 and 1. */
 const literalsOf = (target: unknown): ReadonlySet<number> => {
 	const found = new Set<number>()
 	const seen = new Set<object>()
@@ -40,6 +54,9 @@ const literalsOf = (target: unknown): ReadonlySet<number> => {
 			found.add(value.length)
 			for (const character of value) {
 				Option.map(Str.codePointAt(0)(character), (code) => found.add(code))
+			}
+			for (const spelled of spelledIntegersOf(value)) {
+				found.add(spelled)
 			}
 			return
 		}
@@ -195,10 +212,11 @@ const nearness = (
 }
 
 /**
- * The offsets of a decision that put the target's leaves where its draws on its two simplest offsets differ: a leaf
- * that moves by a fixed step from one offset to the next (an int's lo + offset, or hi - offset) is at the target's
- * value at offset lo + (target - first) / step, when that is a whole offset of the range; so a decision whose mapping
- * no literal of the target names directly (int(1000, 2000)) still reaches it.
+ * The offsets of a decision that put the target's leaves where its draws on its two simplest offsets differ: a leaf, or
+ * an integer a leaf spells (spelledIntegersOf, its place among the leaf's), that moves by a fixed step from one offset
+ * to the next (an int's lo + offset, or hi - offset) is at the target's value at offset lo + (target - first) / step,
+ * when that is a whole offset of the range; so a decision whose mapping no literal of the target names directly
+ * (int(1000, 2000), or such an int spelled in a text) still reaches it.
  */
 const probedOf = (
 	first: ReadonlyMap<string, string>,
@@ -208,18 +226,31 @@ const probedOf = (
 	hi: number
 ): ReadonlyArray<number> =>
 	Arr.flatMap(Arr.fromIterable(first), ([path, before]) => {
-		const after = Number(second.get(path))
-		const at = Number(before)
-		const wanted = Number(target.get(path))
-		const step = after - at
-		const offset = lo + (wanted - at) / step
-		return Number.isFinite(step) &&
-			step !== 0 &&
-			Number.isSafeInteger(offset) &&
-			offset >= lo &&
-			offset <= hi
-			? [offset]
-			: []
+		const after = second.get(path) ?? ""
+		const wanted = target.get(path) ?? ""
+		const atOf = (from: number, to: number, aim: number): ReadonlyArray<number> => {
+			const step = to - from
+			const offset = lo + (aim - from) / step
+			return Number.isFinite(step) &&
+				step !== 0 &&
+				Number.isSafeInteger(offset) &&
+				offset >= lo &&
+				offset <= hi
+				? [offset]
+				: []
+		}
+		const spelled = (leaf: string) =>
+			Arr.map(Arr.fromIterable(Str.matchAll(SPELLED_INTEGER)(leaf)), ([integer]) => Number(integer))
+		const [befores, afters, wanteds] = [spelled(before), spelled(after), spelled(wanted)]
+		return [
+			...atOf(Number(before), Number(after), Number(wanted)),
+			...Arr.flatMap(befores, (from, place) =>
+				Option.match(Option.all([Arr.get(afters, place), Arr.get(wanteds, place)]), {
+					onNone: () => [],
+					onSome: ([to, aim]) => atOf(from, to, aim)
+				})
+			)
+		]
 	})
 
 /** One decision of a draw: its bounds and how a random search spreads it. */
@@ -275,65 +306,160 @@ const nearer = (one: Scored, other: Scored): boolean => {
 	return equal === otherEqual ? close > otherClose : equal > otherEqual
 }
 
+/** What the target is, as every step of the search reads it: the value, its leaves and its literals. */
+type Target = Readonly<{
+	value: unknown
+	leaves: ReadonlyMap<string, string>
+	literals: ReadonlySet<number>
+}>
+
+/** A draw on fixed decisions, scored against the target. */
+type Tried = Readonly<{ drawn: Drawn; exact: boolean; near: readonly [number, number, number] }>
+
+const triedOn = (space: Gen<unknown>, target: Target, fixed: ReadonlyArray<number>): Tried => {
+	const drawn = drawOn(space, fixed)
+	return {
+		drawn,
+		exact: isDeepStrictEqual(drawn.value, target.value),
+		near: nearness(leavesOf(drawn.value), target.leaves)
+	}
+}
+
 /**
- * The tape `space` draws `target` from: decisions fixed left to right, each to the candidate (candidatesOf, and the
- * offsets probedOf reads off its two simplest draws) whose draw, the rest simplest, deeply equals the target or else is
- * nearest it leaf by leaf (nearness), the smallest candidate on a tie, until a draw
- * deeply equals the target. A draw with no decision left to fix ends the search unfound: the value lies outside what
- * the space draws, or a decision no candidate pins. The found tape is drawn again on exactly its decisions and must
- * give the target again.
+ * The candidates of the next decision after `fixed` (candidatesOf, and the offsets probedOf reads off its two simplest
+ * draws), each with its draw, the rest simplest, ascending; none when the draw on `fixed` takes no further decision.
  */
-export const keptOf = (space: Gen<unknown>, target: unknown): Kept => {
-	const targetLeaves = leavesOf(target)
-	const literals = literalsOf(target)
-	const fixed: Array<number> = []
-	for (;;) {
-		const drawn = drawOn(space, fixed)
-		if (isDeepStrictEqual(drawn.value, target)) {
-			const again = generate(recorder(), space, forcedChooser(drawn.values, drawn.values.length))
-			return isDeepStrictEqual(again.value, target)
-				? { kind: "found", values: drawn.values }
-				: { kind: "unfound", why: "the tape found draws another value when replayed" }
-		}
-		const decision = Arr.get(drawn.decisions, fixed.length)
-		if (Option.isNone(decision)) {
-			return {
-				kind: "unfound",
-				why: `with every decision fixed the space draws ${Formatter.format(drawn.value)}: the value lies outside what the space draws, or one of its decisions takes a value none of the target's literals pins`
-			}
-		}
-		const { lo, hi, spread } = decision.value
+const candidatesAfter = (
+	space: Gen<unknown>,
+	target: Target,
+	fixed: ReadonlyArray<number>,
+	drawn: Drawn
+): Option.Option<ReadonlyArray<Scored>> =>
+	Option.map(Arr.get(drawn.decisions, fixed.length), ({ lo, hi, spread }) => {
 		const probed =
 			hi > lo
 				? probedOf(
 						leavesOf(drawOn(space, [...fixed, lo]).value),
 						leavesOf(drawOn(space, [...fixed, lo + 1]).value),
-						targetLeaves,
+						target.leaves,
 						lo,
 						hi
 					)
 				: []
-		const candidates = Arr.sort(
-			Arr.dedupe([...candidatesOf(lo, hi, spread, literals), ...probed]),
-			Order.Number
-		)
-		const scored = Arr.map(candidates, (candidate): Scored => {
-			const tried = drawOn(space, [...fixed, candidate])
-			return {
-				candidate,
-				exact: isDeepStrictEqual(tried.value, target),
-				near: nearness(leavesOf(tried.value), targetLeaves)
+		return Arr.map(
+			Arr.sort(
+				Arr.dedupe([...candidatesOf(lo, hi, spread, target.literals), ...probed]),
+				Order.Number
+			),
+			(candidate): Scored => {
+				const tried = triedOn(space, target, [...fixed, candidate])
+				return { candidate, exact: tried.exact, near: tried.near }
 			}
-		})
-		const best = Arr.reduce(scored, Option.none<Scored>(), (chosen, next) =>
-			Option.match(chosen, {
-				onNone: () => Option.some(next),
-				onSome: (current) => (nearer(next, current) ? Option.some(next) : chosen)
-			})
 		)
+	})
+
+/** The nearest of scored candidates (nearer), the smallest on a tie; none of none. */
+const nearestOf = (scored: ReadonlyArray<Scored>): Option.Option<Scored> =>
+	Arr.reduce(scored, Option.none<Scored>(), (chosen, next) =>
+		Option.match(chosen, {
+			onNone: () => Option.some(next),
+			onSome: (current) => (nearer(next, current) ? Option.some(next) : chosen)
+		})
+	)
+
+/**
+ * The greedy completion of `fixed`: each later decision fixed to its nearest candidate, its draw the rest simplest,
+ * until a draw deeply equals the target or takes no further decision; the last draw, scored.
+ */
+const greedyFrom = (space: Gen<unknown>, target: Target, prefix: ReadonlyArray<number>): Tried => {
+	const fixed = [...prefix]
+	for (;;) {
+		const tried = triedOn(space, target, fixed)
+		if (tried.exact) {
+			return tried
+		}
+		const best = Option.flatMap(candidatesAfter(space, target, fixed, tried.drawn), nearestOf)
+		if (Option.isNone(best)) {
+			return tried
+		}
+		fixed.push(best.value.candidate)
+	}
+}
+
+/**
+ * A decision's candidates each judged by its greedy completion (greedyFrom), one for each distinct draw the rest
+ * simplest gives, since candidates whose simplest draws are alike take the same arm: an arm a choice opens (an option
+ * of oneOf, weighted or a swarm) prints nothing of the target until the decisions after it are fixed, so its simplest
+ * draw cannot tell it from another, and only its completion can.
+ */
+const lookedAhead = (
+	space: Gen<unknown>,
+	target: Target,
+	fixed: ReadonlyArray<number>,
+	candidates: ReadonlyArray<Scored>
+): Option.Option<readonly [Scored, Tried]> => {
+	const seen = new Set<string>()
+	const distinct = Arr.filter(candidates, (c) => {
+		const printed = Formatter.format(drawOn(space, [...fixed, c.candidate]).value)
+		const fresh = !seen.has(printed)
+		seen.add(printed)
+		return fresh
+	})
+	const completed = Arr.map(distinct, (c) => {
+		const tried = greedyFrom(space, target, [...fixed, c.candidate])
+		return [{ candidate: c.candidate, exact: tried.exact, near: tried.near }, tried] as const
+	})
+	return Arr.reduce(completed, Option.none<readonly [Scored, Tried]>(), (chosen, next) =>
+		Option.match(chosen, {
+			onNone: () => Option.some(next),
+			onSome: (current) => (nearer(next[0], current[0]) ? Option.some(next) : chosen)
+		})
+	)
+}
+
+/** A found tape, drawn again on exactly its decisions, which must give the target again. */
+const foundOf = (space: Gen<unknown>, target: Target, drawn: Drawn): Kept => {
+	const again = generate(recorder(), space, forcedChooser(drawn.values, drawn.values.length))
+	return isDeepStrictEqual(again.value, target.value)
+		? { kind: "found", values: drawn.values }
+		: { kind: "unfound", why: "the tape found draws another value when replayed" }
+}
+
+/**
+ * The tape `space` draws `target` from: decisions fixed left to right, each to the candidate (candidatesOf, and the
+ * offsets probedOf reads off its two simplest draws) whose greedy completion (greedyFrom) deeply equals the target or
+ * else is nearest it leaf by leaf (nearness), the smallest candidate on a tie (lookedAhead), until a draw deeply equals
+ * the target. The plain greedy completion of no decision is tried first, and found alone when it is exact. A draw with
+ * no decision left to fix ends the search unfound: the value lies outside what the space draws, or a decision no
+ * candidate pins. The found tape is drawn again on exactly its decisions and must give the target again.
+ */
+export const keptOf = (space: Gen<unknown>, value: unknown): Kept => {
+	const target: Target = { value, leaves: leavesOf(value), literals: literalsOf(value) }
+	const greedy = greedyFrom(space, target, [])
+	if (greedy.exact) {
+		return foundOf(space, target, greedy.drawn)
+	}
+	const fixed: Array<number> = []
+	for (;;) {
+		const tried = triedOn(space, target, fixed)
+		if (tried.exact) {
+			return foundOf(space, target, tried.drawn)
+		}
+		const candidates = candidatesAfter(space, target, fixed, tried.drawn)
+		if (Option.isNone(candidates)) {
+			return {
+				kind: "unfound",
+				why: `with every decision fixed the space draws ${Formatter.format(tried.drawn.value)}: the value lies outside what the space draws, or one of its decisions takes a value none of the target's literals pins`
+			}
+		}
+		const best = lookedAhead(space, target, fixed, candidates.value)
 		if (Option.isNone(best)) {
 			return { kind: "unfound", why: `decision ${fixed.length} has no candidate` }
 		}
-		fixed.push(best.value.candidate)
+		const [chosen, completion] = best.value
+		if (completion.exact) {
+			return foundOf(space, target, completion.drawn)
+		}
+		fixed.push(chosen.candidate)
 	}
 }
