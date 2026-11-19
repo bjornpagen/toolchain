@@ -1,6 +1,6 @@
 import { Array as Arr, Option, Record, Result, String as Str } from "effect"
 import type { DummyRule, DummyRuleMap, OxlintConfig, OxlintOverride } from "oxlint"
-import type { PackName, Toolchain } from "#config.ts"
+import { type PackName, packNamesOf, type Toolchain } from "#config.ts"
 import plugin from "#oxlint-plugin.ts"
 import {
 	ENVIRONMENT_GLOBALS,
@@ -32,8 +32,8 @@ import type { AppStyleOptions } from "#style/options.ts"
 /** The core, which every repository runs, or a pack a repository runs beside it. */
 export type Part = "core" | PackName
 
-/** The parts a toolchain runs: the core, and each pack it lists. */
-type PartsOf<T extends Toolchain> = "core" | T["packs"][number]["pack"]
+/** The parts a toolchain runs: the core, and each pack it names. */
+type PartsOf<T extends Toolchain> = "core" | Extract<keyof T["packs"], PackName>
 
 /** The rules a toolchain rejects, by name. */
 type RejectedOf<T extends Toolchain> = Extract<keyof T["rejected"]["rules"], string>
@@ -438,15 +438,11 @@ type TailwindApp = Readonly<{ root: string; app: string; options: AppStyleOption
 
 /** The web pack's Tailwind apps; none for a repository without a web pack. */
 const tailwindAppsOf = (toolchain: Toolchain): ReadonlyArray<TailwindApp> =>
-	Arr.flatMap(toolchain.packs, (pack) =>
-		pack.pack === "web"
-			? Arr.map(Record.toEntries(pack.options.apps), ([app, options]) => ({
-					root: pack.options.root,
-					app,
-					options
-				}))
-			: []
-	)
+	Option.match(Option.fromUndefinedOr(toolchain.packs.web), {
+		onNone: () => [],
+		onSome: (web) =>
+			Arr.map(Record.toEntries(web.apps), ([app, options]) => ({ root: web.root, app, options }))
+	})
 
 const isClassRuleId = (rule: string): rule is ClassRuleId =>
 	Arr.contains<string>(CLASS_RULE_IDS, rule)
@@ -640,7 +636,7 @@ export type Standard<Rejected extends string, P extends Part> = Readonly<{
 export const standard = <const T extends Toolchain>(
 	toolchain: T & RejectsNoStandardRule<T>
 ): Standard<RejectedOf<T>, PartsOf<T>> => {
-	const parts: ReadonlyArray<Part> = ["core", ...Arr.map(toolchain.packs, (pack) => pack.pack)]
+	const parts: ReadonlyArray<Part> = ["core", ...packNamesOf(toolchain.packs)]
 	const runs = (part: Part): boolean => Arr.contains(parts, part)
 	const off: DummyRuleMap = Record.map(toolchain.rejected.rules, (): DummyRule => "off")
 	const plugins = Arr.map(

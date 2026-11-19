@@ -1,6 +1,7 @@
 #!/usr/bin/env -S node
 
 import { Array as Arr, Console, Effect, FileSystem, Option, Record, String as Str } from "effect"
+import { packNamesOf } from "#config.ts"
 import { STANDARD_GLOBS } from "#preset.ts"
 import { invocationOf } from "#shared/arguments.ts"
 import {
@@ -132,7 +133,7 @@ const checkRepository = Effect.gen(function* () {
 					: []
 			)
 		},
-		Arr.map(config.packs, (pack) => pack.pack)
+		packNamesOf(config.packs)
 	)
 	const lintText = yield* read(LINT_CONFIG_FILE)
 	const globs = Arr.flatMap(overrides, (override) => [

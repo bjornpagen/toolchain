@@ -16,7 +16,6 @@ import {
 } from "#style/class-fixtures.ts"
 import { TAILWIND_PLUGIN } from "#style/classes.ts"
 import { appFindings, FIXTURES_ROOT, fixtureRuns } from "#style/engine.ts"
-import type { WebOptions } from "#style/options.ts"
 
 /**
  * The style linter: the stylesheet contract over the Tailwind app whose package runs it (a workspace package holding
@@ -32,10 +31,7 @@ import type { WebOptions } from "#style/options.ts"
 
 /** The web pack's options, when the repository's toolchain has one. */
 const webOptions = Effect.map(repositoryToolchain, (toolchain) =>
-	Option.map(
-		Arr.findFirst(toolchain.packs, (pack) => pack.pack === "web"),
-		(pack): WebOptions => pack.options
-	)
+	Option.fromUndefinedOr(toolchain.packs.web)
 )
 
 /** The class rules over their fixtures, through oxlint and the plugin's own configuration, as the preset runs them. */

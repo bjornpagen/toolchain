@@ -1,4 +1,4 @@
-import { grizzle, properties, toolchain } from "@bjornpagen/devtools/config"
+import { toolchain } from "@bjornpagen/devtools/config"
 
 /** The toolchain repository's own decisions: the rules and diagnostics it rejects, the grizzle pack, whose standard the
  * testing library is held to, and the properties pack, since its tests are the runner's properties; the packs' names are
@@ -110,5 +110,5 @@ export default toolchain({
 	},
 	exceptions: [],
 	effectFree: [],
-	packs: [grizzle(), properties()]
+	packs: { grizzle: true, properties: true }
 })

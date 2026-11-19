@@ -14,6 +14,21 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: packs keyed by name (2026-11-19)
+
+`toolchain.config.ts`'s `packs` is a record keyed by pack name, so no pack can be listed twice, where it was a list of
+the builders' values that the dev tools refused at load when one came twice. A pack the repository runs is present: the
+drizzle, grizzle and properties packs as `true`, the web pack as its options; one it does not run is absent. The
+builders `drizzle()`, `grizzle()`, `properties()` and `web(...)` are gone, and a pack name no `Packs` holds is a type
+error. Before you move `vendor/toolchain` past this section:
+
+1. **toolchain.config.ts.** `packs: [drizzle(), webPack]` becomes `packs: { drizzle: true, web: webOptions }`,
+   `[grizzle(), properties()]` becomes `{ grizzle: true, properties: true }`, and `[]` becomes `{}`; import only
+   `toolchain` from `@bjornpagen/devtools/config`.
+2. **A web pack's own module** (edullm's and superstarter's `web.ts`) exports the options, not a pack:
+   `export default { root: import.meta.dirname, apps: { ... } } satisfies WebOptions`, with
+   `import type { WebOptions } from "@bjornpagen/devtools/config"`.
+
 ## Consumer migration: one local cluster maker (2026-11-18)
 
 A repository's PostgreSQL test cluster is made by the testing library, one implementation for every repository
@@ -201,7 +216,7 @@ are properties is the properties pack, which that repository's conversion turns 
   `root-files` (a TypeScript file under no workspace package that the root tsconfig's `include` names neither by its
   path nor by a directory above it, an `include` entry that is a glob, or a root `oxlint` script that is not
   `toolchain-oxlint-root`, which lints exactly the `include`'s paths: the root's typecheck and its lint read one list).
-- The properties pack, `packs: [..., properties()]` (`@bjornpagen/devtools/config`), which a repository's conversion
+- The properties pack, `packs: { ..., properties: true }` (`@bjornpagen/devtools/config`), which a repository's conversion
   adds once its test modules are properties: `testing/test-module-shape` on test modules, and the workspace gate's
   `no-vitest-config` (any `vitest.config.*`, `vitest.workspace.*`, or Vite configuration with a test block) and
   `no-test-shards` (`<name>-<digits>.test.ts`). Until the Vitest adapter goes, a package may keep its unconverted

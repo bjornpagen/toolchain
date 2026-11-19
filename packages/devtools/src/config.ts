@@ -1,4 +1,5 @@
-import type { WebOptions } from "#style/options.ts"
+import { Array as Arr, Record, Schema } from "effect"
+import { WebOptions } from "#style/options.ts"
 import type { Exceptions } from "#workspace/rules.ts"
 
 /**
@@ -19,42 +20,35 @@ export type Rejected = Readonly<{
 	diagnostics: Readonly<Record<string, string>>
 }>
 
-/** A pack beside the core: the SQL and Drizzle rules of a repository that owns an application database, grizzle's rules, the
- * web rules of a repository with React apps (the React, jsx-a11y and Next plugins with the React Compiler's
- * rules, the browser rules, each Tailwind app's class, markup and paint rules, and the style linter's stylesheet
- * contract), or the properties pack of a repository whose tests are the toolchain runner's properties. The web pack
- * carries each app's style names; the drizzle and grizzle packs' names are the repository's oxlint.config.ts's,
- * given to the preset's `lintConfig`. */
-export type Pack =
-	| Readonly<{ pack: "drizzle" }>
-	| Readonly<{ pack: "grizzle" }>
-	| Readonly<{ pack: "properties" }>
-	| Readonly<{ pack: "web"; options: WebOptions }>
+/**
+ * The packs a repository runs beside the core, each under its name, so no pack can be listed twice; a pack it does not
+ * run is absent. `drizzle`: the SQL and Drizzle rules of a repository that owns an application database. `grizzle`:
+ * grizzle's rules. `properties`: the properties pack, which a repository's conversion to the toolchain's runner turns on:
+ * its test modules hold properties alone (the testing library's module rules), and the workspace gate refuses a Vitest
+ * configuration and a numbered shard of a test module. `web`: the web rules of a repository with React apps (the React,
+ * jsx-a11y and Next plugins with the React Compiler's rules, the browser rules, each Tailwind app's class, markup and
+ * paint rules, and the style linter's stylesheet contract), with each app's style options by the app's
+ * repository-relative root. The drizzle and grizzle packs' names are the repository's oxlint.config.ts's, given to the
+ * preset's `lintConfig`, so those packs take none here.
+ */
+export const Packs = Schema.Struct({
+	drizzle: Schema.optionalKey(Schema.Literal(true)),
+	grizzle: Schema.optionalKey(Schema.Literal(true)),
+	properties: Schema.optionalKey(Schema.Literal(true)),
+	web: Schema.optionalKey(WebOptions)
+})
+
+export type Packs = typeof Packs.Type
 
 /** The packs a repository may run beside the core, by name. */
-export type PackName = Pack["pack"]
+export type PackName = keyof typeof Packs.fields
 
-/** The one pack of a name, so a repository's config keeps which packs it runs in its type. */
-type PackOf<N extends PackName> = Extract<Pack, Readonly<{ pack: N }>>
+/** The packs a toolchain runs, by name. */
+export const packNamesOf = (packs: Packs): ReadonlyArray<PackName> =>
+	Arr.filter(Record.keys(Packs.fields), (name) => packs[name] !== undefined)
 
-/** The drizzle pack. Its rules are the oxlint plugin's, so the repository's names for them are its oxlint.config.ts's,
- * given to the preset's `lintConfig`, and the pack takes none here. */
-export const drizzle = (): PackOf<"drizzle"> => ({ pack: "drizzle" })
-
-/** The grizzle pack. Its rules are the oxlint plugin's, so the repository's names for them are its oxlint.config.ts's,
- * and the pack takes none here. */
-export const grizzle = (): PackOf<"grizzle"> => ({ pack: "grizzle" })
-
-/**
- * The properties pack, which a repository's conversion to the toolchain's runner turns on: its test modules hold
- * properties alone (the testing library's module rules), and the workspace gate refuses a Vitest configuration and a
- * numbered shard of a test module. A repository still on Vitest's callbacks runs without it until its tests are
- * converted.
- */
-export const properties = (): PackOf<"properties"> => ({ pack: "properties" })
-
-/** The web pack, with each app's style options by the app's repository-relative root. */
-export const web = (options: WebOptions): PackOf<"web"> => ({ pack: "web", options })
+/** The web pack's options, which a repository may build in a module of its own. */
+export type { WebOptions } from "#style/options.ts"
 
 /** What a repository's toolchain.config.ts holds. */
 export type Toolchain = Readonly<{
@@ -63,14 +57,17 @@ export type Toolchain = Readonly<{
 	exceptions: Exceptions
 	/** The workspace packages that use no Effect, by repository-relative directory without a trailing "/". */
 	effectFree: ReadonlyArray<string>
-	/** The packs the repository runs beside the core, each at most once. */
-	packs: ReadonlyArray<Pack>
+	/** The packs the repository runs beside the core. */
+	packs: Packs
 }>
 
 /** A key a toolchain.config.ts may not write: every key no Toolchain holds, such as the `core` and `own` that the
- * retired superlint read, which a toolchain would otherwise carry unread. */
-type UnreadKeys<T> = Readonly<{ [K in Exclude<keyof T, keyof Toolchain>]: never }>
+ * retired superlint read, which a toolchain would otherwise carry unread, and every pack no Packs names. */
+type UnreadKeys<T extends Toolchain> = Readonly<{
+	[K in Exclude<keyof T, keyof Toolchain>]: never
+}> &
+	Readonly<{ packs: Readonly<{ [K in Exclude<keyof T["packs"], PackName>]: never }> }>
 
 /** A repository's toolchain, as its toolchain.config.ts writes it; the literal types survive, so the preset can refuse
- * a rejected rule by name, and a key no Toolchain holds is a type error. */
+ * a rejected rule by name, and a key no Toolchain or Packs holds is a type error. */
 export const toolchain = <const T extends Toolchain>(config: T & UnreadKeys<T>): T => config
