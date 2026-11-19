@@ -36,6 +36,10 @@
 		"fixtures:style": {},
 		"fixtures:oxlint": {},
 		"fixtures:workspace-gate": {},
+		"load": {
+			"description": "Every package's test modules loaded apart, through toolchain-test load: a module whose closure loaded before is a cached answer in toolchain-test's own load cache, keyed by its closure hash, so turbo caches nothing of it.",
+			"cache": false
+		},
 		"test": {
 			"description": "Every package's properties, through toolchain-test run. Each run draws a fresh rotating seed, so a run never replays from cache; the run's seed comes through the environment (and the old fuzz script's variables). The PostgreSQL cluster the testing library's database properties need is the package's own (packages/testing/pg.config.ts; CONTRIBUTING.md, \"Properties that need a database\"), so no libpq variable passes through.",
 			"cache": false,

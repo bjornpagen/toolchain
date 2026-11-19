@@ -34,6 +34,7 @@
 		"fixtures:style": "node src/style.ts --fixtures",
 		"fixtures:oxlint": "node src/oxlint/fixtures.ts",
 		"fixtures:workspace-gate": "node src/workspace-gate.ts --fixtures",
+		"load": "toolchain-test load",
 		"test": "toolchain-test run"
 	},
 	"devDependencies": {

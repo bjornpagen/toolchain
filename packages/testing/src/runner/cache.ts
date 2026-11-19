@@ -17,7 +17,11 @@ import type { ContentHash } from "#runner/closure.ts"
  * produce any more is the only kind a collection may remove. A record is safe to delete at any time; its property runs
  * again.
  *
- * Layout: `<directory>/<SHA-256 of the property id>/<SHA-256 of the key>.json`, each file the key itself as JSON. A write
+ * The load cache (`toolchain-test load`, loadCacheAt) keeps its passes alike, one implementation (passCacheAt): a test
+ * module's load, keyed by the module and its joint closure, its records beside the verdicts'.
+ *
+ * Layout: `<directory>/<SHA-256 of the property id, or the module>/<SHA-256 of the key>.json`, each file the key itself
+ * as JSON. A write
  * goes to a temporary file in a directory of its own beside the record (removed when the write ends) and is renamed into
  * place, so a reader sees a whole record or none, and
  * writers of distinct keys touch distinct files and take no lock. A record whose text is not its key's is refused
@@ -63,13 +67,19 @@ class VerdictCorrupt extends Schema.TaggedError<
 	{ readonly brand: unique symbol }
 >()("VerdictCorrupt", { path: Schema.String }) {}
 
-/** The cache of one repository's verdicts. */
-export type VerdictCache = Readonly<{
+/** A cache of passes keyed by `K`, one repository's. */
+export type PassCache<K> = Readonly<{
 	/** Whether the key holds a pass. */
-	passed: (key: VerdictKey) => Effect.Effect<boolean, VerdictCacheUnusable | VerdictCorrupt>
+	passed: (key: K) => Effect.Effect<boolean, VerdictCacheUnusable | VerdictCorrupt>
 	/** Stores a pass under the key, or removes the pass a failure's key held. */
-	record: (key: VerdictKey, verdict: Verdict) => Effect.Effect<void, VerdictCacheUnusable>
+	record: (key: K, verdict: Verdict) => Effect.Effect<void, VerdictCacheUnusable>
 }>
+
+/** The cache of one repository's verdicts. */
+export type VerdictCache = PassCache<VerdictKey>
+
+/** The cache of one repository's loads. */
+export type LoadCache = PassCache<LoadKey>
 
 /** A key as its record stores it: kills in one order, since a verdict on kills does not depend on their order. */
 const KeyRecord = Schema.fromJsonString(
@@ -109,37 +119,49 @@ const recordOf = (key: VerdictKey): Effect.Effect<string> =>
 		})
 	)
 
-/** The directory of a key's property under `directory`, the file its record is stored in, and the record's text. */
-export const verdictFileOf = Effect.fn("verdictFileOf")(function* (
+/** Where a key's record lies: the directory of its subject, the file it is stored in, and the record's text. */
+type Placed = Readonly<{ shard: string; file: string; record: string }>
+
+/**
+ * The place under `directory` of a record of `subject` (a property's identity, a module's path): the subject's
+ * directory, named by the SHA-256 of the subject, and in it the file named by the SHA-256 of the record's text.
+ */
+const placedOf = Effect.fn("placedOf")(function* (
 	directory: string,
-	key: VerdictKey
+	subject: string,
+	record: string
 ) {
-	const record = yield* recordOf(key)
 	const digest = yield* Digest.Digest
-	const property = yield* digest.digestHex(Digest.sha256, new TextEncoder().encode(key.property))
+	const shard = yield* digest.digestHex(Digest.sha256, new TextEncoder().encode(subject))
 	const hash = yield* digest.digestHex(Digest.sha256, new TextEncoder().encode(record))
 	return {
-		shard: `${directory}/${property}`,
-		file: `${directory}/${property}/${hash}.json`,
+		shard: `${directory}/${shard}`,
+		file: `${directory}/${shard}/${hash}.json`,
 		record
-	}
+	} satisfies Placed
 })
 
-/** The verdict cache whose records are under `directory`, which it creates as it writes. */
-export const verdictCacheAt = (
-	directory: string
-): Effect.Effect<VerdictCache, never, FileSystem.FileSystem | Digest.Digest> =>
+/** The directory of a key's property under `directory`, the file its record is stored in, and the record's text. */
+export const verdictFileOf = (directory: string, key: VerdictKey) =>
+	Effect.flatMap(recordOf(key), (record) => placedOf(directory, key.property, record))
+
+/**
+ * A cache of passes, each record placed by `placed`: whether a key holds a pass (its record there, its text the key's),
+ * and a pass stored or a failure's removed, every write renamed into place from a temporary file beside it.
+ */
+const passCacheAt = <K>(
+	placed: (key: K) => Effect.Effect<Placed, never, Digest.Digest>
+): Effect.Effect<PassCache<K>, never, FileSystem.FileSystem | Digest.Digest> =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem
 		const digest = yield* Digest.Digest
-		const placed = (key: VerdictKey) =>
-			verdictFileOf(directory, key).pipe(Effect.provideService(Digest.Digest, digest))
+		const place = (key: K) => placed(key).pipe(Effect.provideService(Digest.Digest, digest))
 		const unusable = (path: string) => (cause: unknown) =>
 			VerdictCacheUnusable.make({ path, cause })
 		return {
 			passed: (key) =>
 				Effect.gen(function* () {
-					const { file, record } = yield* placed(key)
+					const { file, record } = yield* place(key)
 					const exists = yield* Effect.mapError(fs.exists(file), unusable(file))
 					if (!exists) {
 						return false
@@ -152,7 +174,7 @@ export const verdictCacheAt = (
 				}),
 			record: (key, verdict) =>
 				Effect.gen(function* () {
-					const { shard, file, record } = yield* placed(key)
+					const { shard, file, record } = yield* place(key)
 					switch (verdict) {
 						case "passed":
 							yield* Effect.mapError(fs.makeDirectory(shard, { recursive: true }), unusable(shard))
@@ -174,6 +196,36 @@ export const verdictCacheAt = (
 				})
 		}
 	})
+
+/** The verdict cache whose records are under `directory`, which it creates as it writes. */
+export const verdictCacheAt = (
+	directory: string
+): Effect.Effect<VerdictCache, never, FileSystem.FileSystem | Digest.Digest> =>
+	passCacheAt((key: VerdictKey) => verdictFileOf(directory, key))
+
+/**
+ * What a cached load answers for (`toolchain-test load`, runner/loads.ts): a test module, by its path from the package
+ * root, and the joint closure of it, the package's runner config and the runner's own entry modules (affected.ts
+ * loadKeyingAt), so a module loads again exactly when something it can load changed.
+ */
+export type LoadKey = Readonly<{ module: string; closure: ClosureHash }>
+
+/** A load key as its record stores it. */
+const LoadRecord = Schema.fromJsonString(
+	Schema.Struct({ module: Schema.String, closure: Schema.String })
+)
+
+const encodeLoadRecord = Schema.encodeEffect(LoadRecord)
+
+/** The cache of loads whose records are under `directory`, as the verdict cache keeps its passes. */
+export const loadCacheAt = (
+	directory: string
+): Effect.Effect<LoadCache, never, FileSystem.FileSystem | Digest.Digest> =>
+	passCacheAt((key: LoadKey) =>
+		Effect.flatMap(Effect.orDie(encodeLoadRecord(key)), (record) =>
+			placedOf(directory, key.module, record)
+		)
+	)
 
 /**
  * The first twelve hex digits of the git blob hash of a repository's identity (its origin remote's URL, else its

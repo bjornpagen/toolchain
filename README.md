@@ -14,6 +14,20 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: a check that every test module loads (2026-11-19)
+
+`toolchain-test load` loads every test module a package's runner config includes, each apart in a process of its own
+under the runner's flags, through the runner's own discover, and fails naming each module that throws as it loads (a
+const read in its temporal dead zone, an initializer that throws, an export that is no property) with what it threw: a
+fault that otherwise fails every full run and `pnpm mutate` before anything runs, which `pnpm check` never met. A
+module whose closure (with the config's and the runner's) loaded before is not loaded again: its pass is kept in
+toolchain-test's cache (`<repository key>/loads`), keyed by the closure hash `affected` keys verdicts by, so a check
+loads only what changed. Before you move `vendor/toolchain` past this section:
+
+1. **Every package with a test.config.ts** gets a `"load": "toolchain-test load"` script, and the root's `pnpm check`
+   runs it (a turbo task `load` with `"cache": false`, beside oxlint and format), as the toolchain's own does.
+2. **A script of your own that imports every test module** goes (grizzle's scripts/dev/load-modules.ts).
+
 ## Consumer migration: one TypeScript process for syntax (2026-11-19)
 
 `@bjornpagen/testing/syntax` is the one door to TypeScript 7's native parser, one compiler process a test process

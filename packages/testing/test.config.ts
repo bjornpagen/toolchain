@@ -19,6 +19,7 @@ export default defineRunner({
 		"src/runner/cache.test.ts",
 		"src/runner/consumer.test.ts",
 		"src/runner/named.test.ts",
+		"src/runner/loads.test.ts",
 		"src/resources/scratch.test.ts",
 		"src/resources/resources.test.ts",
 		"src/pg/make.test.ts",

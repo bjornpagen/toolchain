@@ -59,6 +59,7 @@
 	"scripts": {
 		"typecheck": "toolchain-typecheck",
 		"oxlint": "toolchain-oxlint",
+		"load": "toolchain-test load",
 		"test": "toolchain-test run",
 		"bench": "vitest bench --run",
 		"mutate": "toolchain-test mutate",

@@ -7,6 +7,7 @@ import {
 	Inspectable,
 	Layer,
 	Option,
+	type Path,
 	Result,
 	Schema,
 	Stream,
@@ -23,6 +24,7 @@ import { type Kill, Property, type PropertyId } from "#property.ts"
 import { toolchainTestCache } from "#runner/cache-home.ts"
 import {
 	type KillContent,
+	loadCacheAt,
 	repositoryKeyOf,
 	SeedPolicy,
 	type VerdictCache,
@@ -41,8 +43,10 @@ import {
 	type Files,
 	workingTree
 } from "#runner/closure.ts"
+import type { RunnerConfig } from "#runner/config.ts"
 import { runnerLimits } from "#runner/limits.ts"
 import type { Discovered } from "#runner/load.ts"
+import type { LoadKeying } from "#runner/loads.ts"
 import { failureLines, lineOf } from "#runner/report.ts"
 import {
 	loadPackage,
@@ -245,25 +249,37 @@ const runnerRootsOf = (repository: string) =>
 		return own ? yield* Effect.forEach(entries, (real) => underRepository(repository, real)) : []
 	})
 
-/** Weighs the properties `selected` names in a package of a repository: their closures, keys and the repository's cache. */
-const weighingOf = (packageRoot: string, repository: string, selected: ReadonlyArray<string>) =>
+/** The repository's identity, as toolchain-gate names it: its origin remote's URL, else its common git directory. */
+const identityOf = (repository: string) =>
+	Effect.flatMap(gitOf(repository, ["config", "--get", "remote.origin.url"]), (url) =>
+		Option.match(Option.filter(Option.map(url, Str.trim), Str.isNonEmpty), {
+			onSome: Effect.succeed,
+			onNone: () =>
+				required(
+					repository,
+					["rev-parse", "--path-format=absolute", "--git-common-dir"],
+					"the repository has no git directory"
+				)
+		})
+	)
+
+/**
+ * A package's test modules as every cached answer of the repository weighs them: the working tree, the closure
+ * hasher, the repository's cache directory (`<toolchain-test cache>/<repository key>`), and each module's joint
+ * closure with the package's test.config.ts and the runner's own entry modules (runnerRootsOf), hashed under the
+ * config's conditions and this Node's version, so an edit to anything a module, the config or the runner loads makes
+ * its closure new.
+ */
+const modulesWeighedOf = (
+	packageRoot: string,
+	repository: string,
+	config: RunnerConfig,
+	modules: ReadonlyArray<string>
+) =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem
-		const identity = yield* Effect.flatMap(
-			gitOf(repository, ["config", "--get", "remote.origin.url"]),
-			(url) =>
-				Option.match(Option.filter(Option.map(url, Str.trim), Str.isNonEmpty), {
-					onSome: Effect.succeed,
-					onNone: () =>
-						required(
-							repository,
-							["rev-parse", "--path-format=absolute", "--git-common-dir"],
-							"the repository has no git directory"
-						)
-				})
-		)
+		const identity = yield* identityOf(repository)
 		const cache = yield* toolchainTestCache
-		const { config, discovered } = yield* loadPackage(packageRoot, selected)
 		const hashing = yield* Layer.build(Layer.merge(moduleSyntax, layerDigest))
 		const tree = yield* workingTree(repository)
 		const packageFile = (path: string) => underRepository(repository, `${packageRoot}/${path}`)
@@ -272,33 +288,54 @@ const weighingOf = (packageRoot: string, repository: string, selected: ReadonlyA
 			underRepository(repository, real)
 		)
 		const runner = [...runnerRoots, configRoot]
-		const modules = yield* Effect.forEach(
-			Arr.dedupe(Arr.map(discovered, (found) => found.module)),
-			(module) => Effect.map(packageFile(module), (path) => [module, path] as const)
+		const pathEntries = yield* Effect.forEach(Arr.dedupe(modules), (module) =>
+			Effect.map(packageFile(module), (path) => [module, path] as const)
 		)
+		const paths = new Map(pathEntries)
 		const closures = yield* closuresOf({
 			tree,
 			conditions: config.conditions,
 			runtime: process.version,
-			roots: [...runner, ...Arr.map(modules, ([, path]) => path)]
+			roots: [...runner, ...paths.values()]
 		}).pipe(Effect.provide(hashing))
 		const closureOf = (path: RepoPath) =>
 			Effect.mapError(Effect.fromOption(Option.fromUndefinedOr(closures.get(path))), () =>
 				AffectedRefused.make({ message: `${path} has no closure` })
 			)
 		const shared = yield* Effect.forEach(runner, closureOf)
-		const paths = new Map(modules)
-		const weighed = yield* Effect.forEach(discovered, (found) =>
+		const repositoryKey = yield* repositoryKeyOf(identity).pipe(Effect.provide(hashing))
+		return {
+			tree,
+			hashing,
+			home: `${cache}/${repositoryKey}`,
+			jointOf: (module: string) =>
+				Effect.gen(function* () {
+					const path = yield* Effect.mapError(
+						Effect.fromOption(Option.fromUndefinedOr(paths.get(module))),
+						() => AffectedRefused.make({ message: `${module} was not hashed` })
+					)
+					const own = yield* closureOf(path)
+					return yield* jointClosureOf([own, ...shared]).pipe(Effect.provide(hashing))
+				})
+		}
+	})
+
+/** Weighs the properties `selected` names in a package of a repository: their closures, keys and the repository's cache. */
+const weighingOf = (packageRoot: string, repository: string, selected: ReadonlyArray<string>) =>
+	Effect.gen(function* () {
+		const { config, discovered } = yield* loadPackage(packageRoot, selected)
+		const weighed = yield* modulesWeighedOf(
+			packageRoot,
+			repository,
+			config,
+			Arr.map(discovered, (found) => found.module)
+		)
+		const properties = yield* Effect.forEach(discovered, (found) =>
 			Effect.gen(function* () {
-				const path = yield* Effect.mapError(
-					Effect.fromOption(Option.fromUndefinedOr(paths.get(found.module))),
-					() => AffectedRefused.make({ message: `${found.module} was not hashed` })
-				)
-				const own = yield* closureOf(path)
-				const closure = yield* jointClosureOf([own, ...shared]).pipe(Effect.provide(hashing))
+				const closure = yield* weighed.jointOf(found.module)
 				const kills = yield* Effect.forEach(found.property.kills, (kill) =>
-					killContentOf(tree, kill)
-				).pipe(Effect.provide(hashing))
+					killContentOf(weighed.tree, kill)
+				).pipe(Effect.provide(weighed.hashing))
 				const key = Option.map(Option.all(kills), (contents): VerdictKey => ({
 					property: found.id,
 					closure: closure.hash,
@@ -319,12 +356,53 @@ const weighingOf = (packageRoot: string, repository: string, selected: ReadonlyA
 				return { found, closure, key, killKeys } satisfies Weighed
 			})
 		)
-		const repositoryKey = yield* repositoryKeyOf(identity).pipe(Effect.provide(hashing))
-		const verdicts = yield* verdictCacheAt(`${cache}/${repositoryKey}/verdicts`).pipe(
-			Effect.provide(hashing)
+		const verdicts = yield* verdictCacheAt(`${weighed.home}/verdicts`).pipe(
+			Effect.provide(weighed.hashing)
 		)
-		return { repository, packageRoot, cache: verdicts, weighed } satisfies Weighing
+		return { repository, packageRoot, cache: verdicts, weighed: properties } satisfies Weighing
 	})
+
+/**
+ * How `toolchain-test load` keys the test modules `modules` of the package at `root` (runner/loads.ts): each module's
+ * load key, its joint closure (modulesWeighedOf), in the repository's load cache (`<repository key>/loads`); or, where
+ * no key can be made (no git repository, a closure that will not hash: a lockfile missing, a package undeclared), why,
+ * every module then loaded and none recorded.
+ */
+export const loadKeyingAt = (
+	root: string,
+	config: RunnerConfig,
+	modules: ReadonlyArray<string>
+): Effect.Effect<
+	LoadKeying,
+	never,
+	FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
+> =>
+	Effect.scoped(
+		Effect.gen(function* () {
+			const grounds = yield* groundsOf(root)
+			const repository = yield* Effect.mapError(Effect.fromOption(grounds.repository), () =>
+				AffectedRefused.make({ message: `${root} lies in no git repository` })
+			)
+			const weighed = yield* modulesWeighedOf(grounds.packageRoot, repository, config, modules)
+			const keys = yield* Effect.forEach(modules, (module) =>
+				Effect.map(weighed.jointOf(module), (closure) => ({
+					module,
+					key: { module, closure: closure.hash }
+				}))
+			)
+			const cache = yield* loadCacheAt(`${weighed.home}/loads`).pipe(
+				Effect.provide(weighed.hashing)
+			)
+			return { kind: "keyed", cache, keys } satisfies LoadKeying
+		})
+	).pipe(
+		Effect.catch((unkeyed) =>
+			Effect.succeed({
+				kind: "unkeyed",
+				why: Inspectable.toStringUnknown(unkeyed, 0)
+			} satisfies LoadKeying)
+		)
+	)
 
 /** A kill whose verdict the cache already holds: it turned its property red under the same closure and file. */
 type CachedKill = Readonly<{ property: PropertyId; kill: Kill }>

@@ -11,6 +11,7 @@ import {
 	Option,
 	Predicate,
 	Record as Rec,
+	Result,
 	Schema
 } from "effect"
 import { replayOf, replayTokenOf } from "#replay.ts"
@@ -20,6 +21,7 @@ import { HARDENED_FLAGS } from "#runner/config.ts"
 import { fuzz } from "#runner/fuzz.ts"
 import { runOfItsOwn } from "#runner/leases.ts"
 import { configOf, keptValuesAt } from "#runner/load.ts"
+import { type LoadKeying, loadCommand } from "#runner/loads.ts"
 import { failureLines, lineOf } from "#runner/report.ts"
 import { loadPackage, replayToken, runPackage, runSeedLogged } from "#runner/run.ts"
 import { affectedModule, settledRun } from "#runner/settle.ts"
@@ -212,8 +214,30 @@ const keep = (args: ReadonlyArray<string>) =>
 	})
 
 /**
- * The commands, by name. A lane's command is an entry here (affected, kills, mutate, fuzz), reading the package as
- * loadPackage and runPackage (run.ts) give it.
+ * `load`: every test module the runner config includes loaded apart, but those whose closure loaded before
+ * (loads.ts loadCommand), keyed by the repository's load cache (affected.ts loadKeyingAt) where the closure hasher
+ * loads, and with none recorded, saying why, where it does not; 1 when any module failed to load.
+ */
+const load = (args: ReadonlyArray<string>) =>
+	Effect.gen(function* () {
+		if (Arr.isReadonlyArrayNonEmpty(args)) {
+			return yield* CommandFailed.make({ message: "load takes no argument: toolchain-test load" })
+		}
+		return yield* loadCommand(root, (config, modules) =>
+			Effect.flatMap(
+				Effect.result(affectedModule),
+				Result.match({
+					onSuccess: (module) => module.loadKeyingAt(root, config, modules),
+					onFailure: (unloaded) =>
+						Effect.succeed({ kind: "unkeyed", why: unloaded.message } satisfies LoadKeying)
+				})
+			)
+		)
+	})
+
+/**
+ * The commands, by name. A lane's command is an entry here (affected, kills, mutate, fuzz, load), reading the package
+ * as loadPackage and runPackage (run.ts) give it.
  */
 const commands: Readonly<Record<string, Command>> = {
 	run: (args) => failing(run(args)),
@@ -232,6 +256,7 @@ const commands: Readonly<Record<string, Command>> = {
 			)
 		),
 	fuzz: (args) => failing(fuzz(root, args)),
+	load: (args) => failing(load(args)),
 	keep: (args) => failing(keep(args))
 }
 

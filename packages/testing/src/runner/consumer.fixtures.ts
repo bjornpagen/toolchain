@@ -172,18 +172,22 @@ const lockfileOf = (text: string, layout: Layout): string => {
 	return `${first}\n---\n${Arr.join(snapshots, "\n")}`
 }
 
+/** A consumer's own files, each its path from the consumer's root and its text. */
+export type ConsumerFiles = ReadonlyArray<readonly [path: string, text: string]>
+
+/** A consumer's manifest: the library as its layout holds it, and effect. */
+export const manifestOf = (layout: Layout): string =>
+	`{ "name": "consumer", "version": "0.0.0", "private": true, "type": "module", "dependencies": { "@bjornpagen/testing": "${layout.library === "link" ? "link:vendor/testing" : "file:testing.tgz"}", "effect": "4.1.4" } }\n`
+
 /**
  * The consumer's files: its manifest, runner config, one passing property, a passing property with a kill where no kill
  * can be judged, and the script that runs them inline.
  */
-const filesOf = (layout: Layout): ReadonlyArray<readonly [path: string, text: string]> => {
+export const runnerFilesOf = (layout: Layout): ConsumerFiles => {
 	const library =
 		layout.library === "link" ? "./vendor/testing" : "./node_modules/@bjornpagen/testing"
 	return [
-		[
-			"package.json",
-			`{ "name": "consumer", "version": "0.0.0", "private": true, "type": "module", "dependencies": { "@bjornpagen/testing": "${layout.library === "link" ? "link:vendor/testing" : "file:testing.tgz"}", "effect": "4.1.4" } }\n`
-		],
+		["package.json", manifestOf(layout)],
 		[
 			"test.config.ts",
 			`import { defineRunner, noMutation } from "@bjornpagen/testing/runner"\nimport { Layer } from "effect"\n\nexport default defineRunner({ include: ["test/*.test.ts"], smallStack: [], conditions: [], layer: Layer.empty, mutation: noMutation })\n`
@@ -209,7 +213,7 @@ const filesOf = (layout: Layout): ReadonlyArray<readonly [path: string, text: st
 
 /**
  * Writes a consumer of `layout` into `directory` from the checkout whose testing package is at `packageDirectory`
- * (Checkout.dir, so a mutant the mutator writes into a worker tree is in the library the consumer holds): its files;
+ * (Checkout.dir, so a mutant the mutator writes into a worker tree is in the library the consumer holds): its `files`;
  * the library's packages, linked from vendor/ or installed as files under node_modules/@bjornpagen; every other package
  * of the checkout's node_modules linked in, TypeScript's only when it has TypeScript; its lockfile when it has one; and
  * a git repository when it lies in one.
@@ -217,11 +221,12 @@ const filesOf = (layout: Layout): ReadonlyArray<readonly [path: string, text: st
 export const consumerIn = Effect.fn("consumerIn")(function* (
 	directory: string,
 	layout: Layout,
-	packageDirectory: string
+	packageDirectory: string,
+	files: ConsumerFiles
 ) {
 	const fs = yield* FileSystem.FileSystem
 	const checkout = repositoryOf(packageDirectory)
-	for (const [path, text] of filesOf(layout)) {
+	for (const [path, text] of files) {
 		yield* fs.makeDirectory(
 			Arr.join(Arr.initNonEmpty(Str.split("/")(`${directory}/${path}`)), "/"),
 			{
@@ -232,10 +237,10 @@ export const consumerIn = Effect.fn("consumerIn")(function* (
 	}
 	yield* fs.makeDirectory(`${directory}/node_modules/@bjornpagen`, { recursive: true })
 	for (const name of LIBRARY) {
-		const files = `${directory}/${layout.library === "link" ? `vendor/${name}` : `node_modules/@bjornpagen/${name}`}`
-		yield* fs.makeDirectory(files, { recursive: true })
-		yield* fs.copyFile(`${checkout}/packages/${name}/package.json`, `${files}/package.json`)
-		yield* copied(`${checkout}/packages/${name}/src`, `${files}/src`)
+		const held = `${directory}/${layout.library === "link" ? `vendor/${name}` : `node_modules/@bjornpagen/${name}`}`
+		yield* fs.makeDirectory(held, { recursive: true })
+		yield* fs.copyFile(`${checkout}/packages/${name}/package.json`, `${held}/package.json`)
+		yield* copied(`${checkout}/packages/${name}/src`, `${held}/src`)
 		if (layout.library === "link") {
 			yield* fs.symlink(`../../vendor/${name}`, `${directory}/node_modules/@bjornpagen/${name}`)
 		}
@@ -266,7 +271,7 @@ const Summary = Schema.fromJsonString(
 const decodeSummary = Schema.decodeUnknownEffect(Summary)
 
 /** A command run to its end in `cwd` with `env` added: its exit code, standard output and standard error. */
-const ran = Effect.fn("ran")(function* (
+export const ran = Effect.fn("ran")(function* (
 	cwd: string,
 	command: string,
 	args: ReadonlyArray<string>,

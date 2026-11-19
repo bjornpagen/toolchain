@@ -9,7 +9,8 @@ import {
 	judgeable,
 	keyed,
 	layoutSituationsOf,
-	layouts
+	layouts,
+	runnerFilesOf
 } from "#runner/consumer.fixtures.ts"
 
 /**
@@ -41,7 +42,7 @@ export const consumersRunInEveryLayout = property.exhaust(layouts, {
 				const scratch = yield* directory
 				const consumer = `${scratch}/consumer`
 				const library = yield* checkout
-				yield* consumerIn(consumer, layout, library)
+				yield* consumerIn(consumer, layout, library, runnerFilesOf(layout))
 				const ran = yield* consumerRun(consumer, `${scratch}/cache`)
 				yield* agree(
 					[
