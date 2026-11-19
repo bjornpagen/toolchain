@@ -1,4 +1,5 @@
 import { Config, Effect, Option } from "effect"
+import { toolchainTestCache } from "#runner/cache-home.ts"
 
 /**
  * Node's compile cache for a run's processes: V8's compiled code for every module a process loads, kept on disk by
@@ -10,11 +11,7 @@ import { Config, Effect, Option } from "effect"
  */
 
 /** The compile cache's directory: `${XDG_CACHE_HOME:-~/.cache}/toolchain-test/compile`. */
-export const compileCacheDirectory = Effect.gen(function* () {
-	const home = yield* Config.String("HOME")
-	const cacheHome = yield* Config.withDefault(Config.String("XDG_CACHE_HOME"), `${home}/.cache`)
-	return `${cacheHome}/toolchain-test/compile`
-})
+export const compileCacheDirectory = Effect.map(toolchainTestCache, (cache) => `${cache}/compile`)
 
 /** Whether this process reads V8's coverage through NODE_V8_COVERAGE. */
 export const readsCoverage = Effect.map(

@@ -3,7 +3,6 @@ import * as NodeServices from "@effect/platform-node/NodeServices"
 import {
 	Array as Arr,
 	Cause,
-	Config,
 	Console,
 	Effect,
 	FileSystem,
@@ -16,6 +15,7 @@ import {
 	Schema
 } from "effect"
 import { replayOf, replayTokenOf } from "#replay.ts"
+import { toolchainTestCache } from "#runner/cache-home.ts"
 import { compileCached } from "#runner/compile-cache.ts"
 import { HARDENED_FLAGS } from "#runner/config.ts"
 import { fuzz } from "#runner/fuzz.ts"
@@ -55,9 +55,8 @@ const root = process.cwd()
 const usageWritten = (packageRoot: string, seed: number, millis: number, usage: UsageReport) =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem
-		const home = yield* Config.String("HOME")
-		const cacheHome = yield* Config.withDefault(Config.String("XDG_CACHE_HOME"), `${home}/.cache`)
-		const runs = `${cacheHome}/toolchain-test/runs`
+		const cache = yield* toolchainTestCache
+		const runs = `${cache}/runs`
 		const file = `${runs}/${seed}-${process.pid}.json`
 		const json = yield* usageJson({ root: packageRoot, seed, millis, report: usage })
 		yield* fs.makeDirectory(runs, { recursive: true })

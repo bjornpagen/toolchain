@@ -1,7 +1,6 @@
 import { layerDigest } from "@effect/platform-node/NodeCrypto"
 import {
 	Array as Arr,
-	Config,
 	Console,
 	Effect,
 	FileSystem,
@@ -21,6 +20,7 @@ import { mutatorPool } from "#mutate/lease.ts"
 import { realPathOf } from "#mutate/mutated.ts"
 import { treesOf } from "#mutate/tree.ts"
 import { type Kill, Property, type PropertyId } from "#property.ts"
+import { toolchainTestCache } from "#runner/cache-home.ts"
 import {
 	type KillContent,
 	repositoryKeyOf,
@@ -259,8 +259,7 @@ const weighingOf = (packageRoot: string, repository: string, selected: ReadonlyA
 						)
 				})
 		)
-		const home = yield* Config.String("HOME")
-		const cacheHome = yield* Config.withDefault(Config.String("XDG_CACHE_HOME"), `${home}/.cache`)
+		const cache = yield* toolchainTestCache
 		const { config, discovered } = yield* loadPackage(packageRoot, selected)
 		const hashing = yield* Layer.build(Layer.merge(moduleSyntax, layerDigest))
 		const tree = yield* workingTree(repository)
@@ -318,10 +317,10 @@ const weighingOf = (packageRoot: string, repository: string, selected: ReadonlyA
 			})
 		)
 		const repositoryKey = yield* repositoryKeyOf(identity).pipe(Effect.provide(hashing))
-		const cache = yield* verdictCacheAt(
-			`${cacheHome}/toolchain-test/${repositoryKey}/verdicts`
-		).pipe(Effect.provide(hashing))
-		return { repository, packageRoot, cache, weighed } satisfies Weighing
+		const verdicts = yield* verdictCacheAt(`${cache}/${repositoryKey}/verdicts`).pipe(
+			Effect.provide(hashing)
+		)
+		return { repository, packageRoot, cache: verdicts, weighed } satisfies Weighing
 	})
 
 /**
