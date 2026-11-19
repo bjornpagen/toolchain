@@ -45,7 +45,7 @@ import {
 } from "#runner/protocol.ts"
 import { seriesRun } from "#runner/series.ts"
 import { NeedFailed } from "#runner/services.ts"
-import { overrunText, ownCpu, ownWork } from "#runner/work.ts"
+import { type Overrun, overrunText, ownCpu, ownWork } from "#runner/work.ts"
 import { type Observed, type Recording, recording, simplestChooser } from "#source.ts"
 
 /**
@@ -485,7 +485,7 @@ const printedOf = <S>(
 type Settled =
 	| Readonly<{ kind: "passed" }>
 	| Readonly<{ kind: "failed"; cause: Cause.Cause<unknown> }>
-	| Readonly<{ kind: "hung" }>
+	| Readonly<{ kind: "hung"; overrun: Overrun }>
 	| Readonly<{ kind: "unopened"; unopened: NeedFailed }>
 
 /**
@@ -566,7 +566,10 @@ const guarded = <E, R>(
 			const ended = yield* restore(
 				Effect.raceFirst(
 					Effect.map(Fiber.await(running), settledOf),
-					Effect.as(overrun(ownWork(wall, own), deadline), { kind: "hung" } satisfies Settled)
+					Effect.map(overrun(ownWork(wall, own), deadline), (ran): Settled => ({
+						kind: "hung",
+						overrun: ran
+					}))
 				)
 			).pipe(
 				Effect.onInterrupt(() =>
@@ -628,7 +631,12 @@ const outcomeOf = (
 				printed: printed()
 			}
 		case "hung":
-			return { kind: "hung", tape: recorded.tape(), printed: printed() }
+			return {
+				kind: "hung",
+				leg: overrunText(settled.overrun),
+				tape: recorded.tape(),
+				printed: printed()
+			}
 		case "unopened":
 			return {
 				kind: "unopened",

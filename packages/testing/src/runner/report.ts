@@ -97,7 +97,7 @@ export const headlineOf = (finding: Finding): string => {
 		case "falsified":
 			return `falsified on ${finding.where}`
 		case "hung":
-			return `hung on ${finding.where}`
+			return `hung on ${finding.where}: ${finding.leg}`
 		case "misused":
 			return `used its case after the case ended, on ${finding.where}`
 		case "lost":

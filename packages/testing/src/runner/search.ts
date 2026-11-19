@@ -253,6 +253,7 @@ const findingOf = (
 				kind: "hung",
 				phase,
 				where,
+				leg: outcome.leg,
 				printed: outcome.printed,
 				token: tokenOf(run.id, drawn, outcome.tape)
 			})

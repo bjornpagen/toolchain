@@ -31,7 +31,7 @@
  */
 import { Array as Arr, Clock, Effect, Option, Order, String as Str } from "effect"
 import { TestClock } from "effect/testing"
-import { deepStrictEqual, strictEqual } from "#assert.ts"
+import { assertTrue, deepStrictEqual, strictEqual } from "#assert.ts"
 import { aimed, finite, int } from "#gen.ts"
 import { property } from "#property.ts"
 import {
@@ -94,13 +94,24 @@ export const hangsOnTheLiveClock = property.explore(
 						limits: { ...runnerLimits, deadline }
 					}).pipe(Effect.provideService(Clock.Clock, testClock))
 					strictEqual(verdictKind(verdict), "hung")
+					const finding = yield* Effect.fromOption(findingOf(verdict))
+					assertTrue(
+						finding.kind === "hung" && Str.startsWith("its process tree")(finding.leg),
+						`the hung finding names the leg its guard read, its CPU spent or its stall: ${finding.kind === "hung" ? finding.leg : finding.kind}`
+					)
 				}),
 		oracle: {
 			kind: "specification",
-			name: "a case past its deadline on the live clock is hung, whatever clock its search runs under"
+			name: "a case past its deadline on the live clock is hung, whatever clock its search runs under, and its finding names the leg its guard read: its CPU spent, or its stall"
 		},
 		kept: [],
 		kills: [
+			{
+				file: "packages/testing/src/runner/case.ts",
+				original: "leg: overrunText(settled.overrun),",
+				replacement: 'leg: "",',
+				why: "A hung case is reported without the leg its guard read, so a hang under load says neither whether the case spent its CPU nor whether it waited on something no one declared (CONFINE's inductive control run, hung at case 0)."
+			},
 			{
 				file: "packages/testing/src/live.ts",
 				original:

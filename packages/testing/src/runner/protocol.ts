@@ -165,7 +165,7 @@ const CaseOutcome = Schema.Union([
 		tape: Tape,
 		printed: Printed
 	}),
-	Schema.Struct({ kind: Schema.Literal("hung"), tape: Tape, printed: Printed }),
+	Schema.Struct({ kind: Schema.Literal("hung"), leg: Schema.String, tape: Tape, printed: Printed }),
 	Schema.Struct({ kind: Schema.Literal("lost"), report: Schema.String }),
 	Schema.Struct({ kind: Schema.Literal("unopened"), need: Schema.String, message: Schema.String })
 ])
@@ -561,7 +561,15 @@ export type Finding =
 			shrinking: Shrinking
 			token: string
 	  }>
-	| Readonly<{ kind: "hung"; phase: CasePhase; where: string; printed: Printed; token: string }>
+	| Readonly<{
+			kind: "hung"
+			phase: CasePhase
+			where: string
+			/** What the case's guard read as it stopped it (runner/work.ts overrunText): its CPU spent, or its stall. */
+			leg: string
+			printed: Printed
+			token: string
+	  }>
 	| Readonly<{ kind: "misused"; phase: CasePhase; where: string; printed: Printed }>
 	| Readonly<{ kind: "lost"; phase: CasePhase; where: string; report: string }>
 	| Readonly<{ kind: "unopened"; need: string; message: string }>
