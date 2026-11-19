@@ -1,9 +1,11 @@
 import { parseArgs } from "node:util"
+import { layerDigest } from "@effect/platform-node/NodeCrypto"
 import {
 	Array as Arr,
 	Console,
 	Effect,
 	FileSystem,
+	Layer,
 	Option,
 	Order,
 	Path,
@@ -11,16 +13,18 @@ import {
 	String as Str
 } from "effect"
 import { liveMillis } from "#live.ts"
-import { OPERATORS } from "#mutants.ts"
+import { applied, OPERATORS } from "#mutants.ts"
+import { type Catch, type Counted, censusOf, productOf, type Standing } from "#mutate/census.ts"
 import { loadingOf } from "#mutate/checkout.ts"
 import { imagesOf } from "#mutate/image.ts"
 import { type Judged, killsOf, redText } from "#mutate/kills.ts"
 import { mutatorPool } from "#mutate/lease.ts"
-import { realPathOf } from "#mutate/mutated.ts"
+import { type RealPath, realPathOf } from "#mutate/mutated.ts"
 import { type Choice, type MutantJudged, mutationOf } from "#mutate/operators.ts"
 import type { Subject } from "#mutate/schedule.ts"
 import { treesOf } from "#mutate/tree.ts"
-import { killVerdictsAt } from "#runner/affected.ts"
+import { gitOf, verdictsAt } from "#runner/affected.ts"
+import { editOf } from "#runner/cache.ts"
 import type { Mutation, RunnerConfig } from "#runner/config.ts"
 import { runnerLimits } from "#runner/limits.ts"
 import type { Discovered } from "#runner/load.ts"
@@ -115,8 +119,8 @@ export const killsCommand = (root: string, selected: ReadonlyArray<string>) =>
 			const began = yield* liveMillis
 			const checkout = yield* checkoutOf(root)
 			const packageRoot = yield* realPathOf(root)
-			const { discovered } = yield* loadPackage(root, selected)
-			const verdicts = yield* killVerdictsAt(root, selected)
+			const { config, discovered } = yield* loadPackage(root, selected)
+			const verdicts = (yield* verdictsAt(root, config, discovered)).kills
 			const { fresh, cached } = yield* verdicts.split(
 				Arr.filter(discovered, (found) => Arr.isReadonlyArrayNonEmpty(found.property.kills))
 			)
@@ -313,7 +317,8 @@ const survivorsReport = (judged: ReadonlyArray<MutantJudged<string>>): ReadonlyA
  * `mutate <file>... [--against <path | id>]... [--operator <name>]... [--sample <n> --seed <s> | --mutant <id>...]`:
  * operator mutation of the files (paths from the package root) by the library's operators and the runner config's
  * families, but for the mutants it judges equivalent (its Mutation, loadedMutation), against the properties
- * `--against` names (every property of the package when it names none), on the pool (mutate/operators.ts). A
+ * `--against` names (every property of the package when it names none), on the pool (mutate/operators.ts), each kill
+ * recorded in the verdict cache under its edit (runner/affected.ts EditVerdicts), which the census reads. A
  * measurement: it prints its counts, its score, its mutants by operator and its survivors by file and operator, and
  * answers 0 whatever it measured; a refusal (an equivalent judgment gone stale, a property red with no mutant, a probe a
  * property survived, a package that does not typecheck) is the command's failure.
@@ -362,6 +367,18 @@ export const mutateCommand = (root: string, args: ReadonlyArray<string>) =>
 				operators: new Set(operators),
 				choice: parsed.choice
 			})
+			const { edits } = yield* verdictsAt(root, config, discovered)
+			const digest = yield* Layer.build(layerDigest)
+			yield* Effect.forEach(
+				judged,
+				({ mutant, verdict }) =>
+					verdict.kind === "killed"
+						? Effect.flatMap(editOf(mutant.file, mutant.source, applied(mutant)), (edit) =>
+								edits.record(verdict.property, edit, true)
+							)
+						: Effect.void,
+				{ discard: true }
+			).pipe(Effect.provide(digest))
 			const ended = yield* liveMillis
 			const count = (kind: MutantJudged<string>["verdict"]["kind"]) =>
 				Arr.filter(judged, ({ verdict }) => verdict.kind === kind).length
@@ -380,5 +397,160 @@ export const mutateCommand = (root: string, args: ReadonlyArray<string>) =>
 				)
 			)
 			return 0
+		})
+	)
+
+/** The files a checkout's repository holds, paths from its root: a submodule's files are another repository's. */
+const trackedIn = (checkout: RealPath) =>
+	Effect.flatMap(gitOf(checkout, ["ls-files", "-z"]), (listed) =>
+		Option.match(listed, {
+			onNone: () =>
+				Effect.fail(MutatorRefused.make({ message: `git ls-files failed in ${checkout}` })),
+			onSome: (text) =>
+				Effect.succeed<ReadonlySet<string>>(
+					new Set(Arr.filter(Str.split("\0")(text), Str.isNonEmpty))
+				)
+		})
+	)
+
+/** Whether a file is TypeScript the mutator mutates: a module, never a declaration file. */
+const isMutable = (file: string): boolean =>
+	Arr.some([".ts", ".tsx", ".mts", ".cts"], (extension) => Str.endsWith(extension)(file)) &&
+	!Arr.some([".d.ts", ".d.mts", ".d.cts"], (extension) => Str.endsWith(extension)(file))
+
+/** A text on one line of a table: its tabs and line breaks as spaces. */
+const cell = (text: string): string =>
+	Arr.join(
+		Arr.map(Arr.fromIterable(text), (character) =>
+			character === "\t" || character === "\n" || character === "\r" ? " " : character
+		),
+		""
+	)
+
+/** What showed that a property caught a bug, as its row says it. */
+const caughtBy = (by: Catch): string => {
+	switch (by.kind) {
+		case "kill":
+			return `kill: ${by.kill.why} (${by.kill.file})`
+		case "mutant":
+			return `mutant ${by.mutant.id} ${by.mutant.file}:${String(by.mutant.line)}:${String(by.mutant.column)} in ${by.mutant.fn}: ${by.mutant.original} -> ${by.mutant.replacement}`
+	}
+}
+
+/** What showed a property's standing and why the census could not judge it, as its row says them. */
+const shownBy = (standing: Standing): Readonly<{ by: string; why: string }> => {
+	switch (standing.kind) {
+		case "catches":
+			return { by: caughtBy(standing.by), why: "" }
+		case "never-caught":
+			return { by: "", why: "" }
+		case "unjudged":
+			return { by: "", why: standing.why }
+	}
+}
+
+/** The census table's header. */
+const CENSUS_HEADER = [
+	"property",
+	"module",
+	"standing",
+	"by",
+	"product kills",
+	"killed",
+	"other kills",
+	"kept",
+	"mutants tried",
+	"why"
+] as const
+
+/** A property's row of the census table. */
+const censusRow = (module: string, counted: Counted): string => {
+	const { by, why } = shownBy(counted.standing)
+	return Arr.join(
+		Arr.map(
+			[
+				counted.id,
+				module,
+				counted.standing.kind,
+				by,
+				String(counted.productKills),
+				String(counted.killedKills),
+				String(counted.otherKills),
+				String(counted.kept),
+				String(counted.tried),
+				why
+			],
+			cell
+		),
+		"\t"
+	)
+}
+
+/**
+ * `census [paths | ids]`: whether each property named (every one of the package when none is) has caught a bug
+ * (mutate/census.ts), its kills of product source judged and, where none turned it red, the operator mutants of the
+ * product source it runs tried until one does, on the pool, every verdict read from and kept in the verdict cache.
+ * Product source is every file the checkout's repository holds outside test scope (scope.ts); the mutants are of its
+ * TypeScript under the package root, by the library's operators and the config's families, but those it judges
+ * equivalent. Standard output is the census as a table, a header and a tab-separated row a property; standard error
+ * has each property's standing as it is settled and the counts. 1 when any property never caught a bug or could not be
+ * judged.
+ */
+export const censusCommand = (root: string, selected: ReadonlyArray<string>) =>
+	Effect.scoped(
+		Effect.gen(function* () {
+			const path = yield* Path.Path
+			const began = yield* liveMillis
+			const checkout = yield* checkoutOf(root)
+			const packageRoot = yield* realPathOf(root)
+			const { config, discovered } = yield* loadPackage(root, selected)
+			const mutation = yield* loadedMutation(config)
+			const verdicts = yield* verdictsAt(root, config, discovered)
+			const tracked = yield* trackedIn(checkout)
+			const product = productOf(tracked)
+			const within = path.relative(checkout, packageRoot)
+			const sources = Arr.filter(
+				Arr.sort(Arr.fromIterable(tracked), Order.String),
+				(file) =>
+					product(file) && isMutable(file) && (within === "" || Str.startsWith(`${within}/`)(file))
+			)
+			const pool = mutatorPool(checkout, packageRoot)
+			const trees = yield* treesOf(checkout)
+			const images = yield* imagesOf(checkout, trees)
+			const digest = yield* Layer.build(layerDigest)
+			const counted = yield* censusOf(pool, images, {
+				witnesses: { seed: 0, limits: runnerLimits },
+				checkout,
+				pkg: packageRoot,
+				subjects: subjectsOf(discovered),
+				product,
+				sources,
+				families: mutation.families,
+				equivalent: mutation.equivalent,
+				kills: verdicts.kills,
+				edits: verdicts.edits,
+				settled: (one) => {
+					const { by, why } = shownBy(one.standing)
+					return Console.error(
+						Arr.join(Arr.filter([`${one.id}: ${one.standing.kind}`, by, why], Str.isNonEmpty), "; ")
+					)
+				}
+			}).pipe(Effect.provide(digest))
+			const ended = yield* liveMillis
+			const count = (kind: Counted["standing"]["kind"]) =>
+				Arr.filter(counted, (one) => one.standing.kind === kind).length
+			yield* Console.log(
+				Arr.join(
+					[
+						Arr.join(CENSUS_HEADER, "\t"),
+						...Arr.map(Arr.zip(discovered, counted), ([found, one]) => censusRow(found.module, one))
+					],
+					"\n"
+				)
+			)
+			yield* Console.error(
+				`census: ${String(counted.length)} properties: ${String(count("catches"))} catch, ${String(count("never-caught"))} never caught, ${String(count("unjudged"))} unjudged; ${String(Arr.reduce(counted, 0, (sum, one) => sum + one.tried))} mutants tried over ${String(sources.length)} product files, in ${String(Math.round(ended - began))} ms on ${String(pool.width)} workers`
+			)
+			return count("catches") === counted.length ? 0 : 1
 		})
 	)

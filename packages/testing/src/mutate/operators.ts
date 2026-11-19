@@ -19,7 +19,13 @@ import {
 	type Operator
 } from "#mutants.ts"
 import type { Loading } from "#mutate/checkout.ts"
-import { type CoverageMap, coverageMapOf, type DumpUnread, ranIn } from "#mutate/coverage.ts"
+import {
+	type CoverageMap,
+	coverageMapOf,
+	type DumpUnread,
+	type Ran,
+	ranIn
+} from "#mutate/coverage.ts"
 import type { Images } from "#mutate/image.ts"
 import { type MutatedFile, probeOf, type RealPath, realPathOf } from "#mutate/mutated.ts"
 import type { MutantPool } from "#mutate/pool.ts"
@@ -88,7 +94,7 @@ const FIRST: Readonly<Record<Loading, number>> = { "in-process": 0, tree: 1 }
  * A trial of `mutated` against `subjects`, in their order within one stage per way they load the repository's code
  * (in process first): each stage's workers start from `mutated` loaded as its properties load the code.
  */
-const trialOf = (
+export const trialOf = (
 	images: Images,
 	subjects: Arr.NonEmptyReadonlyArray<Subject>,
 	mutated: MutatedFile
@@ -112,19 +118,28 @@ const trialOf = (
 	)
 
 /**
- * The coverage pass: each subject's witnesses once, unmutated, on a worker of its own ("one each") whose dumps go to a
- * directory of the subject's, every subject at once, and the map of what each ran of the run's files. A subject red
- * with no mutant refuses the run, and so does one whose coverage a worker lost (coverage.ts CoverageLost).
+ * What a coverage pass found of one subject: what its witnesses ran of the pass's files, or that they went red with no
+ * mutant (`red`), or that a worker ended before it wrote its coverage (coverage.ts CoverageLost), so what it ran is
+ * unknown.
  */
-const coverageOf = <E>(
+export type Covered =
+	| Readonly<{ kind: "ran"; ran: Ran<Subject> }>
+	| Readonly<{ kind: "red"; subject: Subject; red: Red }>
+	| Readonly<{ kind: "lost"; subject: Subject; processes: ReadonlyArray<string> }>
+
+/**
+ * The coverage pass: each subject's witnesses once, unmutated, on a worker of its own ("one each") whose dumps go to a
+ * directory of the subject's, every subject at once, and what each ran of `targets`, in the subjects' order.
+ */
+export const coveragePass = <E>(
 	pool: MutantPool<E>,
 	run: WitnessRun,
 	images: Images,
-	subjects: Arr.NonEmptyReadonlyArray<Subject>,
+	subjects: ReadonlyArray<Subject>,
 	targets: ReadonlyArray<RealPath>
 ): Effect.Effect<
-	CoverageMap<Subject>,
-	E | MutationRefused | DumpUnread | PlatformError.PlatformError,
+	ReadonlyArray<Covered>,
+	E | DumpUnread | PlatformError.PlatformError,
 	FileSystem.FileSystem | Path.Path | Scope.Scope | RunLease
 > =>
 	Effect.gen(function* () {
@@ -147,28 +162,67 @@ const coverageOf = <E>(
 			]),
 			"one each"
 		)
-		const red = Arr.flatMap(verdicts, (verdict) =>
-			verdict.kind === "red" ? [verdict.property] : []
+		return yield* Effect.forEach(
+			Arr.zip(passes, verdicts),
+			([{ subject, directory }, verdict]): Effect.Effect<
+				Covered,
+				DumpUnread | PlatformError.PlatformError,
+				FileSystem.FileSystem | Path.Path
+			> => {
+				if (verdict.kind === "red") {
+					return Effect.succeed({ kind: "red", subject, red: verdict.red })
+				}
+				return Effect.flatMap(fs.exists(directory), (present) =>
+					present
+						? ranIn(subject, directory, targets).pipe(
+								Effect.map((ran): Covered => ({ kind: "ran", ran })),
+								Effect.catchTag("CoverageLost", (lost) =>
+									Effect.succeed<Covered>({ kind: "lost", subject, processes: lost.processes })
+								)
+							)
+						: Effect.succeed<Covered>({ kind: "ran", ran: { property: subject, files: new Map() } })
+				)
+			}
 		)
+	})
+
+/**
+ * The coverage map of a mutation run: its coverage pass, refused when a subject is red with no mutant or its coverage
+ * was lost, since a mutant can only be measured against properties that pass and whose runs are known.
+ */
+const coverageOf = <E>(
+	pool: MutantPool<E>,
+	run: WitnessRun,
+	images: Images,
+	subjects: Arr.NonEmptyReadonlyArray<Subject>,
+	targets: ReadonlyArray<RealPath>
+): Effect.Effect<
+	CoverageMap<Subject>,
+	E | MutationRefused | DumpUnread | PlatformError.PlatformError,
+	FileSystem.FileSystem | Path.Path | Scope.Scope | RunLease
+> =>
+	Effect.gen(function* () {
+		const covered = yield* coveragePass(pool, run, images, subjects, targets)
+		const red = Arr.flatMap(covered, (one) => (one.kind === "red" ? [one.subject.id] : []))
 		if (Arr.isReadonlyArrayNonEmpty(red)) {
 			return yield* MutationRefused.make({
 				message: `with no mutant, ${Arr.join(red, ", ")} ${red.length === 1 ? "is" : "are"} red: a mutant can only be measured against properties that pass`
 			})
 		}
-		const ran = yield* Effect.forEach(passes, ({ subject, directory }) =>
-			Effect.flatMap(fs.exists(directory), (present) =>
-				present
-					? Effect.catchTag(ranIn(subject, directory, targets), "CoverageLost", (lost) =>
-							Effect.fail(
-								MutationRefused.make({
-									message: `the coverage pass of ${subject.id} lost what its workers ${Arr.join(lost.processes, ", ")} ran: each started and ended before it wrote its coverage, as a worker the pool ends past its grace does, so the run refuses rather than read less coverage`
-								})
-							)
-						)
-					: Effect.succeed({ property: subject, files: new Map() })
-			)
-		)
-		return coverageMapOf(ran)
+		const lost = Arr.flatMap(covered, (one) => (one.kind === "lost" ? [one] : []))
+		if (Arr.isReadonlyArrayNonEmpty(lost)) {
+			return yield* MutationRefused.make({
+				message: Arr.join(
+					Arr.map(
+						lost,
+						({ subject, processes }) =>
+							`the coverage pass of ${subject.id} lost what its workers ${Arr.join(processes, ", ")} ran: each started and ended before it wrote its coverage, as a worker the pool ends past its grace does, so the run refuses rather than read less coverage`
+					),
+					"\n"
+				)
+			})
+		}
+		return coverageMapOf(Arr.flatMap(covered, (one) => (one.kind === "ran" ? [one.ran] : [])))
 	})
 
 /** A file's probe against one property that ran it. */

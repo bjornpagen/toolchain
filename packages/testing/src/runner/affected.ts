@@ -14,6 +14,7 @@ import {
 	String as Str
 } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { killApplied } from "#mutants.ts"
 import { loadingOf } from "#mutate/checkout.ts"
 import { imagesOf } from "#mutate/image.ts"
 import { type Judged, killsOf, redText } from "#mutate/kills.ts"
@@ -23,7 +24,8 @@ import { treesOf } from "#mutate/tree.ts"
 import { type Kill, Property, type PropertyId } from "#property.ts"
 import { toolchainTestCache } from "#runner/cache-home.ts"
 import {
-	type KillContent,
+	type Edit,
+	editOf,
 	loadCacheAt,
 	repositoryKeyOf,
 	SeedPolicy,
@@ -35,7 +37,6 @@ import {
 import {
 	type Closure,
 	closuresOf,
-	contentHashOf,
 	jointClosureOf,
 	moduleSyntax,
 	type RepoPath,
@@ -67,7 +68,7 @@ import {
  *
  * A property's key is its identity, the joint closure (closure.ts) of its module, the package's test.config.ts and
  * the runner's own entry modules (the CLI and the worker), each hashed under the config's conditions and this Node's
- * version, the seed policy of a gate run (RUN_SEEDS), and each kill with the content hash of the file it mutates. So
+ * version, the seed policy of a gate run (RUN_SEEDS), and each kill as the edit it makes of its file (cache.ts Edit). So
  * an edit to a module a property loads, to the runner, to the config, to a lockfile entry a closure holds or to a
  * killed file makes its key new, and the property runs; nothing else does. What a property reads at run time without
  * importing it (a fixture file, a child process's code) is outside its closure: a full run per production version
@@ -89,12 +90,13 @@ const RUN_SEEDS = SeedPolicy(
 )
 
 /**
- * The seed policy of a cached kill verdict: the property's witnesses (kept tokens, floor and steered phase, fixed by
- * its identity) under the kill's mutant, as the kill gate runs them. A kill that turned them red is a known answer for
- * as long as the property's closure, the kill and its file's content stand.
+ * The seed policy of a cached verdict under an edit: the property's witnesses (kept tokens, floor and steered phase,
+ * fixed by its identity) with one file edited, as the kill gate runs them under a kill and the mutator under an
+ * operator mutant. Witnesses that went red under an edit are a known answer for as long as the property's closure and
+ * the edit (its file's text, and the text it makes) stand, whichever of a kill or a mutant made it.
  */
-const KILL_SEEDS = SeedPolicy(
-	"witnesses under the kill's mutant: kept tokens, floor and steered phase, fixed by the property's identity"
+const EDIT_SEEDS = SeedPolicy(
+	"witnesses under an edit of one file: kept tokens, floor and steered phase, fixed by the property's identity"
 )
 
 /** The affected command could not run: its usage, the repository or a ref it could not read. */
@@ -103,8 +105,8 @@ class AffectedRefused extends Schema.TaggedError<
 	{ readonly brand: unique symbol }
 >()("AffectedRefused", { message: Schema.String }) {}
 
-/** git run in `cwd`: its trimmed standard output when it exits 0, none otherwise. */
-const gitOf = (cwd: string, args: ReadonlyArray<string>) =>
+/** git run in `cwd`: its standard output when it exits 0, none otherwise. */
+export const gitOf = (cwd: string, args: ReadonlyArray<string>) =>
 	Effect.scoped(
 		Effect.gen(function* () {
 			const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
@@ -164,27 +166,31 @@ const isChanged = (changed: ReadonlySet<string>, file: string): boolean =>
 		return { prefix, found: state.found || changed.has(prefix) }
 	}).found
 
-/** A kill as its key holds it: the mutant and the content hash of its file, or none when the file is not there. */
-const killContentOf = (tree: Files, kill: Kill) =>
+/**
+ * A kill as the edit it makes of its file (cache.ts Edit): none when the file is not there or the kill's original does
+ * not stand once in it, so a stale kill keys nothing and its property is judged, and refused, again.
+ */
+const editOfKill = (tree: Files, kill: Kill) =>
 	Effect.flatMap(Effect.transposeOption(Option.map(repoPathOf(kill.file), tree.read)), (read) =>
 		Effect.transposeOption(
-			Option.map(Option.flatten(read), (bytes) =>
-				Effect.map(contentHashOf(bytes), (content): KillContent => ({
-					file: kill.file,
-					original: kill.original,
-					replacement: kill.replacement,
-					content
-				}))
-			)
+			Option.flatMap(Option.flatten(read), (bytes) => {
+				const own = new TextDecoder().decode(bytes)
+				return Option.map(Result.getSuccess(killApplied(kill, own)), (mutated) =>
+					editOf(kill.file, own, mutated)
+				)
+			})
 		)
 	)
 
-/** One property as the gate weighs it: what it is, its joint closure, and its key (none when a kill's file is gone). */
+/**
+ * One property as the gate weighs it: what it is, its joint closure, its key (none when a kill's edit is none), and
+ * each kill with its edit.
+ */
 type Weighed = Readonly<{
 	found: Discovered
 	closure: Closure
 	key: Option.Option<VerdictKey>
-	killKeys: ReadonlyArray<readonly [Kill, Option.Option<VerdictKey>]>
+	killEdits: ReadonlyArray<readonly [Kill, Option.Option<Edit>]>
 }>
 
 /** A judged kill as the gate reports it. */
@@ -219,7 +225,7 @@ const groundsOf = (root: string) =>
 
 /**
  * A package weighed for the verdict cache: its repository and package root (real paths), the repository's verdict
- * cache, and each property `selected` names (every one when it names none) with its joint closure and key.
+ * cache, and each property discovered with its joint closure and key.
  */
 type Weighing = Readonly<{
 	repository: string
@@ -320,10 +326,14 @@ const modulesWeighedOf = (
 		}
 	})
 
-/** Weighs the properties `selected` names in a package of a repository: their closures, keys and the repository's cache. */
-const weighingOf = (packageRoot: string, repository: string, selected: ReadonlyArray<string>) =>
+/** Weighs the properties `discovered` of a package of a repository: their closures, keys and the repository's cache. */
+const weighingOf = (
+	packageRoot: string,
+	repository: string,
+	config: RunnerConfig,
+	discovered: ReadonlyArray<Discovered>
+) =>
 	Effect.gen(function* () {
-		const { config, discovered } = yield* loadPackage(packageRoot, selected)
 		const weighed = yield* modulesWeighedOf(
 			packageRoot,
 			repository,
@@ -333,27 +343,17 @@ const weighingOf = (packageRoot: string, repository: string, selected: ReadonlyA
 		const properties = yield* Effect.forEach(discovered, (found) =>
 			Effect.gen(function* () {
 				const closure = yield* weighed.jointOf(found.module)
-				const kills = yield* Effect.forEach(found.property.kills, (kill) =>
-					killContentOf(weighed.tree, kill)
+				const edits = yield* Effect.forEach(found.property.kills, (kill) =>
+					editOfKill(weighed.tree, kill)
 				).pipe(Effect.provide(weighed.hashing))
-				const key = Option.map(Option.all(kills), (contents): VerdictKey => ({
+				const key = Option.map(Option.all(edits), (all): VerdictKey => ({
 					property: found.id,
 					closure: closure.hash,
 					seeds: RUN_SEEDS,
-					kills: contents
+					edits: all
 				}))
-				const killKeys = Arr.zip(
-					found.property.kills,
-					Arr.map(kills, (content) =>
-						Option.map(content, (one): VerdictKey => ({
-							property: found.id,
-							closure: closure.hash,
-							seeds: KILL_SEEDS,
-							kills: [one]
-						}))
-					)
-				)
-				return { found, closure, key, killKeys } satisfies Weighed
+				const killEdits = Arr.zip(found.property.kills, edits)
+				return { found, closure, key, killEdits } satisfies Weighed
 			})
 		)
 		const verdicts = yield* verdictCacheAt(`${weighed.home}/verdicts`).pipe(
@@ -404,32 +404,43 @@ export const loadKeyingAt = (
 		)
 	)
 
-/** A kill whose verdict the cache already holds: it turned its property red under the same closure and file. */
+/** A kill whose verdict the cache already holds: it turned its property red under the same closure and edit. */
 type CachedKill = Readonly<{ property: PropertyId; kill: Kill }>
 
 /**
- * A package's kill verdicts: `split` sets apart the kills of `subjects` the cache answers (each property's remaining
- * kills are the ones to judge), and `record` keeps each judged kill's verdict under its key, a kill that turned its
- * property red as a pass and any other as a failure. With no weighing (no git repository, no lockfile, a closure that
- * would not hash) nothing is answered and nothing recorded.
+ * A package's verdicts under edits (cache.ts Edit), a kill's or an operator mutant's alike: `red` answers whether the
+ * cache holds the red of a property's witnesses under an edit, at the property's closure, and `record` keeps a judged
+ * one, a red as a pass of its key and anything else as a failure. With no weighing (no git repository, no lockfile, a
+ * closure that would not hash) nothing is answered and nothing recorded.
  */
-type KillVerdicts = Readonly<{
-	split: (
-		subjects: ReadonlyArray<Discovered>
+export type EditVerdicts = Readonly<{
+	red: (id: PropertyId, edit: Edit) => Effect.Effect<boolean, VerdictCacheUnusable>
+	record: (id: PropertyId, edit: Edit, red: boolean) => Effect.Effect<void, VerdictCacheUnusable>
+}>
+
+/**
+ * A package's kill verdicts: `split` sets apart the kills of `subjects` the cache answers (each property's remaining
+ * kills are the ones to judge), and `record` keeps each judged kill's verdict under its edit's key, a kill that turned
+ * its property red as a pass and any other as a failure.
+ */
+export type KillVerdicts = Readonly<{
+	split: <S extends Readonly<{ id: PropertyId; property: Property }>>(
+		subjects: ReadonlyArray<S>
 	) => Effect.Effect<
-		Readonly<{ fresh: ReadonlyArray<Discovered>; cached: ReadonlyArray<CachedKill> }>,
+		Readonly<{ fresh: ReadonlyArray<S>; cached: ReadonlyArray<CachedKill> }>,
 		VerdictCacheUnusable
 	>
 	record: (judged: ReadonlyArray<Judged>) => Effect.Effect<void, VerdictCacheUnusable>
 }>
 
 /** A property whose kills are `kills`: the same search, needs and evaluation, judged against those kills alone. */
-const withKills = (property: Property, kills: ReadonlyArray<Kill>): Property =>
+export const withKills = (property: Property, kills: ReadonlyArray<Kill>): Property =>
 	new Property({
 		kind: property.kind,
 		needs: property.needs,
 		guide: property.guide,
 		oracle: property.oracle,
+		kept: property.kept,
 		kills,
 		search: property.search,
 		replay: property.replay,
@@ -437,41 +448,71 @@ const withKills = (property: Property, kills: ReadonlyArray<Kill>): Property =>
 		ready: property.ready
 	})
 
-/** The kill verdicts of a weighing, or none to keep. */
+/** The verdicts under edits of a weighing, or none to keep. */
+const editVerdictsOf = (weighing: Option.Option<Weighing>): EditVerdicts => {
+	const keyOf = (id: PropertyId, edit: Edit): Option.Option<VerdictKey> =>
+		Option.flatMap(weighing, (weighed) =>
+			Option.map(
+				Arr.findFirst(weighed.weighed, (one) => one.found.id === id),
+				(one): VerdictKey => ({
+					property: id,
+					closure: one.closure.hash,
+					seeds: EDIT_SEEDS,
+					edits: [edit]
+				})
+			)
+		)
+	const cache = Option.map(weighing, (weighed) => weighed.cache)
+	return {
+		red: (id, edit) =>
+			Effect.gen(function* () {
+				const key = keyOf(id, edit)
+				if (Option.isNone(key) || Option.isNone(cache)) {
+					return false
+				}
+				return yield* cache.value
+					.passed(key.value)
+					.pipe(Effect.catchTag("VerdictCorrupt", () => Effect.succeed(false)))
+			}),
+		record: (id, edit, red) =>
+			Effect.gen(function* () {
+				const key = keyOf(id, edit)
+				if (Option.isSome(key) && Option.isSome(cache)) {
+					yield* cache.value.record(key.value, red ? "passed" : "failed")
+				}
+			})
+	}
+}
+
+/** The kill verdicts of a weighing, each kill answered and recorded under its edit's key, or none to keep. */
 const killVerdictsOf = (weighing: Option.Option<Weighing>): KillVerdicts => {
-	const keyOf = (id: PropertyId, kill: Kill): Option.Option<VerdictKey> =>
+	const edits = editVerdictsOf(weighing)
+	const killEdit = (id: PropertyId, kill: Kill): Option.Option<Edit> =>
 		Option.flatMap(weighing, (weighed) =>
 			Option.flatMap(
 				Arr.findFirst(weighed.weighed, (one) => one.found.id === id),
 				(one) =>
 					Option.flatten(
 						Option.map(
-							Arr.findFirst(one.killKeys, ([own]) => own === kill),
-							([, key]) => key
+							Arr.findFirst(one.killEdits, ([own]) => own === kill),
+							([, edit]) => edit
 						)
 					)
 			)
 		)
-	const cache = Option.map(weighing, (weighed) => weighed.cache)
-	const answered = (id: PropertyId, kill: Kill) =>
-		Effect.gen(function* () {
-			const key = keyOf(id, kill)
-			if (Option.isNone(key) || Option.isNone(cache)) {
-				return false
-			}
-			return yield* cache.value
-				.passed(key.value)
-				.pipe(Effect.catchTag("VerdictCorrupt", () => Effect.succeed(false)))
-		})
 	return {
-		split: (subjects) =>
+		split: <S extends Readonly<{ id: PropertyId; property: Property }>>(
+			subjects: ReadonlyArray<S>
+		) =>
 			Effect.gen(function* () {
-				const fresh: Array<Discovered> = []
+				const fresh: Array<S> = []
 				const cached: Array<CachedKill> = []
 				for (const found of subjects) {
 					const remaining: Array<Kill> = []
 					for (const kill of found.property.kills) {
-						if (yield* answered(found.id, kill)) {
+						const edit = killEdit(found.id, kill)
+						const answered = Option.isSome(edit) && (yield* edits.red(found.id, edit.value))
+						if (answered) {
 							cached.push({ property: found.id, kill })
 						} else {
 							remaining.push(kill)
@@ -487,18 +528,19 @@ const killVerdictsOf = (weighing: Option.Option<Weighing>): KillVerdicts => {
 			Effect.forEach(
 				judged,
 				(one) =>
-					Effect.gen(function* () {
-						const key = keyOf(one.property, one.kill)
-						if (Option.isSome(key) && Option.isSome(cache)) {
-							yield* cache.value.record(
-								key.value,
-								one.verdict.kind === "killed" ? "passed" : "failed"
-							)
-						}
+					Option.match(killEdit(one.property, one.kill), {
+						onNone: () => Effect.void,
+						onSome: (edit) => edits.record(one.property, edit, one.verdict.kind === "killed")
 					}),
 				{ discard: true }
 			)
 	}
+}
+
+/** The verdicts of a package with no verdict key: nothing answered, nothing kept. */
+export const noVerdicts: Readonly<{ kills: KillVerdicts; edits: EditVerdicts }> = {
+	kills: killVerdictsOf(Option.none()),
+	edits: editVerdictsOf(Option.none())
 }
 
 /** A cached kill as a run reports it. */
@@ -506,17 +548,23 @@ const cachedLine = (cached: CachedKill): string =>
 	`${cached.property}: killed (a cached verdict): ${cached.kill.why}`
 
 /**
- * The kill verdicts of the package at `root` for the properties `selected` names, for a command that judges kills
- * itself (`toolchain-test kills`): none when the package has no verdict key.
+ * The verdicts under edits of the package at `root`, for the properties `discovered` of it under `config`, for a
+ * command that judges kills or mutants itself (`toolchain-test kills`, `mutate` and `census`): its kills' and its
+ * edits', none kept when the package has no verdict key.
  */
-export const killVerdictsAt = (root: string, selected: ReadonlyArray<string>) =>
+export const verdictsAt = (
+	root: string,
+	config: RunnerConfig,
+	discovered: ReadonlyArray<Discovered>
+) =>
 	Effect.gen(function* () {
 		const grounds = yield* groundsOf(root)
 		const weighing = yield* Option.match(grounds.repository, {
 			onNone: () => Effect.succeedNone,
-			onSome: (repository) => Effect.option(weighingOf(grounds.packageRoot, repository, selected))
+			onSome: (repository) =>
+				Effect.option(weighingOf(grounds.packageRoot, repository, config, discovered))
 		})
-		return killVerdictsOf(weighing)
+		return { kills: killVerdictsOf(weighing), edits: editVerdictsOf(weighing) }
 	})
 
 /** The kills of `subjects` judged on leased workers (MUTATOR's killsOf), in the checkout of `repository`. */
@@ -602,14 +650,16 @@ const recorded = (
 export const recordedRun = (root: string, selected: ReadonlyArray<string>, outcome: RunOutcome) =>
 	Effect.gen(function* () {
 		const grounds = yield* groundsOf(root)
-		const { discovered } = yield* loadPackage(root, selected)
+		const { config, discovered } = yield* loadPackage(root, selected)
 		const passed = Arr.filter(discovered, (found) => searchedPassed(outcome, found.id))
 		const ids = Arr.map(discovered, (found) => found.id)
 		if (Option.isNone(grounds.repository)) {
 			return yield* unjudgeable(outcome, `${root} lies in no git repository`)
 		}
 		const repository = grounds.repository.value
-		const weighing = yield* Effect.result(weighingOf(grounds.packageRoot, repository, selected))
+		const weighing = yield* Effect.result(
+			weighingOf(grounds.packageRoot, repository, config, discovered)
+		)
 		const { judged, lines } = yield* settledKills(
 			killVerdictsOf(Result.getSuccess(weighing)),
 			repository,
@@ -640,7 +690,8 @@ export const affected = (root: string, args: ReadonlyArray<string>) =>
 			const repository = yield* Effect.mapError(Effect.fromOption(grounds.repository), () =>
 				AffectedRefused.make({ message: `${root} lies in no git repository` })
 			)
-			const weighing = yield* weighingOf(grounds.packageRoot, repository, [])
+			const { config, discovered } = yield* loadPackage(grounds.packageRoot, [])
+			const weighing = yield* weighingOf(grounds.packageRoot, repository, config, discovered)
 			const base = yield* required(
 				weighing.repository,
 				["rev-parse", "--verify", "--quiet", `${ref}^{tree}`],

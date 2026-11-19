@@ -2,12 +2,13 @@ import { Array as Arr, Brand, Effect, FileSystem, Order, Schema, String as Str }
 import { Digest } from "effect/crypto"
 import type { PropertyId } from "#property.ts"
 import type { ClosureHash } from "#runner/closure-hash.ts"
-import type { ContentHash } from "#runner/closure.ts"
+import { type ContentHash, contentHashOf } from "#runner/closure.ts"
 
 /**
  * The verdict cache: which properties passed, keyed by everything their verdict depends on, so a pass is a known answer
  * for as long as its key stands and is never recomputed. A key is a property's identity, the closure hash of its module
- * (closure.ts), how the run seeded its cases, and its kills, each with the bytes of the file it mutates. Only passes are
+ * (closure.ts), how the run seeded its cases, and the edits it ran under or must turn red: each a file, its own bytes
+ * and its bytes edited (a kill applied, or an operator mutant). Only passes are
  * stored, as files named by the hash of their key: a failure removes the pass its own key held and writes nothing, so a
  * failure is never read as a pass.
  *
@@ -36,20 +37,33 @@ export type SeedPolicy = string & Brand.Brand<"SeedPolicy">
 
 export const SeedPolicy = Brand.nominal<SeedPolicy>()
 
-/** A kill as its verdict depends on it: the mutant, and the bytes of the file it mutates. */
-export type KillContent = Readonly<{
-	file: string
-	original: string
-	replacement: string
-	content: ContentHash
-}>
+/**
+ * An edit of one file as a verdict depends on it: the file, the hash of its own bytes, and the hash of its bytes with the
+ * edit applied. A kill (its original replaced where it stands once) and an operator mutant (its span replaced) are both
+ * edits, and two that make one text are one edit: the program the property runs under it is the same.
+ */
+export type Edit = Readonly<{ file: string; content: ContentHash; mutated: ContentHash }>
+
+/** The edit that makes `own`, the text of `file` (a path from the repository root), into `mutated`. */
+export const editOf = (
+	file: string,
+	own: string,
+	mutated: string
+): Effect.Effect<Edit, never, Digest.Digest> =>
+	Effect.map(
+		Effect.all([
+			contentHashOf(new TextEncoder().encode(own)),
+			contentHashOf(new TextEncoder().encode(mutated))
+		]),
+		([content, edited]): Edit => ({ file, content, mutated: edited })
+	)
 
 /** What a cached verdict answers for. */
 export type VerdictKey = Readonly<{
 	property: PropertyId
 	closure: ClosureHash
 	seeds: SeedPolicy
-	kills: ReadonlyArray<KillContent>
+	edits: ReadonlyArray<Edit>
 }>
 
 /** A run's verdict on a property and its kills, as the cache takes it: any outcome but a pass is a failure. */
@@ -81,31 +95,25 @@ export type VerdictCache = PassCache<VerdictKey>
 /** The cache of one repository's loads. */
 export type LoadCache = PassCache<LoadKey>
 
-/** A key as its record stores it: kills in one order, since a verdict on kills does not depend on their order. */
+/** A key as its record stores it: edits in one order, since a verdict on edits does not depend on their order. */
 const KeyRecord = Schema.fromJsonString(
 	Schema.Struct({
 		property: Schema.String,
 		closure: Schema.String,
 		seeds: Schema.String,
-		kills: Schema.Array(
-			Schema.Struct({
-				file: Schema.String,
-				original: Schema.String,
-				replacement: Schema.String,
-				content: Schema.String
-			})
+		edits: Schema.Array(
+			Schema.Struct({ file: Schema.String, content: Schema.String, mutated: Schema.String })
 		)
 	})
 )
 
 const encodeKeyRecord = Schema.encodeEffect(KeyRecord)
 
-/** Kills in the order a record stores them: by file, then original, replacement and content. */
-const KILL_ORDER = Order.combineAll<KillContent>([
-	Order.mapInput(Str.Order, (kill: KillContent) => kill.file),
-	Order.mapInput(Str.Order, (kill: KillContent) => kill.original),
-	Order.mapInput(Str.Order, (kill: KillContent) => kill.replacement),
-	Order.mapInput(Str.Order, (kill: KillContent) => kill.content)
+/** Edits in the order a record stores them: by file, then content, then the edited content. */
+const EDIT_ORDER = Order.combineAll<Edit>([
+	Order.mapInput(Str.Order, (edit: Edit) => edit.file),
+	Order.mapInput(Str.Order, (edit: Edit) => edit.content),
+	Order.mapInput(Str.Order, (edit: Edit) => edit.mutated)
 ])
 
 /** A key's record text: one text for every key that answers alike. */
@@ -115,7 +123,7 @@ const recordOf = (key: VerdictKey): Effect.Effect<string> =>
 			property: key.property,
 			closure: key.closure,
 			seeds: key.seeds,
-			kills: Arr.dedupe(Arr.sort(key.kills, KILL_ORDER))
+			edits: Arr.dedupe(Arr.sort(key.edits, EDIT_ORDER))
 		})
 	)
 

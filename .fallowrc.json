@@ -40,6 +40,12 @@
 	},
 	"boundaries": {
 		"zones": [
+			// Test scope (what a test module and its support are), one definition the dev tools' lint scopes and the
+			// testing library's census read, so it is a zone of its own that both packages may import.
+			{
+				"name": "scope",
+				"patterns": ["packages/testing/src/scope.ts"]
+			},
 			{
 				"name": "devtools-suites",
 				"patterns": [
@@ -68,11 +74,11 @@
 			},
 			{
 				"from": "testing",
-				"allow": []
+				"allow": ["scope"]
 			},
 			{
 				"from": "devtools",
-				"allow": []
+				"allow": ["scope"]
 			},
 			{
 				"from": "configs",

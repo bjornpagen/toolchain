@@ -25,7 +25,7 @@ import {
 } from "#gen.ts"
 import { type Need, NeedFailed, PropertyId } from "#property.ts"
 import {
-	type KillContent,
+	type Edit,
 	SeedPolicy,
 	type VerdictCache,
 	type VerdictCacheUnusable,
@@ -45,19 +45,25 @@ import {
 
 /**
  * Programs over the verdict cache for cache.test.ts: rounds of operations, each round's operations on distinct keys
- * and run at once, every key built from a few values of each of its fields so that keys one field apart, and kill lists
+ * and run at once, every key built from a few values of each of its fields so that keys one field apart, and edit lists
  * in another order, come up. A model (a map from each key's identity to its state) is the oracle.
  */
 
-/** One kill of a key, by which of three mutants it is and which of two contents its file has. */
-export type KillModel = Readonly<{ mutant: number; content: number }>
+/** One edit of a key, by which of three mutants it is and which of two contents its file has. */
+export type EditModel = Readonly<{ mutant: Mutant; content: number }>
 
-/** A key, by which of two values each field takes, its kills as listed (their order is the property's). */
+/** Which of three mutants an edit is. */
+type Mutant = 0 | 1 | 2
+
+/** The mutant after each, round the three: a second edit of one key that differs from the first. */
+const NEXT: Readonly<Record<Mutant, Mutant>> = { 0: 1, 1: 2, 2: 0 }
+
+/** A key, by which of two values each field takes, its edits as listed (their order is the property's). */
 export type KeyModel = Readonly<{
 	property: number
 	closure: number
 	seeds: number
-	kills: ReadonlyArray<KillModel>
+	edits: ReadonlyArray<EditModel>
 }>
 
 /** What an operation does to its key: records a pass or a failure, reads it, or overwrites its record with another's. */
@@ -71,8 +77,8 @@ export type Operation = Readonly<{ key: KeyModel; action: Action }>
 /** A program: rounds of operations, each round on distinct keys and run at once. */
 export type Program = ReadonlyArray<ReadonlyArray<Operation>>
 
-const kills: Gen<KillModel> = (source) => ({
-	mutant: source.draw(element([0, 1, 2])),
+const edits: Gen<EditModel> = (source) => ({
+	mutant: source.draw(element([0, 1, 2] as const)),
 	content: source.draw(element([0, 1]))
 })
 
@@ -80,25 +86,25 @@ const keys: Gen<KeyModel> = (source) => ({
 	property: source.draw(element([0, 1])),
 	closure: source.draw(element([0, 1])),
 	seeds: source.draw(element([0, 1])),
-	kills: source.draw(array(kills, { min: 0, max: 2 }))
+	edits: source.draw(array(edits, { min: 0, max: 2 }))
 })
 
-/** A key's identity: equal for two keys exactly when the cache must answer them alike, its kills taken as a set. */
+/** A key's identity: equal for two keys exactly when the cache must answer them alike, its edits taken as a set. */
 const identityOf = (key: KeyModel): string =>
 	`${key.property} ${key.closure} ${key.seeds} ${Arr.join(
 		Arr.dedupe(
 			Arr.sort(
-				Arr.map(key.kills, (kill) => `${kill.mutant}.${kill.content}`),
+				Arr.map(key.edits, (edit) => `${edit.mutant}.${edit.content}`),
 				Str.Order
 			)
 		),
 		","
 	)}`
 
-/** A key's kills as listed, which two keys of one identity may list in different orders. */
+/** A key's edits as listed, which two keys of one identity may list in different orders. */
 const listedOf = (key: KeyModel): string =>
 	Arr.join(
-		Arr.map(key.kills, (kill) => `${kill.mutant}.${kill.content}`),
+		Arr.map(key.edits, (edit) => `${edit.mutant}.${edit.content}`),
 		","
 	)
 
@@ -124,6 +130,7 @@ const programs: Gen<Program> = array(
 export type Hashes = Readonly<{
 	closures: readonly [ClosureHash, ClosureHash]
 	contents: readonly [ContentHash, ContentHash]
+	mutated: Readonly<Record<Mutant, ContentHash>>
 }>
 
 /** A parser for trees of JSON files alone, which no closure parses. */
@@ -131,7 +138,7 @@ const NO_CODE = ModuleSyntax.of({ runtimeSpecifiers: () => Effect.succeed([]) })
 
 /**
  * Two closure hashes and two content hashes, made as closure.ts makes them (its brands are minted there alone): the
- * closures of two JSON modules of a tree of their own, and two files' contents.
+ * closures of two JSON modules of a tree of their own, two files' contents, and three mutants' edited contents.
  */
 export const hashesOf = Effect.fn("hashesOf")(function* (
 	digest: Context.Service.Shape<typeof Digest.Digest>
@@ -156,11 +163,15 @@ export const hashesOf = Effect.fn("hashesOf")(function* (
 	const [first, second] = yield* Effect.fromOption(
 		Option.all([Option.fromUndefinedOr(closures.get(a)), Option.fromUndefinedOr(closures.get(b))])
 	)
-	const contents = yield* Effect.all([
-		contentHashOf(encoder.encode("0")),
-		contentHashOf(encoder.encode("1"))
+	const [contents, mutated] = yield* Effect.all([
+		Effect.all([contentHashOf(encoder.encode("0")), contentHashOf(encoder.encode("1"))]),
+		Effect.all({
+			0: contentHashOf(encoder.encode("mutant 0")),
+			1: contentHashOf(encoder.encode("mutant 1")),
+			2: contentHashOf(encoder.encode("mutant 2"))
+		})
 	]).pipe(Effect.provideService(Digest.Digest, digest))
-	return { closures: [first.hash, second.hash], contents } as const
+	return { closures: [first.hash, second.hash], contents, mutated } as const
 })
 
 /** The key a model key stands for. */
@@ -168,17 +179,16 @@ const keyOf = (hashes: Hashes, key: KeyModel): VerdictKey => ({
 	property: PropertyId(`src/cache.test.ts#property${key.property}`),
 	closure: key.closure === 0 ? hashes.closures[0] : hashes.closures[1],
 	seeds: SeedPolicy(`policy ${key.seeds}`),
-	kills: Arr.map(key.kills, (kill): KillContent => ({
-		file: `packages/testing/src/mutant${kill.mutant}.ts`,
-		original: `original ${kill.mutant}`,
-		replacement: `replacement\n${kill.mutant}`,
-		content: kill.content === 0 ? hashes.contents[0] : hashes.contents[1]
+	edits: Arr.map(key.edits, (edit): Edit => ({
+		file: `packages/testing/src/mutant${edit.mutant}.ts`,
+		content: edit.content === 0 ? hashes.contents[0] : hashes.contents[1],
+		mutated: hashes.mutated[edit.mutant]
 	}))
 })
 
 /**
  * What one key's record holds in the model: nothing (never passed, or cleared by a failure under its own key), a pass
- * (and the kill order it was passed with), or a foreign text.
+ * (and the edit order it was passed with), or a foreign text.
  */
 export type Held =
 	| Readonly<{ kind: "absent"; why: "never" | "cleared" }>
@@ -278,23 +288,23 @@ export type CacheSituation =
 	| "a key read as none after a failure cleared its pass"
 	| "a pass read beside another pass of its property"
 	| "a corrupt record refused"
-	| "kills in another order answering as one key"
+	| "edits in another order answering as one key"
 	| "a key whose property alone differs from a pass read as none"
 	| "a key whose closure alone differs from a pass read as none"
 	| "a key whose seed policy alone differs from a pass read as none"
-	| "a key whose kills alone differ from a pass read as none"
+	| "a key whose edits alone differ from a pass read as none"
 	| "passes of distinct keys written at once"
 
-/** The one field two keys differ in, kills taken as a set; none when they differ in none or in more. */
+/** The one field two keys differ in, edits taken as a set; none when they differ in none or in more. */
 const loneFieldOf = (left: KeyModel, right: KeyModel): Option.Option<KeyField> => {
-	const [, , , leftKills = ""] = Str.split(" ")(identityOf(left))
-	const [, , , rightKills = ""] = Str.split(" ")(identityOf(right))
+	const [, , , leftEdits = ""] = Str.split(" ")(identityOf(left))
+	const [, , , rightEdits = ""] = Str.split(" ")(identityOf(right))
 	const differing = Arr.filter(
 		[
 			["property", left.property !== right.property],
 			["closure", left.closure !== right.closure],
 			["seeds", left.seeds !== right.seeds],
-			["kills", leftKills !== rightKills]
+			["edits", leftEdits !== rightEdits]
 		] as const,
 		([, differs]) => differs
 	)
@@ -304,14 +314,14 @@ const loneFieldOf = (left: KeyModel, right: KeyModel): Option.Option<KeyField> =
 }
 
 /** A key's fields. */
-type KeyField = "property" | "closure" | "seeds" | "kills"
+type KeyField = "property" | "closure" | "seeds" | "edits"
 
 /** The situation of reading a key that differs from a passed key in one field alone. */
 const LONE_FIELD_SITUATIONS: Readonly<Record<KeyField, CacheSituation>> = {
 	property: "a key whose property alone differs from a pass read as none",
 	closure: "a key whose closure alone differs from a pass read as none",
 	seeds: "a key whose seed policy alone differs from a pass read as none",
-	kills: "a key whose kills alone differ from a pass read as none"
+	edits: "a key whose edits alone differ from a pass read as none"
 }
 
 /** What a read of an absent key reaches, by why it is absent. */
@@ -362,7 +372,7 @@ export const roundOf = (
 						situations.add(
 							state.listed === listedOf(key)
 								? "a pass read back"
-								: "kills in another order answering as one key"
+								: "edits in another order answering as one key"
 						)
 						if (
 							Arr.some(
@@ -442,16 +452,16 @@ export const describedOf = (round: ReadonlyArray<Operation>): string =>
 	)
 
 /**
- * A program that passes a key whose two kills differ and then reads it with its kills listed the other way round,
+ * A program that passes a key whose two edits differ and then reads it with its edits listed the other way round,
  * before rounds of its own.
  */
 const reorderedPrograms: Gen<Program> = (source) => {
 	const key = source.draw(keys)
-	const first = source.draw(kills)
-	const second: KillModel = { mutant: (first.mutant + 1) % 3, content: first.content }
+	const first = source.draw(edits)
+	const second: EditModel = { mutant: NEXT[first.mutant], content: first.content }
 	return [
-		[{ key: { ...key, kills: [first, second] }, action: "pass" }],
-		[{ key: { ...key, kills: [second, first] }, action: "read" }],
+		[{ key: { ...key, edits: [first, second] }, action: "pass" }],
+		[{ key: { ...key, edits: [second, first] }, action: "read" }],
 		...source.draw(programs)
 	]
 }
@@ -489,7 +499,7 @@ const thenRead =
 
 /**
  * Programs, aimed at what a read meets after one write of its key's property: a pass under the same key, a corrupt
- * record, a pass under a key one seed policy away, kills listed in another order, a failure after a pass, and a pass
+ * record, a pass under a key one seed policy away, edits listed in another order, a failure after a pass, and a pass
  * read after a newer pass of its property.
  */
 export const aimedPrograms = aimed<Program, CacheSituation>(programs, [
@@ -499,7 +509,7 @@ export const aimedPrograms = aimed<Program, CacheSituation>(programs, [
 		"a key whose seed policy alone differs from a pass read as none",
 		thenRead("pass", (key) => ({ ...key, seeds: 1 - key.seeds }))
 	],
-	["kills in another order answering as one key", reorderedPrograms],
+	["edits in another order answering as one key", reorderedPrograms],
 	["a key read as none after a failure cleared its pass", clearedPrograms],
 	["a pass read beside another pass of its property", keptPrograms]
 ])

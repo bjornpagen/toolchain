@@ -33,6 +33,9 @@ import { reportOf, type UsageReport, usageJson, usageLines } from "#runner/usage
  *   toolchain-test run [paths | property ids]   every property (or those named), at full width, and the kills of each
  *                                               that passed, every verdict cached; exit 1 on any failure or survivor
  *   toolchain-test replay <token>               the one case a failure printed, as it ran
+ *   toolchain-test census [paths | property ids] whether each property caught a bug: a kill or an operator mutant of
+ *                                               product source turns it red (mutate/census.ts); exit 1 on any that
+ *                                               never did or cannot be judged
  *   toolchain-test kills [paths | property ids] each property's kills turn its witnesses red; exit 1 on any survivor
  *                                               or stale kill (mutate/commands.ts)
  *   toolchain-test mutate <file>... [options]  operator mutation of the files, a measurement (mutate/commands.ts)
@@ -242,6 +245,8 @@ const load = (args: ReadonlyArray<string>) =>
 const commands: Readonly<Record<string, Command>> = {
 	run: (args) => failing(run(args)),
 	replay: (args) => failing(replay(args)),
+	census: (args) =>
+		failing(Effect.flatMap(mutateModule, (module) => module.censusCommand(root, args))),
 	kills: (args) =>
 		failing(Effect.flatMap(mutateModule, (module) => module.killsCommand(root, args))),
 	mutate: (args) =>

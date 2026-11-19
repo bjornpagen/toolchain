@@ -1,3 +1,4 @@
+import { TEST_SCOPE, TEST_SUFFIXES } from "@bjornpagen/testing/scope"
 import { Array as Arr, Option, Record, Result, String as Str } from "effect"
 import type { DummyRule, DummyRuleMap, OxlintConfig, OxlintOverride } from "oxlint"
 import { type PackName, packNamesOf, type Toolchain } from "#config.ts"
@@ -8,7 +9,6 @@ import {
 	ENVIRONMENT_PROPERTIES
 } from "#oxlint/environment.ts"
 import type { OptionsOf, Plugin } from "#oxlint/rule.ts"
-import { TEST_SCOPE, TEST_SUFFIXES } from "#shared/tests.ts"
 import {
 	CLASS_RULE_IDS,
 	type ClassRuleId,

@@ -1,6 +1,6 @@
+import { isTestScope } from "@bjornpagen/testing/scope"
 import { Array as Arr, Option, Schema, String as Str } from "effect"
 import { type AnyNode, configured, type Context, isFileAt, type NodeOf } from "#oxlint/rule.ts"
-import { isTestScope } from "#shared/tests.ts"
 
 /**
  * What a generator draws: the members of the list it is handed (`element`), the one value it is handed (`constant`),

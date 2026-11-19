@@ -50,7 +50,10 @@ export const killGate = property.explore(
 				const pool = yield* processPool
 				const subject: Subject = {
 					id: PropertyId(gate.check),
-					property: checkProperty(Arr.map(gate.kills, (name) => KILLS[name])),
+					property: checkProperty(
+						Arr.map(gate.kills, (name) => KILLS[name]),
+						[]
+					),
 					loading: gate.loading
 				}
 				const judged = yield* killsOf(pool, { seed: 1, limits: runnerLimits }, checkout, images, [

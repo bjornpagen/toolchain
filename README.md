@@ -14,6 +14,32 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: the census of caught bugs (2026-11-19)
+
+`toolchain-test census [paths | ids]`, run from a package root, says of each property whether it has caught a bug
+(Bjorn, 2026-11-16: "all tests that have never caught a bug need to be hard deleted. no conditions."): `catches` when an
+edit of product source turns its witnesses red, one of its kills or an operator mutant at a place its witnesses ran;
+`never-caught` when no product kill and no mutant it ran against did; `unjudged` when the census cannot say (red with no
+mutant, its coverage lost, a product file it runs where its mutants never reach, a file whose mutants the package
+cannot type). Product source is every file the repository itself tracks outside test scope: a kill of support, a harness
+or an oracle shows nothing, nor does a kill of a submodule's file, nor a kept case on its own (write the defect it pins
+back as a kill). Standard output is a table, a tab-separated row a property; standard error has each property's
+standing as it settles and the counts; it exits 1 when any property never caught a bug or cannot be judged. A
+property's kills are judged first; only a property no product kill turned red faces mutants, each typed by the
+package and tried on a worker of its own until one turns it red, every property still looking sharing the pool's width.
+Database properties run the census through the machine's one database job, as any run of them does. Before you move
+`vendor/toolchain` past this section:
+
+1. **Test scope moved.** `TEST_SCOPE`, `TEST_SUFFIXES` and `isTestScope` are `@bjornpagen/testing/scope`
+   (src/scope.ts), the dev tools' `shared/tests.ts` gone; `@bjornpagen/devtools` depends on `@bjornpagen/testing`
+   (its devDependency until now), so run `pnpm install`, which moves one line of your lockfile.
+2. **The verdict cache keys edits.** A key's kills are `edits`: each the file, the hash of its text and the hash of its
+   text edited (runner/cache.ts Edit), a kill's and an operator mutant's alike, so `mutate` keeps every kill it finds
+   under the same key a kill trial keeps, and the census reads both. Every cached verdict is new once, as at any change
+   of the runner.
+3. **A Property carries its kept cases** (`Property.kept`), which the census counts. A harness that builds a Property
+   (`new Property({ ... })`) states `kept`.
+
 ## Consumer migration: one assertion vocabulary (2026-11-19)
 
 `@bjornpagen/testing/assert` speaks one vocabulary, grizzle's (UNIFY's census, row 12), where it spoke
@@ -298,7 +324,7 @@ are properties is the properties pack, which that repository's conversion turns 
 
 - Test scope: the testing plugin's rules (`TEST_RULES`) hold every module of test scope, not test modules alone:
   `*.test.ts(x)`, `*.fixtures.ts`, and every module beneath a `test/`, `integration/` or `support/` directory
-  (`TEST_SCOPE` in `@bjornpagen/devtools`'s `shared/tests.ts`, the one definition the preset reads). A support module
+  (`TEST_SCOPE` in `@bjornpagen/testing/scope`, the one definition the preset and the census read). A support module
   whose job is the clock or a wait is an override's exception, with its reason.
 - `TEST_RULES` gains `testing/no-verdict-table` (a list literal of rows writing a verdict under `expected`, `verdict`,
   `outcome` or `answer`, or of tuples whose declared type labels one; a dictionary door's lists pass) and

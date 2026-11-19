@@ -53,6 +53,7 @@ export const fakeProperty = (seen: Ref.Ref<Seen>, guide: Sense): Property =>
 	new Property({
 		kind: "explore",
 		oracle: { kind: "unstated" },
+		kept: [],
 		kills: [],
 		needs: {},
 		guide,

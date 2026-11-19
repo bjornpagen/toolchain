@@ -30,6 +30,7 @@
 		"./lsw": "./src/lsw.ts",
 		"./oracle": "./src/oracle.ts",
 		"./random": "./src/random.ts",
+		"./scope": "./src/scope.ts",
 		"./sense": "./src/sense.ts",
 		"./shrink": "./src/shrink.ts",
 		"./source": "./src/source.ts",

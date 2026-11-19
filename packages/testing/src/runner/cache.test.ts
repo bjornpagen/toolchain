@@ -20,7 +20,7 @@ import { repositoryKeyOf } from "#runner/cache.ts"
 
 /**
  * The verdict cache answers a key with a pass exactly when a pass was last recorded under it, every key's record kept
- * beside the others of its property: a failure removes the pass under its own key alone, a key one field away (its property, closure, seed policy or kills) is another key, kills listed in another
+ * beside the others of its property: a failure removes the pass under its own key alone, a key one field away (its property, closure, seed policy or edits) is another key, edits listed in another
  * order are the same key, a record whose text is not its key is refused rather than read as a pass, and passes of
  * distinct keys written at once all land. Oracle: a map from each key's identity to what was last recorded under it.
  */
@@ -32,11 +32,11 @@ export const verdictsAreWhatWasLastRecorded = property.explore(aimedPrograms, {
 		"a key read as none after a failure cleared its pass",
 		"a pass read beside another pass of its property",
 		"a corrupt record refused",
-		"kills in another order answering as one key",
+		"edits in another order answering as one key",
 		"a key whose property alone differs from a pass read as none",
 		"a key whose closure alone differs from a pass read as none",
 		"a key whose seed policy alone differs from a pass read as none",
-		"a key whose kills alone differ from a pass read as none",
+		"a key whose edits alone differ from a pass read as none",
 		"passes of distinct keys written at once"
 	],
 	check:
@@ -68,15 +68,15 @@ export const verdictsAreWhatWasLastRecorded = property.explore(aimedPrograms, {
 			}),
 	oracle: {
 		kind: "second-implementation",
-		name: "a map from each key's identity, its kills taken as a set, to what was last recorded under it"
+		name: "a map from each key's identity, its edits taken as a set, to what was last recorded under it"
 	},
 	kept: [],
 	kills: [
 		{
 			file: "packages/testing/src/runner/cache.ts",
-			original: "kills: Arr.dedupe(Arr.sort(key.kills, KILL_ORDER))",
-			replacement: "kills: key.kills",
-			why: "a key keyed by its kills in the order they are listed: reordering a property's kills loses its pass"
+			original: "edits: Arr.dedupe(Arr.sort(key.edits, EDIT_ORDER))",
+			replacement: "edits: key.edits",
+			why: "a key keyed by its edits in the order they are listed: reordering a property's kills loses its pass"
 		},
 		{
 			file: "packages/testing/src/runner/cache.ts",

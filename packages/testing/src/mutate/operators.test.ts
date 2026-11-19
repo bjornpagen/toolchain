@@ -68,7 +68,7 @@ export const operatorMutation = property.explore(
 				const equivalent = yield* equivalentOf(run.judged)
 				const subjects = Arr.map(run.checks, (_, index): Subject => ({
 					id: PropertyId(`check${String(index)}`),
-					property: checkProperty([]),
+					property: checkProperty([], []),
 					loading: run.loading
 				}))
 				const measured = yield* Effect.result(

@@ -1,7 +1,7 @@
+import { TEST_SUFFIXES } from "@bjornpagen/testing/scope"
 import { Array as Arr, Option, Record, Result, Schema, String as Str } from "effect"
 import type { PackName } from "#config.ts"
 import type { Finding } from "#shared/finding.ts"
-import { TEST_SUFFIXES } from "#shared/tests.ts"
 import { QUARANTINE, quarantineFindings, type Snapshot } from "#workspace/quarantine.ts"
 import { TEST_SYSTEM_RULES, type TestSystemRule } from "#workspace/rules.ts"
 

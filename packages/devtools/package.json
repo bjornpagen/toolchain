@@ -38,12 +38,12 @@
 		"test": "toolchain-test run"
 	},
 	"devDependencies": {
-		"@bjornpagen/testing": "workspace:*",
 		"@effect/vitest": "catalog:",
 		"@types/node": "catalog:",
 		"vitest": "catalog:"
 	},
 	"dependencies": {
+		"@bjornpagen/testing": "workspace:*",
 		"@effect/platform-node": "catalog:",
 		"@effect/tsgo": "catalog:",
 		"effect": "catalog:",

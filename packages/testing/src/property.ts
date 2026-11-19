@@ -295,6 +295,7 @@ type Made = Readonly<{
 	needs: Needs
 	guide: Sense
 	oracle: Oracle
+	kept: ReadonlyArray<Kept>
 	kills: ReadonlyArray<Kill>
 	search: (run: SearchRun) => Effect.Effect<Verdict>
 	replay: (run: SearchRun, token: string) => Effect.Effect<Verdict>
@@ -306,7 +307,8 @@ type Made = Readonly<{
  * What the runner runs: a property, its case type, needs and failures erased at construction into closures (its
  * search, its replay of one token, and how a process readies it: its needs opened, outside any case's deadline, then the
  * evaluation of a batch of its cases), so one runner holds properties of
- * every type with no cast. Its needs stay readable, by key, so the mutator knows a property that needs Checkout.dir. A test module only ever builds one with a constructor of `property` or a harness
+ * every type with no cast. Its needs stay readable, by key, so the mutator knows a property that needs Checkout.dir, and
+ * its kept cases and kills, which the census (mutate/census.ts) reads. A test module only ever builds one with a constructor of `property` or a harness
  * constructor that returns one or a Family.
  */
 export class Property {
@@ -314,6 +316,7 @@ export class Property {
 	readonly needs: Needs
 	readonly guide: Sense
 	readonly oracle: Oracle
+	readonly kept: ReadonlyArray<Kept>
 	readonly kills: ReadonlyArray<Kill>
 	readonly search: Made["search"]
 	readonly replay: Made["replay"]
@@ -325,6 +328,7 @@ export class Property {
 		this.needs = made.needs
 		this.guide = made.guide
 		this.oracle = made.oracle
+		this.kept = made.kept
 		this.kills = made.kills
 		this.search = made.search
 		this.replay = made.replay
@@ -399,6 +403,7 @@ const exploredAs =
 			needs: spec.needs,
 			guide: searched.guide,
 			oracle: spec.oracle,
+			kept: spec.kept,
 			kills: spec.kills,
 			...boundedBy(spec, exploreSearch(searched, oneByOne), replay(searched)),
 			keep: keepingOf(drawing, aimPlacesOf(spec.space, spec.situations)),
@@ -465,6 +470,7 @@ export const property = {
 			needs: spec.needs,
 			guide: searched.guide,
 			oracle: spec.oracle,
+			kept: spec.kept,
 			kills: spec.kills,
 			...boundedBy(spec, exhaustSearch(searched, spec.box, 1), replay(searched)),
 			keep: keepingOf(drawing, []),
@@ -488,6 +494,7 @@ export const property = {
 			needs: spec.needs,
 			guide: searched.guide,
 			oracle: spec.oracle,
+			kept: spec.kept,
 			kills: spec.kills,
 			...boundedBy(spec, exploreSearch(searched, batchingOf(spec)), replay(searched)),
 			keep: keepingOf(drawing, aimPlacesOf(space, spec.situations)),
@@ -515,6 +522,7 @@ export const property = {
 			needs: spec.needs,
 			guide: searched.guide,
 			oracle: spec.oracle,
+			kept: spec.kept,
 			kills: spec.kills,
 			...boundedBy(
 				spec,

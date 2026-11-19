@@ -1,7 +1,7 @@
 import { Array as Arr, Effect, Stream, String as Str } from "effect"
 import { ChildProcess, type ChildProcessSpawner } from "effect/process"
 import { type MutantPool, servedArgv } from "#mutate/pool.ts"
-import { type Kill, Property } from "#property.ts"
+import { type Kept, type Kill, Property } from "#property.ts"
 import { runnerLimits } from "#runner/limits.ts"
 import type { Batch, CaseResult } from "#runner/protocol.ts"
 
@@ -40,12 +40,13 @@ export const oneCase = (id: string, deadline: number): Batch => [
  * A property whose search is one case under its identity, run on the search's evaluator: red when the case did not
  * pass. A process pool (processPool) runs the case as a process of the property's own check.
  */
-export const checkProperty = (kills: ReadonlyArray<Kill>): Property =>
+export const checkProperty = (kills: ReadonlyArray<Kill>, kept: ReadonlyArray<Kept>): Property =>
 	new Property({
 		kind: "explore",
 		guide: { kind: "notes" },
 		needs: {},
 		oracle: { kind: "unstated" },
+		kept,
 		kills,
 		search: (run) =>
 			Effect.map(

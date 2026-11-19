@@ -92,9 +92,9 @@ export const consumersRunInEveryLayout = property.exhaust(layouts, {
 		{
 			file: "packages/testing/src/runner/affected.ts",
 			original:
-				"const weighing = yield* Effect.result(weighingOf(grounds.packageRoot, repository, selected))",
+				"const weighing = yield* Effect.result(\n\t\t\tweighingOf(grounds.packageRoot, repository, config, discovered)\n\t\t)",
 			replacement:
-				"const weighing = Result.succeed(yield* weighingOf(grounds.packageRoot, repository, selected))",
+				"const weighing = Result.succeed(\n\t\t\tyield* weighingOf(grounds.packageRoot, repository, config, discovered)\n\t\t)",
 			why: "a package with no lockfile fails its run"
 		},
 		{
