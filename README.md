@@ -268,6 +268,22 @@ are properties is the properties pack, which that repository's conversion turns 
   module of the parent's package, where the parent kept no list), and an override turning `testing/test-module-shape`
   off that names a file no quarantine holds.
 
+## Consumer migration: a regression kept by value (2026-11-19)
+
+A kept case is a replay token, a tape its space draws again, and `toolchain-test keep` finds the tape of a value the
+space draws. A regression recorded as a value its space never draws (a hand-built acceptance case, or a sketch from
+before the space changed), or one deeper than keep reaches, is kept beside the space instead:
+
+- `recorded(space, values)` (`@bjornpagen/testing/gen`) is `space`, and beside it `values`, each reachable only
+  through its token: its first decision, `source.recall(values.length)`, is 0 for every case a search draws,
+  enumerates, mutates or shrinks to, and a token's k, from 1 to the count, draws `values[k - 1]`. A recalled decision's
+  tape is bounded by the value it took, so a shrink moves it toward 0 and nothing moves it off 0.
+- Wrap the property's whole space, inside its aims or its steering (`aimed(recorded(space, values), aims)`,
+  `steered((s) => recorded(under(s), values))`), so the recalled decision is the case's first and an unsteered token
+  reaches it; every token the property kept before gains a leading `0.`.
+- `toolchain-test keep <id> <file>` finds a recorded value's token (`-:k`) as it finds a drawn value's.
+- no-case-list reads `recorded` as it reads `aimed`: a case list beside recorded values is still a case list.
+
 ## Consumer migration: steering belongs to the generator (2026-11-15)
 
 A property that read `Case.steering` and swapped its case (`c.draw(aimedGen)` while its turn aimed at a pending

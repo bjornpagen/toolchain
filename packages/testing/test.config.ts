@@ -24,6 +24,7 @@ export default defineRunner({
 		"src/pg/reached.test.ts",
 		"src/pg/lease.test.ts",
 		"src/core.test.ts",
+		"src/recorded.test.ts",
 		"src/idioms.test.ts",
 		"src/shrink.test.ts",
 		"src/features.test.ts",

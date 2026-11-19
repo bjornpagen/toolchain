@@ -193,7 +193,7 @@ const spaces: Gen<Drawn> = weighted([
 /** The names every module reads: the library's constructors, the dictionary's mint, and a bound held by a name. */
 const HEADER = `import { property } from "@bjornpagen/testing/property"
 import { drawn, explore } from "@bjornpagen/testing/explore"
-import { aimed, constant, element, int, map, oneOf } from "@bjornpagen/testing/gen"
+import { aimed, constant, element, int, map, oneOf, recorded } from "@bjornpagen/testing/gen"
 import { dictionary, word } from "@bjornpagen/testing/dictionary"
 import { KEYWORDS } from "${DOOR}"
 declare const k: number
@@ -201,8 +201,9 @@ declare const check: unknown
 `
 
 /**
- * A search that holds a space, and whether it reads it: a property constructor's first argument (aimed or not), the
- * old `explore`'s spec field `draw`, or `property.stateful`'s machine, which is no space.
+ * A search that holds a space, and whether it reads it: a property constructor's first argument (aimed, beside
+ * recorded values, or neither), the old `explore`'s spec field `draw`, or `property.stateful`'s machine, which is no
+ * space.
  */
 type Search = Readonly<{ call: (space: string) => string; reads: boolean }>
 
@@ -216,6 +217,10 @@ const SEARCHES: readonly [Search, ...Array<Search>] = [
 	{
 		call: (space) =>
 			`property.explore(aimed(${space}, [["a situation", constant(1)]]), { situations: [] })`,
+		reads: true
+	},
+	{
+		call: (space) => `property.explore(recorded(${space}, [1, 2]), { situations: [] })`,
 		reads: true
 	},
 	{ call: (space) => `explore({ suite: "s", draw: drawn(${space}) }, check)`, reads: true },

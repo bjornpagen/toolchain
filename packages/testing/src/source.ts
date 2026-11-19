@@ -8,7 +8,9 @@ export type Observed = "as-recorded" | "diverged"
 /**
  * What a generator draws its decisions from. `choose` makes one bounded decision about a magnitude, which a random
  * search leans toward the ends of a wide range (`biased`); `pick` makes one bounded decision among options, which a
- * random search draws uniformly however wide, so a choice's stated distribution is its distribution; `draw` runs
+ * random search draws uniformly however wide, so a choice's stated distribution is its distribution; `recall` makes
+ * one decision of 0 to `count` that every search takes at 0 and only a replay takes past it, the arm of a recorded
+ * space (gen.ts recorded), which only a token reaches; `draw` runs
  * another generator on the same decisions, so a struct, a tuple or a dependent value is a plain function body; `span`
  * labels the decisions a generator makes while it runs, so a tape keeps its structure (`open` and `close` do the same
  * without allocating, for a combinator's loop, and must pair); `observe` records a value the system under test decided, not the test, as a decision with one
@@ -19,6 +21,7 @@ export type Observed = "as-recorded" | "diverged"
 export type Source = Readonly<{
 	choose: (lo: number, hi: number) => number
 	pick: (lo: number, hi: number) => number
+	recall: (count: number) => number
 	draw: <A>(generator: (source: Source) => A) => A
 	span: <A>(label: string, generate: () => A) => A
 	open: (label: string) => void
@@ -28,10 +31,12 @@ export type Source = Readonly<{
 
 /**
  * How a random search spreads a decision over its range: a magnitude leans toward the ends of a wide range, where code
- * branches, and an option is drawn uniformly, so no option is favoured by where it sits. Only a random search reads it:
- * a replay, an enumeration and a shrink see the same decision with the same bounds.
+ * branches, an option is drawn uniformly, so no option is favoured by where it sits, and a recalled decision is taken at
+ * its least, so no drawn case reaches a value a regression recorded. Only a random search spreads by it, and a recording
+ * bounds a recalled decision's tape by the value it took (recorder); a replay, an enumeration and a shrink see the same
+ * decision with the same bounds.
  */
-export type Spread = "leaning" | "uniform"
+export type Spread = "leaning" | "uniform" | "recalled"
 
 /**
  * Where a recording's values come from: `draw` answers the decision at position `at`, spread as `spread` says, and
@@ -51,6 +56,8 @@ export const randomChooser = (words: Words): Chooser => ({
 				return biased(words, lo, hi)
 			case "uniform":
 				return between(words, lo, hi)
+			case "recalled":
+				return lo
 		}
 	}
 })
@@ -116,7 +123,9 @@ const grownInt = (buffer: Int32Array, factor: number) => {
  * a replay ran out or its value no longer fits the decision, becomes the decision's simplest value and marks the
  * recording `overrun`: it still completes, deterministically, and shrinking may still accept it. A decision with one
  * possible value is no decision: it gives that value and records nothing, so a choice among one option never lengthens
- * a tape, and a kept case whose property passes through one still draws nothing.
+ * a tape, and a kept case whose property passes through one still draws nothing. A recalled decision is recorded between
+ * 0 and the value it took, the only values a search may move it to: an enumeration never moves it off 0, a mutation
+ * and a shrink move it toward 0 alone, and only a replay's value takes it past.
  */
 export const recorder = (): Recorder => {
 	let chooser: Chooser = simplestChooser
@@ -147,12 +156,14 @@ export const recorder = (): Recorder => {
 		if (!fits && status === "complete") {
 			status = "overrun"
 		}
-		return append(fits ? offered : lo, lo, hi)
+		const value = fits ? offered : lo
+		return append(value, lo, spread === "recalled" ? value : hi)
 	}
 	const source: Source = {
 		draw: (inner) => inner(source),
 		choose: (lo, hi) => decide(lo, hi, "leaning"),
 		pick: (lo, hi) => decide(lo, hi, "uniform"),
+		recall: (count) => decide(0, count, "recalled"),
 		open: (label) => {
 			const index = spanLabel.length
 			spanLabel.push(label)

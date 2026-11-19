@@ -1,7 +1,8 @@
 /**
  * The no-case-list rule (src/oxlint/rules/no-case-list.ts), searched over test modules and source modules of one
  * property or several, drawn from a grammar of the spaces its contract reads in a property's spec
- * (`property.explore(space, spec)`, the testing library's searches as its oxlint module states them): a list written in
+ * (`property.explore(space, spec)`, the testing library's searches as its oxlint module states them, the space aimed,
+ * beside recorded values or neither): a list written in
  * the module, held by a constant or handed in place; a list imported, by name or through a namespace, from a module
  * of the tests (a subpath import, a relative path, a package's test directory) or from a roster or a dictionary door;
  * one value (`constant`, a range of one value); the index of a list (`int(0, xs.length - 1)`, and mapped back to the
@@ -41,5 +42,12 @@ export const caseListSpaces = property.explore(programs, {
 		name: "the rule's stated contract over the testing library's case lists and test scope"
 	},
 	kept: [],
-	kills: []
+	kills: [
+		{
+			file: "packages/testing/src/oxlint/plugin.ts",
+			original: '\t\t\tnames: ["map", "span", "aimed", "finite", "recorded"],',
+			replacement: '\t\t\tnames: ["map", "span", "aimed", "finite"],',
+			why: "A case list beside recorded values (gen.ts recorded) is no case list the rule reads, so a property over recorded(element(list), values) is never reported."
+		}
+	]
 })

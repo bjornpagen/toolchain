@@ -133,6 +133,21 @@ export const steered = <A, const F extends string>(
 	under: (steering: Option.Option<Pending<F>>) => Space<A>
 ): Steered<A, F> => ({ kind: "steered", under })
 
+/**
+ * `space`, and beside it the values regressions recorded, each reachable only through its replay token: every case a
+ * search draws, enumerates, mutates or shrinks to is drawn from `space`, and a replay whose recalled decision is k, from
+ * 1 to the values' count, is `values[k - 1]` (source.ts recall). A value lying outside what `space` draws, or deeper than
+ * `toolchain-test keep` reaches, is kept this way; keep finds its token as it finds a drawn value's. Wrap a property's
+ * whole space, inside its aims or its steering, so the recalled decision is its case's first and an unsteered token
+ * reaches it.
+ */
+export const recorded =
+	<A>(space: Space<A>, values: Arr.NonEmptyReadonlyArray<A>): Space<A> =>
+	(source) => {
+		const at = source.recall(values.length)
+		return at === 0 ? space(source) : Arr.getUnsafe(values, at - 1)
+	}
+
 /** A space declared finite, for an exhaustion: the runner counts it before any case runs. */
 export const finite = <A>(space: Space<A>): FiniteSpace<A> =>
 	Object.assign((source: Source): A => space(source), { [finiteSpace]: true } as const)
@@ -460,7 +475,7 @@ const drawnWithDecisions = <A>(
 	source: Source
 ): Readonly<{ value: A; decisions: Float64Array }> => {
 	const taken: Array<number> = []
-	const recorded: Source = {
+	const capturing: Source = {
 		...source,
 		choose: (lo, hi) => {
 			const value = source.choose(lo, hi)
@@ -476,13 +491,18 @@ const drawnWithDecisions = <A>(
 			}
 			return value
 		},
+		recall: (count) => {
+			const value = source.recall(count)
+			taken.push(value)
+			return value
+		},
 		observe: (decided) => {
 			taken.push(decided)
 			return source.observe(decided)
 		},
-		draw: (inner) => inner(recorded)
+		draw: (inner) => inner(capturing)
 	}
-	return { value: generator(recorded), decisions: Float64Array.from(taken) }
+	return { value: generator(capturing), decisions: Float64Array.from(taken) }
 }
 
 /** Whether two tapes made the same decisions. */
@@ -502,8 +522,8 @@ const nearestNew = <K>(
 	decisions: Float64Array,
 	taken: ReadonlySet<K>
 ): Option.Option<K> => {
-	const recorded = recorder()
-	const drawn = generate(recorded, key, forcedChooser(decisions, decisions.length)).tape
+	const buffers = recorder()
+	const drawn = generate(buffers, key, forcedChooser(decisions, decisions.length)).tape
 	const isNew = (generated: Generated<K>): boolean => !taken.has(generated.value)
 	for (let at = 0; at < drawn.length; at += 1) {
 		const lo = drawn.lo[at] ?? 0
@@ -512,7 +532,7 @@ const nearestNew = <K>(
 		for (let step = 1; step < width && step <= taken.size; step += 1) {
 			const edited = drawn.values.slice(0, drawn.length)
 			edited[at] = lo + ((from + step) % width)
-			const neighbour = generate(recorded, key, forcedChooser(edited, edited.length))
+			const neighbour = generate(buffers, key, forcedChooser(edited, edited.length))
 			if (isNew(neighbour)) {
 				return Option.some(neighbour.value)
 			}
@@ -528,7 +548,7 @@ const nearestNew = <K>(
 			wrapped = true
 		}
 		const step = enumerated(
-			recorded,
+			buffers,
 			key,
 			Option.getOrElse(branch, () => firstBranch)
 		)
@@ -617,7 +637,7 @@ export const clone =
 	<A>(generator: Gen<A>, count: number): Gen<ReadonlyArray<A>> =>
 	(source) => {
 		const taken: Array<number> = []
-		const recorded: Source = {
+		const capturing: Source = {
 			...source,
 			choose: (lo, hi) => {
 				const value = source.choose(lo, hi)
@@ -629,9 +649,14 @@ export const clone =
 				taken.push(value)
 				return value
 			},
-			draw: (inner) => inner(recorded)
+			recall: (options) => {
+				const value = source.recall(options)
+				taken.push(value)
+				return value
+			},
+			draw: (inner) => inner(capturing)
 		}
-		const twins: Array<A> = [generator(recorded)]
+		const twins: Array<A> = [generator(capturing)]
 		while (twins.length < count) {
 			let at = 0
 			const next = (lo: number) => {
@@ -643,6 +668,7 @@ export const clone =
 				...source,
 				choose: next,
 				pick: next,
+				recall: () => next(0),
 				draw: (inner) => inner(replayed),
 				span: (_label, run) => run(),
 				open: () => undefined,

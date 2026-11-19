@@ -150,7 +150,11 @@ export const CASE_LISTS = {
 		{ module: "@bjornpagen/testing/gen", names: ["element"], draws: "list" },
 		{ module: "@bjornpagen/testing/gen", names: ["constant"], draws: "value" },
 		{ module: "@bjornpagen/testing/gen", names: ["int"], draws: "range" },
-		{ module: "@bjornpagen/testing/gen", names: ["map", "span", "aimed", "finite"], draws: "each" },
+		{
+			module: "@bjornpagen/testing/gen",
+			names: ["map", "span", "aimed", "finite", "recorded"],
+			draws: "each"
+		},
 		{
 			module: "@bjornpagen/testing/gen",
 			names: ["oneOf", "weighted", "proportional"],

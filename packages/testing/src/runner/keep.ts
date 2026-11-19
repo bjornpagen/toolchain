@@ -110,8 +110,9 @@ const offsetsOf = (literal: number, lo: number, hi: number): ReadonlyArray<numbe
 	)
 
 /**
- * A decision's candidates: every value of a choice among options (a pick, whose range is its options' count), and for a
- * magnitude its bounds, its value so far and the offsets of the target's literals, ascending.
+ * A decision's candidates: every value of a choice among options (a pick, whose range is its options' count) and of a
+ * recalled decision (every recorded value and the space beside them), and for a magnitude its bounds, its value so far
+ * and the offsets of the target's literals, ascending.
  */
 const candidatesOf = (
 	lo: number,
@@ -121,6 +122,7 @@ const candidatesOf = (
 ): ReadonlyArray<number> => {
 	switch (spread) {
 		case "uniform":
+		case "recalled":
 			return Array.from({ length: hi - lo + 1 }, (_, offset) => lo + offset)
 		case "leaning":
 			return Arr.sort(

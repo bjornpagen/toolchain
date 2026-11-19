@@ -629,6 +629,8 @@ const through = (source: Source): Chooser => ({
 				return source.choose(lo, hi)
 			case "uniform":
 				return source.pick(lo, hi)
+			case "recalled":
+				return source.recall(hi)
 		}
 	}
 })
