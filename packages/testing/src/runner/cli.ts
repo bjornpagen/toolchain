@@ -1,6 +1,5 @@
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime"
 import * as NodeServices from "@effect/platform-node/NodeServices"
-import { regex } from "arkregex"
 import {
 	Array as Arr,
 	Cause,
@@ -12,7 +11,6 @@ import {
 	Inspectable,
 	Option,
 	Predicate,
-	Random,
 	Record as Rec,
 	Result,
 	Schema
@@ -23,7 +21,7 @@ import { HARDENED_FLAGS } from "#runner/config.ts"
 import { fuzz } from "#runner/fuzz.ts"
 import { configOf, keptValuesAt } from "#runner/load.ts"
 import { failureLines, lineOf } from "#runner/report.ts"
-import { loadPackage, replayToken, runPackage } from "#runner/run.ts"
+import { loadPackage, replayToken, runPackage, runSeedLogged } from "#runner/run.ts"
 import { reportOf, type UsageReport, usageJson, usageLines } from "#runner/usage.ts"
 
 /**
@@ -45,20 +43,6 @@ import { reportOf, type UsageReport, usageJson, usageLines } from "#runner/usage
  * again with them. A command is an entry of `commands`; a lane adds its own (affected, kills, mutate, fuzz) there,
  * reading runPackage's results.
  */
-
-/** A 32-bit run seed as a person writes it: decimal, or hexadecimal after `0x`. */
-const SeedText = Schema.String.check(Schema.isPattern(regex("^(0x[0-9a-fA-F]{1,8}|[0-9]{1,10})$")))
-
-/** The run's seed: TEST_SEED's, or one drawn fresh. */
-const seedOf = Effect.gen(function* () {
-	const given = yield* Config.option(Config.String("TEST_SEED"))
-	if (Option.isSome(given)) {
-		const text = yield* Schema.decodeEffect(SeedText)(given.value)
-		return { seed: Number(text), drawn: false }
-	}
-	const seed = yield* Random.nextIntBetween(0, 0xffff_ffff)
-	return { seed, drawn: true }
-})
 
 /** The package root a command runs in: the directory it was started from. */
 const root = process.cwd()
@@ -90,10 +74,7 @@ const usageWritten = (packageRoot: string, seed: number, millis: number, usage: 
 const run = (selected: ReadonlyArray<string>) =>
 	Effect.scoped(
 		Effect.gen(function* () {
-			const { seed, drawn } = yield* seedOf
-			yield* Console.log(
-				`TEST_SEED=${seed}${drawn ? " (drawn by this run; set it to reproduce the run)" : ""}`
-			)
+			const { seed } = yield* runSeedLogged
 			const outcome = yield* runPackage({ root, seed, reach: "full", selected })
 			const loaded = yield* Effect.result(affectedModule)
 			const { judged, passing } = yield* Result.match(loaded, {

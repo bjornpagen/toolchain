@@ -1,5 +1,4 @@
 import { layerDigest } from "@effect/platform-node/NodeCrypto"
-import { regex } from "arkregex"
 import {
 	Array as Arr,
 	Config,
@@ -9,7 +8,6 @@ import {
 	Inspectable,
 	Layer,
 	Option,
-	Random,
 	Result,
 	Schema,
 	Stream,
@@ -46,7 +44,13 @@ import {
 import { runnerLimits } from "#runner/limits.ts"
 import type { Discovered } from "#runner/load.ts"
 import { failureLines, lineOf } from "#runner/report.ts"
-import { loadPackage, type RunOutcome, runPackage, WORKER_ENTRY } from "#runner/run.ts"
+import {
+	loadPackage,
+	type RunOutcome,
+	runPackage,
+	runSeedLogged,
+	WORKER_ENTRY
+} from "#runner/run.ts"
 
 /**
  * `toolchain-test affected <ref>`, the push gate's run: every property of the package whose verdict key holds no
@@ -190,20 +194,6 @@ export const killLine = (judged: Judged): string => {
 			return `${judged.property}: UNJUDGED: ${judged.kill.why}, since the property goes red with no mutant (${redText(verdict.red)})`
 	}
 }
-
-/** A 32-bit run seed as a person writes it, as `toolchain-test run` reads TEST_SEED: decimal, or hexadecimal after 0x. */
-const SeedText = Schema.String.check(Schema.isPattern(regex("^(0x[0-9a-fA-F]{1,8}|[0-9]{1,10})$")))
-
-/** The run's seed: TEST_SEED's, as `toolchain-test run` reads it, or one drawn fresh. */
-const seedOf = Effect.gen(function* () {
-	const given = yield* Config.option(Config.String("TEST_SEED"))
-	if (Option.isSome(given)) {
-		const text = yield* Schema.decodeEffect(SeedText)(given.value)
-		return { seed: Number(text), drawn: false }
-	}
-	const seed = yield* Random.nextIntBetween(0, 0xffff_ffff)
-	return { seed, drawn: true }
-})
 
 /** Where a package stands: its root, and the repository it lies in, none when it lies in no git repository. */
 type Grounds = Readonly<{ packageRoot: string; repository: Option.Option<string> }>
@@ -624,10 +614,7 @@ export const affected = (root: string, args: ReadonlyArray<string>) =>
 					(Arr.isReadonlyArrayNonEmpty(one.closure.packages) && changed.has("pnpm-lock.yaml")) ||
 					Arr.some(one.found.property.kills, (kill) => isChanged(changed, kill.file))
 			).length
-			const { seed, drawn } = yield* seedOf
-			yield* Console.log(
-				`TEST_SEED=${seed}${drawn ? " (drawn by this run; set it to reproduce the run)" : ""}`
-			)
+			const { seed } = yield* runSeedLogged
 			const outcome = yield* runPackage({
 				root,
 				seed,

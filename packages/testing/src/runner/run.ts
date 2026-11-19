@@ -1,12 +1,16 @@
 import type { NodeServices } from "@effect/platform-node/NodeServices"
+import { regex } from "arkregex"
 import {
 	Array as Arr,
+	Config,
 	Console,
 	Context,
 	Effect,
 	type FileSystem,
 	Option,
 	type Path,
+	Random,
+	Schema,
 	Scope,
 	String as Str
 } from "effect"
@@ -205,6 +209,39 @@ const collected = (
 				)
 			)
 		: Effect.void
+
+/** A 32-bit run seed as a person writes it: decimal, or hexadecimal after `0x`. */
+const SeedText = Schema.String.check(Schema.isPattern(regex("^(0x[0-9a-fA-F]{1,8}|[0-9]{1,10})$")))
+
+/** A run's seed: given in TEST_SEED, to reproduce a run, or drawn fresh by this one. */
+type RunSeed = Readonly<{ kind: "given" | "drawn"; seed: number }>
+
+/** The line a run prints first, so any failure of it can be reproduced: its seed, and whether this run drew it. */
+const seedLine = (run: RunSeed): string => {
+	switch (run.kind) {
+		case "given":
+			return `TEST_SEED=${run.seed}`
+		case "drawn":
+			return `TEST_SEED=${run.seed} (drawn by this run; set it to reproduce the run)`
+	}
+}
+
+/** The run's seed, TEST_SEED's or one drawn fresh, once its line is printed. */
+export const runSeedLogged: Effect.Effect<RunSeed, Config.ConfigError | Schema.SchemaError> =
+	Effect.gen(function* () {
+		const given = yield* Config.option(Config.String("TEST_SEED"))
+		const run: RunSeed = Option.isSome(given)
+			? yield* Effect.map(Schema.decodeEffect(SeedText)(given.value), (text): RunSeed => ({
+					kind: "given",
+					seed: Number(text)
+				}))
+			: yield* Effect.map(Random.nextIntBetween(0, 0xffff_ffff), (seed): RunSeed => ({
+					kind: "drawn",
+					seed
+				}))
+		yield* Console.log(seedLine(run))
+		return run
+	})
 
 /**
  * Runs a package's properties on the pool, every property's search at once, its cases spread over every worker:
