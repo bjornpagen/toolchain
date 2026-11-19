@@ -10,10 +10,13 @@ export { doctor, type Verdict } from "#pg/doctor.ts"
 export {
 	clusterStatus,
 	clusterUp,
+	ClusterUnmade,
 	clusterVariable,
 	destroyCluster,
 	type InitMode,
 	initCluster,
+	type MadeMember,
+	madeMembers,
 	type MemberStatus,
 	type PgMember,
 	type Platform,

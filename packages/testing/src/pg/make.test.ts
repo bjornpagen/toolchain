@@ -7,7 +7,7 @@
  * refused. Each case's cluster is its own: its state under a home of the case's own and its name a port free when the
  * case began (TOOLCHAIN_PG_CLUSTER). Oracle: the specification, stated in the check.
  */
-import { Array as Arr, ConfigProvider, Effect, Exit, FileSystem, Schema } from "effect"
+import { Array as Arr, ConfigProvider, Effect, Exit, FileSystem, Option, Schema } from "effect"
 import { assertTrue, deepStrictEqual, strictEqual } from "#assert.ts"
 import { doctor } from "#pg/doctor.ts"
 import {
@@ -17,6 +17,7 @@ import {
 	holdings,
 	lives,
 	machineBin,
+	madeSynchronously,
 	postmasters,
 	spawnedBy,
 	specOf,
@@ -59,6 +60,16 @@ export const lifeOfACluster = property.exhaust(lives, {
 			})
 			const inCase = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
 				Effect.provideService(effect, ConfigProvider.ConfigProvider, environment)
+			const unmade = madeSynchronously(spec, environment)
+			assertTrue(
+				Exit.isFailure(unmade) && Exit.hasFails(unmade),
+				"an unmade cluster's members are refused"
+			)
+			deepStrictEqual(
+				Option.map(Exit.findErrorOption(unmade), (error) => error._tag),
+				Option.some("ClusterUnmade"),
+				"an unmade cluster's members are refused as unmade"
+			)
 			const brought = yield* inCase(
 				Effect.all(
 					[clusterUp(spec), ...Array.from({ length: life.atOnce - 1 }, () => clusterUp(spec))],
@@ -81,6 +92,31 @@ export const lifeOfACluster = property.exhaust(lives, {
 					"every bring-up at once reaches the one cluster"
 				)
 			})
+			const made = madeSynchronously(spec, environment)
+			assertTrue(Exit.isSuccess(made), "a made cluster's members are read synchronously")
+			deepStrictEqual(
+				Arr.map(made.value, (member) => ({
+					name: member.name,
+					port: member.port,
+					socket: member.socket,
+					owner: member.owner,
+					template: member.template,
+					passwordFile: member.passwordFile,
+					caFile: member.caFile,
+					lease: member.lease
+				})),
+				Arr.map(Arr.headNonEmpty(brought), (member) => ({
+					name: member.name,
+					port: member.port,
+					socket: member.socket,
+					owner: member.owner,
+					template: spec.template,
+					passwordFile: member.passwordFile,
+					caFile: member.caFile,
+					lease: member.lease
+				})),
+				"a made cluster's members are read as clusterUp reads them"
+			)
 			const checked = yield* inCase(doctor(spec, true))
 			Arr.forEach(checked, ({ port: member, verdicts }) => {
 				deepStrictEqual(
@@ -177,6 +213,12 @@ export const lifeOfACluster = property.exhaust(lives, {
 			original: `(name) => \`GRANT SET ON PARAMETER \${ident(name)} TO \${owner}\``,
 			replacement: "() => `SELECT 1`",
 			why: "The owner is granted none of the parameters its spec names, which the doctor checks; the property fails."
+		},
+		{
+			file: "packages/testing/src/pg/make.ts",
+			original: "\t\t\tdescribedMember(cluster, state.member(member))\n",
+			replacement: `\t\t\t({ ...describedMember(cluster, state.member(member)), caFile: \`\${state.member(member).state}/ca.crt\` })\n`,
+			why: "The synchronous reader spells a member's CA file itself, beside the one description every reader takes it from, so a config built on it names a file the maker never wrote; the property fails."
 		},
 		{
 			file: "packages/testing/src/pg/make.ts",

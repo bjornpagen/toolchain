@@ -159,27 +159,40 @@ const underLock = <A, E, R>(
 		})
 	)
 
-/** The manifest of `life`'s cluster when one is written, decoded; a file that is no manifest fails. */
-const manifestOf = (
-	life: Life
-): Effect.Effect<Option.Option<Manifest>, ClusterFailed, FileSystem.FileSystem> =>
-	Effect.gen(function* () {
-		const fs = yield* FileSystem.FileSystem
-		const step = stepOf(life, `reading its manifest ${life.state.manifest}`)
-		const present = yield* Effect.mapError(fs.exists(life.state.manifest), (error) =>
-			failed(step, error.message)
-		)
-		if (!present) {
-			return Option.none()
-		}
-		const text = yield* Effect.mapError(fs.readFileString(life.state.manifest), (error) =>
-			failed(step, error.message)
-		)
-		const manifest = yield* Effect.mapError(Schema.decodeEffect(ManifestFile)(text), (error) =>
-			failed(step, error.message)
-		)
-		return Option.some(manifest)
-	})
+/** Node's file system: a cluster's manifest is read synchronously, so a reader of a made cluster needs no runtime. */
+const files = process.getBuiltinModule("node:fs")
+
+/**
+ * The manifest of the cluster whose state is `state` when one is written, decoded; a file that is no manifest fails.
+ * It is read synchronously, the one file read, so a caller that runs it with Effect.runSync (a repository's config
+ * building its connection: madeMembers) reads it as every bring-up does.
+ */
+const manifestRead = (
+	state: ClusterState
+): Effect.Effect<Option.Option<Manifest>, ClusterFailed> => {
+	const step: Step = { cluster: state.port, doing: `reading its manifest ${state.manifest}` }
+	return Effect.flatMap(
+		Effect.try({
+			try: () =>
+				files.existsSync(state.manifest)
+					? Option.some(files.readFileSync(state.manifest, "utf8"))
+					: Option.none<string>(),
+			catch: (error) => failed(step, String(error))
+		}),
+		Option.match({
+			onNone: () => Effect.succeedNone,
+			onSome: (text) =>
+				Effect.mapBoth(Schema.decodeEffect(ManifestFile)(text), {
+					onFailure: (error) => failed(step, error.message),
+					onSuccess: Option.some
+				})
+		})
+	)
+}
+
+/** The manifest of `life`'s cluster when one is written (manifestRead). */
+const manifestOf = (life: Life): Effect.Effect<Option.Option<Manifest>, ClusterFailed> =>
+	manifestRead(life.state)
 
 /** The members a run of this machine's width asks of `life`'s cluster (settings.ts membersOf). */
 const familySize = (life: Life): number => membersOf(life.cluster.family, testWorkers)
@@ -670,7 +683,38 @@ const removeCluster = (life: Life): Effect.Effect<void, ClusterFailed, Platform>
 		)
 	})
 
-/** Reads `member`'s facts as a client reaches it (PgMember) from its state directory. */
+/**
+ * A made member as its state directory holds it, before any file of it is read: its name (its port), its port, its Unix
+ * socket's directory, the owner and the template its cluster was made with, the files of the owner's password, of the
+ * local CA and of the unrelated CA, and its lease directory. Every reader of a member's files takes their paths here
+ * (memberOf, madeMembers), so no path to a member's file is spelled twice.
+ */
+export type MadeMember = Readonly<{
+	name: string
+	port: number
+	socket: string
+	owner: string
+	template: string
+	passwordFile: string
+	caFile: string
+	wrongCaFile: string
+	lease: string
+}>
+
+/** `member` of a cluster made for `cluster`'s owner and template, described (MadeMember). */
+const describedMember = (cluster: LocalCluster, member: MemberState): MadeMember => ({
+	name: `${member.port}`,
+	port: member.port,
+	socket: member.socket,
+	owner: cluster.owner,
+	template: cluster.template,
+	passwordFile: member.passwordFile,
+	caFile: `${member.tls}/ca.crt`,
+	wrongCaFile: `${member.tls}/wrong-ca.crt`,
+	lease: member.lease
+})
+
+/** Reads `member`'s facts as a client reaches it (PgMember) from the files its description names (describedMember). */
 const memberOf = (
 	life: Life,
 	member: MemberState
@@ -680,24 +724,64 @@ const memberOf = (
 		const step = stepOf(life, `reading its member on port ${member.port}`)
 		const read = (file: string) =>
 			Effect.mapError(fs.readFileString(file), (error) => failed(step, error.message))
-		const caFile = `${member.tls}/ca.crt`
+		const made = describedMember(life.cluster, member)
 		const [password, ca, wrongCa] = yield* Effect.all([
-			read(member.passwordFile),
-			read(caFile),
-			read(`${member.tls}/wrong-ca.crt`)
+			read(made.passwordFile),
+			read(made.caFile),
+			read(made.wrongCaFile)
 		])
 		return {
-			name: `${member.port}`,
-			port: member.port,
-			socket: member.socket,
-			owner: life.cluster.owner,
+			name: made.name,
+			port: made.port,
+			socket: made.socket,
+			owner: made.owner,
 			password: Redacted.make(Str.trim(password)),
-			passwordFile: member.passwordFile,
+			passwordFile: made.passwordFile,
 			ca,
-			caFile,
+			caFile: made.caFile,
 			wrongCa,
-			lease: member.lease
+			lease: made.lease
 		}
+	})
+
+/** No cluster is made on the port a spec reaches: its manifest, which its making writes last, is not there. */
+export class ClusterUnmade extends Schema.TaggedError<
+	ClusterUnmade,
+	{ readonly brand: unique symbol }
+>()("ClusterUnmade", { cluster: Schema.Int, message: Schema.String }) {}
+
+/**
+ * The members of the cluster `cluster` reaches (reachedPort) as its making recorded them, in member order: its manifest
+ * read and agreeing with the spec's owner, template, extensions and durability (disagreements), each member described
+ * as clusterUp's members are (describedMember), with no file read but the manifest and no program run, so it runs
+ * synchronously (Effect.runSync), for a repository's config that builds its connection to a made cluster before any
+ * runtime runs. A cluster not made is ClusterUnmade, naming the command that makes it; a manifest another spec made, or
+ * one that cannot be read, is ClusterFailed. Whether a member runs is not read: a connection to one that does not run
+ * is refused by the server.
+ */
+export const madeMembers = (
+	cluster: LocalCluster
+): Effect.Effect<Arr.NonEmptyReadonlyArray<MadeMember>, ClusterFailed | ClusterUnmade> =>
+	Effect.gen(function* () {
+		const port = yield* reachedPort(cluster)
+		const state = yield* clusterState(port)
+		const recorded = yield* manifestRead(state)
+		if (Option.isNone(recorded)) {
+			return yield* ClusterUnmade.make({
+				cluster: port,
+				message: `no cluster is made on port ${port} (no ${state.manifest}): toolchain-pg start makes it`
+			})
+		}
+		const differences = disagreements(cluster, recorded.value)
+		if (Arr.isReadonlyArrayNonEmpty(differences)) {
+			return yield* failed(
+				{ cluster: port, doing: `reading the cluster at ${state.root}` },
+				`it was made for another spec: ${Arr.join(differences, "; ")}`
+			)
+		}
+		return Arr.map(recorded.value.members, (member) =>
+			describedMember(cluster, state.member(member))
+		)
 	})
 
 /**

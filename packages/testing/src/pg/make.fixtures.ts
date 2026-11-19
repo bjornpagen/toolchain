@@ -1,7 +1,16 @@
-import { Array as Arr, Effect, FileSystem, Option, String as Str } from "effect"
+import {
+	Array as Arr,
+	ConfigProvider,
+	Effect,
+	type Exit,
+	FileSystem,
+	Option,
+	String as Str
+} from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { element, finite } from "#gen.ts"
-import { program, succeeded } from "#pg/server.ts"
+import { type ClusterUnmade, type MadeMember, madeMembers } from "#pg/make.ts"
+import { type ClusterFailed, program, succeeded } from "#pg/server.ts"
 import { localCluster, type LocalCluster } from "#pg/spec.ts"
 import { testWorkers } from "#workers.ts"
 
@@ -223,3 +232,15 @@ export const spawnedBy = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
 		yield* Effect.provideService(effect, ChildProcessSpawner.ChildProcessSpawner, recording)
 		return spawned
 	})
+
+/**
+ * What madeMembers reads of `spec`'s cluster under `environment`, run as a repository's config runs it, synchronously
+ * (Effect.runSyncExit): a reader that waited on anything asynchronous would die here, where its callers run it.
+ */
+export const madeSynchronously = (
+	spec: LocalCluster,
+	environment: ConfigProvider.ConfigProvider
+): Exit.Exit<Arr.NonEmptyReadonlyArray<MadeMember>, ClusterFailed | ClusterUnmade> =>
+	Effect.runSyncExit(
+		Effect.provideService(madeMembers(spec), ConfigProvider.ConfigProvider, environment)
+	)
