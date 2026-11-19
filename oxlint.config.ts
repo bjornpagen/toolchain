@@ -102,7 +102,15 @@ export default defineConfig(
 				files: ["packages/testing/src/witness.fixtures.ts"],
 				rules: active({
 					/** The type tier's refusals: a literal handed where a stream goes is the type error each entry proves. */
-					"testing/no-fixed-seed": "off",
+					"testing/no-fixed-seed": "off"
+				})
+			},
+			{
+				files: [
+					"packages/testing/src/witness.fixtures.ts",
+					"packages/testing/src/resources/cluster.fixtures.ts"
+				],
+				rules: active({
 					/** A type test's refusal is a `@ts-expect-error` that names what it refuses. */
 					"typescript/ban-ts-comment": [
 						"error",

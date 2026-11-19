@@ -27,6 +27,9 @@ class SpecUnloaded extends Schema.TaggedError<SpecUnloaded, { readonly brand: un
 	{ message: Schema.String }
 ) {}
 
+/** Whether a module's default export is a cluster's spec, made by localCluster: an instance of its class. */
+const isLocalCluster = Schema.is(Schema.instanceOf(LocalCluster))
+
 /** The cluster the package at the working directory states: its pg.config.ts's default export, a LocalCluster. */
 const specOf: Effect.Effect<LocalCluster, SpecUnloaded, Path.Path> = Effect.gen(function* () {
 	const paths = yield* Path.Path
@@ -41,7 +44,7 @@ const specOf: Effect.Effect<LocalCluster, SpecUnloaded, Path.Path> = Effect.gen(
 		typeof namespace === "object" && namespace !== null
 			? Reflect.get(namespace, "default")
 			: undefined
-	return spec instanceof LocalCluster
+	return isLocalCluster(spec)
 		? spec
 		: yield* SpecUnloaded.make({
 				message: `${configFile} must export localCluster({ ... }) (@bjornpagen/testing/pg) as its default`

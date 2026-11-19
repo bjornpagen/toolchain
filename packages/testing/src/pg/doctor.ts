@@ -110,9 +110,9 @@ const quickChecks = (
 		Effect.forEach(cluster.sized, ([name, value]) =>
 			Effect.map(asAdmin(reached, [settingOf(name)]), (held): Verdict =>
 				Number(held) >= Number(value)
-					? { name: `${name} holds ${value}, sized for this machine`, kind: "ok" }
+					? { name: `${name} holds ${value}, as the spec sizes it`, kind: "ok" }
 					: {
-							name: `${name} holds ${value}, sized for this machine`,
+							name: `${name} holds ${value}, as the spec sizes it`,
 							kind: "failed",
 							detail: `it is ${held}: toolchain-pg init --adopt sizes it`
 						}
@@ -232,7 +232,7 @@ const memberChecks = (
 
 /**
  * The go/no-go checks of `cluster`, brought up first (make.ts examined): for every member, in member order, that its
- * server is the one that made it; each setting sized for this machine holds at least its size, and each setting every
+ * server is the one that made it; each setting the spec sizes holds at least its size, and each setting every
  * member holds is exactly its value; the owner's attributes and grants; the hba's SCRAM line; that verify-full TLS
  * connects and an unrelated CA, another hostname and plaintext are refused; and, unless `quick`, that a database made
  * from the template carries each of its extensions in its schema, with UTF-8 and the builtin C.UTF-8 locale.

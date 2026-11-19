@@ -7,6 +7,7 @@
 		"packages/testing/src/mutate/hook.ts",
 		"packages/testing/src/mutate/templates.fixtures.ts",
 		"packages/testing/src/pg/cli.ts",
+		"packages/testing/src/resources/cluster.fixtures.ts",
 		"packages/testing/src/runner/cli-entry.ts",
 		"packages/testing/src/runner/loops.fixtures.ts",
 		"packages/testing/src/runner/nested.fixtures.ts",

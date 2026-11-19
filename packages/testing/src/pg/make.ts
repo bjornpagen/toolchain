@@ -204,7 +204,7 @@ const manifestOf = (life: Life): Effect.Effect<Option.Option<Manifest>, ClusterF
 	manifestRead(life.state)
 
 /** The members a run of this machine's width asks of `life`'s cluster (settings.ts membersOf). */
-const familySize = (life: Life): number => membersOf(life.cluster.family, testWorkers)
+const familySize = (life: Life): number => membersOf(life.cluster.sizing, testWorkers)
 
 /**
  * The manifest of `life`'s cluster, refused unless it is one this spec and server made at this machine's width: an
@@ -799,8 +799,8 @@ export const madeMembers = (
 /**
  * Records in `member`'s lease directory the connections its running server admits beside those it reserves
  * (max_connections less superuser_reserved_connections and reserved_connections), read from the server, which every
- * lessee of the member reads (lease.ts leaseOn): what a lease divides is the server's own number, never one the spec or
- * a lessee assumes.
+ * lessee of the member reads (lease.ts leaseSlots): what a lease divides is the server's own number, never one the spec
+ * or a lessee assumes.
  */
 const recordCapacity = (
 	life: Life,

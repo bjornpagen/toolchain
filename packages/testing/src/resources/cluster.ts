@@ -14,7 +14,7 @@ import {
 } from "effect"
 import { reservationOf } from "#pg/lease.ts"
 import { clusterUp, type PgMember, type Platform } from "#pg/make.ts"
-import type { LocalCluster } from "#pg/spec.ts"
+import type { LeasedSizing, LocalCluster } from "#pg/spec.ts"
 import { NeedFailed, RunLease, WorkerIndex } from "#runner/services.ts"
 
 export type { PgMember } from "#pg/make.ts"
@@ -58,7 +58,8 @@ export type DatabaseName = string & Brand.Brand<"DatabaseName">
 /**
  * What a repository states about its cluster, which `PgCluster.layer` turns into the runner service its databases come
  * from: the prefix of every name this library mints there; its local cluster (@bjornpagen/testing/pg's LocalCluster),
- * which the layer makes and starts the first time a need reaches it, whose members a run's workers spread over (the
+ * a leased one (LeasedSizing), since the run leases it for its workers and a cluster sized by its sessions states no
+ * worker's demand to lease by, which the layer makes and starts the first time a need reaches it, whose members a run's workers spread over (the
  * first a worker of index i reaches is member i mod their count), whose template every template built from the cluster
  * itself copies (IS_TEMPLATE, never connected to), and in whose owner's own database this library's sessions and
  * advisory locks live; and how to open a session as the owner on a member in a database, over the repository's own
@@ -66,7 +67,7 @@ export type DatabaseName = string & Brand.Brand<"DatabaseName">
  */
 export type PgClusterSpec = Readonly<{
 	prefix: DatabasePrefix
-	cluster: LocalCluster
+	cluster: LocalCluster<LeasedSizing>
 	connect: (member: PgMember, database: string) => Effect.Effect<PgSession, NeedFailed, Scope.Scope>
 }>
 

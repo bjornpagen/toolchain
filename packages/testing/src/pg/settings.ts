@@ -1,5 +1,5 @@
 import { Array as Arr, String as Str } from "effect"
-import type { Durability, Family, LocalCluster, Sized } from "#pg/spec.ts"
+import type { Durability, LocalCluster, PerWorker, Sized, Sizing } from "#pg/spec.ts"
 
 /**
  * How long a backend runs a statement between two polls of its client's socket, PostgreSQL's
@@ -140,9 +140,14 @@ const ofDurability = (durability: Durability): ReadonlyArray<Setting> =>
 export const fixedSettings = (cluster: LocalCluster): Arr.NonEmptyReadonlyArray<Setting> =>
 	Arr.appendAll(everyMember, ofDurability(cluster.durability))
 
-/** The members a cluster of `family` has among `workers` workers: one, or the workers over a member's share, rounded up. */
-export const membersOf = (family: Family, workers: number): number =>
-	family.kind === "one" ? 1 : Math.ceil(workers / family.workersPerMember)
+/**
+ * The members a cluster sized by `sizing` has among `workers` workers: a leased cluster's family's, one or the workers
+ * over a member's share, rounded up; a cluster sized by its sessions, one, since it serves no worker.
+ */
+export const membersOf = (sizing: Sizing, workers: number): number =>
+	sizing.kind === "sessions" || sizing.family.kind === "one"
+		? 1
+		: Math.ceil(workers / sizing.family.workersPerMember)
 
 /**
  * The workers one member serves at most among `workers` workers on `members` members: the workers over the members,
@@ -151,29 +156,41 @@ export const membersOf = (family: Family, workers: number): number =>
  */
 export const shareOf = (workers: number, members: number): number => Math.ceil(workers / members)
 
-/** A count a member is sized for, over the workers it serves (Sized): none at PostgreSQL's default. */
+/** What a member serving `share` workers holds of a count stated per worker (PerWorker): every worker's and the outside's. */
+const perWorkerCount = (counted: PerWorker, share: number): number =>
+	share * counted.perWorker + counted.outside
+
+/** A count a leased member is sized for, over the workers it serves (Sized): none at PostgreSQL's default. */
 const sizedCount = (sized: Sized, share: number): ReadonlyArray<number> =>
-	sized.kind === "default" ? [] : [share * sized.perWorker + sized.outside]
+	sized.kind === "default" ? [] : [perWorkerCount(sized, share)]
+
+/** max_connections for `count` connections of the member's users, with the slots PostgreSQL reserves at their defaults. */
+const maxConnections = (count: number): Setting => [
+	"max_connections",
+	`${count + superuserReservedConnections + reservedConnections}`
+]
 
 /**
- * The settings that size a member of `cluster` to its share of a full-width run, `share` workers, on a server of
- * `blockSize` bytes a page, each at least what the doctor requires: max_connections, every worker's connections and the
- * outside's, with the slots PostgreSQL reserves at their defaults; max_replication_slots and max_wal_senders, one bound
- * for both, since a live source's leader holds one slot and one walsender; shared_buffers in pages, every page each
- * worker's largest database holds. A count the repository states no evidence for stays PostgreSQL's default, and is
- * none of these.
+ * The settings that size a member of `cluster`, each at least what the doctor requires, on a server of `blockSize`
+ * bytes a page. A leased member is sized to its share of a full-width run, `share` workers: max_connections, every
+ * worker's connections and the outside's; max_replication_slots and max_wal_senders, one bound for both, since a live
+ * source's leader holds one slot and one walsender; shared_buffers in pages, every page each worker's largest database
+ * holds; a count the repository states no evidence for stays PostgreSQL's default, and is none of these. A member sized
+ * by its sessions holds max_connections for them alone, whatever the run's width, and the rest at PostgreSQL's
+ * defaults.
  */
 export const sizedSettings = (
 	cluster: LocalCluster,
 	share: number,
 	blockSize: number
 ): ReadonlyArray<Setting> => {
-	const { connections, replication, sharedBuffers } = cluster.sizing
+	const { sizing } = cluster
+	if (sizing.kind === "sessions") {
+		return [maxConnections(sizing.sessions)]
+	}
+	const { connections, replication, sharedBuffers } = sizing
 	return [
-		...Arr.map(sizedCount(connections, share), (count): Setting => [
-			"max_connections",
-			`${count + superuserReservedConnections + reservedConnections}`
-		]),
+		maxConnections(perWorkerCount(connections, share)),
 		...Arr.flatMap(sizedCount(replication, share), (count): ReadonlyArray<Setting> => [
 			["max_replication_slots", `${count}`],
 			["max_wal_senders", `${count}`]

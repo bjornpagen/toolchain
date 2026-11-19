@@ -1,7 +1,9 @@
 /**
  * A local cluster's life (pg/make.ts): however many processes bring a cluster up at once, one makes it, under its lock,
- * and the rest take what it made, every member of its family on a port of its own and the manifest recording them; what
- * it made passes the doctor's quick checks on every member, TLS, SCRAM and the settings every member holds among them;
+ * and the rest take what it made, every member of its family on a port of its own and the manifest recording them; each
+ * member admits the connections its sizing states beside those its server reserves, a leased member its share of the
+ * run's workers' and the outside's, a member sized by its sessions those sessions whatever the run's width; what it
+ * made passes the doctor's quick checks on every member, TLS, SCRAM and the settings every member holds among them;
  * a second bring-up takes the running cluster as it is, its postmasters the same processes; a spec of another owner on
  * the same port is refused, never taken; and a throwaway cluster is destroyed whole while a kept one's destroy is
  * refused. Each case's cluster is its own: its state under a home of the case's own and its name a port free when the
@@ -20,6 +22,7 @@ import {
 import { assertTrue, deepStrictEqual, strictEqual } from "#assert.ts"
 import { doctor } from "#pg/doctor.ts"
 import {
+	admittedOf,
 	adoptedHoldings,
 	foreignCluster,
 	type Holding,
@@ -27,6 +30,7 @@ import {
 	lives,
 	machineBin,
 	madeSynchronously,
+	membersOfLife,
 	postmasters,
 	spawnedBy,
 	specOf,
@@ -43,16 +47,18 @@ import { property } from "#property.ts"
 type Feature =
 	| "made by one of several at once"
 	| "a family of two members"
+	| "a cluster sized by its sessions"
 	| "a throwaway cluster destroyed"
 	| "a throwaway cluster of an older manifest made again"
 	| "a kept cluster's destroy refused"
 
 export const lifeOfACluster = property.exhaust(lives, {
-	box: "both durabilities, a family of one and of two members, brought up by one to three at once",
+	box: "both durabilities, a leased family of one and of two members and a cluster sized by its sessions, brought up by one to three at once",
 	needs: {},
 	situations: [
 		"made by one of several at once",
 		"a family of two members",
+		"a cluster sized by its sessions",
 		"a throwaway cluster destroyed",
 		"a throwaway cluster of an older manifest made again",
 		"a kept cluster's destroy refused"
@@ -92,7 +98,7 @@ export const lifeOfACluster = property.exhaust(lives, {
 				Schema.decodeEffect(ManifestFile)
 			)
 			const ports = Arr.map(Arr.headNonEmpty(brought), (member) => member.port)
-			strictEqual(ports.length, life.members, "the family has the members its spec asks")
+			strictEqual(ports.length, membersOfLife(life), "the family has the members its spec asks")
 			strictEqual(ports[0], port, "its first member is its name's")
 			strictEqual(new Set(ports).size, ports.length, "each member is on a port of its own")
 			deepStrictEqual(manifest.members, ports, "the manifest records the members in member order")
@@ -136,6 +142,24 @@ export const lifeOfACluster = property.exhaust(lives, {
 					`member ${member} passes the doctor's quick checks`
 				)
 			})
+			const bin = yield* machineBin
+			const state = yield* inCase(clusterState(spec.port))
+			const admitted = yield* Effect.forEach(ports, (member) =>
+				adminSql(
+					bin,
+					state.member(member),
+					"postgres",
+					[
+						"SELECT pg_catalog.current_setting('max_connections')::int4 - pg_catalog.current_setting('superuser_reserved_connections')::int4 - pg_catalog.current_setting('reserved_connections')::int4"
+					],
+					{ cluster: port, doing: "reading the connections a member admits" }
+				)
+			)
+			deepStrictEqual(
+				admitted,
+				Arr.map(ports, () => [`${admittedOf(life)}`]),
+				`every member admits the connections its sizing states (${life.sizedBy.kind})`
+			)
 			const before = yield* postmasters(root, ports)
 			const spawned = yield* clusterUp(spec).pipe(inCase, spawnedBy)
 			const after = yield* postmasters(root, ports)
@@ -205,13 +229,16 @@ export const lifeOfACluster = property.exhaust(lives, {
 			if (life.atOnce > 1) {
 				c.note("made by one of several at once")
 			}
-			if (life.members === 2) {
+			if (life.sizedBy.kind === "leased" && life.sizedBy.members === 2) {
 				c.note("a family of two members")
+			}
+			if (life.sizedBy.kind === "sessions") {
+				c.note("a cluster sized by its sessions")
 			}
 		}).pipe(Effect.scoped),
 	oracle: {
 		kind: "specification",
-		name: "a cluster brought up at once is made once and passes the doctor, is taken as it is when it runs, refuses another spec, and is destroyed only when throwaway"
+		name: "a cluster brought up at once is made once, admits the connections its sizing states and passes the doctor, is taken as it is when it runs, refuses another spec, and is destroyed only when throwaway"
 	},
 	kept: [],
 	kills: [
@@ -272,6 +299,18 @@ export const lifeOfACluster = property.exhaust(lives, {
 			why: "init --force and destroy read the whole manifest to tell whose cluster it is, so a throwaway cluster whose manifest predates a field (its owner's parameters) is refused, never made again: the documented migration cannot run; the property fails."
 		},
 		{
+			file: "packages/testing/src/pg/settings.ts",
+			original: "		return [maxConnections(sizing.sessions)]\n",
+			replacement: "		return [maxConnections(share * sizing.sessions)]\n",
+			why: "A cluster sized by its sessions is read as though each were a worker's, its sessions times the run's share, so a development cluster's max_connections grows with the machine's width; the property fails."
+		},
+		{
+			file: "packages/testing/src/pg/settings.ts",
+			original: "		maxConnections(perWorkerCount(connections, share)),\n",
+			replacement: "		maxConnections(perWorkerCount(connections, 1)),\n",
+			why: "A leased member is sized for one worker whatever its share of the run's, so its lease admits one worker and the run's others wait; the property fails."
+		},
+		{
 			file: "packages/testing/src/pg/make.ts",
 			original: "takenRunning(life),",
 			replacement: "Effect.succeedNone,",
@@ -297,7 +336,11 @@ export const adoptingACluster = property.exhaust(holdings, {
 			const home = yield* fs.makeTempDirectoryScoped({ prefix: "tpg-" })
 			const port = yield* freePort([])
 			const foreignPort = yield* freePort([port])
-			const spec = specOf({ durability: "kept", members: 1, atOnce: 1 }, port, "adopted_owner")
+			const spec = specOf(
+				{ durability: "kept", sizedBy: { kind: "leased", members: 1 }, atOnce: 1 },
+				port,
+				"adopted_owner"
+			)
 			const root = `${home}/.local/var/toolchain-pg/${port}`
 			const data = `${home}/foreign`
 			yield* Effect.addFinalizer(() => stopEvery(root))

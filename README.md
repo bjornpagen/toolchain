@@ -14,6 +14,27 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: a cluster is leased or sized by its sessions (2026-11-19)
+
+A cluster's `sizing` says who holds its connections, as a union: `leased`, a test cluster a run's workers lease, its
+family and every count sized per worker as before; or `sessions`, a cluster nothing leases (a development cluster
+`pnpm dev` and its tools reach), one member whose max_connections is the sessions its known users hold at most at once,
+the rest at PostgreSQL's defaults. `LocalCluster` is generic over the arm, and `PgCluster.layer` takes a
+`LocalCluster<LeasedSizing>`, so handing a runner's layer a cluster sized by its sessions is a type error, never a
+lease divided by a demand nobody stated. The family moves into the leased arm, since a cluster with no workers spreads
+none. Before you move `vendor/toolchain` past this section:
+
+1. **A test cluster's pg.config.ts.** `family: F, sizing: { connections: { kind: "perWorker", perWorker, outside },
+   replication, sharedBuffers }` becomes `sizing: { kind: "leased", family: F, connections: { perWorker, outside },
+   replication, sharedBuffers }`: the leased arm's connections are always per worker, so they carry no `kind`;
+   `replication` keeps its `{ kind: "default" }` or `{ kind: "perWorker", perWorker, outside }`.
+2. **A development cluster** (kept, reached by an application, never by a runner's layer) states
+   `sizing: { kind: "sessions", sessions }`, its `sessions` derived from its known users' own numbers, each stated in
+   the repository's code beside the user it bounds: the application's pool maximum where the pool is made (never a
+   driver's unstated default), plus one each for a doctor and an operator's psql. Then `toolchain-pg init --adopt` sizes
+   its member.
+3. **Code that read `cluster.family`** reads `cluster.sizing.family` of a leased cluster.
+
 ## Consumer migration: a run leases its cluster (2026-11-19)
 
 A run takes its share of a local cluster's capacity before any of its workers opens a connection there, so runs of

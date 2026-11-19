@@ -37,50 +37,64 @@ export type TemplateExtension = Readonly<{ name: string; schema: string }>
 export type Durability = "throwaway" | "kept"
 
 /**
- * How many members a cluster has, each a postmaster of its own on a port of its own, its workers spread over them:
- * `one`, a single member serving every worker of a run; or `spread`, as many members as a run's workers (one a core,
- * testing's testWorkers) over the workers one member serves at once, rounded up, for a repository whose measurement
- * shows a member's shared costs (SSI's LWLocks, the checkpointer) grow with the workers on it. `workersPerMember` is
- * the repository's measured number, never this library's.
+ * How many members a leased cluster has, each a postmaster of its own on a port of its own, its workers spread over
+ * them: `one`, a single member serving every worker of a run; or `spread`, as many members as a run's workers (one a
+ * core, testing's testWorkers) over the workers one member serves at once, rounded up, for a repository whose
+ * measurement shows a member's shared costs (SSI's LWLocks, the checkpointer) grow with the workers on it.
+ * `workersPerMember` is the repository's measured number, never this library's.
  */
 export type Family =
 	| Readonly<{ kind: "one" }>
 	| Readonly<{ kind: "spread"; workersPerMember: number }>
 
 /**
- * A count a member is sized for: PostgreSQL's own default, for a repository that has no evidence of what a full run
- * of its needs; or what each worker the member serves holds at most, `perWorker`, and what is held outside any worker,
- * `outside` (a global setup, a doctor, an operator's psql), each the repository's number with its evidence beside its
- * spec. A member holds the sum over the workers it serves and the outside.
+ * What each worker a member serves holds at most, `perWorker`, and what is held outside any worker, `outside` (a
+ * global setup, a doctor, an operator's psql), each the repository's number with its evidence beside its spec. A
+ * member holds the sum over the workers it serves and the outside.
  */
-export type Sized = Readonly<{ kind: "default" }> | PerWorker
+export type PerWorker = Readonly<{ perWorker: number; outside: number }>
 
 /**
- * What each worker a member serves holds at most, `perWorker`, and what is held outside any worker, `outside`, each the
- * repository's number with its evidence beside its spec: a member's connections are always sized so, since its lease
- * divides the member's capacity by what a lessee holds (lease.ts leaseOn), and a demand never stated could not be
- * divided.
+ * A count a leased member is sized for: PostgreSQL's own default, for a repository that has no evidence of what a full
+ * run of its needs; or what each worker the member serves holds at most and what is held outside any worker
+ * (PerWorker).
  */
-export type PerWorker = Readonly<{ kind: "perWorker"; perWorker: number; outside: number }>
+export type Sized = Readonly<{ kind: "default" }> | (Readonly<{ kind: "perWorker" }> & PerWorker)
 
 /**
- * The shared buffers a member is sized for: PostgreSQL's own default, or every page each worker the member serves
- * reads held at once, `bytes` being the largest database one worker works in.
+ * The shared buffers a leased member is sized for: PostgreSQL's own default, or every page each worker the member
+ * serves reads held at once, `bytes` being the largest database one worker works in.
  */
 export type SizedBuffers =
 	| Readonly<{ kind: "default" }>
 	| Readonly<{ kind: "perWorker"; bytes: number }>
 
 /**
- * What a member is sized for, a full-width run of the repository's needs: its connections (max_connections, the
- * superuser's and reserved slots added), its replication (max_replication_slots and max_wal_senders, each a live
- * source's slot and walsender), and its shared buffers.
+ * A cluster a run's workers lease (resources/cluster.ts PgCluster.layer, lease.ts), sized for a full-width run of the
+ * repository's needs: its family, the members its workers spread over; its connections (max_connections, the
+ * superuser's and reserved slots added), always per worker, since its lease divides a member's capacity by what a
+ * worker holds (lease.ts leaseSlots) and a demand never stated could not be divided; its replication
+ * (max_replication_slots and max_wal_senders, each a live source's slot and walsender); and its shared buffers.
  */
-export type Sizing = Readonly<{
+export type LeasedSizing = Readonly<{
+	kind: "leased"
+	family: Family
 	connections: PerWorker
 	replication: Sized
 	sharedBuffers: SizedBuffers
 }>
+
+/**
+ * A cluster nothing leases (a development cluster that `pnpm dev` and its tools reach, never a runner's layer): one
+ * member, its max_connections the sessions its known users hold at most at once (an application's pool, a doctor, an
+ * operator's psql), the superuser's and reserved slots added, each user's number stated in the repository's own code
+ * beside the user it bounds; its replication and shared buffers at PostgreSQL's defaults. It has no workers, so
+ * nothing of it is sized per worker.
+ */
+export type SessionsSizing = Readonly<{ kind: "sessions"; sessions: number }>
+
+/** How a cluster is sized: for the run's workers that lease it (LeasedSizing), or for its known users' sessions. */
+export type Sizing = LeasedSizing | SessionsSizing
 
 /**
  * A repository's local PostgreSQL cluster, as it states it once: its name (the port), the server that runs it, the
@@ -90,12 +104,13 @@ export type Sizing = Readonly<{
  * (`ownerParameters`, each granted as `GRANT SET ON PARAMETER`: grizzle's installation sets deadlock_timeout and
  * session_replication_role), the roles this user signs in as over a member's Unix socket by peer authentication
  * beside the bootstrap superuser (`peerLogins`: an application's login, whose local sign-in then needs no secret),
- * its durability, its family and its sizing. Everything else of the cluster (TLS, SCRAM,
+ * its durability and its sizing (`S`: leased by a run's workers or sized by its sessions, so only a leased cluster is
+ * handed to a runner's layer). Everything else of the cluster (TLS, SCRAM,
  * the settings every member holds, its state directory) is the same for every repository (make.ts), and the
  * cluster's facts a client reaches it by are its members' (PgMember). `toolchain-pg` reads it as the default export
  * of the package's pg.config.ts; its class is how the command tells it from any other default export.
  */
-export class LocalCluster {
+export class LocalCluster<S extends Sizing = Sizing> {
 	readonly port: ClusterPort
 	readonly bin: ServerBin
 	readonly owner: string
@@ -104,10 +119,9 @@ export class LocalCluster {
 	readonly ownerParameters: ReadonlyArray<string>
 	readonly peerLogins: ReadonlyArray<string>
 	readonly durability: Durability
-	readonly family: Family
-	readonly sizing: Sizing
+	readonly sizing: S
 
-	constructor(fields: LocalClusterFields) {
+	constructor(fields: LocalClusterFields<S>) {
 		this.port = ClusterPort(fields.port)
 		this.bin = fields.bin
 		this.owner = fields.owner
@@ -116,13 +130,12 @@ export class LocalCluster {
 		this.ownerParameters = fields.ownerParameters
 		this.peerLogins = fields.peerLogins
 		this.durability = fields.durability
-		this.family = fields.family
 		this.sizing = fields.sizing
 	}
 }
 
 /** What a repository writes of its cluster (LocalCluster), its port as a plain number. */
-export type LocalClusterFields = Readonly<{
+export type LocalClusterFields<S extends Sizing = Sizing> = Readonly<{
 	port: number
 	bin: ServerBin
 	owner: string
@@ -131,9 +144,9 @@ export type LocalClusterFields = Readonly<{
 	ownerParameters: ReadonlyArray<string>
 	peerLogins: ReadonlyArray<string>
 	durability: Durability
-	family: Family
-	sizing: Sizing
+	sizing: S
 }>
 
 /** A repository's cluster: `export default localCluster({ ... })` in its pg.config.ts. A port that is none fails. */
-export const localCluster = (fields: LocalClusterFields): LocalCluster => new LocalCluster(fields)
+export const localCluster = <S extends Sizing>(fields: LocalClusterFields<S>): LocalCluster<S> =>
+	new LocalCluster(fields)

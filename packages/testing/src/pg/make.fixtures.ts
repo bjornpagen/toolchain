@@ -16,19 +16,53 @@ import { testWorkers } from "#workers.ts"
 
 /** What the lifecycle property (make.test.ts) draws, and the helpers its check runs. */
 
-/** A case's cluster: its durability, its family, and how many bring it up at once. */
+/** How a case's cluster is sized: leased by a run's workers over a family of one or two members, or by its sessions. */
+export type SizedBy = Readonly<{ kind: "leased"; members: 1 | 2 }> | Readonly<{ kind: "sessions" }>
+
+/** Every sizing a case's cluster takes: a leased family of one and of two, and a cluster sized by its sessions. */
+const sizings: Arr.NonEmptyReadonlyArray<SizedBy> = [
+	{ kind: "leased", members: 1 },
+	{ kind: "leased", members: 2 },
+	{ kind: "sessions" }
+]
+
+/** A case's cluster: its durability, how it is sized, and how many bring it up at once. */
 export type Life = Readonly<{
 	durability: "throwaway" | "kept"
-	members: 1 | 2
+	sizedBy: SizedBy
 	atOnce: 1 | 2 | 3
 }>
 
-/** Every case: both durabilities, a family of one and of two, brought up by one to three at once. */
+/** Every case: both durabilities, every sizing, brought up by one to three at once. */
 export const lives = finite((source): Life => ({
 	durability: source.draw(element(["throwaway", "kept"] as const)),
-	members: source.draw(element([1, 2] as const)),
+	sizedBy: source.draw(element(sizings)),
 	atOnce: source.draw(element([1, 2, 3] as const))
 }))
+
+/** The members a case's cluster has: its leased family's, or one sized by its sessions. */
+export const membersOfLife = (life: Life): number =>
+	life.sizedBy.kind === "leased" ? life.sizedBy.members : 1
+
+/**
+ * What one worker of a case's leased cluster holds at most, and what is held outside any worker, as the testing
+ * package's own cluster states them (pg.config.ts: two a worker, three outside).
+ */
+const casePerWorker = { perWorker: 2, outside: 3 } as const
+
+/** The sessions a case's cluster sized by its sessions is stated to hold: a case's own number. */
+const caseSessions = 5
+
+/**
+ * The connections each member of a case's cluster admits beside those its server reserves, as its sizing states them:
+ * a leased member's share of the machine's workers (its family's members serving them all, the share rounded up) at
+ * casePerWorker's each, and the outside's; a member sized by its sessions, caseSessions, whatever the machine's width.
+ */
+export const admittedOf = (life: Life): number =>
+	life.sizedBy.kind === "sessions"
+		? caseSessions
+		: Math.ceil(testWorkers / life.sizedBy.members) * casePerWorker.perWorker +
+			casePerWorker.outside
 
 /**
  * Stops every postmaster a case's cluster left under `root` at once, whatever its making reached: what a case's scope
@@ -63,8 +97,8 @@ export const stopEvery = (root: string) =>
 
 /**
  * The spec of a case's cluster on `port`, owned by `owner`, at PostgreSQL's default sizes but its connections, sized as
- * the testing package's own cluster is (two a worker, three outside), its owner granted SET on two parameters only a
- * superuser may set by default, as grizzle's is.
+ * the testing package's own cluster is (casePerWorker) when it is leased and for caseSessions when it is sized by its
+ * sessions, its owner granted SET on two parameters only a superuser may set by default, as grizzle's is.
  */
 export const specOf = (life: Life, port: number, owner: string): LocalCluster =>
 	localCluster({
@@ -76,15 +110,19 @@ export const specOf = (life: Life, port: number, owner: string): LocalCluster =>
 		ownerParameters: ["deadlock_timeout", "session_replication_role"],
 		peerLogins: [],
 		durability: life.durability,
-		family:
-			life.members === 1
-				? { kind: "one" }
-				: { kind: "spread", workersPerMember: Math.ceil(testWorkers / 2) },
-		sizing: {
-			connections: { kind: "perWorker", perWorker: 2, outside: 3 },
-			replication: { kind: "default" },
-			sharedBuffers: { kind: "default" }
-		}
+		sizing:
+			life.sizedBy.kind === "sessions"
+				? { kind: "sessions", sessions: caseSessions }
+				: {
+						kind: "leased",
+						family:
+							life.sizedBy.members === 1
+								? { kind: "one" }
+								: { kind: "spread", workersPerMember: Math.ceil(testWorkers / 2) },
+						connections: casePerWorker,
+						replication: { kind: "default" },
+						sharedBuffers: { kind: "default" }
+					}
 	})
 
 /** The postmaster's process of each member, from its data directory's lock file's first line. */
