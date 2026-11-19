@@ -24,7 +24,12 @@ import { array, boolean, finite, int } from "#gen.ts"
 import { liveSleep } from "#live.ts"
 import { property } from "#property.ts"
 import { PgCluster, run as runIn, single } from "#resources/cluster.ts"
-import { collect } from "#resources/collect.ts"
+import {
+	type CollectionPhase,
+	collect,
+	collectMemberBy,
+	collectionPhases
+} from "#resources/collect.ts"
 import { Database } from "#resources/database.ts"
 import {
 	countedConnections,
@@ -560,8 +565,8 @@ export const inUseKept = property.exhaust(
 			{
 				file: "packages/testing/src/resources/collect.ts",
 				original:
-					"\t\t\t\t\t\t\t\t!(yield* free(digest)) ||\n\t\t\t\t\t\t\t\t!(yield* unused(digest))",
-				replacement: "\t\t\t\t\t\t\t\t!(yield* free(digest))",
+					'\t\t\t\t\t\t!(yield* took(collector, lockKey("$1"), digest)) ||\n\t\t\t\t\t\t!(yield* took(collector, useKey("$1"), digest))',
+				replacement: '\t\t\t\t\t\t!(yield* took(collector, lockKey("$1"), digest))',
 				why: "Collection drops a template whatever worker holds it in use; this property fails."
 			},
 			{
@@ -569,6 +574,97 @@ export const inUseKept = property.exhaust(
 				original: "\t\t\tonSome: (origin) => holdInUse(owner, origin)",
 				replacement: "\t\t\tonSome: () => Effect.void",
 				why: "An opener holds its template in use but not the origin it was built from, which another run's collection then drops under a live worker; this property fails."
+			}
+		]
+	}
+)
+
+export const cloneOutlivesNoTemplate = property.exhaust(
+	finite((source) => source.draw(int(0, collectionPhases.length))),
+	{
+		box: "where among a collection's phases the worker that cloned a template ends, its clone left behind",
+		needs: { services },
+		situations: [
+			"the opener ends before the collection",
+			"the opener ends between its phases",
+			"the opener ends after it"
+		],
+		check:
+			({ services: context }, c) =>
+			(at) =>
+				Effect.gen(function* () {
+					c.note(
+						at === 0
+							? "the opener ends before the collection"
+							: at === collectionPhases.length
+								? "the opener ends after it"
+								: "the opener ends between its phases"
+					)
+					const ctx = yield* context
+					const runner = Context.make(ModuleClosure, Context.get(ctx, ModuleClosure)).pipe(
+						Context.add(WorkerIndex, Context.get(ctx, WorkerIndex))
+					)
+					const outcome = yield* Effect.scoped(
+						Effect.gen(function* () {
+							const cluster = Context.get(ctx, PgCluster)
+							const member = yield* Effect.map(cluster.members, Arr.headNonEmpty)
+							const prefixToken = yield* Effect.scoped(
+								Effect.flatMap(cluster.connect(member, cluster.maintenance), (session) =>
+									Effect.flatMap(
+										single(
+											session,
+											"SELECT pg_catalog.substr(pg_catalog.md5(pg_catalog.gen_random_uuid()::text), 1, 12)",
+											[]
+										),
+										(drawn) => Effect.fromOption(Option.fromNullishOr(drawn))
+									)
+								)
+							)
+							const prefix = `tcs${prefixToken}_`
+							const template = tokenTemplate(prefix, () => Effect.void)
+							const opener = yield* Scope.make()
+							const openers = yield* Scope.provide(Layer.build(ownCluster(prefix)), opener)
+							const clone = yield* Effect.provideContext(
+								Effect.flatMap(template.open, (opened) => opened.clone),
+								Context.merge(openers, runner)
+							)
+							const ending: CollectionPhase = () => Effect.as(Scope.close(opener, Exit.void), [])
+							const collecting = yield* Layer.build(ownCluster(prefix))
+							const collector = Context.merge(collecting, runner)
+							const present = Effect.provideContext(
+								Effect.all({
+									template: exists({ member: clone.member, name: clone.template }),
+									clone: exists(clone)
+								}),
+								collector
+							)
+							yield* Effect.provideContext(
+								collectMemberBy([
+									...Arr.take(collectionPhases, at),
+									ending,
+									...Arr.drop(collectionPhases, at)
+								])(clone.member, new Set()),
+								collector
+							)
+							const after = yield* present
+							yield* Effect.provideContext(collect([]), collector)
+							return { after, left: yield* present }
+						})
+					)
+					assertTrue(outcome.after.template || !outcome.after.clone)
+					deepStrictEqual(outcome.left, { template: false, clone: false })
+				}),
+		oracle: {
+			kind: "specification",
+			name: "a collection never leaves a clone of a template it drops, whenever the worker that cloned it ends, and the next drops both"
+		},
+		kept: [],
+		kills: [
+			{
+				file: "packages/testing/src/resources/collect.ts",
+				original: "\ttemplatesCollected,\n\tclonesCollected\n]",
+				replacement: "\tclonesCollected,\n\ttemplatesCollected\n]",
+				why: "Collection drops clones before templates, as before: a worker that ends between the steps keeps its clone (its owner lock held at the clone step) and loses its template (its use key free at the template step), and the next build of the template meets its former build's roles still owned in that clone (grizzle's forms#seated: 2BP01); this property fails."
 			}
 		]
 	}
