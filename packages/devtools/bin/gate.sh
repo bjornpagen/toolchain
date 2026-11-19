@@ -266,6 +266,12 @@ case $mode in
 		[ -z "$failed" ] || die "failed:$failed"
 		;;
 	push)
+		# Its arguments are git's pre-push arguments, which lefthook passes on: the remote's name (its URL when the push
+		# names none) and its URL; by hand, none. Anything else is refused, since this mode checks what the push sends,
+		# whatever it is given: a lane that ran the pre-push script as `run index …` was checking HEAD, not the index.
+		if [ "$#" -ne 0 ] && { [ "$#" -ne 2 ] || { [ "$1" != "$2" ] && ! git remote get-url -- "$1" >/dev/null 2>&1; }; }; then
+			die "push takes git's pre-push arguments (a remote and its URL) or none; to check the index or a commit, run toolchain-gate run <index|commit> <command>"
+		fi
 		# Each line names a ref the push updates, the commit it sends and the commit the remote held; a commit of zeros
 		# sends nothing to check (a deletion). What the remote held is what `toolchain-test affected` counts changes
 		# against: the empty tree when the ref is new or the remote's commit is not here. With no lines at all (run by

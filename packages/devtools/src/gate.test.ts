@@ -20,7 +20,7 @@ import { Checkout } from "@bjornpagen/testing/checkout"
 import { finite } from "@bjornpagen/testing/gen"
 import { property } from "@bjornpagen/testing/property"
 import { Scratch } from "@bjornpagen/testing/resources"
-import { Array as Arr, Effect, Order } from "effect"
+import { Array as Arr, Effect, Order, String as Str } from "effect"
 import {
 	alternatesOf,
 	befell,
@@ -46,7 +46,11 @@ import {
 	objectsOf,
 	newCommit,
 	onlyKey,
+	pushCallFeatures,
+	pushCalls,
+	pushedAs,
 	pushLock,
+	REFUSED_CALL,
 	registered,
 	sandboxOf,
 	sharingFeatures,
@@ -54,6 +58,7 @@ import {
 	slotted,
 	spelledClones,
 	stampsBefore,
+	takesCall,
 	submoduleClones,
 	treeOf,
 	versionFile,
@@ -358,6 +363,53 @@ export const collectedSnapshots = property.exhaust(finite(collectings), {
 			original: 'if [ -d "$clone" ] && [ "$(key_of "$clone")" = "$(basename -- "$dir")" ]; then',
 			replacement: 'if [ -d "$clone" ]; then',
 			why: "A listed clone re-pointed at another repository still keeps its old key directory alive; the collection property fails."
+		}
+	]
+})
+
+export const pushCall = property.exhaust(finite(pushCalls), {
+	box: "a push-mode run called by hand, as git calls the pre-push hook, or as a lane mistook the pre-push script for the gate",
+	needs: { dir: Scratch.dir, checkout: Checkout.dir, lockfile: workspaceLockfile },
+	situations: [
+		"a run by hand with no arguments is taken",
+		"git's call by a remote's name is taken",
+		"git's call by a URL is taken",
+		"a lane's run index with a command is refused",
+		"a lane's run index alone, two arguments as git's are, is refused"
+	],
+	check:
+		({ dir, checkout, lockfile }, c) =>
+		(call) =>
+			Effect.gen(function* () {
+				c.noteAll(pushCallFeatures(call))
+				const scratch = yield* dir
+				const gateCheckout = yield* checkout
+				const workspace = yield* lockfile
+				const sandbox = sandboxOf(scratch, gateCheckout, workspace)
+				const { origin, clones } = yield* clonedRepository(sandbox, 1)
+				const done = yield* pushedAs(sandbox, Arr.headNonEmpty(clones), origin, call)
+				const refused = done.status === 2 && Str.includes(REFUSED_CALL)(done.stderr)
+				deepStrictEqual(refused, !takesCall(call))
+			}),
+	oracle: {
+		kind: "specification",
+		name: "the push mode takes git's pre-push arguments, a remote and its URL or a URL twice, or none, and refuses any other call, which it would otherwise ignore and check HEAD"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/devtools/bin/gate.sh",
+			original:
+				'if [ "$#" -ne 0 ] && { [ "$#" -ne 2 ] || { [ "$1" != "$2" ] && ! git remote get-url -- "$1" >/dev/null 2>&1; }; }; then',
+			replacement: "if false; then",
+			why: "The push mode takes any call, so a lane's `run index pnpm check` through the pre-push script checks HEAD and passes on an index it never read (COPYDIFF's lint red); the push-call property fails."
+		},
+		{
+			file: "packages/devtools/bin/gate.sh",
+			original:
+				'if [ "$#" -ne 0 ] && { [ "$#" -ne 2 ] || { [ "$1" != "$2" ] && ! git remote get-url -- "$1" >/dev/null 2>&1; }; }; then',
+			replacement: 'if [ "$#" -ne 0 ] && [ "$#" -ne 2 ]; then',
+			why: "The push mode takes any two arguments as git's, so a lane's `run index` checks HEAD; the push-call property fails."
 		}
 	]
 })

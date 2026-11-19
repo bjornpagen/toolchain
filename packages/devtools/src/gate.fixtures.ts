@@ -1122,3 +1122,86 @@ export const claimedBy = Effect.fn("claimedBy")(function* (sandbox: Sandbox, clo
 	)
 	return { seen: seenOf(stdout), snapshot: Arr.join(names, " ") }
 })
+
+/** How a push-mode run of the gate is called: by hand with nothing, as git calls the pre-push hook (the remote's name
+ * and its URL, or a URL twice when the push names no remote), or as a lane mistook the pre-push script for the gate. */
+export type PushCall =
+	| "by hand"
+	| "git, by remote"
+	| "git, by URL"
+	| "run index pnpm check"
+	| "run index"
+
+const PUSH_CALLS = [
+	"by hand",
+	"git, by remote",
+	"git, by URL",
+	"run index pnpm check",
+	"run index"
+] as const
+
+/** Every way a push-mode run is called: five. */
+export const pushCalls: Gen<PushCall> = (source) => source.draw(element(PUSH_CALLS))
+
+/** Whether the gate takes a call, by its contract: git's arguments or none. */
+export const takesCall = (call: PushCall): boolean => {
+	switch (call) {
+		case "by hand":
+		case "git, by remote":
+		case "git, by URL":
+			return true
+		case "run index pnpm check":
+		case "run index":
+			return false
+	}
+}
+
+/** The situation a call is in. */
+export type PushCallFeature =
+	| "a run by hand with no arguments is taken"
+	| "git's call by a remote's name is taken"
+	| "git's call by a URL is taken"
+	| "a lane's run index with a command is refused"
+	| "a lane's run index alone, two arguments as git's are, is refused"
+
+const PUSH_CALL_FEATURES: Readonly<Record<PushCall, PushCallFeature>> = {
+	"by hand": "a run by hand with no arguments is taken",
+	"git, by remote": "git's call by a remote's name is taken",
+	"git, by URL": "git's call by a URL is taken",
+	"run index pnpm check": "a lane's run index with a command is refused",
+	"run index": "a lane's run index alone, two arguments as git's are, is refused"
+}
+
+/** The situations a call is in. */
+export const pushCallFeatures = (call: PushCall): ReadonlyArray<PushCallFeature> => [
+	PUSH_CALL_FEATURES[call]
+]
+
+/** The arguments of a call, in a clone of `origin`. */
+const argumentsOf = (call: PushCall, origin: string): ReadonlyArray<string> => {
+	switch (call) {
+		case "by hand":
+			return []
+		case "git, by remote":
+			return ["origin", origin]
+		case "git, by URL":
+			return [origin, origin]
+		case "run index pnpm check":
+			return ["run", "index", "pnpm", "check"]
+		case "run index":
+			return ["run", "index"]
+	}
+}
+
+/** What the gate says when it refuses a push-mode call. */
+export const REFUSED_CALL = "push takes git's pre-push arguments"
+
+/** A push-mode run of the gate in a clone of `origin`, called as `call`, with no pre-push lines: its status and output. */
+export const pushedAs = Effect.fn("pushedAs")(function* (
+	sandbox: Sandbox,
+	clone: string,
+	origin: string,
+	call: PushCall
+) {
+	return yield* ran(sandbox, clone, "sh", [sandbox.gate, "push", ...argumentsOf(call, origin)])
+})
