@@ -385,10 +385,10 @@ export const clonesListed = Effect.fn("clonesListed")(function* (sandbox: Sandbo
 	return Arr.filter(Str.split("\n")(text), Str.isNonEmpty)
 })
 
-/** The objects directory a key directory's push snapshot borrows (its alternates). */
+/** The objects directory a key directory's first push snapshot borrows (its alternates): runs one at a time claim it. */
 export const alternatesOf = Effect.fn("alternatesOf")(function* (sandbox: Sandbox, key: string) {
 	const fs = yield* FileSystem.FileSystem
-	const text = yield* fs.readFileString(`${sandbox.root}/${key}/push.git/objects/info/alternates`)
+	const text = yield* fs.readFileString(`${sandbox.root}/${key}/push.0.git/objects/info/alternates`)
 	return Str.trim(text)
 })
 
@@ -420,26 +420,42 @@ export const clonedRepository = Effect.fn("clonedRepository")(function* (
 	return { origin, clones }
 })
 
+/** How a clone's origin remote URL is written: as it was cloned, or with a trailing .git or /, each the same repository. */
+export type Spelling = "as cloned" | "with .git" | "with /"
+
+const SPELLINGS = ["as cloned", "with .git", "with /"] as const
+
+/** What each spelling adds to the URL a clone was cloned from. */
+const SUFFIXES: Readonly<Record<Spelling, string>> = {
+	"as cloned": "",
+	"with .git": ".git",
+	"with /": "/"
+}
+
 /**
- * Clones of one repository and the gate's runs in them, in order: each run names the clone it runs in, by its place
- * among the clones, and whether its command leaves a stamp under node_modules, which .gitignore names.
+ * Clones of one repository and the gate's runs in them, in order: how every clone but the first writes its origin
+ * remote URL, and for each run the clone it runs in, by its place among the clones, and whether its command leaves a
+ * stamp under node_modules, which .gitignore names.
  */
 export type Sharing = Readonly<{
 	clones: number
+	spelling: Spelling
 	runs: Arr.NonEmptyReadonlyArray<Readonly<{ clone: number; stamps: boolean }>>
 }>
 
 /**
  * Every way three runs fall among up to three clones, each clone named by the run that first uses it (the first run
- * in c0, a new clone the next of c1, c2), each run leaving a stamp: five layouts, the smallest that reach every
- * situation (a second clone's first run after a first's stamp, a clone again after another, three clones on one
- * snapshot).
+ * in c0, a new clone the next of c1, c2), each run leaving a stamp, and every clone after the first writing its origin
+ * each way: thirteen layouts, the smallest that reach every situation (a second clone's first run after a first's
+ * stamp, a clone again after another, three clones on one snapshot, a clone whose origin ends in .git or /).
  */
 export const sharings: Gen<Sharing> = (source) => {
 	const second = source.draw(int(0, 1))
 	const third = source.draw(int(0, second + 1))
+	const clones = Math.max(second, third) + 1
 	return {
-		clones: Math.max(second, third) + 1,
+		clones,
+		spelling: clones > 1 ? source.draw(element(SPELLINGS)) : "as cloned",
 		runs: [
 			{ clone: 0, stamps: true },
 			{ clone: second, stamps: true },
@@ -453,6 +469,15 @@ export type SharingFeature =
 	| "a second clone's first run finds what a first run left under .gitignore"
 	| "a clone runs again after another clone's run"
 	| "three clones share one snapshot"
+	| "a clone whose origin URL ends in .git shares the snapshot"
+	| "a clone whose origin URL ends in / shares the snapshot"
+
+/** The situation a clone after the first is in, by how it writes its origin. */
+const SPELLING_FEATURES: Readonly<Record<Spelling, ReadonlyArray<SharingFeature>>> = {
+	"as cloned": [],
+	"with .git": ["a clone whose origin URL ends in .git shares the snapshot"],
+	"with /": ["a clone whose origin URL ends in / shares the snapshot"]
+}
 
 /** The situations each run of a Sharing is in. */
 export const sharingFeatures = (sharing: Sharing): ReadonlyArray<SharingFeature> => [
@@ -470,8 +495,29 @@ export const sharingFeatures = (sharing: Sharing): ReadonlyArray<SharingFeature>
 	}),
 	...(Arr.dedupe(Arr.map(sharing.runs, (run) => run.clone)).length === 3
 		? ["three clones share one snapshot" as const]
-		: [])
+		: []),
+	...(sharing.clones > 1 ? SPELLING_FEATURES[sharing.spelling] : [])
 ]
+
+/** The repository of a Sharing and its clones, every clone after the first writing its origin as the Sharing spells it. */
+export const spelledClones = Effect.fn("spelledClones")(function* (
+	sandbox: Sandbox,
+	sharing: Sharing
+) {
+	const made = yield* clonedRepository(sandbox, sharing.clones)
+	yield* Effect.forEach(Arr.drop(made.clones, 1), (clone) =>
+		sh(
+			sandbox,
+			clone,
+			"git",
+			"remote",
+			"set-url",
+			"origin",
+			`${made.origin}${SUFFIXES[sharing.spelling]}`
+		)
+	)
+	return made
+})
 
 /** The stamps the runs before the one at `index` left under node_modules, in name order: what that run must find. */
 export const stampsBefore = (sharing: Sharing, index: number): ReadonlyArray<string> =>
@@ -676,10 +722,13 @@ export const submoduleClones = Effect.fn("submoduleClones")(function* (
  * now names another repository, so its key is another). */
 export type Fate = "present" | "removed" | "re-pointed"
 
+/** A snapshot's name in a key directory: a mode's numbered one, or the one snapshot of a mode an older gate kept. */
+type SnapshotName = `${"commit" | "push"}.${number}` | "commit"
+
 /** A lock in a key directory: none, or one on a snapshot whose pid file names a live process or one that has exited. */
 export type Lock =
 	| Readonly<{ kind: "none" }>
-	| Readonly<{ kind: "live" | "stale"; snapshot: "commit" | "push" }>
+	| Readonly<{ kind: "live" | "stale"; snapshot: SnapshotName }>
 
 /**
  * A key directory of the cache beside the repository a run checks: the clones of another repository that ran the gate,
@@ -708,8 +757,8 @@ const lockGen: Gen<Lock> = (source) =>
 	source.draw(
 		element([
 			{ kind: "none" },
-			{ kind: "live", snapshot: "commit" },
-			{ kind: "stale", snapshot: "push" }
+			{ kind: "live", snapshot: "commit.0" },
+			{ kind: "stale", snapshot: "push.0" }
 		] as const)
 	)
 
@@ -913,4 +962,98 @@ export const befell = Effect.fn("befell")(function* (sandbox: Sandbox, made: Reg
 				entry.held ? { kind: "live", snapshot: "commit" } : { kind: "none" }
 			)
 	}
+})
+
+/** A snapshot of the push mode as a run finds it: with no lock, held by a live run, or locked by a run that has exited. */
+export type Slot = "no lock" | "live" | "stale"
+
+const SLOTS = ["no lock", "live", "stale"] as const
+
+/** The push mode's first two snapshots, each of every kind: nine layouts, the smallest that reach every situation. */
+export const claimings: Gen<readonly [Slot, Slot]> = (source) => [
+	source.draw(element(SLOTS)),
+	source.draw(element(SLOTS))
+]
+
+/** The snapshot a run claims, by the gate's contract: the first that no live run holds, else the next after them all. */
+export const claimedSlot = (slots: ReadonlyArray<Slot>): number =>
+	Option.getOrElse(
+		Arr.findFirstIndex(slots, (slot) => slot !== "live"),
+		() => slots.length
+	)
+
+/** The situations a run is in among the snapshots it finds. */
+export type ClaimingFeature =
+	| "a run claims a snapshot no run holds"
+	| "a run passes a snapshot a live run holds"
+	| "a run takes a snapshot whose run has exited"
+	| "every snapshot held: a run makes a new one"
+
+/** The situation of the snapshot a run claims, by what it finds there. */
+const CLAIMED_FEATURES: Readonly<Record<Slot, ReadonlyArray<ClaimingFeature>>> = {
+	"no lock": ["a run claims a snapshot no run holds"],
+	live: [],
+	stale: ["a run takes a snapshot whose run has exited"]
+}
+
+/** The situations a run is in among `slots`. */
+export const claimingFeatures = (slots: ReadonlyArray<Slot>): ReadonlyArray<ClaimingFeature> => {
+	const at = claimedSlot(slots)
+	return [
+		...(at > 0 ? ["a run passes a snapshot a live run holds" as const] : []),
+		...Option.match(Arr.get(slots, at), {
+			onNone: () => ["every snapshot held: a run makes a new one" as const],
+			onSome: (slot) => CLAIMED_FEATURES[slot]
+		})
+	]
+}
+
+/** The locks of the push mode's numbered snapshots a key directory holds, by number. */
+export const pushLocks = Effect.fn("pushLocks")(function* (sandbox: Sandbox, key: string) {
+	const fs = yield* FileSystem.FileSystem
+	const names = yield* fs.readDirectory(`${sandbox.root}/${key}`)
+	return Arr.sort(
+		Arr.flatMap(names, (name) => {
+			const [mode, number, lock, ...rest] = Str.split(".")(name)
+			return mode === "push" &&
+				lock === "lock" &&
+				number !== undefined &&
+				!Arr.isReadonlyArrayNonEmpty(rest)
+				? [Number(number)]
+				: []
+		}),
+		Order.Number
+	)
+})
+
+/** Puts the push mode's snapshot numbered `at` of a key directory in the state `slot` draws. */
+export const slotted = Effect.fn("slotted")(function* (
+	sandbox: Sandbox,
+	key: string,
+	slot: Slot,
+	at: number
+) {
+	const snapshot: SnapshotName = `push.${at}`
+	switch (slot) {
+		case "no lock":
+			return
+		case "live":
+			return yield* locked(sandbox, key, { kind: "live", snapshot })
+		case "stale":
+			return yield* locked(sandbox, key, { kind: "stale", snapshot })
+	}
+})
+
+/** The gate's run in a clone whose command looks at the snapshot and names it: what it saw, and the snapshot's name. */
+export const claimedBy = Effect.fn("claimedBy")(function* (sandbox: Sandbox, clone: string) {
+	const stdout = yield* gated(
+		sandbox,
+		clone,
+		Arr.join([...LOOK, String.raw`printf 'in %s\n' "${"$"}{PWD##*/}"`], "\n")
+	)
+	const names = Arr.flatMap(
+		Arr.getSomes(Arr.map(Str.split("\n")(stdout), tagged("in"))),
+		(fields) => fields
+	)
+	return { seen: seenOf(stdout), snapshot: Arr.join(names, " ") }
 })

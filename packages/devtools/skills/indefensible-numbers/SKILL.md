@@ -194,18 +194,23 @@ export const messageMaxBytes = maxAllocSize - 1
 A protective cap no evidence defends yet. It exists so that work stays bounded while the evidence is found; it is a
 debt, never an authority.
 
-```sh
-# Each wait of one gate run for the run that holds its snapshot's lock.
-#
-# @limitKind provisional
-# @owner the dev tools' gate (packages/devtools/bin/gate.sh, lock)
-# @unit seconds
-# @guards with no wait between looks a waiting run spins a CPU for as long as the other run holds the lock
-# @measure time how long a waiting gate takes to start after the lock is let go, at polls of 0.1, 0.5, 1 and 2 s,
-#   and keep the longest whose delay stays a small share of the commit gate's run
-# @origin written with the snapshot gate in e277d8d (2026-11-14), with no evidence
-# @recorded 2026-11-16
-readonly GATE_LOCK_POLL_SECONDS=1
+```ts
+/**
+ * How many decisions one mutation of a case edits in place, at most, before its one structural edit (mutate.ts).
+ *
+ * @limitKind provisional
+ * @owner the choice-stream testing library (mutate.ts, a case's mutation)
+ * @unit point edits
+ * @scope one mutation of one case's tape
+ * @guards without a most, a mutation's run of point edits, which halves in likelihood with each, could edit a tape all
+ *   over, so a mutant would keep nothing of the seed it came from
+ * @measure fuzz the library's plants for a fixed budget with at most 1, 2, 4 and 8 point edits a mutation, several
+ *   seeds each, and keep the most that turns the most plants red soonest
+ * @origin written with no evidence before the testing library came into this repository as one package in 20b4112
+ *   (2026-11-13), from grizzle's, superstarter's and edullm's copies
+ * @recorded 2026-11-16
+ */
+const pointEditsMax = 4
 ```
 
 - `@guards`: what the cap guards, the unbounded work, wait or growth it stops. If it names nothing, or only "just in
@@ -227,8 +232,7 @@ and write the result as `measured` (or the source as `published`). `rg '@limitKi
 ## A limit outside TypeScript
 
 A shell script, a SQL migration or a config in another language keeps its limit where it takes effect, with the same
-tags in that language's comments: a script's own number is a `readonly` at its top, its evidence above it (the gate's
-lock poll, above). A settings file a deployment installs holds the literal; where a comment there would change what is
+tags in that language's comments: a script's own number is a `readonly` at its top, its evidence above it. A settings file a deployment installs holds the literal; where a comment there would change what is
 installed, the code that installs it carries the evidence. A number TypeScript also reads keeps its evidence in the
 TypeScript that defines it, and the other copies point there.
 

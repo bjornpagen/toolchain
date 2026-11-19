@@ -1,16 +1,18 @@
 /**
- * The gate's snapshot cache (bin/gate.sh): one snapshot per repository, shared by every clone of it, with the objects
- * of the clone whose commit is checked, and a snapshot whose repository is gone collected.
+ * The gate's snapshot cache (bin/gate.sh): snapshots per repository, shared by every clone of it however it writes its
+ * origin, each with the objects of the clone whose commit is checked; a run that claims the first snapshot no live run
+ * holds, never waiting; and a snapshot whose repository is gone collected.
  *
- * Each case draws the shape of a scenario (how many clones of one repository, what each commits and leaves uncommitted,
- * which clone each run checks, whether the repository has a submodule and at which commit, what a run's command leaves
- * behind, the key directories beside it and what became of their clones and locks), builds it from real git
- * repositories in a scratch directory of its own, and runs the gate over its clones with a cache of its own
- * (XDG_CACHE_HOME), so nothing here touches the real cache. Oracle: the specification, the gate's header: a command
- * the gate runs on a commit sees exactly that commit's files, a submodule's at the commit it records; a file a first
- * run left under .gitignore (node_modules) is still there for a second clone's first run, which is what a warm
- * snapshot is; and a run collects every other key directory whose repository is gone and that holds no live lock,
- * leaving the old per-path layout alone.
+ * Each case draws the shape of a scenario (how many clones of one repository and how they write its URL, what each
+ * commits and leaves uncommitted, which clone each run checks, whether the repository has a submodule and at which
+ * commit, what a run's command leaves behind, which snapshots live or exited runs hold, the key directories beside it
+ * and what became of their clones and locks), builds it from real git repositories in a scratch directory of its own,
+ * and runs the gate over its clones with a cache of its own (XDG_CACHE_HOME), so nothing here touches the real cache.
+ * Oracle: the specification, the gate's header: a command the gate runs on a commit sees exactly that commit's files, a
+ * submodule's at the commit it records; a file a first run left under .gitignore (node_modules) is still there for a
+ * second clone's first run, which is what a warm snapshot is; a run beside live runs takes the first snapshot none of
+ * them holds, or a new one; and a run collects every other key directory whose repository is gone and that holds no
+ * live lock, leaving the old per-path layout alone.
  */
 import { deepStrictEqual } from "@bjornpagen/testing/assert"
 import { Checkout } from "@bjornpagen/testing/checkout"
@@ -22,6 +24,10 @@ import {
 	alternatesOf,
 	befell,
 	checkedClones,
+	claimedBy,
+	claimedSlot,
+	claimingFeatures,
+	claimings,
 	checkingFeatures,
 	checkings,
 	clonedRepository,
@@ -37,10 +43,13 @@ import {
 	looked,
 	objectsOf,
 	onlyKey,
+	pushLocks,
 	registered,
 	sandboxOf,
 	sharingFeatures,
 	sharings,
+	slotted,
+	spelledClones,
 	stampsBefore,
 	submoduleClones,
 	treeOf,
@@ -50,12 +59,14 @@ import {
 } from "#gate.fixtures.ts"
 
 export const sharedSnapshot = property.exhaust(finite(sharings), {
-	box: "every way three runs fall among up to three clones of one repository, each leaving a stamp",
+	box: "every way three runs fall among up to three clones of one repository, each leaving a stamp, the later clones writing its URL each way",
 	needs: { dir: Scratch.dir, checkout: Checkout.dir, lockfile: workspaceLockfile },
 	situations: [
 		"a second clone's first run finds what a first run left under .gitignore",
 		"a clone runs again after another clone's run",
-		"three clones share one snapshot"
+		"three clones share one snapshot",
+		"a clone whose origin URL ends in .git shares the snapshot",
+		"a clone whose origin URL ends in / shares the snapshot"
 	],
 	check:
 		({ dir, checkout, lockfile }, c) =>
@@ -66,7 +77,7 @@ export const sharedSnapshot = property.exhaust(finite(sharings), {
 				const gateCheckout = yield* checkout
 				const workspace = yield* lockfile
 				const sandbox = sandboxOf(scratch, gateCheckout, workspace)
-				const { clones } = yield* clonedRepository(sandbox, sharing.clones)
+				const { clones } = yield* spelledClones(sandbox, sharing)
 				yield* Effect.forEach(sharing.runs, (run, index) =>
 					Effect.gen(function* () {
 						const clone = Arr.getUnsafe(clones, run.clone)
@@ -85,7 +96,7 @@ export const sharedSnapshot = property.exhaust(finite(sharings), {
 			}),
 	oracle: {
 		kind: "specification",
-		name: "the gate's cache layout: one key directory per repository, named by its origin's URL and listing every clone that ran, whose snapshot keeps what .gitignore names between runs"
+		name: "the gate's cache layout: one key directory per repository, named by its origin's URL with no trailing .git or / and listing every clone that ran, whose snapshot keeps what .gitignore names between runs"
 	},
 	kept: [],
 	kills: [
@@ -94,6 +105,73 @@ export const sharedSnapshot = property.exhaust(finite(sharings), {
 			original: 'identity=$(git --git-dir="$1" config --get remote.origin.url 2>/dev/null || true)',
 			replacement: "identity=",
 			why: "The key is each clone's own git directory, not its repository's URL, so every clone keeps a snapshot of its own (the old per-path layout) and a second clone's first run is cold; the shared-snapshot property fails."
+		},
+		{
+			file: "packages/devtools/bin/gate.sh",
+			original: `identity=\${identity%.git}`,
+			replacement: ":",
+			why: "A clone whose origin URL ends in .git keys a cache of its own beside the one its repository's other clones share (grizzle's 5b2a7da5aaff and 3b452b0d8c62), so its first run is cold; the shared-snapshot property fails."
+		},
+		{
+			file: "packages/devtools/bin/gate.sh",
+			original: `identity=\${identity%/}`,
+			replacement: ":",
+			why: "A clone whose origin URL ends in / keys a cache of its own beside the one its repository's other clones share; the shared-snapshot property fails."
+		}
+	]
+})
+
+export const claimedSnapshot = property.exhaust(finite(claimings), {
+	box: "the push mode's first two snapshots, each with no lock, held by a live run or locked by an exited one, when a run comes",
+	needs: { dir: Scratch.dir, checkout: Checkout.dir, lockfile: workspaceLockfile },
+	situations: [
+		"a run claims a snapshot no run holds",
+		"a run passes a snapshot a live run holds",
+		"a run takes a snapshot whose run has exited",
+		"every snapshot held: a run makes a new one"
+	],
+	check:
+		({ dir, checkout, lockfile }, c) =>
+		(slots) =>
+			Effect.gen(function* () {
+				c.noteAll(claimingFeatures(slots))
+				const scratch = yield* dir
+				const gateCheckout = yield* checkout
+				const workspace = yield* lockfile
+				const sandbox = sandboxOf(scratch, gateCheckout, workspace)
+				const { clones } = yield* clonedRepository(sandbox, 1)
+				const clone = Arr.headNonEmpty(clones)
+				yield* looked(sandbox, clone, 0, { stamp: false, stray: false })
+				const key = yield* onlyKey(sandbox)
+				yield* Effect.forEach(slots, (slot, at) => slotted(sandbox, key, slot, at))
+				const claimed = claimedSlot(slots)
+				const run = yield* claimedBy(sandbox, clone)
+				deepStrictEqual(run.snapshot, `push.${String(claimed)}`)
+				const tree = yield* treeOf(sandbox, clone)
+				deepStrictEqual(run.seen.files, tree)
+				const locks = yield* pushLocks(sandbox, key)
+				deepStrictEqual(
+					locks,
+					Arr.flatMap(slots, (slot, at) => (slot === "no lock" || at === claimed ? [] : [at]))
+				)
+			}),
+	oracle: {
+		kind: "specification",
+		name: "a run claims the first snapshot of its mode that no live run holds, a new one when every one is held, never waits, and frees only the one it claimed"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/devtools/bin/gate.sh",
+			original: 'snapshot="$cache/$1.$n"',
+			replacement: 'snapshot="$cache/$1.0"',
+			why: "Every run checks in the first snapshot whatever holds it, so a run beside a live one rewrites the files that run is checking, and frees that run's lock when it exits; the claimed-snapshot property fails."
+		},
+		{
+			file: "packages/devtools/bin/gate.sh",
+			original: '\t\t\trm -rf "$cache/$1.$n.lock"',
+			replacement: "\t\t\tn=$((n + 1))",
+			why: "A snapshot whose run exited without freeing it is never claimed again, so every crash leaves a snapshot no run uses; the claimed-snapshot property fails."
 		}
 	]
 })

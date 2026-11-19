@@ -145,7 +145,11 @@ working tree, so lanes that share one checkout never fail or pass each other's w
 - git leaves a submodule's gitlink an empty directory; the gate fills each from the submodule's own repository at the
   commit the snapshot records, and leaves a submodule the working tree never checked out empty, as it is there.
 - The commit gate and the push gate keep separate snapshots, so a commit, which holds `.git/index.lock` for its whole
-  hook, never waits on a push's full gate. Runs on one snapshot take turns.
+  hook, never shares one with a push's gate.
+- No run waits for another. A mode has as many snapshots as runs of it were ever at once: a run claims the first one
+  no live run holds and, when every one is held, makes the next at once, filled and installed from pnpm's store. A
+  long command in one snapshot (a property suite run by hand, the push's affected properties) holds no other lane's
+  commit or push: JUDGEGUARD's push waited 1,720 s behind another run's lock, then checked in 35.5 s.
 - Turbo's cache is the working tree's (`.turbo/cache`) unless `TURBO_CACHE_DIR` names one, so a task the working tree
   already ran on the same content is a hit in the snapshot, and the other way round: `pnpm types` after the last edit
   makes the commit gate's `pnpm types` a replay.
@@ -160,10 +164,11 @@ changes.
 ### The cache layout
 
 The cache is per repository, not per checkout: `${XDG_CACHE_HOME:-~/.cache}/toolchain-gate/<key>/`, where the key is the
-first 12 hex digits of the git hash of the repository's identity, its origin remote URL when it has one, else its
-absolute common git directory. Every clone of one repository (grizzle's lanes clone it under
-`~/.cache/grizzle-release/<LANE>/`) shares one commit snapshot and one push snapshot and takes turns under the lock, so
-a clone's first run is warm: the install and the typecheck's build info are already there.
+first 12 hex digits of the git hash of the repository's identity, its origin remote URL when it has one, written with
+no trailing `/` or `.git` (`https://github.com/o/r.git` and `https://github.com/o/r` are one repository, which keyed
+two caches for grizzle until the gate wrote them alike), else its absolute common git directory. Every clone of one
+repository (grizzle's lanes clone it under `~/.cache/grizzle-release/<LANE>/`) shares its snapshots, so a clone's first
+run is warm: the install is already there.
 
 A snapshot's install reads pnpm's own caches, the store and the package metadata, which every clone and snapshot on the
 machine shares, and fetches only what they lack (`--prefer-offline`), never `--offline`: under pnpm 12's supply-chain
@@ -171,18 +176,18 @@ policy (`minimumReleaseAge`, the trust policy) any lockfile change has pnpm chec
 an offline install failed with `ERR_PNPM_NO_OFFLINE_META` whenever the metadata cache lacked one of them, until someone
 installed in the snapshot online by hand.
 
-| Path under `<key>/`        | What it is                                                                                                                 |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `clones`                   | The common git directories of the clones that ran here, one a line.                                                        |
-| `commit`, `push`           | The snapshots' checkouts; `commit.git` and `push.git` are their git directories.                                           |
-| `commit.lock`, `push.lock` | A directory holding a pid file while a run uses the snapshot.                                                              |
-| `push.full`                | Stamped when the daily `check:full` passed.                                                                                |
-| `push.passed/<tree>`       | Stamped when every check of the push gate passed on that tree: a push sending it again waits for no lock and runs nothing. |
+| Path under `<key>/`      | What it is                                                                                                                  |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| `clones`                 | The common git directories of the clones that ran here, one a line.                                                         |
+| `commit.<n>`, `push.<n>` | The snapshots' checkouts, numbered from 0; `<mode>.<n>.git` is each one's git directory.                                    |
+| `<mode>.<n>.lock`        | A directory holding a pid file while a run uses that snapshot.                                                              |
+| `push.full`              | Stamped when the daily `check:full` passed.                                                                                 |
+| `push.passed/<tree>`     | Stamped when every check of the push gate passed on that tree: a push sending it again claims no snapshot and runs nothing. |
 
 A snapshot's git directory borrows objects (alternates) from one repository. Each run rewrites the alternates to the
-objects of the clone whose commit it checks, under the lock and before `read-tree`: that clone is the only one certain
-to hold the commit (the commit gate's commit of the index exists nowhere else), and the run holds the lock until it
-exits, so no other clone's rewrite takes the objects away mid-run. The semantics are unchanged: `read-tree --reset -u`,
+objects of the clone whose commit it checks, while it holds the snapshot and before `read-tree`: that clone is the only
+one certain to hold the commit (the commit gate's commit of the index exists nowhere else), and the run holds the
+snapshot until it exits, so no other clone's rewrite takes the objects away mid-run. The semantics are unchanged: `read-tree --reset -u`,
 `git clean -fd` without `-x`, submodules filled from the checking clone's submodule repositories.
 
 A run that enters the cache collects garbage: it deletes every other key directory none of whose listed clones still
@@ -274,8 +279,8 @@ question is whether a cap should exist at all: one that guards nothing named is 
 in the module that uses it, its evidence in its JSDoc: `@limitKind` `published`, `measured`, `derived` or
 `provisional`, with `@owner`, `@unit`, `@scope` and the kind's tags. Review holds the policy; no rule does.
 
-A shell script keeps its number as a `readonly` at its top with the same tags above it: `bin/gate.sh`'s lock poll and
-its daily check:full period.
+A shell script keeps its number as a `readonly` at its top with the same tags above it: `bin/gate.sh`'s daily check:full
+period.
 
 A number the machine reports is read where it is used, never minted, and widths computed from it are no limit:
 
@@ -284,7 +289,7 @@ A number the machine reports is read where it is used, never minted, and widths 
 | Test processes at once, `testWorkers`              | `packages/testing/src/workers.ts`         | what the machine reports, `availableParallelism()`: one forked test process a logical CPU                                                                                                                                                                         |
 | Workers one mutant's trial leases                  | `packages/testing/src/mutate/schedule.ts` | `shareOf`, a plain function of the pool's width (`testWorkers`) and the trials of a run: the width split evenly among them, at least one each, so the trials at once never lease more workers than one test run holds                                             |
 | turbo's tasks at once, `"concurrency": "100%"`     | `turbo.json`                              | one task a logical processor; turbo documents `100%` as "all available logical processors" and 10 tasks as its default (https://turborepo.dev/docs/reference/configuration, verified 2026-11-15). JSON carries no comment, so this row is its documentation       |
-| One gate run per snapshot                          | `bin/gate.sh`                             | an identity: a snapshot is one directory that a run rewrites                                                                                                                                                                                                      |
+| One gate run per snapshot                          | `bin/gate.sh`                             | an identity: a snapshot is one directory that a run rewrites; the snapshots of a mode are as many as its runs were ever at once                                                                                                                                   |
 | A search's cases at once, a search's `concurrency` | each test's `explore` or `exhaust`        | left out, one at a time (`oneAtATime`), an identity; stated above one, the test's own input, no resource's bound: the engine finds the same cases at any concurrency, and a sense that reads process-wide counters (guided coverage) runs its cases one at a time |
 
 ## Steering belongs to the generator

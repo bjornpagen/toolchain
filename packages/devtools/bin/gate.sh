@@ -21,25 +21,32 @@
 # that changed since the last, deletes the ones that went, and leaves what .gitignore names (node_modules, the
 # typecheck's build info, the tools' caches) where it was, so installs and incremental checks stay warm. Each submodule
 # is checked out the same way, with a git directory of its own borrowing the submodule's objects, at the commit the
-# snapshot records, so the snapshot lists it as its gitlink, as the working tree does. The commit gate and the push gate keep separate snapshots, so a
-# commit, which holds index.lock for its whole hook, never waits on a push's full gate; runs on one snapshot take turns.
+# snapshot records, so the snapshot lists it as its gitlink, as the working tree does. The commit gate and the push gate
+# keep separate snapshots, so a commit, which holds index.lock for its whole hook, never shares one with a push's gate.
+#
+# No run waits for another. A mode has as many snapshots as runs of it were ever at once: a run claims the first one no
+# live run holds, and when every one is held it makes the next at once, filled and installed from pnpm's store, so a
+# long command in one snapshot (a property suite run by hand, the push's affected properties) keeps no other lane's
+# commit or push waiting. A snapshot stays warm for whichever run claims it next: its install stays, and fill rewrites
+# only what changed.
 #
 # Cache layout: ${XDG_CACHE_HOME:-~/.cache}/toolchain-gate/<key>/, one directory per REPOSITORY, not per checkout. The key
-# is the first 12 hex digits of the git hash of the repository's identity: its origin remote URL when it has one, else
+# is the first 12 hex digits of the git hash of the repository's identity: its origin remote URL when it has one,
+# written with no trailing / or .git (https://github.com/o/r.git and https://github.com/o/r are one repository), else
 # the absolute common git directory. Every clone of one repository (grizzle's lanes clone it under
-# ~/.cache/grizzle-release/<LANE>/) therefore shares the one commit snapshot and the one push snapshot, taking turns
-# under the lock, and the first run of the second clone is warm: the install and the typecheck's build info are there.
+# ~/.cache/grizzle-release/<LANE>/) therefore shares the snapshots, and the first run of the second clone is warm: the
+# install is there.
 #
-#   <key>/clones          the common git directories of the clones that have run here, one a line
-#   <key>/commit, push    the snapshots' checkouts           <key>/commit.git, push.git   their git directories
-#   <key>/commit.lock, push.lock   held (a pid file in a directory) while a run uses the snapshot
-#   <key>/push.full       stamped when the daily check:full passed
-#   <key>/push.passed/<tree>   stamped when every check of the push gate passed on that tree
+#   <key>/clones                 the common git directories of the clones that have run here, one a line
+#   <key>/commit.<n>, push.<n>   the snapshots' checkouts, n from 0     <key>/<mode>.<n>.git   their git directories
+#   <key>/<mode>.<n>.lock        held (a pid file in a directory) while a run uses that snapshot
+#   <key>/push.full              stamped when the daily check:full passed
+#   <key>/push.passed/<tree>     stamped when every check of the push gate passed on that tree
 #
-# The snapshot's git directory borrows objects (alternates) from ONE repository, and a shared snapshot has several
-# candidates. Each run rewrites the alternates to the objects of the clone whose commit it checks, under the lock and
+# A snapshot's git directory borrows objects (alternates) from ONE repository, and a snapshot serves several clones.
+# Each run rewrites the alternates to the objects of the clone whose commit it checks, while it holds the snapshot and
 # before read-tree: that clone is the only one certain to hold the commit (an index commit exists nowhere else), and a
-# run holds the lock until it exits, so no other clone's rewrite can pull the objects away mid-run. Listing every
+# run holds its snapshot until it exits, so no other clone's rewrite can pull the objects away mid-run. Listing every
 # clone's objects instead would let a deleted clone's missing directory and an unrelated clone's stale objects take
 # part in every read.
 #
@@ -63,28 +70,16 @@ cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/toolchain-gate"
 newline='
 '
 
-# key_of <common git dir>: the repository's cache key, from its origin remote URL when it has one, else from its path.
+# key_of <common git dir>: the repository's cache key, from its origin remote URL when it has one, written with no
+# trailing / or .git, else from its path.
 key_of() {
 	identity=$(git --git-dir="$1" config --get remote.origin.url 2>/dev/null || true)
+	identity=${identity%/}
+	identity=${identity%.git}
 	printf '%s' "${identity:-$1}" | git hash-object --stdin | cut -c1-12
 }
 
 cache="$cache_root/$(key_of "$common_dir")"
-
-# How long the gate waits between two looks at a snapshot's lock that another run holds (devtools/bin/gate.sh).
-#
-# @limitKind provisional
-# @owner the dev tools' gate (packages/devtools/bin/gate.sh, lock)
-# @unit seconds
-# @scope each wait of one gate run for the run that holds its snapshot's lock
-# @guards with no wait between looks a waiting run spins a CPU for as long as the other run holds the lock, a whole
-#   `pnpm check` at the push
-# @measure time how long a waiting gate takes to start after the lock is let go, on cassowary with the hooks of
-#   several lanes waiting at once, at polls of 0.1, 0.5, 1 and 2 s, and keep the longest whose delay stays a small
-#   share of the commit gate's run
-# @origin written with the snapshot gate in e277d8d (2026-11-14), with no evidence
-# @recorded 2026-11-16
-readonly GATE_LOCK_POLL_SECONDS=1
 
 # How long the push gate's last passing check:full counts, before the next push runs check:full again (gate.sh).
 #
@@ -139,23 +134,22 @@ fill() (
 	done
 )
 
-# lock <snapshot>: waits until no other run holds the snapshot, then holds it until this run exits.
-lock() {
-	held="$1.lock"
-	mkdir -p "$(dirname -- "$held")"
-	waited=0
-	until mkdir "$held" 2>/dev/null; do
-		holder=$(cat "$held/pid" 2>/dev/null || true)
+# claim <mode>: holds the first snapshot of <mode> that no live run holds, until this run exits, and names it $snapshot.
+# A snapshot whose holder is gone is free again; when every one is held, the next number is a new snapshot, which fill
+# makes. A lock with no pid yet is a run that has only just taken it.
+claim() {
+	n=0
+	until mkdir "$cache/$1.$n.lock" 2>/dev/null; do
+		holder=$(cat "$cache/$1.$n.lock/pid" 2>/dev/null || true)
 		if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
-			rm -rf "$held"
-			continue
+			rm -rf "$cache/$1.$n.lock"
+		else
+			n=$((n + 1))
 		fi
-		[ "$waited" = 0 ] && printf 'toolchain-gate: waiting for the run that holds %s\n' "$held" >&2
-		waited=1
-		sleep "$GATE_LOCK_POLL_SECONDS"
 	done
-	printf '%s\n' "$$" >"$held/pid"
-	trap 'rm -rf "$held"' EXIT
+	snapshot="$cache/$1.$n"
+	printf '%s\n' "$$" >"$snapshot.lock/pid"
+	trap 'rm -rf "$snapshot.lock"' EXIT
 	trap 'exit 130' INT TERM
 }
 
@@ -211,17 +205,17 @@ indexed() {
 			git commit-tree "$tree" ${parent:+-p "$parent"}
 }
 
-# enter <snapshot> <commit>: the snapshot is a checkout of <commit>, its dependencies are installed, and the shell is in
-# it. The install reads pnpm's store and metadata cache and fetches only what they lack (--prefer-offline): under pnpm's
-# supply-chain policy a changed lockfile has every package's metadata checked again, and --offline failed
-# (ERR_PNPM_NO_OFFLINE_META) whenever the metadata cache lacked one of them.
+# enter <mode> <commit>: a snapshot of the mode is this run's, a checkout of <commit> with its dependencies installed,
+# and the shell is in it. The install reads pnpm's store and metadata cache and fetches only what they lack
+# (--prefer-offline): under pnpm's supply-chain policy a changed lockfile has every package's metadata checked again,
+# and --offline failed (ERR_PNPM_NO_OFFLINE_META) whenever the metadata cache lacked one of them.
 enter() {
 	unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
 	collect
-	lock "$cache/$1"
-	fill "$git_dir" "$2" "$cache/$1" "$cache/$1.git" "$root"
+	claim "$1"
+	fill "$git_dir" "$2" "$snapshot" "$snapshot.git" "$root"
 	export TURBO_CACHE_DIR="${TURBO_CACHE_DIR:-$root/.turbo/cache}"
-	cd "$cache/$1"
+	cd "$snapshot"
 	pnpm install --frozen-lockfile --prefer-offline --reporter=silent
 }
 
@@ -300,7 +294,7 @@ case $mode in
 			commit=${pair%%:*}
 			base=${pair#*:}
 			# A tree this gate passed before passes again: the gate's verdict is a function of the commit's tree, so a push
-			# that sends a tree already gated (a ref race that threw the push away, a re-push) waits for no lock and runs
+			# that sends a tree already gated (a ref race that threw the push away, a re-push) claims no snapshot and runs
 			# nothing. The stamp is written only when every check of the tree passed.
 			tree=$(git rev-parse "$commit^{tree}")
 			if [ -f "$cache/push.passed/$tree" ]; then
