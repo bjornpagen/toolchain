@@ -14,6 +14,15 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: one TypeScript process for syntax (2026-11-19)
+
+`@bjornpagen/testing/syntax` is the one door to TypeScript 7's native parser, one compiler process a test process
+shares: `syntaxOf(file, text, read)` reads a text's tree, parsed as the file it is named (its extension its kind), and
+`syntaxDiagnosticsOf(file, text)` its syntax errors (`{ code, message, pos, end }`, transpileModule's, no program and no
+type). Before you move `vendor/toolchain` past this section, delete a need or helper of yours that starts its own
+`new API()` from `typescript/sync` to parse or transpile printed source (effect-openapi-cli-generator's
+`typescriptApi`), and read it through the door instead.
+
 ## Consumer migration: a cluster is leased or sized by its sessions (2026-11-19)
 
 A cluster's `sizing` says who holds its connections, as a union: `leased`, a test cluster a run's workers lease, its
