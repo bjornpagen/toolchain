@@ -398,7 +398,7 @@ export const staleReplays = property.explore(
 			{
 				file: "packages/testing/src/runner/search.ts",
 				original: "\t\t\t\tranExactly(result, replayed.values.length)",
-				replacement: "\t\t\t\t!result.overrun",
+				replacement: '\t\t\t\tresult.drew.kind === "complete"',
 				why: "A replay whose property leaves some of its token's draws over passes, its leftover draws accepted (replay-leftover-accepted, re-anchored from explore.ts to the new search's token run); the stale replay property fails."
 			}
 		]

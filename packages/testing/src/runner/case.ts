@@ -36,6 +36,7 @@ import {
 	type CountOrder,
 	type Done,
 	doneWith,
+	type Drew,
 	type Printed,
 	type SeriesOrder,
 	type SeriesRan,
@@ -648,7 +649,6 @@ const outcomeOf = (
 
 /** What a case's run settles to before its result is measured. */
 type Ran = Readonly<{
-	sketchDecisions: number
 	notes: ReadonlyArray<string>
 	measures: ReadonlyArray<readonly [string, number]>
 	trace: Trace
@@ -729,7 +729,6 @@ type DrawnCase<S, F extends string> = Readonly<{
 	recorded: Recording
 	value: S
 	handle: Handle<F>
-	sketchDecisions: number
 	at: number
 }>
 
@@ -757,7 +756,6 @@ const slotOf = <S, F extends string>(
 			kind: "undrawn",
 			recorded,
 			ran: {
-				sketchDecisions: recorded.decided(),
 				notes: [],
 				measures: [],
 				trace: [],
@@ -779,7 +777,6 @@ const slotOf = <S, F extends string>(
 			handle: handleOf<F>(recorded, (drew) =>
 				lateUses.report(order, printedOf(drawing.print, drawn.success, drew))
 			),
-			sketchDecisions: recorded.decided(),
 			at
 		}
 	}
@@ -794,7 +791,6 @@ const ranOf = <S, F extends string>(
 ): Ran => {
 	const closed = drawn.handle.close()
 	return {
-		sketchDecisions: drawn.sketchDecisions,
 		notes: closed.notes,
 		measures: closed.measures,
 		trace,
@@ -804,11 +800,19 @@ const ranOf = <S, F extends string>(
 	}
 }
 
+/** How a case's draw ended: its decisions, all, or ran out or no longer fit what a forced chooser gave (overrun). */
+const drewOf = (recorded: Recording): Drew => {
+	switch (recorded.status()) {
+		case "complete":
+			return { kind: "complete", decisions: recorded.decided() }
+		case "overrun":
+			return { kind: "overrun" }
+	}
+}
+
 /** A case's result from its run, its measured time and its process's CPU meanwhile. */
 const resultOf = (recorded: Recording, ran: Ran, millis: number, cpu: number): CaseResult => ({
-	decisions: recorded.decided(),
-	sketchDecisions: ran.sketchDecisions,
-	overrun: recorded.status() === "overrun",
+	drew: drewOf(recorded),
 	notes: ran.notes,
 	measures: ran.measures,
 	trace: ran.trace,

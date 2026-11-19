@@ -7,9 +7,7 @@ import type { Batch, CaseResult } from "#runner/protocol.ts"
 
 /** A case that passed, as a worker answers it. */
 export const passed: CaseResult = {
-	decisions: 0,
-	sketchDecisions: 0,
-	overrun: false,
+	drew: { kind: "complete", decisions: 0 },
 	notes: [],
 	measures: [],
 	trace: [],

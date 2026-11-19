@@ -181,15 +181,23 @@ const Trace = Schema.Array(Schema.Tuple([Schema.String, Schema.Finite]))
 export type Trace = typeof Trace.Type
 
 /**
- * One case's result: how many decisions it made, how many of them drew its value (the rest are its property's own
- * draws), whether a forced chooser ran out or no longer fit (`overrun`), the situations it noted, what it measured
- * (Case.measure, by name), its trace, how it ended, how long it took in milliseconds, and how many milliseconds of its
- * process's CPU (user and system) it took meanwhile.
+ * How a case's draw ended: every decision it made, its count, or a forced chooser (a replay's, a kept case's) ran out or
+ * no longer fit, where its count says nothing of the values it was given (`overrun`).
+ */
+const Drew = Schema.Union([
+	Schema.Struct({ kind: Schema.Literal("complete"), decisions: Schema.Finite }),
+	Schema.Struct({ kind: Schema.Literal("overrun") })
+])
+
+export type Drew = typeof Drew.Type
+
+/**
+ * One case's result: how its draw ended, the situations it noted, what it measured (Case.measure, by name), its trace,
+ * how it ended, how long it took in milliseconds, and how many milliseconds of its process's CPU (user and system) it
+ * took meanwhile.
  */
 const CaseResult = Schema.Struct({
-	decisions: Schema.Finite,
-	sketchDecisions: Schema.Finite,
-	overrun: Schema.Boolean,
+	drew: Drew,
 	notes: Schema.Array(Schema.String),
 	measures: Schema.Array(Schema.Tuple([Schema.String, Schema.Finite])),
 	trace: Trace,
@@ -350,9 +358,7 @@ export type Done = typeof Done.Type
 
 /** The result of a case that never ran: no decision made, nothing noted, measured or traced, and why. */
 const unranResult = (outcome: CaseOutcome): CaseResult => ({
-	decisions: 0,
-	sketchDecisions: 0,
-	overrun: false,
+	drew: { kind: "complete", decisions: 0 },
 	notes: [],
 	measures: [],
 	trace: [],

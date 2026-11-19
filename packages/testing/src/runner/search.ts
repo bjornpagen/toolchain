@@ -294,12 +294,24 @@ const findingOf = (
 }
 
 /** Whether a case replayed from given values ran exactly them: none ran out or no longer fit, none was left over. */
-const ranExactly = (result: CaseResult, given: number): boolean =>
-	!result.overrun && result.decisions >= given
+const ranExactly = (result: CaseResult, given: number): boolean => {
+	switch (result.drew.kind) {
+		case "complete":
+			return result.drew.decisions >= given
+		case "overrun":
+			return false
+	}
+}
 
 /** How a stale case's values differ from what its property now draws. */
-const drewInstead = (result: CaseResult, given: number): string =>
-	`it gives ${given} decisions, and its property now draws ${result.overrun ? "others than those" : `${result.decisions}`}`
+const drewInstead = (result: CaseResult, given: number): string => {
+	switch (result.drew.kind) {
+		case "complete":
+			return `it gives ${given} decisions, and its property now draws ${result.drew.decisions}`
+		case "overrun":
+			return `it gives ${given} decisions, and its property now draws others than those`
+	}
+}
 
 /** The first requirement a token's steering names that a property of `declared` requirements does not have. */
 const undeclaredIn = (drawn: Drawn, declared: number): Option.Option<number> => {
