@@ -370,8 +370,50 @@ const configured = (
 	})
 
 /**
+ * Which of what the owner's making (owned) makes a member already holds, as the bootstrap superuser reads it: the owner
+ * role, the template and the owner's own database. A member made here holds none; one adopted from a cluster another
+ * maker made (adoptMember) may hold each, made by that maker.
+ */
+type Held = Readonly<{ role: boolean; template: boolean; database: boolean }>
+
+/** What psql prints of heldOf's three booleans: each t or f, between bars. */
+const heldLine = regex("^([tf])\\|([tf])\\|([tf])$")
+
+/** What `member` holds of `life`'s owner, template and owner's database (Held), each a boolean psql prints as t or f. */
+const heldOf = (
+	life: Life,
+	member: MemberState,
+	step: Step
+): Effect.Effect<Held, ClusterFailed, Platform> =>
+	Effect.flatMap(
+		adminSql(
+			life.bin,
+			member,
+			"postgres",
+			[
+				`SELECT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = ${literal(life.cluster.owner)}), EXISTS (SELECT FROM pg_catalog.pg_database WHERE datname = ${literal(life.cluster.template)}), EXISTS (SELECT FROM pg_catalog.pg_database WHERE datname = ${literal(life.cluster.owner)})`
+			],
+			{ ...step, doing: `${step.doing}: what it holds of its owner and template` }
+		),
+		(lines) =>
+			Option.match(Option.fromNullishOr(heldLine.exec(Arr.join(lines, ""))), {
+				onNone: () =>
+					Effect.fail(failed(step, `psql printed [${Arr.join(lines, "\n")}] for what it holds`)),
+				onSome: ([, role, template, database]) =>
+					Effect.succeed({
+						role: role === "t",
+						template: template === "t",
+						database: database === "t"
+					})
+			})
+	)
+
+/**
  * What the bootstrap superuser makes in a started member, which every member holds: the owner role with `password`,
- * its grants, the template and its extensions, and the owner's own database, the template closed to connections.
+ * its grants, the template and its extensions, and the owner's own database, the template closed to connections. What
+ * the member already holds (heldOf: a cluster another maker made, which `init --adopt-from` takes) is kept and given
+ * what every member's holds: the owner role its attributes and `password`, the template its owner and IS_TEMPLATE, each
+ * extension's schema and the extension created where absent, the owner's database kept as it is.
  */
 const owned = (
 	life: Life,
@@ -382,23 +424,32 @@ const owned = (
 	Effect.gen(function* () {
 		const owner = ident(life.cluster.owner)
 		const template = ident(life.cluster.template)
+		const held = yield* heldOf(life, member, step)
+		const attributes = `LOGIN CREATEDB CREATEROLE REPLICATION PASSWORD ${literal(password)}`
 		yield* adminSql(
 			life.bin,
 			member,
 			"postgres",
 			[
-				`CREATE ROLE ${owner} LOGIN CREATEDB CREATEROLE REPLICATION PASSWORD ${literal(password)}`,
+				held.role ? `ALTER ROLE ${owner} ${attributes}` : `CREATE ROLE ${owner} ${attributes}`,
 				`GRANT SET ON PARAMETER deadlock_timeout TO ${owner}`,
 				`GRANT pg_read_all_stats TO ${owner} WITH ADMIN TRUE, INHERIT FALSE, SET TRUE`,
 				`GRANT pg_signal_backend TO ${owner}`,
-				`CREATE DATABASE ${template} OWNER ${owner} TEMPLATE template0 ENCODING 'UTF8' LOCALE_PROVIDER builtin BUILTIN_LOCALE 'C.UTF-8' LOCALE 'C.UTF-8' IS_TEMPLATE true`
+				...(held.template
+					? [
+							`ALTER DATABASE ${template} OWNER TO ${owner}`,
+							`ALTER DATABASE ${template} WITH IS_TEMPLATE true ALLOW_CONNECTIONS true`
+						]
+					: [
+							`CREATE DATABASE ${template} OWNER ${owner} TEMPLATE template0 ENCODING 'UTF8' LOCALE_PROVIDER builtin BUILTIN_LOCALE 'C.UTF-8' LOCALE 'C.UTF-8' IS_TEMPLATE true`
+						])
 			],
 			{ ...step, doing: `${step.doing}: its owner and template` }
 		)
 		yield* Arr.match(
 			Arr.flatMap(life.cluster.extensions, ({ name, schema }) => [
-				`CREATE SCHEMA ${ident(schema)} AUTHORIZATION ${owner}`,
-				`CREATE EXTENSION ${ident(name)} SCHEMA ${ident(schema)}`
+				`CREATE SCHEMA IF NOT EXISTS ${ident(schema)} AUTHORIZATION ${owner}`,
+				`CREATE EXTENSION IF NOT EXISTS ${ident(name)} SCHEMA ${ident(schema)}`
 			]),
 			{
 				onEmpty: () => Effect.void,
@@ -415,10 +466,10 @@ const owned = (
 			life.bin,
 			member,
 			"postgres",
-			[
-				`CREATE DATABASE ${owner} OWNER ${owner} TEMPLATE ${template}`,
+			Arr.append(
+				held.database ? [] : [`CREATE DATABASE ${owner} OWNER ${owner} TEMPLATE ${template}`],
 				`ALTER DATABASE ${template} ALLOW_CONNECTIONS false`
-			],
+			),
 			{ ...step, doing: `${step.doing}: its owner's database` }
 		)
 	})

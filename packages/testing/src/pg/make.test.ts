@@ -10,9 +10,21 @@
 import { Array as Arr, ConfigProvider, Effect, Exit, FileSystem, Schema } from "effect"
 import { assertTrue, deepStrictEqual, strictEqual } from "#assert.ts"
 import { doctor } from "#pg/doctor.ts"
-import { lives, postmasters, specOf, stopEvery } from "#pg/make.fixtures.ts"
-import { clusterUp, destroyCluster, stopCluster } from "#pg/make.ts"
+import {
+	adoptedHoldings,
+	foreignCluster,
+	type Holding,
+	holdings,
+	lives,
+	machineBin,
+	postmasters,
+	specOf,
+	stopEvery
+} from "#pg/make.fixtures.ts"
+import { clusterUp, destroyCluster, initCluster, stopCluster } from "#pg/make.ts"
 import { freePort } from "#pg/ports.ts"
+import { adminSql } from "#pg/server.ts"
+import { clusterState } from "#pg/state.ts"
 import { ManifestFile } from "#pg/state.ts"
 import { property } from "#property.ts"
 
@@ -152,6 +164,86 @@ export const lifeOfACluster = property.exhaust(lives, {
 			original: '"hostssl all   all        127.0.0.1/32  scram-sha-256",',
 			replacement: '"hostssl all   all        127.0.0.1/32  trust",',
 			why: "Every role signs in over TCP with no password, which the doctor's SCRAM check refuses; the property fails."
+		}
+	]
+})
+
+/**
+ * A cluster another maker made is adopted whatever it already holds of the spec's owner role, template and owner's
+ * database (`init --adopt-from`, make.ts adoptMember and owned): its data kept where it lies, each database it held the
+ * same database after (its oid kept), and every member then passing the doctor's every check, the owner signing in
+ * with the password the adoption gave it, a database made from the template carrying its extensions. Each case's
+ * clusters are its own, under a home of the case's own, on ports free when the case began.
+ */
+export const adoptingACluster = property.exhaust(holdings, {
+	box: "a cluster another maker made holding nothing of the spec's, its owner role, the role and its template, or all three with the owner's database",
+	needs: {},
+	situations: adoptedHoldings satisfies ReadonlyArray<Holding>,
+	check: (_resources, c) => (holding) =>
+		Effect.gen(function* () {
+			const fs = yield* FileSystem.FileSystem
+			const home = yield* fs.makeTempDirectoryScoped({ prefix: "tpg-" })
+			const port = yield* freePort([])
+			const foreignPort = yield* freePort([port])
+			const spec = specOf({ durability: "kept", members: 1, atOnce: 1 }, port, "adopted_owner")
+			const root = `${home}/.local/var/toolchain-pg/${port}`
+			const data = `${home}/foreign`
+			yield* Effect.addFinalizer(() => stopEvery(root))
+			const before = yield* foreignCluster(spec, holding, data, `${home}/sock`, foreignPort)
+			const environment = ConfigProvider.fromEnvRecord({
+				HOME: home,
+				TOOLCHAIN_PG_CLUSTER: `${port}`
+			})
+			const inCase = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+				Effect.provideService(effect, ConfigProvider.ConfigProvider, environment)
+			const [member] = yield* inCase(initCluster(spec, { kind: "adoptFrom", data }))
+			const checked = yield* inCase(doctor(spec, false))
+			Arr.forEach(checked, ({ port: at, verdicts }) => {
+				deepStrictEqual(
+					Arr.filter(verdicts, (verdict) => verdict.kind === "failed"),
+					[],
+					`member ${at} of a cluster adopted holding ${holding} passes the doctor`
+				)
+			})
+			const state = yield* inCase(clusterState(spec.port))
+			const bin = yield* machineBin
+			const after = yield* adminSql(
+				bin,
+				state.member(member.port),
+				"postgres",
+				["SELECT datname || '=' || oid FROM pg_catalog.pg_database ORDER BY 1"],
+				{ cluster: port, doing: "reading its databases" }
+			)
+			assertTrue(
+				Arr.every(before, (database) => Arr.contains(after, database)),
+				`every database the adopted cluster held is kept: ${Arr.join(before, ", ")} against ${Arr.join(after, ", ")}`
+			)
+			yield* inCase(stopCluster(spec))
+			c.note(holding)
+		}).pipe(Effect.scoped),
+	oracle: {
+		kind: "specification",
+		name: "an adopted cluster keeps every database it held and passes the doctor, whatever it held of the spec's owner, template and owner's database"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/pg/make.ts",
+			original: `held.role ? \`ALTER ROLE \${owner} \${attributes}\` : \`CREATE ROLE \${owner} \${attributes}\``,
+			replacement: `\`CREATE ROLE \${owner} \${attributes}\``,
+			why: "An owner role the adopted cluster holds is created again, which PostgreSQL refuses (42710); the property fails."
+		},
+		{
+			file: "packages/testing/src/pg/make.ts",
+			original: "				...(held.template\n",
+			replacement: "				...(false\n",
+			why: "A template the adopted cluster holds is created again, which PostgreSQL refuses (42P04); the property fails."
+		},
+		{
+			file: "packages/testing/src/pg/make.ts",
+			original: `held.database ? [] : [\`CREATE DATABASE \${owner} OWNER \${owner} TEMPLATE \${template}\`]`,
+			replacement: `[\`CREATE DATABASE \${owner} OWNER \${owner} TEMPLATE \${template}\`]`,
+			why: "The owner's database the adopted cluster holds is created again, which PostgreSQL refuses (42P04); the property fails."
 		}
 	]
 })

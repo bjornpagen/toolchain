@@ -1,6 +1,7 @@
 import { Array as Arr, Effect, FileSystem, Option, String as Str } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { element, finite } from "#gen.ts"
+import { program, succeeded } from "#pg/server.ts"
 import { localCluster, type LocalCluster } from "#pg/spec.ts"
 import { testWorkers } from "#workers.ts"
 
@@ -81,3 +82,108 @@ export const postmasters = (root: string, ports: ReadonlyArray<number>) =>
 			)
 		)
 	)
+
+/**
+ * What a cluster another maker made holds of a spec's owner, template and owner's database before it is adopted
+ * (make.ts heldOf): nothing; the owner role; the role and the template; or all three, as grizzle's old init.sh left
+ * edullm's.
+ */
+export const adoptedHoldings = [
+	"nothing",
+	"the owner",
+	"the owner and template",
+	"all three"
+] as const
+
+export type Holding = (typeof adoptedHoldings)[number]
+
+/** Each holding, one case each. */
+export const holdings = finite((source): Holding => source.draw(element(adoptedHoldings)))
+
+/** The statements the foreign cluster's superuser runs in `postgres` to hold `holding` of `spec`'s, none for nothing. */
+const holdingStatements = (spec: LocalCluster, holding: Holding): ReadonlyArray<string> => [
+	...(holding === "nothing" ? [] : [`CREATE ROLE ${spec.owner} LOGIN PASSWORD 'another maker''s'`]),
+	...(holding === "the owner and template" || holding === "all three"
+		? [
+				`CREATE DATABASE ${spec.template} OWNER ${spec.owner} TEMPLATE template0 ENCODING 'UTF8' LOCALE_PROVIDER builtin BUILTIN_LOCALE 'C.UTF-8' LOCALE 'C.UTF-8'`
+			]
+		: []),
+	...(holding === "all three"
+		? [`CREATE DATABASE ${spec.owner} OWNER ${spec.owner} TEMPLATE template0`]
+		: [])
+]
+
+/** The bin directory of the machine's PostgreSQL, as its pg_config names it: every spec of these properties runs it. */
+export const machineBin = Effect.map(
+	succeeded(
+		{ cluster: 0, doing: "reading pg_config --bindir" },
+		ChildProcess.make("pg_config", ["--bindir"])
+	),
+	Str.trim
+)
+
+/**
+ * A cluster another maker made, at `data`: initdb's data directory of the machine's PostgreSQL (pg_config), started on
+ * its socket alone at `socket` on `port`, given `holding` of `spec`'s by its superuser, and stopped, as adoptFrom takes
+ * a cluster; the oids of every database it then holds, by name, which an adoption keeps.
+ */
+export const foreignCluster = (
+	spec: LocalCluster,
+	holding: Holding,
+	data: string,
+	socket: string,
+	port: number
+) =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		const step = { cluster: port, doing: "making a cluster to adopt" }
+		const bin = yield* machineBin
+		const ran = (name: "initdb" | "pg_ctl" | "psql", args: ReadonlyArray<string>) =>
+			succeeded(step, program(bin, name, args, {}))
+		yield* fs.makeDirectory(socket, { recursive: true })
+		yield* ran("initdb", [
+			"-D",
+			data,
+			"-U",
+			"postgres",
+			"-E",
+			"UTF8",
+			"--locale-provider=builtin",
+			"--builtin-locale=C.UTF-8",
+			"--locale=C.UTF-8",
+			"--auth=trust"
+		])
+		yield* ran("pg_ctl", [
+			"-D",
+			data,
+			"-o",
+			`-p ${port} -k ${socket} -c listen_addresses=''`,
+			"-l",
+			`${data}.log`,
+			"-w",
+			"start"
+		])
+		const psql = (statement: string) =>
+			ran("psql", [
+				"-X",
+				"-q",
+				"-A",
+				"-t",
+				"-v",
+				"ON_ERROR_STOP=1",
+				"-h",
+				socket,
+				"-p",
+				`${port}`,
+				"-U",
+				"postgres",
+				"-d",
+				"postgres",
+				"-c",
+				statement
+			])
+		yield* Effect.forEach(holdingStatements(spec, holding), psql, { discard: true })
+		const oids = yield* psql("SELECT datname || '=' || oid FROM pg_catalog.pg_database ORDER BY 1")
+		yield* ran("pg_ctl", ["-D", data, "-m", "fast", "-w", "stop"])
+		return Arr.filter(Str.split(oids, "\n"), Str.isNonEmpty)
+	})
