@@ -1,4 +1,4 @@
-import { Array as Arr, Effect, Fiber, Option, String as Str } from "effect"
+import { Array as Arr, Effect, Fiber, Option, Result, String as Str } from "effect"
 import { residualOf, type SteeringPhase, type Tally, tallyOf, turnsOf } from "#features.ts"
 import { mutate } from "#mutate.ts"
 import {
@@ -12,7 +12,6 @@ import {
 } from "#random.ts"
 import { type Drawn, type ReplayCase, replayOf, replayTokenOf } from "#replay.ts"
 import {
-	type Batch,
 	type CaseOrder,
 	type CaseOutcome,
 	type CasePhase,
@@ -335,28 +334,92 @@ const tokenCaseOf = (
 	)
 
 /** A case a token names, as an order printed whether it passes or not. */
-const tokenOrderOf = (run: SearchRun, replayed: ReplayCase): Batch => [
-	{
-		property: run.id,
-		chooser: { kind: "forced", values: Float64Array.from(replayed.values) },
-		drawn: replayed.drawn,
-		keep: "nothing",
-		sense: notesOnly,
-		deadline: run.limits.deadline,
-		open: run.limits.open,
-		print: "always"
-	}
-]
+const tokenOrderOf = (run: SearchRun, replayed: ReplayCase): CaseOrder => ({
+	property: run.id,
+	chooser: { kind: "forced", values: Float64Array.from(replayed.values) },
+	drawn: replayed.drawn,
+	keep: "nothing",
+	sense: notesOnly,
+	deadline: run.limits.deadline,
+	open: run.limits.open,
+	print: "always"
+})
 
 /** How a token's case ran: it passed as its token says, or a finding. */
 type TokenRan =
 	| Readonly<{ kind: "passed"; result: CaseResult }>
 	| Readonly<{ kind: "found"; finding: Finding }>
 
+/** A token that names no case of this property, or a requirement it no longer declares: stale. */
+const staleFinding = (phase: CasePhase, where: string, why: string): Finding => ({
+	kind: "stale",
+	phase,
+	where,
+	why
+})
+
 /**
- * Runs the case a token names, in place of every stream: a pass that ran exactly its values passes; a pass that did
- * not, or a token that names another property or a requirement the property no longer declares, is stale; anything
- * else is reported as it ran, unshrunk, with its token again.
+ * How the case a token names ran, judged as its token says: a pass that ran exactly its values passes; a pass that did
+ * not is stale; anything else is reported as it ran, unshrunk, with its token again.
+ */
+const judgedToken = (
+	run: SearchRun,
+	replayed: ReplayCase,
+	result: CaseResult,
+	phase: CasePhase,
+	where: string
+): Effect.Effect<TokenRan> => {
+	const outcome = result.outcome
+	switch (outcome.kind) {
+		case "passed":
+			return Effect.succeed<TokenRan>(
+				ranExactly(result, replayed.values.length)
+					? { kind: "passed", result }
+					: {
+							kind: "found",
+							finding: staleFinding(
+								phase,
+								where,
+								`${where} passed, but not as its token says: ${drewInstead(result, replayed.values.length)}; replay it from a fresh failure`
+							)
+						}
+			)
+		case "failed":
+			return Effect.succeed<TokenRan>({
+				kind: "found",
+				finding: {
+					kind: "falsified",
+					phase,
+					where,
+					printed: outcome.printed,
+					failure: outcome.failure,
+					shrinking: { kind: "unshrunk" },
+					token: tokenOf(run.id, replayed.drawn, outcome.tape)
+				}
+			})
+		case "misused":
+		case "hung":
+		case "lost":
+		case "unopened":
+			return Effect.map(
+				findingOf(run, result, {
+					phase,
+					where,
+					drawn: replayed.drawn,
+					shrink: { kind: "unshrunk" }
+				}),
+				(found): TokenRan =>
+					Option.match(found, {
+						onNone: () => ({ kind: "passed", result }),
+						onSome: (finding) => ({ kind: "found", finding })
+					})
+			)
+	}
+}
+
+/**
+ * Runs the case a token names, in place of every stream: a token that names another property or a requirement the
+ * property no longer declares is stale; the case it names is judged as its token says (judgedToken).
  */
 const tokenRun = (
 	run: SearchRun,
@@ -367,60 +430,12 @@ const tokenRun = (
 ): Effect.Effect<TokenRan> =>
 	Effect.matchEffect(tokenCaseOf(run, searched, token), {
 		onFailure: (why) =>
-			Effect.succeed<TokenRan>({ kind: "found", finding: { kind: "stale", phase, where, why } }),
+			Effect.succeed<TokenRan>({ kind: "found", finding: staleFinding(phase, where, why) }),
 		onSuccess: (replayed) =>
-			Effect.flatMap(run.evaluator.evaluate([tokenOrderOf(run, replayed)], stops), (batches) =>
+			Effect.flatMap(run.evaluator.evaluate([[tokenOrderOf(run, replayed)]], stops), (batches) =>
 				Option.match(Arr.head(Arr.flatten(batches)), {
 					onNone: () => Effect.die(`${run.id}: ${where} came back with no result`),
-					onSome: (result): Effect.Effect<TokenRan> => {
-						const outcome = result.outcome
-						switch (outcome.kind) {
-							case "passed":
-								return Effect.succeed<TokenRan>(
-									ranExactly(result, replayed.values.length)
-										? { kind: "passed", result }
-										: {
-												kind: "found",
-												finding: {
-													kind: "stale",
-													phase,
-													where,
-													why: `${where} passed, but not as its token says: ${drewInstead(result, replayed.values.length)}; replay it from a fresh failure`
-												}
-											}
-								)
-							case "failed":
-								return Effect.succeed<TokenRan>({
-									kind: "found",
-									finding: {
-										kind: "falsified",
-										phase,
-										where,
-										printed: outcome.printed,
-										failure: outcome.failure,
-										shrinking: { kind: "unshrunk" },
-										token: tokenOf(run.id, replayed.drawn, outcome.tape)
-									}
-								})
-							case "misused":
-							case "hung":
-							case "lost":
-							case "unopened":
-								return Effect.map(
-									findingOf(run, result, {
-										phase,
-										where,
-										drawn: replayed.drawn,
-										shrink: { kind: "unshrunk" }
-									}),
-									(found): TokenRan =>
-										Option.match(found, {
-											onNone: () => ({ kind: "passed", result }),
-											onSome: (finding) => ({ kind: "found", finding })
-										})
-								)
-						}
-					}
+					onSome: (result) => judgedToken(run, replayed, result, phase, where)
 				})
 			)
 	})
@@ -428,19 +443,48 @@ const tokenRun = (
 /** A search's verdict on a finding. */
 const failed = (finding: Finding): Verdict => ({ kind: "failed", finding })
 
-/** The kept tokens' cases, in the order kept, before any stream: the first that does not pass as kept is the finding. */
-const keptFinding = (run: SearchRun, searched: Searched): Effect.Effect<Option.Option<Finding>> =>
+/**
+ * The kept tokens' cases, in the order kept, before any stream, all sent at once, `group` to a batch (a batched
+ * property's evaluation, one otherwise), as a window's cases are: the first that does not pass as kept is the finding.
+ * A batch whose case fails ends the evaluation, and every case before it in kept order was judged, so the cases after
+ * it, unrun, are never read.
+ */
+const keptFinding = (
+	run: SearchRun,
+	searched: Searched,
+	group: number
+): Effect.Effect<Option.Option<Finding>> =>
 	Effect.gen(function* () {
-		for (const kept of searched.kept) {
-			const ran = yield* tokenRun(
-				run,
-				searched,
-				kept.token,
-				"kept",
-				`the kept case "${kept.reason}"`
-			)
-			if (ran.kind === "found") {
-				return Option.some(ran.finding)
+		const read = yield* Effect.forEach(searched.kept, (kept) =>
+			Effect.map(Effect.result(tokenCaseOf(run, searched, kept.token)), (decoded) => ({
+				where: `the kept case "${kept.reason}"`,
+				decoded
+			}))
+		)
+		const runnable = Arr.flatMap(read, ({ decoded }) =>
+			Result.isSuccess(decoded) ? [decoded.success] : []
+		)
+		const batches = Arr.chunksOf(
+			Arr.map(runnable, (replayed) => tokenOrderOf(run, replayed)),
+			group
+		)
+		const evaluated = Arr.isReadonlyArrayNonEmpty(batches)
+			? yield* run.evaluator.evaluate(batches, stops)
+			: []
+		const results = Arr.flatten(evaluated)
+		let ran = 0
+		for (const { where, decoded } of read) {
+			if (Result.isFailure(decoded)) {
+				return Option.some(staleFinding("kept", where, decoded.failure))
+			}
+			const result = Arr.get(results, ran)
+			ran += 1
+			if (Option.isNone(result)) {
+				return yield* Effect.die(`${run.id}: ${where} came back with no result`)
+			}
+			const judged = yield* judgedToken(run, decoded.success, result.value, "kept", where)
+			if (judged.kind === "found") {
+				return Option.some(judged.finding)
 			}
 		}
 		return Option.none()
@@ -599,7 +643,20 @@ const judgedStream = (
 	})
 
 /**
- * An exploration's search, `group` cases to a batch: kept tokens first; then the witnesses, the floor stream and, while
+ * How an exploration's cases are drawn and checked: at least `window` of them drawn under one snapshot of what is
+ * pending and run at once (the runner's steering window when it is more), a constant of the property, never of the
+ * machine, so one seed draws the same cases at any width; and at most `group` of them to an evaluation, where they run
+ * and never what they are, a batched property's batch (a type tier's program), one otherwise. A window of more cases
+ * than a group is checked in several evaluations at once, and a stream is sent in series of a group's cases or the
+ * runner's window, whichever is more.
+ */
+export type Batching = Readonly<{ window: number; group: number }>
+
+/** An exploration of one case to an evaluation, its window the runner's. */
+export const oneByOne: Batching = { window: 1, group: 1 }
+
+/**
+ * An exploration's search, its cases drawn and checked as `batching` says: kept tokens first, all sent at once; then the witnesses, the floor stream and, while
  * a required situation is unreached, the steered phase grown from it, both fixed by the property's identity; then,
  * for a full run, the rotating stream, fresh each run seed. A property that requires situations runs its witnesses in
  * windows of the runner's steering window, each drawn under the snapshot of what was pending when its window began,
@@ -611,22 +668,24 @@ const judgedStream = (
  * spreads where that pays, with no round trip between its windows. Results are judged in case order, so width changes how fast a search runs and never what it finds. A failing case is shrunk by editing its tape,
  * property draws included, under the steering it was drawn under. The coverage verdict is judged on the witnesses
  * alone, before the rotating stream runs, so it is the same on every run seed. The residual comes from the rotating
- * stream's independent cases alone. A batched property's window holds one batch at least, so a batch is never cut
- * short by its window.
+ * stream's independent cases alone. A batched property's window holds its batches whole, each of at most `group`
+ * cases, so a window of several runs them at once and a batch is never cut short by its window.
  */
 export const exploreSearch =
-	(searched: Searched, group: number) =>
+	(searched: Searched, batching: Batching) =>
 	(run: SearchRun): Effect.Effect<Verdict> =>
 		Effect.gen(function* () {
+			const { group } = batching
 			const phases = PHASES[run.reach]
-			const kept = phases.witnesses ? yield* keptFinding(run, searched) : Option.none()
+			const kept = phases.witnesses ? yield* keptFinding(run, searched, group) : Option.none()
 			if (Option.isSome(kept)) {
 				return failed(kept.value)
 			}
 			const { situations } = searched
 			const { limits } = run
 			const floorCases = phases.witnesses ? limits.floor : 0
-			const window = Math.max(limits.window, group)
+			const window = Math.max(limits.window, batching.window)
+			const unit = Math.max(limits.window, group)
 			const required = Arr.isReadonlyArrayNonEmpty(situations)
 			const keep = required ? "tape" : "nothing"
 			const floor = floorSeed(run.id)
@@ -639,11 +698,11 @@ export const exploreSearch =
 			let cases = 0
 			const rotating = rotatingSeed(run.seed, floor)
 			const rotatingSeries = phases.rotating
-				? streamSeriesOf(run, rotating, limits.runs, window, group, { kind: "unsteered" })
+				? streamSeriesOf(run, rotating, limits.runs, unit, group, { kind: "unsteered" })
 				: []
 			const floorSeries = required
 				? []
-				: streamSeriesOf(run, floor, floorCases, window, group, { kind: "steered", pending: [] })
+				: streamSeriesOf(run, floor, floorCases, unit, group, { kind: "steered", pending: [] })
 			const floorSent = yield* Effect.forkChild(dispatched(run, floorSeries))
 			const rotatingSent = yield* Effect.forkChild(
 				required ? Effect.succeedNone : Effect.asSome(dispatched(run, rotatingSeries))
@@ -829,7 +888,7 @@ export const exhaustSearch =
 	(searched: Searched, box: string, group: number) =>
 	(run: SearchRun): Effect.Effect<Verdict> =>
 		Effect.gen(function* () {
-			const kept = yield* keptFinding(run, searched)
+			const kept = yield* keptFinding(run, searched, group)
 			if (Option.isSome(kept)) {
 				return failed(kept.value)
 			}

@@ -394,7 +394,8 @@ export const failingInCases = (
 				property: property.batched(int(0, 9), {
 					needs,
 					situations: [],
-					size: 4,
+					window: 4,
+					batches: 1,
 					checkAll: (resources) => (cases) =>
 						Effect.andThen(
 							Effect.sync(() => Arr.map(cases, ([, c]) => drawn(c))),

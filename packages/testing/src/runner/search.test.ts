@@ -42,6 +42,8 @@ import type { CasePhase } from "#runner/protocol.ts"
 import {
 	aimedOneSearch,
 	aimedSearch,
+	batchedOf,
+	batchedShapes,
 	aimedSketches,
 	aimRecorder,
 	caseOf,
@@ -51,6 +53,7 @@ import {
 	drawsFrom,
 	drawsOnce,
 	endless,
+	evaluationsAt,
 	failsAfter,
 	fidelityRun,
 	fidelitySearch,
@@ -166,8 +169,8 @@ export const streams = property.explore(
 		kills: [
 			{
 				file: "packages/testing/src/runner/search.ts",
-				original: "streamSeriesOf(run, floor, floorCases, window",
-				replacement: "streamSeriesOf(run, floor, floorCases - 1, window",
+				original: "streamSeriesOf(run, floor, floorCases, unit",
+				replacement: "streamSeriesOf(run, floor, floorCases - 1, unit",
 				why: "The floor stream runs one case fewer than its limit (explore-floor-rounded-down, re-anchored from explore.ts's floor count to the floor of a property that requires no situation, sent as series); the streams property fails."
 			}
 		]
@@ -255,6 +258,78 @@ export const seriesPerWorker = property.explore(
 	}
 )
 
+export const batchedWindows = property.explore(batchedShapes, {
+	needs: {},
+	situations: [
+		"a window checked in several batches",
+		"kept cases sent together",
+		"a required residue"
+	],
+	check: (_resources, c) => (shape) =>
+		Effect.gen(function* () {
+			const id = "batched/inner"
+			const group = Math.ceil(shape.window / shape.batches)
+			const run = {
+				...fullRun(id, shape.seed),
+				limits: {
+					...runnerLimits,
+					runs: shape.runs,
+					floor: Math.ceil(shape.runs / 4),
+					steered: shape.runs
+				},
+				width: shape.width
+			}
+			const split = batchedOf(id, shape, shape.batches)
+			const whole = batchedOf(id, shape, 1)
+			const { verdict, sent } = yield* evaluationsAt(split.property, run)
+			const once = yield* searchedAt(whole.property, run)
+			const larger = Arr.filter(split.checked(), (size) => size > group)
+			deepStrictEqual(
+				larger,
+				[],
+				`no batch holds more than ⌈${shape.window} / ${shape.batches}⌉ cases`
+			)
+			if (Arr.isReadonlyArrayNonEmpty(shape.kept)) {
+				deepStrictEqual(Arr.head(sent), Option.some(cutOf(shape.kept.length, group)))
+			}
+			const summary = (v: typeof verdict) => ({
+				kind: verdictKind(v),
+				cases: v.kind === "explored" ? v.cases : -1
+			})
+			deepStrictEqual(summary(verdict), summary(once))
+			if (split.checked().length > whole.checked().length) {
+				c.note("a window checked in several batches")
+			}
+			if (shape.kept.length > 1 && group > 1) {
+				c.note("kept cases sent together")
+			}
+			if (shape.required) {
+				c.note("a required residue")
+			}
+		}),
+	oracle: {
+		kind: "second-implementation",
+		name: "the same search checking each window in one batch, and no batch more than its share of the window"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/property.ts",
+			original: "\tgroup: Math.ceil(spec.window / spec.batches)",
+			replacement: "\tgroup: spec.window",
+			why: "A batched property checks each window in one batch whatever its batches, as before: a type tier's window of 150 cases is one program on one worker, its windows run one after another; this property fails."
+		},
+		{
+			file: "packages/testing/src/runner/search.ts",
+			original:
+				"\t\tconst batches = Arr.chunksOf(\n\t\t\tArr.map(runnable, (replayed) => tokenOrderOf(run, replayed)),\n\t\t\tgroup\n\t\t)",
+			replacement:
+				"\t\tconst batches = Arr.chunksOf(\n\t\t\tArr.map(runnable, (replayed) => tokenOrderOf(run, replayed)),\n\t\t\t1\n\t\t)",
+			why: "Each kept case is a batch of its own, as before: a type tier's five kept cases are five programs, each paying its compiler's fixed load; this property fails."
+		}
+	]
+})
+
 export const shrunkDraws = property.explore(
 	(source) => ({ threshold: source.draw(int(1, 500)), seed: source.draw(seeds) }),
 	{
@@ -322,8 +397,8 @@ export const staleReplays = property.explore(
 		kills: [
 			{
 				file: "packages/testing/src/runner/search.ts",
-				original: "\t\t\t\t\t\t\t\t\tranExactly(result, replayed.values.length)",
-				replacement: "\t\t\t\t\t\t\t\t\t!result.overrun",
+				original: "\t\t\t\tranExactly(result, replayed.values.length)",
+				replacement: "\t\t\t\t!result.overrun",
 				why: "A replay whose property leaves some of its token's draws over passes, its leftover draws accepted (replay-leftover-accepted, re-anchored from explore.ts to the new search's token run); the stale replay property fails."
 			}
 		]
@@ -436,9 +511,9 @@ export const keptStale = property.explore(
 		kills: [
 			{
 				file: "packages/testing/src/runner/search.ts",
-				original: '\t\tchooser: { kind: "forced", values: Float64Array.from(replayed.values) },',
+				original: '\tchooser: { kind: "forced", values: Float64Array.from(replayed.values) },',
 				replacement:
-					'\t\tchooser: { kind: "prefix", values: Float64Array.from(replayed.values), rest: { kind: "simplest" } },',
+					'\tchooser: { kind: "prefix", values: Float64Array.from(replayed.values), rest: { kind: "simplest" } },',
 				why: "A token's case whose draws run out is filled in with simplest values, not failed as stale (kept-ran-out-filled, re-anchored from explore.ts's kept chooser to the new search's token order); the stale kept property fails."
 			}
 		]
@@ -931,8 +1006,8 @@ export const replayFidelity = property.explore(fidelitySketches, {
 	kills: [
 		{
 			file: "packages/testing/src/runner/search.ts",
-			original: '\t\tdrawn: replayed.drawn,\n\t\tkeep: "nothing",',
-			replacement: '\t\tdrawn: { kind: "unsteered" },\n\t\tkeep: "nothing",',
+			original: '\tdrawn: replayed.drawn,\n\tkeep: "nothing",',
+			replacement: '\tdrawn: { kind: "unsteered" },\n\tkeep: "nothing",',
 			why: "A replay runs its case unsteered, whatever steering its token records (replay-unsteered, re-anchored from explore.ts to the new search's token order); the replay fidelity property fails."
 		}
 	]

@@ -5,6 +5,7 @@ import {
 	type Aimed,
 	aimed,
 	array,
+	boolean,
 	constant,
 	element,
 	finite,
@@ -445,6 +446,101 @@ export const rareByDraw = (magic: number, kept: ReadonlyArray<Kept>): Property =
 		oracle: planted,
 		kept,
 		kills: []
+	})
+
+/** A batched inner search's shape: its window, its batches, whether it requires the residues, its kept values. */
+export type BatchedShape = Readonly<{
+	window: number
+	batches: number
+	required: boolean
+	kept: ReadonlyArray<number>
+	runs: number
+	width: number
+	seed: number
+}>
+
+/**
+ * Batched inner searches over 0..99: windows of 1 to 40 cases checked in 1 to 8 batches, required residues or none, up
+ * to four kept values, up to 60 rotating cases.
+ */
+export const batchedShapes: Gen<BatchedShape> = (source) => ({
+	window: source.draw(int(1, 40)),
+	batches: source.draw(int(1, 8)),
+	required: source.draw(boolean),
+	kept: source.draw(array(streamSpace, { min: 0, max: 4 })),
+	runs: source.draw(int(0, 60)),
+	width: source.draw(widths),
+	seed: source.draw(seeds)
+})
+
+/**
+ * A batched inner search over 0..99 (property.batched) of `shape`'s window and batches, noting each value's residue
+ * modulo seven (required, when the shape requires them) and keeping each of the shape's kept values, every case
+ * passing; with the size of each batch its checkAll was given, in the order checked.
+ */
+export const batchedOf = (
+	id: string,
+	shape: BatchedShape,
+	batches: number
+): Readonly<{ checked: () => ReadonlyArray<number>; property: Property }> => {
+	const checked: Array<number> = []
+	return {
+		checked: () => checked,
+		property: property.batched(streamSpace, {
+			needs: {},
+			situations: shape.required ? RESIDUES : [],
+			window: shape.window,
+			batches,
+			checkAll: () => (cases) =>
+				Effect.sync(() => {
+					checked.push(cases.length)
+					return Arr.map(cases, ([value, c]) => {
+						c.note(residueOf(value))
+						return Effect.void
+					})
+				}),
+			oracle: planted,
+			kept: Arr.map(shape.kept, (value) =>
+				keptOf(id, { drawn: { kind: "unsteered" }, values: [value] })
+			),
+			kills: []
+		})
+	}
+}
+
+/**
+ * An inner search's verdict and the batches each of its evaluator's `evaluate` calls sent, in order, each by how many
+ * cases it holds, on an evaluator of the run's width.
+ */
+export const evaluationsAt = (
+	inner: Property,
+	run: InnerRun
+): Effect.Effect<
+	Readonly<{ verdict: Verdict; sent: ReadonlyArray<ReadonlyArray<number>> }>,
+	never,
+	InProcess
+> =>
+	Effect.gen(function* () {
+		const evaluator = yield* widthEvaluator(inner, run.width)
+		const sent: Array<ReadonlyArray<number>> = []
+		const recording: Evaluator = {
+			...evaluator,
+			evaluate: (batches, stop) =>
+				Effect.andThen(
+					Effect.sync(() => {
+						sent.push(Arr.map(batches, (batch) => batch.length))
+					}),
+					evaluator.evaluate(batches, stop)
+				)
+		}
+		const verdict = yield* inner.search({
+			id: run.id,
+			seed: run.seed,
+			reach: run.reach,
+			limits: run.limits,
+			evaluator: recording
+		})
+		return { verdict, sent }
 	})
 
 /** A kept regression of `id`'s case `replayed`, kept today. */

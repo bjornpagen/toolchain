@@ -24,7 +24,14 @@ import {
 } from "#runner/case.ts"
 import { keptOf } from "#runner/keep.ts"
 import type { SearchRun, Sense, Verdict } from "#runner/protocol.ts"
-import { exhaustSearch, exploreSearch, replay, type Searched } from "#runner/search.ts"
+import {
+	type Batching,
+	exhaustSearch,
+	exploreSearch,
+	oneByOne,
+	replay,
+	type Searched
+} from "#runner/search.ts"
 import type { ModuleClosure, NeedFailed, WorkerIndex } from "#runner/services.ts"
 
 export type { Aimed, Case, FiniteSpace, Oracle, Space, Steered }
@@ -185,15 +192,20 @@ export type ExhaustSpec<S, F extends string, N extends Needs, E> = Stated<S, F, 
 
 /**
  * What a batched property states beside its space: cases checked a batch at a time in one evaluation (a type-tier
- * batch checked in one compiler run), still drawn, shrunk alone and parallel across batches. `size` is how many cases
- * one batch holds; each case's own effect, from `checkAll`, is its verdict.
+ * batch checked in one compiler run), still drawn, shrunk alone and parallel across batches. `window` is how many cases
+ * its search draws under one snapshot of what is pending and runs at once (the runner's steering window when that is
+ * more), a constant of the property, never of the machine, so one seed draws the same cases at any width. `batches` is
+ * how many evaluations a window of them is checked in at once, each of at most ⌈window / batches⌉ cases: where its cases
+ * run, never what they are, so a property may derive it from the machine (a type tier's programs spread over its
+ * cores, each paying its compiler's fixed load). Each case's own effect, from `checkAll`, is its verdict.
  */
 export type BatchedSpec<S, F extends string, N extends Needs, E> = Omit<
 	Stated<S, F, N, E>,
 	"check"
 > &
 	Readonly<{
-		size: number
+		window: number
+		batches: number
 		checkAll: (
 			resources: Resources<N>
 		) => (
@@ -379,7 +391,7 @@ const exploredAs =
 			guide: searched.guide,
 			oracle: spec.oracle,
 			kills: spec.kills,
-			...boundedBy(spec, exploreSearch(searched, 1), replay(searched)),
+			...boundedBy(spec, exploreSearch(searched, oneByOne), replay(searched)),
 			keep: keepingOf(drawing, aimPlacesOf(spec.space, spec.situations)),
 			ready: casesReadied(drawing, spec.needs, spec.check)
 		})
@@ -416,6 +428,12 @@ const boundedBy = (
 }
 
 /** The constructors a test module builds its properties with, one per kind of search. */
+/** A batched property's window, and its evaluations of at most ⌈window / batches⌉ cases each. */
+const batchingOf = (spec: Readonly<{ window: number; batches: number }>): Batching => ({
+	window: spec.window,
+	group: Math.ceil(spec.window / spec.batches)
+})
+
 export const property = {
 	/** A sampled search of `space`, steered toward its required situations. */
 	explore: <S, const F extends string, N extends Needs, E>(
@@ -462,7 +480,7 @@ export const property = {
 			guide: searched.guide,
 			oracle: spec.oracle,
 			kills: spec.kills,
-			...boundedBy(spec, exploreSearch(searched, spec.size), replay(searched)),
+			...boundedBy(spec, exploreSearch(searched, batchingOf(spec)), replay(searched)),
 			keep: keepingOf(drawing, aimPlacesOf(space, spec.situations)),
 			ready: batchesReadied(drawing, spec.needs, checkAll)
 		})
@@ -489,7 +507,11 @@ export const property = {
 			guide: searched.guide,
 			oracle: spec.oracle,
 			kills: spec.kills,
-			...boundedBy(spec, exhaustSearch(searched, spec.box, spec.size), replay(searched)),
+			...boundedBy(
+				spec,
+				exhaustSearch(searched, spec.box, batchingOf(spec).group),
+				replay(searched)
+			),
 			keep: keepingOf(drawing, []),
 			ready: batchesReadied(drawing, spec.needs, checkAll)
 		})
