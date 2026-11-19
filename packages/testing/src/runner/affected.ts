@@ -49,6 +49,9 @@ import {
 	type RunOutcome,
 	runPackage,
 	runSeedLogged,
+	type Settled,
+	searchedPassed,
+	unjudgeable,
 	WORKER_ENTRY
 } from "#runner/run.ts"
 
@@ -323,12 +326,6 @@ const weighingOf = (packageRoot: string, repository: string, selected: ReadonlyA
 		return { repository, packageRoot, cache: verdicts, weighed } satisfies Weighing
 	})
 
-/**
- * What a run settles to: a line for each kill (judged now, or a cached verdict), and the properties that passed with
- * every kill turning them red.
- */
-type Settled = Readonly<{ lines: ReadonlyArray<string>; passing: ReadonlySet<PropertyId> }>
-
 /** A kill whose verdict the cache already holds: it turned its property red under the same closure and file. */
 type CachedKill = Readonly<{ property: PropertyId; kill: Kill }>
 
@@ -444,14 +441,6 @@ export const killVerdictsAt = (root: string, selected: ReadonlyArray<string>) =>
 		return killVerdictsOf(weighing)
 	})
 
-/** Whether every run of a property (on every stack it ran on) passed its search, and it ran at all. */
-const searchedPassed = (outcome: RunOutcome, id: PropertyId): boolean => {
-	const runs = Arr.filter(outcome.properties, (ran) => ran.id === id)
-	return (
-		Arr.isReadonlyArrayNonEmpty(runs) && Arr.every(runs, (ran) => ran.verdict.kind !== "failed")
-	)
-}
-
 /** The kills of `subjects` judged on leased workers (MUTATOR's killsOf), in the checkout of `repository`. */
 const judgedOf = (repository: string, packageRoot: string, subjects: ReadonlyArray<Discovered>) =>
 	Effect.gen(function* () {
@@ -527,7 +516,8 @@ const recorded = (
  * The verdict cache's side of `toolchain-test run`, the full run per production version: it reads no cached pass, so
  * every property `selected` names ran (`outcome`); this judges the kills of each whose searches passed and records every
  * verdict, so a property whose kills did not all turn red is a failure of the run, never a cached pass. A package in no
- * git repository has no checkout to mutate and no verdict key: its kills are not judged and nothing is recorded. A
+ * git repository has no checkout to mutate and no verdict key: no kill of its can be judged, so each fails its
+ * property (run.ts unjudgeable), and nothing is recorded. A
  * package whose properties have no verdict key (no lockfile, a module that resolves to nothing) has its kills judged
  * and records nothing. Each says so once, and the run's verdict is its searches' and kills'.
  */
@@ -538,10 +528,7 @@ export const recordedRun = (root: string, selected: ReadonlyArray<string>, outco
 		const passed = Arr.filter(discovered, (found) => searchedPassed(outcome, found.id))
 		const ids = Arr.map(discovered, (found) => found.id)
 		if (Option.isNone(grounds.repository)) {
-			yield* Console.log(
-				`kills not judged and verdicts not recorded: ${root} lies in no git repository`
-			)
-			return { lines: [], passing: passingOf(outcome, ids, []) } satisfies Settled
+			return yield* unjudgeable(outcome, `${root} lies in no git repository`)
 		}
 		const repository = grounds.repository.value
 		const weighing = yield* Effect.result(weighingOf(grounds.packageRoot, repository, selected))

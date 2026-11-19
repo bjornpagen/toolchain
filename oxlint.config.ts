@@ -129,7 +129,8 @@ export default defineConfig(
 			{
 				files: [
 					"packages/testing/src/runner/cli.ts",
-					"packages/testing/src/runner/module-closure.ts"
+					"packages/testing/src/runner/module-closure.ts",
+					"packages/testing/src/runner/settle.ts"
 				],
 				rules: active({
 					/** The modules that load TypeScript's native compiler, an optional peer of the library (closure.ts, mutants.ts),

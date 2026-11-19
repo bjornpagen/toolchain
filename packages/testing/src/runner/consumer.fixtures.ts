@@ -14,23 +14,37 @@ import { boolean, element, type FiniteSpace, finite } from "#gen.ts"
 /**
  * Consumer packages for consumer.test.ts: a tiny package with one passing property, laid out as a repository holds the
  * library (a workspace link to the library's files in the repository, as grizzle's vendor/toolchain; or installed
- * under node_modules), in a git repository or not, with a lockfile or not. Each is written in a scratch directory from
- * this checkout's own library files, and run in a child process through the library's loadPackage, its inline
- * evaluator and its recordedRun, so the run is the one `toolchain-test run` does, with no pool nested in the case.
+ * under node_modules), in a git repository or not, with a lockfile or not, with TypeScript installed or not. Each is
+ * written in a scratch directory from this checkout's own library files, and run in a child process through the
+ * library's loadPackage, its inline evaluator and its settledRun, so the run is the one `toolchain-test run` does, with
+ * no pool nested in the case. Where no run can judge a kill (no git repository, no TypeScript) the package holds a
+ * second passing property, with a kill.
  */
 
-/** How a consumer holds the library, and whether it lies in a git repository and has a lockfile. */
-export type Layout = Readonly<{ library: "link" | "installed"; git: boolean; lockfile: boolean }>
+/**
+ * How a consumer holds the library, whether it lies in a git repository and has a lockfile, and whether TypeScript, the
+ * closure hasher's optional peer, is installed.
+ */
+export type Layout = Readonly<{
+	library: "link" | "installed"
+	git: boolean
+	lockfile: boolean
+	typescript: boolean
+}>
 
-/** Every layout: the library linked or installed, in git or not, with a lockfile or not. */
+/** Every layout: the library linked or installed, in git or not, with a lockfile or not, with TypeScript or not. */
 export const layouts: FiniteSpace<Layout> = finite((source) => ({
 	library: source.draw(element(["link", "installed"])),
 	git: source.draw(boolean),
-	lockfile: source.draw(boolean)
+	lockfile: source.draw(boolean),
+	typescript: source.draw(boolean)
 }))
 
-/** Whether a layout's properties have a verdict key: a git repository and its lockfile. */
-export const keyed = (layout: Layout): boolean => layout.git && layout.lockfile
+/** Whether a layout's kills can be judged: it lies in a git repository and the closure hasher loads. */
+export const judgeable = (layout: Layout): boolean => layout.git && layout.typescript
+
+/** Whether a layout's properties have their verdicts recorded: kills judged, and a lockfile for the key. */
+export const keyed = (layout: Layout): boolean => judgeable(layout) && layout.lockfile
 
 /** What a layout exercises. */
 export type LayoutSituation =
@@ -38,6 +52,7 @@ export type LayoutSituation =
 	| "an installed library with a verdict key"
 	| "a package in no git repository"
 	| "a package with no lockfile"
+	| "a package with no TypeScript"
 
 /** The situations a layout reaches. */
 export const layoutSituationsOf = (layout: Layout): ReadonlyArray<LayoutSituation> => [
@@ -49,7 +64,8 @@ export const layoutSituationsOf = (layout: Layout): ReadonlyArray<LayoutSituatio
 			]
 		: []),
 	...(layout.git ? [] : ["a package in no git repository" as const]),
-	...(layout.lockfile ? [] : ["a package with no lockfile" as const])
+	...(layout.lockfile ? [] : ["a package with no lockfile" as const]),
+	...(layout.typescript ? [] : ["a package with no TypeScript" as const])
 ]
 
 /** The repository a package of it lies in: the toolchain's root, two directories above packages/<name>. */
@@ -156,7 +172,10 @@ const lockfileOf = (text: string, layout: Layout): string => {
 	return `${first}\n---\n${Arr.join(snapshots, "\n")}`
 }
 
-/** The consumer's files: its manifest, runner config, one passing property and the script that runs it inline. */
+/**
+ * The consumer's files: its manifest, runner config, one passing property, a passing property with a kill where no kill
+ * can be judged, and the script that runs them inline.
+ */
 const filesOf = (layout: Layout): ReadonlyArray<readonly [path: string, text: string]> => {
 	const library =
 		layout.library === "link" ? "./vendor/testing" : "./node_modules/@bjornpagen/testing"
@@ -173,9 +192,17 @@ const filesOf = (layout: Layout): ReadonlyArray<readonly [path: string, text: st
 			"test/sums.test.ts",
 			`import { Effect } from "effect"\nimport { int } from "@bjornpagen/testing/gen"\nimport { property } from "@bjornpagen/testing/property"\n\nexport const sums = property.explore(int(0, 9), {\n\tneeds: {},\n\tsituations: [],\n\tcheck: () => (a) => (a + (9 - a) === 9 ? Effect.void : Effect.die("not nine")),\n\toracle: { kind: "specification", name: "a + (9 - a) is 9" },\n\tkept: [],\n\tkills: []\n})\n`
 		],
+		...(judgeable(layout)
+			? []
+			: [
+					[
+						"test/killed.test.ts",
+						`import { Effect } from "effect"\nimport { int } from "@bjornpagen/testing/gen"\nimport { property } from "@bjornpagen/testing/property"\n\nexport const killed = property.explore(int(0, 9), {\n\tneeds: {},\n\tsituations: [],\n\tcheck: () => (a) => (a * 0 === 0 ? Effect.void : Effect.die("not zero")),\n\toracle: { kind: "specification", name: "a * 0 is 0" },\n\tkept: [],\n\tkills: [{ file: "test/killed.test.ts", original: "a * 0 === 0", replacement: "a * 1 === 0", why: "a kill no run here can judge" }]\n})\n`
+					] as const
+				]),
 		[
 			"run-inline.mjs",
-			`import * as NodeServices from "@effect/platform-node/NodeServices"\nimport { Effect } from "effect"\nimport { recordedRun } from "${library}/src/runner/affected.ts"\nimport { inlineRun, searchInline } from "${library}/src/runner/inline.ts"\nimport { loadPackage } from "${library}/src/runner/run.ts"\n\nconst root = process.cwd()\nconst program = Effect.gen(function* () {\n\tconst { discovered } = yield* loadPackage(root, [])\n\tconst properties = yield* Effect.forEach(discovered, (found) =>\n\t\tEffect.map(Effect.scoped(searchInline(found.property, inlineRun(found.id, 1))), (verdict) => ({ id: found.id, stack: "default", label: found.id, module: found.module, kind: found.property.kind, oracle: found.property.oracle, kills: found.property.kills, verdict, millis: 0 }))\n\t)\n\tconst settled = yield* Effect.scoped(recordedRun(root, [], { properties, millis: 0, workers: [] }))\n\tprocess.stdout.write(JSON.stringify({ verdicts: properties.map((ran) => ran.verdict.kind), passing: settled.passing.size }) + "\\n")\n})\nEffect.runPromise(program.pipe(Effect.provide(NodeServices.layer))).catch((cause) => {\n\tconsole.error(cause)\n\tprocess.exitCode = 1\n})\n`
+			`import * as NodeServices from "@effect/platform-node/NodeServices"\nimport { Effect } from "effect"\nimport { inlineRun, searchInline } from "${library}/src/runner/inline.ts"\nimport { loadPackage } from "${library}/src/runner/run.ts"\nimport { settledRun } from "${library}/src/runner/settle.ts"\n\nconst root = process.cwd()\nconst program = Effect.gen(function* () {\n\tconst { discovered } = yield* loadPackage(root, [])\n\tconst properties = yield* Effect.forEach(discovered, (found) =>\n\t\tEffect.map(Effect.scoped(searchInline(found.property, inlineRun(found.id, 1))), (verdict) => ({ id: found.id, stack: "default", label: found.id, module: found.module, kind: found.property.kind, oracle: found.property.oracle, kills: found.property.kills, verdict, millis: 0 }))\n\t)\n\tconst settled = yield* Effect.scoped(settledRun(root, [], { properties, millis: 0, workers: [] }))\n\tprocess.stdout.write(JSON.stringify({ verdicts: properties.map((ran) => ran.verdict.kind), passing: settled.passing.size }) + "\\n")\n})\nEffect.runPromise(program.pipe(Effect.provide(NodeServices.layer))).catch((cause) => {\n\tconsole.error(cause)\n\tprocess.exitCode = 1\n})\n`
 		]
 	]
 }
@@ -184,7 +211,8 @@ const filesOf = (layout: Layout): ReadonlyArray<readonly [path: string, text: st
  * Writes a consumer of `layout` into `directory` from the checkout whose testing package is at `packageDirectory`
  * (Checkout.dir, so a mutant the mutator writes into a worker tree is in the library the consumer holds): its files;
  * the library's packages, linked from vendor/ or installed as files under node_modules/@bjornpagen; every other package
- * of the checkout's node_modules linked in; its lockfile when it has one; and a git repository when it lies in one.
+ * of the checkout's node_modules linked in, TypeScript's only when it has TypeScript; its lockfile when it has one; and
+ * a git repository when it lies in one.
  */
 export const consumerIn = Effect.fn("consumerIn")(function* (
 	directory: string,
@@ -213,7 +241,11 @@ export const consumerIn = Effect.fn("consumerIn")(function* (
 		}
 	}
 	for (const name of yield* fs.readDirectory(`${checkout}/node_modules`)) {
-		if (name !== "@bjornpagen" && !Str.startsWith(".")(name)) {
+		if (
+			name !== "@bjornpagen" &&
+			!Str.startsWith(".")(name) &&
+			(layout.typescript || (name !== "typescript" && name !== "@typescript"))
+		) {
 			yield* fs.symlink(`${checkout}/node_modules/${name}`, `${directory}/node_modules/${name}`)
 		}
 	}

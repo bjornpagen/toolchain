@@ -68,6 +68,43 @@ export type RunOutcome = Readonly<{
 	usage: RunUsage
 }>
 
+/** Whether every run of a property (on every stack it ran on) passed its search, and it ran at all. */
+export const searchedPassed = (outcome: RunOutcome, id: PropertyId): boolean => {
+	const runs = Arr.filter(outcome.properties, (ran) => ran.id === id)
+	return (
+		Arr.isReadonlyArrayNonEmpty(runs) && Arr.every(runs, (ran) => ran.verdict.kind !== "failed")
+	)
+}
+
+/**
+ * What a run settles to: a line for each kill (judged now, a cached verdict, or one no run could judge), and the
+ * properties that passed with every kill turning them red.
+ */
+export type Settled = Readonly<{ lines: ReadonlyArray<string>; passing: ReadonlySet<PropertyId> }>
+
+/**
+ * A run that can judge no kill, for `why` (its package lies in no git repository, the closure hasher did not load):
+ * every kill unjudged, a line each saying why, so a property with kills fails whatever its searches did, as any
+ * unjudged kill fails it, and a property with none passes as its searches did; it says once that no verdict is recorded.
+ */
+export const unjudgeable = (outcome: RunOutcome, why: string): Effect.Effect<Settled> => {
+	const runs = Arr.dedupeWith(outcome.properties, (one, other) => one.id === other.id)
+	const settled: Settled = {
+		lines: Arr.flatMap(runs, (ran) =>
+			Arr.map(
+				ran.kills,
+				(kill) => `${ran.id}: UNJUDGED: ${kill.why}, since no kill can be judged: ${why}`
+			)
+		),
+		passing: new Set(
+			Arr.flatMap(runs, (ran) =>
+				searchedPassed(outcome, ran.id) && !Arr.isReadonlyArrayNonEmpty(ran.kills) ? [ran.id] : []
+			)
+		)
+	}
+	return Effect.as(Console.log(`kills not judged and verdicts not recorded: ${why}`), settled)
+}
+
 /**
  * What to run: the package root, the run seed, the reach (every phase, or the witnesses alone), and which properties:
  * every one, or those the arguments name, each a module path or a directory of them (a prefix of a module's path), or
