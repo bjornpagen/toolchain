@@ -39,9 +39,14 @@
 #
 #   <key>/clones                 the common git directories of the clones that have run here, one a line
 #   <key>/commit.<n>, push.<n>   the snapshots' checkouts, n from 0     <key>/<mode>.<n>.git   their git directories
-#   <key>/<mode>.<n>.lock        held (a pid file in a directory) while a run uses that snapshot
+#   <key>/<mode>.<n>.lock        flock(1)ed, exclusive, by the run that uses that snapshot
 #   <key>/push.full              stamped when the daily check:full passed
 #   <key>/push.passed/<tree>     stamped when every check of the push gate passed on that tree
+#   .<key>.lock                  beside the key directory, flock(1)ed, shared, by every run in it
+#
+# Every hold is a kernel lock on an open file (flock(1), util-linux): a run's shell and every process it starts keep it
+# open, and the kernel lets it go when the last of them exits, however it exits. No pid names a holder, so no live run
+# is ever taken for a dead one, and no run reads a snapshot another run is filling.
 #
 # A snapshot's git directory borrows objects (alternates) from ONE repository, and a snapshot serves several clones.
 # Each run rewrites the alternates to the objects of the clone whose commit it checks, while it holds the snapshot and
@@ -51,9 +56,12 @@
 # part in every read.
 #
 # Garbage: a run that enters the cache deletes each other key directory whose repository is gone, meaning none of the
-# clones listed in its `clones` file still exists with that key as its identity, and that holds no live lock. A
-# directory with no `clones` file is the old per-path layout (a hash of the checkout's path), which a repository pinned
-# to an older toolchain still runs in: it is left alone, since no run here can tell whether its checkout still uses it.
+# clones listed in its `clones` file still exists with that key as its identity, and that no run holds: it takes the
+# directory's lock alone (exclusive, without waiting) and renames the directory away under it, so a run either holds
+# the directory before the rename, and it stays, or makes a new one after it. A directory an older gate may be running
+# in is left alone, since that gate holds no lock this one reads: one holding a snapshot of the one-snapshot layout
+# (`commit` or `push`), as every older gate's does, the old per-path layout's (a hash of the checkout's path, with no
+# `clones` file) among them.
 # Turbo's cache is the working tree's (.turbo/cache) unless TURBO_CACHE_DIR names one, so a task the working tree
 # already ran on the same content is a hit in the snapshot, and the other way round.
 set -eu
@@ -79,7 +87,8 @@ key_of() {
 	printf '%s' "${identity:-$1}" | git hash-object --stdin | cut -c1-12
 }
 
-cache="$cache_root/$(key_of "$common_dir")"
+key=$(key_of "$common_dir")
+cache="$cache_root/$key"
 
 # How long the push gate's last passing check:full counts, before the next push runs check:full again (gate.sh).
 #
@@ -134,39 +143,22 @@ fill() (
 	done
 )
 
-# claim <mode>: holds the first snapshot of <mode> that no live run holds, until this run exits, and names it $snapshot.
-# A snapshot whose holder is gone is free again; when every one is held, the next number is a new snapshot, which fill
-# makes. A lock with no pid yet is a run that has only just taken it.
+# claim <mode>: holds the first snapshot of <mode> no live run holds, until this run and everything it starts have
+# exited, and names it $snapshot; when every one is held, the next number is a new snapshot, which fill makes. Each
+# look opens the snapshot's lock on descriptor 9, letting go of the one before, which this run could not take.
 claim() {
 	n=0
-	until mkdir "$cache/$1.$n.lock" 2>/dev/null; do
-		holder=$(cat "$cache/$1.$n.lock/pid" 2>/dev/null || true)
-		if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
-			rm -rf "$cache/$1.$n.lock"
-		else
-			n=$((n + 1))
-		fi
+	until exec 9>>"$cache/$1.$n.lock" && flock -n 9; do
+		n=$((n + 1))
 	done
 	snapshot="$cache/$1.$n"
-	printf '%s\n' "$$" >"$snapshot.lock/pid"
-	trap 'rm -rf "$snapshot.lock"' EXIT
-	trap 'exit 130' INT TERM
 }
 
-# held <key directory>: succeeds when a live run holds one of the directory's locks.
-held() {
-	for lockdir in "$1"/*.lock; do
-		pid=$(cat "$lockdir/pid" 2>/dev/null || true)
-		[ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && return 0
-	done
-	return 1
-}
-
-# collect: registers this clone under its key, then deletes every other key directory of this layout whose repository is
-# gone and that holds no live lock. The key directory appears whole (renamed from a hidden one) so a concurrent collect never reads a
-# new directory as an old-layout one; hidden names are skipped.
+# collect: registers this clone under its key, then deletes every other key directory whose repository is gone, that no
+# run holds and that no older gate may be running in. The key directory appears whole (renamed from a hidden one) so
+# a concurrent collect never reads a new directory as an old-layout one; hidden names are skipped. A deleted directory
+# is renamed to a hidden one under its lock and removed after, and so is any a collect left behind when it was killed.
 collect() {
-	mkdir -p "$cache_root"
 	if [ ! -d "$cache" ]; then
 		fresh=$(mktemp -d "$cache_root/.new.XXXXXX")
 		printf '%s\n' "$common_dir" >"$fresh/clones"
@@ -176,9 +168,9 @@ collect() {
 	grep -qxF -- "$common_dir" "$cache/clones" 2>/dev/null || printf '%s\n' "$common_dir" >>"$cache/clones"
 	for dir in "$cache_root"/*; do
 		[ -d "$dir" ] && [ "$dir" != "$cache" ] || continue
-		# An older toolchain's gate keeps its snapshots here keyed by its checkout's path, with no clones file: that
-		# repository may be mid-run in it (edullm and grizzle move their pin only with a certified grizzle).
-		[ -f "$dir/clones" ] || continue
+		# An older toolchain's gate keeps one snapshot a mode, `commit` and `push`, here keyed by its repository or by its
+		# checkout's path (with no clones file), and holds no lock this gate reads: that repository may be mid-run in it.
+		[ ! -e "$dir/commit" ] && [ ! -e "$dir/push" ] || continue
 		alive=
 		clones=$(cat "$dir/clones" 2>/dev/null || true)
 		while IFS= read -r clone; do
@@ -190,8 +182,13 @@ collect() {
 $clones
 EOF
 		[ -z "$alive" ] || continue
-		held "$dir" || rm -rf "$dir"
+		exec 7>>"$cache_root/.$(basename -- "$dir").lock"
+		if flock -n -x 7; then
+			mv "$dir" "$(mktemp -d "$cache_root/.gone.XXXXXX")/"
+		fi
+		exec 7>&-
 	done
+	rm -rf "$cache_root"/.gone.*
 }
 
 # indexed: a commit of what the index holds, on HEAD, for the commit snapshot's HEAD. It is never referenced, so git's
@@ -211,6 +208,9 @@ indexed() {
 # and --offline failed (ERR_PNPM_NO_OFFLINE_META) whenever the metadata cache lacked one of them.
 enter() {
 	unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
+	mkdir -p "$cache_root"
+	exec 8>>"$cache_root/.$key.lock"
+	flock -s 8
 	collect
 	claim "$1"
 	fill "$git_dir" "$2" "$snapshot" "$snapshot.git" "$root"

@@ -1,4 +1,3 @@
-import { pid } from "node:process"
 import { deepStrictEqual, fail } from "@bjornpagen/testing/assert"
 import type { CheckoutDir } from "@bjornpagen/testing/checkout"
 import { boolean, element, type Gen, int } from "@bjornpagen/testing/gen"
@@ -722,23 +721,21 @@ export const submoduleClones = Effect.fn("submoduleClones")(function* (
  * now names another repository, so its key is another). */
 export type Fate = "present" | "removed" | "re-pointed"
 
-/** A snapshot's name in a key directory: a mode's numbered one, or the one snapshot of a mode an older gate kept. */
-type SnapshotName = `${"commit" | "push"}.${number}` | "commit"
-
-/** A lock in a key directory: none, or one on a snapshot whose pid file names a live process or one that has exited. */
-export type Lock =
-	| Readonly<{ kind: "none" }>
-	| Readonly<{ kind: "live" | "stale"; snapshot: SnapshotName }>
+/** A key directory's lock beside it (`.<key>.lock`): none, held by a live run, or left by a run that has exited, which
+ * the kernel let go of. */
+export type Lock = "none" | "live" | "stale"
 
 /**
  * A key directory of the cache beside the repository a run checks: the clones of another repository that ran the gate,
- * keyed by that repository's URL; a repository with no origin remote that ran the gate, keyed by its own path; or a
- * directory of the old per-path layout, with no clones file, held by a live run or not.
+ * keyed by that repository's URL; a repository with no origin remote that ran the gate, keyed by its own path; a
+ * directory of the old per-path layout, with no clones file, held by a live run or not; or the directory of a
+ * repository whose clones are gone that holds an older gate's one snapshot of a mode.
  */
 export type Entry =
 	| Readonly<{ kind: "clones"; fates: Arr.NonEmptyReadonlyArray<Fate>; lock: Lock }>
 	| Readonly<{ kind: "repository"; fate: Fate; lock: Lock }>
 	| Readonly<{ kind: "old layout"; held: boolean }>
+	| Readonly<{ kind: "older snapshot" }>
 
 const FATES = ["present", "removed", "re-pointed"] as const
 
@@ -752,18 +749,12 @@ const fatesGen: Gen<Arr.NonEmptyReadonlyArray<Fate>> = (source) => {
 		: [Arr.getUnsafe(FATES, first)]
 }
 
-/** No lock, a live one, or a stale one: which snapshot a lock is on decides nothing a run does with it. */
-const lockGen: Gen<Lock> = (source) =>
-	source.draw(
-		element([
-			{ kind: "none" },
-			{ kind: "live", snapshot: "commit.0" },
-			{ kind: "stale", snapshot: "push.0" }
-		] as const)
-	)
+const lockGen: Gen<Lock> = (source) => source.draw(element(["none", "live", "stale"] as const))
 
 const entryGen: Gen<Entry> = (source) => {
-	const kind = source.draw(element(["clones", "repository", "old layout"] as const))
+	const kind = source.draw(
+		element(["clones", "repository", "old layout", "older snapshot"] as const)
+	)
 	switch (kind) {
 		case "clones":
 			return { kind, fates: source.draw(fatesGen), lock: source.draw(lockGen) }
@@ -771,19 +762,23 @@ const entryGen: Gen<Entry> = (source) => {
 			return { kind, fate: source.draw(fateGen), lock: source.draw(lockGen) }
 		case "old layout":
 			return { kind, held: source.draw(boolean) }
+		case "older snapshot":
+			return { kind }
 	}
 }
 
 /**
  * One key directory beside the one the run checks, of every kind: a repository's clones (one or two, each fate) or a
- * repository with no origin remote, each under no lock, a live one or a stale one; or the old layout, held or not.
- * Thirty-eight layouts; a run judges each key directory alone, so one a case reaches every situation.
+ * repository with no origin remote, each under no lock, a live one or a stale one; the old layout, held or not; or an
+ * older gate's snapshot. Thirty-nine layouts; a run judges each key directory alone, so one a case reaches every
+ * situation.
  */
 export const collectings: Gen<Arr.NonEmptyReadonlyArray<Entry>> = (source) => [
 	source.draw(entryGen)
 ]
 
-/** The fates of the clones a key directory lists, or none for one of the old layout, which lists none. */
+/** The fates of the clones a key directory lists, or none for one of the old layout, which lists none, and none still
+ * there for an older gate's snapshot's, whose clones are gone. */
 const fatesOf = (entry: Entry): ReadonlyArray<Fate> => {
 	switch (entry.kind) {
 		case "clones":
@@ -792,18 +787,26 @@ const fatesOf = (entry: Entry): ReadonlyArray<Fate> => {
 			return [entry.fate]
 		case "old layout":
 			return []
+		case "older snapshot":
+			return ["removed"]
 	}
 }
 
 /**
- * Whether a run keeps a key directory, by the gate's contract: a directory of the old layout always (an older gate may
- * be running in it), and any other while one of the clones it lists is still there under its key or a live run holds
- * one of its locks.
+ * Whether a run keeps a key directory, by the gate's contract: a directory an older gate may be running in always (the
+ * old layout, or an older gate's snapshot), and any other while one of the clones it lists is still there under its key
+ * or a live run holds its lock.
  */
-export const kept = (entry: Entry): boolean =>
-	entry.kind === "old layout" ||
-	Arr.contains(fatesOf(entry), "present") ||
-	entry.lock.kind === "live"
+export const kept = (entry: Entry): boolean => {
+	switch (entry.kind) {
+		case "old layout":
+		case "older snapshot":
+			return true
+		case "clones":
+		case "repository":
+			return Arr.contains(fatesOf(entry), "present") || entry.lock === "live"
+	}
+}
 
 /** The situations a key directory is in. */
 export type CollectingFeature =
@@ -815,32 +818,39 @@ export type CollectingFeature =
 	| "a repository with no origin remote, keyed by its path"
 	| "an old-layout directory left alone"
 	| "a held old-layout directory left alone"
+	| "an older gate's snapshot left alone"
 
 /** The situations an entry is in. */
 const entryFeatures = (entry: Entry): ReadonlyArray<CollectingFeature> => {
-	if (entry.kind === "old layout") {
-		return [
-			entry.held ? "a held old-layout directory left alone" : "an old-layout directory left alone"
-		]
+	switch (entry.kind) {
+		case "old layout":
+			return [
+				entry.held ? "a held old-layout directory left alone" : "an old-layout directory left alone"
+			]
+		case "older snapshot":
+			return ["an older gate's snapshot left alone"]
+		case "clones":
+		case "repository": {
+			const fates = fatesOf(entry)
+			const gone = !Arr.contains(fates, "present")
+			return [
+				...(kept(entry) ? [] : ["a key directory whose clones are all gone is collected" as const]),
+				...(!gone && !Arr.every(fates, (fate) => fate === "present")
+					? ["a key directory kept by a clone still there among gone ones" as const]
+					: []),
+				...(gone && entry.lock === "live"
+					? ["a key directory whose clones are gone kept by a live lock" as const]
+					: []),
+				...(gone && entry.lock === "stale" ? ["a stale lock keeps nothing" as const] : []),
+				...(!kept(entry) && Arr.contains(fates, "re-pointed")
+					? ["a re-pointed clone counts as gone" as const]
+					: []),
+				...(entry.kind === "repository"
+					? ["a repository with no origin remote, keyed by its path" as const]
+					: [])
+			]
+		}
 	}
-	const fates = fatesOf(entry)
-	const gone = !Arr.contains(fates, "present")
-	return [
-		...(kept(entry) ? [] : ["a key directory whose clones are all gone is collected" as const]),
-		...(!gone && !Arr.every(fates, (fate) => fate === "present")
-			? ["a key directory kept by a clone still there among gone ones" as const]
-			: []),
-		...(gone && entry.lock.kind === "live"
-			? ["a key directory whose clones are gone kept by a live lock" as const]
-			: []),
-		...(gone && entry.lock.kind === "stale" ? ["a stale lock keeps nothing" as const] : []),
-		...(!kept(entry) && Arr.contains(fates, "re-pointed")
-			? ["a re-pointed clone counts as gone" as const]
-			: []),
-		...(entry.kind === "repository"
-			? ["a repository with no origin remote, keyed by its path" as const]
-			: [])
-	]
 }
 
 /** The situations the key directories of a case are in. */
@@ -848,20 +858,43 @@ export const collectingFeatures = (
 	entries: ReadonlyArray<Entry>
 ): ReadonlyArray<CollectingFeature> => Arr.flatMap(entries, entryFeatures)
 
-/** A pid no process holds any more: a shell's, after it exited. */
-const exitedPid = (sandbox: Sandbox) =>
-	Effect.map(sh(sandbox, sandbox.dir, "sh", "-c", "echo $$"), Str.trim)
+/**
+ * Holds a lock on `file`, shared (-s) or exclusive (-x), as a run of the gate holds one: flock(1) in a child process
+ * that keeps it until the case's scope closes. flock lets go of the file before it starts its command (-o), so killing
+ * it lets go of the lock, and its command, which only waits on its input, ends when the case's end closes that input.
+ */
+const holding = Effect.fn("holding")(function* (sandbox: Sandbox, file: string, kind: "-s" | "-x") {
+	const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+	const handle = yield* spawner.spawn(
+		ChildProcess.make("flock", ["-o", kind, file, "sh", "-c", "echo held; exec cat >/dev/null"], {
+			cwd: sandbox.dir,
+			extendEnv: true,
+			env: IDENTITY
+		})
+	)
+	const said = yield* Stream.runHead(Stream.decodeText(handle.stdout))
+	deepStrictEqual(Option.map(said, Str.trim), Option.some("held"), `flock never held ${file}`)
+})
 
-/** Holds a lock in a key directory: a pid file naming this process, or a process that has exited. */
+/** Whether a lock file is free: flock(1) takes it at once and lets go. */
+export const free = Effect.fn("free")(function* (sandbox: Sandbox, file: string) {
+	const done = yield* ran(sandbox, sandbox.dir, "flock", ["-n", file, "true"])
+	return done.status === 0
+})
+
+/** Takes a key directory's lock as `lock` draws it: held by a live process, or left by one that exited, a file no
+ * process holds. */
 const locked = Effect.fn("locked")(function* (sandbox: Sandbox, key: string, lock: Lock) {
 	const fs = yield* FileSystem.FileSystem
-	if (lock.kind === "none") {
-		return
+	const file = `${sandbox.root}/.${key}.lock`
+	switch (lock) {
+		case "none":
+			return
+		case "live":
+			return yield* holding(sandbox, file, "-s")
+		case "stale":
+			return yield* fs.writeFileString(file, "")
 	}
-	const held = `${sandbox.root}/${key}/${lock.snapshot}.lock`
-	yield* fs.makeDirectory(held, { recursive: true })
-	const holder = lock.kind === "live" ? String(pid) : yield* exitedPid(sandbox)
-	yield* fs.writeFileString(`${held}/pid`, `${holder}\n`)
 })
 
 /** What becomes of a clone or a repository after it ran: nothing, its removal, or a new origin remote, set (a clone's)
@@ -899,6 +932,22 @@ const madeSince = Effect.fn("madeSince")(function* (
 	return only
 })
 
+/** The clones of a new repository named `name`, one a fate, each having run the gate: the key directory they made. */
+const clonesRegistered = Effect.fn("clonesRegistered")(function* (
+	sandbox: Sandbox,
+	name: string,
+	fates: Arr.NonEmptyReadonlyArray<Fate>,
+	listed: ReadonlyArray<string>
+) {
+	const origin = yield* repository(sandbox, name)
+	const clones = yield* Effect.forEach(fates, (_, at) =>
+		cloneOf(sandbox, origin, `${name}c${String(at)}`)
+	)
+	yield* Effect.forEach(clones, (clone) => gated(sandbox, clone, "true"))
+	const key = yield* madeSince(sandbox, listed)
+	return { key, clones }
+})
+
 /**
  * A key directory beside the repository a run checks, as the entry at `index` draws it. The clones of a repository
  * register under its URL, a run of the gate in each, and a repository with no remote under its path, by a run in
@@ -915,12 +964,12 @@ export const registered = Effect.fn("registered")(function* (
 	const listed = present ? yield* keys(sandbox) : []
 	switch (entry.kind) {
 		case "clones": {
-			const origin = yield* repository(sandbox, name)
-			const clones = yield* Effect.forEach(entry.fates, (_, at) =>
-				cloneOf(sandbox, origin, `${name}c${String(at)}`)
-			)
-			yield* Effect.forEach(clones, (clone) => gated(sandbox, clone, "true"))
-			const key = yield* madeSince(sandbox, listed)
+			const { key, clones } = yield* clonesRegistered(sandbox, name, entry.fates, listed)
+			const made: Registered = { entry, key, registrants: clones }
+			return made
+		}
+		case "older snapshot": {
+			const { key, clones } = yield* clonesRegistered(sandbox, name, ["removed"], listed)
 			const made: Registered = { entry, key, registrants: clones }
 			return made
 		}
@@ -941,8 +990,10 @@ export const registered = Effect.fn("registered")(function* (
 })
 
 /** What becomes of a registered key directory before the run: each clone or repository that registered it meets its
- * fate, and the lock its entry draws is taken. */
+ * fate, and the lock its entry draws is taken; an older gate's snapshot's clone is removed and the snapshot made, as an
+ * older gate names it (`push`, one a mode). */
 export const befell = Effect.fn("befell")(function* (sandbox: Sandbox, made: Registered) {
+	const fs = yield* FileSystem.FileSystem
 	const { entry } = made
 	switch (entry.kind) {
 		case "clones":
@@ -956,18 +1007,20 @@ export const befell = Effect.fn("befell")(function* (sandbox: Sandbox, made: Reg
 			)
 			return yield* locked(sandbox, made.key, entry.lock)
 		case "old layout":
-			return yield* locked(
-				sandbox,
-				made.key,
-				entry.held ? { kind: "live", snapshot: "commit" } : { kind: "none" }
+			return yield* locked(sandbox, made.key, entry.held ? "live" : "none")
+		case "older snapshot":
+			yield* Effect.forEach(made.registrants, (clone) =>
+				befallen(sandbox, clone, "removed", "set-url")
 			)
+			return yield* fs.makeDirectory(`${sandbox.root}/${made.key}/push`, { recursive: true })
 	}
 })
 
-/** A snapshot of the push mode as a run finds it: with no lock, held by a live run, or locked by a run that has exited. */
-export type Slot = "no lock" | "live" | "stale"
+/** A snapshot of the push mode as a run finds it: free (none yet, or one a run checked in and left), held by a live
+ * run, or left half-filled by a run that was killed, whose lock the kernel let go of. */
+export type Slot = "free" | "live" | "killed"
 
-const SLOTS = ["no lock", "live", "stale"] as const
+const SLOTS = ["free", "live", "killed"] as const
 
 /** The push mode's first two snapshots, each of every kind: nine layouts, the smallest that reach every situation. */
 export const claimings: Gen<readonly [Slot, Slot]> = (source) => [
@@ -986,14 +1039,14 @@ export const claimedSlot = (slots: ReadonlyArray<Slot>): number =>
 export type ClaimingFeature =
 	| "a run claims a snapshot no run holds"
 	| "a run passes a snapshot a live run holds"
-	| "a run takes a snapshot whose run has exited"
+	| "a run takes over a snapshot a killed run left half-filled"
 	| "every snapshot held: a run makes a new one"
 
 /** The situation of the snapshot a run claims, by what it finds there. */
 const CLAIMED_FEATURES: Readonly<Record<Slot, ReadonlyArray<ClaimingFeature>>> = {
-	"no lock": ["a run claims a snapshot no run holds"],
+	free: ["a run claims a snapshot no run holds"],
 	live: [],
-	stale: ["a run takes a snapshot whose run has exited"]
+	killed: ["a run takes over a snapshot a killed run left half-filled"]
 }
 
 /** The situations a run is in among `slots`. */
@@ -1008,22 +1061,28 @@ export const claimingFeatures = (slots: ReadonlyArray<Slot>): ReadonlyArray<Clai
 	]
 }
 
-/** The locks of the push mode's numbered snapshots a key directory holds, by number. */
-export const pushLocks = Effect.fn("pushLocks")(function* (sandbox: Sandbox, key: string) {
+/** The lock of the push mode's snapshot numbered `at` in a key directory. */
+export const pushLock = (sandbox: Sandbox, key: string, at: number): string =>
+	`${sandbox.root}/${key}/push.${String(at)}.lock`
+
+/**
+ * The push mode's snapshot numbered `at`, as a run that was killed while filling it leaves it: the first snapshot's
+ * files and git directory (copied to `at` when it is another), one tracked file cut short, one deleted and a stray
+ * beside them, and its lock a file no process holds.
+ */
+const halfFilled = Effect.fn("halfFilled")(function* (sandbox: Sandbox, key: string, at: number) {
 	const fs = yield* FileSystem.FileSystem
-	const names = yield* fs.readDirectory(`${sandbox.root}/${key}`)
-	return Arr.sort(
-		Arr.flatMap(names, (name) => {
-			const [mode, number, lock, ...rest] = Str.split(".")(name)
-			return mode === "push" &&
-				lock === "lock" &&
-				number !== undefined &&
-				!Arr.isReadonlyArrayNonEmpty(rest)
-				? [Number(number)]
-				: []
-		}),
-		Order.Number
-	)
+	const base = `${sandbox.root}/${key}`
+	const snapshot = `${base}/push.${String(at)}`
+	if (at > 0) {
+		yield* sh(sandbox, base, "cp", "-a", "push.0", `push.${String(at)}`)
+		yield* sh(sandbox, base, "cp", "-a", "push.0.git", `push.${String(at)}.git`)
+		yield* fs.writeFileString(`${snapshot}/.git`, `gitdir: ${snapshot}.git\n`)
+	}
+	yield* fs.writeFileString(`${snapshot}/README.txt`, "cut sh")
+	yield* fs.remove(`${snapshot}/package.json`)
+	yield* fs.writeFileString(`${snapshot}/half-${String(at)}.txt`, "a killed run's\n")
+	yield* fs.writeFileString(pushLock(sandbox, key, at), "")
 })
 
 /** Puts the push mode's snapshot numbered `at` of a key directory in the state `slot` draws. */
@@ -1033,15 +1092,21 @@ export const slotted = Effect.fn("slotted")(function* (
 	slot: Slot,
 	at: number
 ) {
-	const snapshot: SnapshotName = `push.${at}`
 	switch (slot) {
-		case "no lock":
+		case "free":
 			return
 		case "live":
-			return yield* locked(sandbox, key, { kind: "live", snapshot })
-		case "stale":
-			return yield* locked(sandbox, key, { kind: "stale", snapshot })
+			return yield* holding(sandbox, pushLock(sandbox, key, at), "-x")
+		case "killed":
+			return yield* halfFilled(sandbox, key, at)
 	}
+})
+
+/** A commit in a clone that a snapshot filled before has not seen: a file of its own. */
+export const newCommit = Effect.fn("newCommit")(function* (sandbox: Sandbox, clone: string) {
+	const fs = yield* FileSystem.FileSystem
+	yield* fs.writeFileString(`${clone}/after.txt`, "a later commit\n")
+	yield* committed(sandbox, clone, "a later commit")
 })
 
 /** The gate's run in a clone whose command looks at the snapshot and names it: what it saw, and the snapshot's name. */

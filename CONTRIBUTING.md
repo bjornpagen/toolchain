@@ -183,9 +183,15 @@ installed in the snapshot online by hand.
 | ------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
 | `clones`                 | The common git directories of the clones that ran here, one a line.                                                         |
 | `commit.<n>`, `push.<n>` | The snapshots' checkouts, numbered from 0; `<mode>.<n>.git` is each one's git directory.                                    |
-| `<mode>.<n>.lock`        | A directory holding a pid file while a run uses that snapshot.                                                              |
+| `<mode>.<n>.lock`        | Locked (flock(1), exclusive) by the run that uses that snapshot, and by every process it starts.                            |
 | `push.full`              | Stamped when the daily `check:full` passed.                                                                                 |
 | `push.passed/<tree>`     | Stamped when every check of the push gate passed on that tree: a push sending it again claims no snapshot and runs nothing. |
+
+Beside each key directory, `.<key>.lock` is locked (flock(1), shared) by every run in it. Every hold is the kernel's lock
+on an open file, which the run's shell and everything it starts keep open and which the kernel lets go of when the last
+of them exits, however it exits: no pid names a holder, so a live run is never taken for a dead one, and no run reads a
+snapshot another is filling. A snapshot a killed run left half-filled is reset whole by the next run that claims it
+(`read-tree --reset -u` rewrites every tracked file whose stat differs, and `clean` removes the strays).
 
 A snapshot's git directory borrows objects (alternates) from one repository. Each run rewrites the alternates to the
 objects of the clone whose commit it checks, while it holds the snapshot and before `read-tree`: that clone is the only
@@ -194,8 +200,10 @@ snapshot until it exits, so no other clone's rewrite takes the objects away mid-
 `git clean -fd` without `-x`, submodules filled from the checking clone's submodule repositories.
 
 A run that enters the cache collects garbage: it deletes every other key directory none of whose listed clones still
-exists with that key as its identity, unless a live run holds one of its locks. A directory with no `clones` file is
-the old per-path layout and goes the same way (a hard cutover; nothing reads it). A clone moved or deleted therefore
+exists with that key as its identity, unless a live run holds it: the collect takes the directory's lock alone, without
+waiting, and renames the directory away under it, so a run holds the directory before the rename and it stays, or
+makes a new one after it. A directory holding an older gate's one snapshot of a mode (`commit` or `push`, the per-path
+layout's among them) is left alone, since that gate holds no lock this one reads. A clone moved or deleted therefore
 costs its repository one cold snapshot at most, when the last clone is gone.
 
 A snapshot directory is safe to delete when no gate is running; the next run builds it again.

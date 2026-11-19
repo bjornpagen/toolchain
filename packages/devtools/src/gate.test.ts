@@ -11,8 +11,9 @@
  * Oracle: the specification, the gate's header: a command the gate runs on a commit sees exactly that commit's files, a
  * submodule's at the commit it records; a file a first run left under .gitignore (node_modules) is still there for a
  * second clone's first run, which is what a warm snapshot is; a run beside live runs takes the first snapshot none of
- * them holds, or a new one; and a run collects every other key directory whose repository is gone and that holds no
- * live lock, leaving the old per-path layout alone.
+ * them holds, or a new one, and fills it to exactly its commit whatever a killed run left there; and a run collects
+ * every other key directory whose repository is gone and that no live run holds, leaving alone what an older gate may
+ * be running in.
  */
 import { deepStrictEqual } from "@bjornpagen/testing/assert"
 import { Checkout } from "@bjornpagen/testing/checkout"
@@ -28,6 +29,7 @@ import {
 	claimedSlot,
 	claimingFeatures,
 	claimings,
+	free,
 	checkingFeatures,
 	checkings,
 	clonedRepository,
@@ -42,8 +44,9 @@ import {
 	keys,
 	looked,
 	objectsOf,
+	newCommit,
 	onlyKey,
-	pushLocks,
+	pushLock,
 	registered,
 	sandboxOf,
 	sharingFeatures,
@@ -122,42 +125,50 @@ export const sharedSnapshot = property.exhaust(finite(sharings), {
 })
 
 export const claimedSnapshot = property.exhaust(finite(claimings), {
-	box: "the push mode's first two snapshots, each with no lock, held by a live run or locked by an exited one, when a run comes",
+	box: "the push mode's first two snapshots, each free, held by a live run or left half-filled by a killed one, when a run comes to check a commit neither holds",
 	needs: { dir: Scratch.dir, checkout: Checkout.dir, lockfile: workspaceLockfile },
 	situations: [
 		"a run claims a snapshot no run holds",
 		"a run passes a snapshot a live run holds",
-		"a run takes a snapshot whose run has exited",
+		"a run takes over a snapshot a killed run left half-filled",
 		"every snapshot held: a run makes a new one"
 	],
 	check:
 		({ dir, checkout, lockfile }, c) =>
 		(slots) =>
-			Effect.gen(function* () {
-				c.noteAll(claimingFeatures(slots))
-				const scratch = yield* dir
-				const gateCheckout = yield* checkout
-				const workspace = yield* lockfile
-				const sandbox = sandboxOf(scratch, gateCheckout, workspace)
-				const { clones } = yield* clonedRepository(sandbox, 1)
-				const clone = Arr.headNonEmpty(clones)
-				yield* looked(sandbox, clone, 0, { stamp: false, stray: false })
-				const key = yield* onlyKey(sandbox)
-				yield* Effect.forEach(slots, (slot, at) => slotted(sandbox, key, slot, at))
-				const claimed = claimedSlot(slots)
-				const run = yield* claimedBy(sandbox, clone)
-				deepStrictEqual(run.snapshot, `push.${String(claimed)}`)
-				const tree = yield* treeOf(sandbox, clone)
-				deepStrictEqual(run.seen.files, tree)
-				const locks = yield* pushLocks(sandbox, key)
-				deepStrictEqual(
-					locks,
-					Arr.flatMap(slots, (slot, at) => (slot === "no lock" || at === claimed ? [] : [at]))
-				)
-			}),
+			Effect.scoped(
+				Effect.gen(function* () {
+					c.noteAll(claimingFeatures(slots))
+					const scratch = yield* dir
+					const gateCheckout = yield* checkout
+					const workspace = yield* lockfile
+					const sandbox = sandboxOf(scratch, gateCheckout, workspace)
+					const { clones } = yield* clonedRepository(sandbox, 1)
+					const clone = Arr.headNonEmpty(clones)
+					yield* looked(sandbox, clone, 0, { stamp: false, stray: false })
+					const key = yield* onlyKey(sandbox)
+					yield* newCommit(sandbox, clone)
+					yield* Effect.forEach(
+						Arr.reverse(Arr.map(slots, (slot, at) => [slot, at] as const)),
+						([slot, at]) => slotted(sandbox, key, slot, at)
+					)
+					const claimed = claimedSlot(slots)
+					const run = yield* claimedBy(sandbox, clone)
+					deepStrictEqual(run.snapshot, `push.${String(claimed)}`)
+					const tree = yield* treeOf(sandbox, clone)
+					deepStrictEqual(run.seen.files, tree)
+					const freed = yield* Effect.forEach(slots, (_, at) =>
+						free(sandbox, pushLock(sandbox, key, at))
+					)
+					deepStrictEqual(
+						freed,
+						Arr.map(slots, (slot) => slot !== "live")
+					)
+				})
+			),
 	oracle: {
 		kind: "specification",
-		name: "a run claims the first snapshot of its mode that no live run holds, a new one when every one is held, never waits, and frees only the one it claimed"
+		name: "a run claims the first snapshot of its mode that no live run holds, a new one when every one is held, never waits, fills it to exactly its commit whatever a killed run left there, and lets go of it when it exits"
 	},
 	kept: [],
 	kills: [
@@ -165,13 +176,19 @@ export const claimedSnapshot = property.exhaust(finite(claimings), {
 			file: "packages/devtools/bin/gate.sh",
 			original: 'snapshot="$cache/$1.$n"',
 			replacement: 'snapshot="$cache/$1.0"',
-			why: "Every run checks in the first snapshot whatever holds it, so a run beside a live one rewrites the files that run is checking, and frees that run's lock when it exits; the claimed-snapshot property fails."
+			why: "Every run checks in the first snapshot whatever holds it, so a run beside a live one rewrites the files that run is checking; the claimed-snapshot property fails."
 		},
 		{
 			file: "packages/devtools/bin/gate.sh",
-			original: '\t\t\trm -rf "$cache/$1.$n.lock"',
-			replacement: "\t\t\tn=$((n + 1))",
-			why: "A snapshot whose run exited without freeing it is never claimed again, so every crash leaves a snapshot no run uses; the claimed-snapshot property fails."
+			original: 'until exec 9>>"$cache/$1.$n.lock" && flock -n 9; do',
+			replacement: 'until exec 9>>"$cache/$1.$n.lock"; do',
+			why: "A run takes the first snapshot without its lock, so it checks in one a live run is filling and checking; the claimed-snapshot property fails."
+		},
+		{
+			file: "packages/devtools/bin/gate.sh",
+			original: 'GIT_DIR=$4 git --work-tree="$3" read-tree --reset -u "$2^{tree}"',
+			replacement: 'GIT_DIR=$4 git --work-tree="$3" read-tree -m -u "$2^{tree}"',
+			why: "A snapshot is merged into, not reset, so one a killed run left with a file cut short is refused and the run fails, where it must check its commit; the claimed-snapshot property fails."
 		}
 	]
 })
@@ -287,51 +304,54 @@ export const collectedSnapshots = property.exhaust(finite(collectings), {
 		"a re-pointed clone counts as gone",
 		"a repository with no origin remote, keyed by its path",
 		"an old-layout directory left alone",
-		"a held old-layout directory left alone"
+		"a held old-layout directory left alone",
+		"an older gate's snapshot left alone"
 	],
 	check:
 		({ dir, checkout, lockfile }, c) =>
 		(entries) =>
-			Effect.gen(function* () {
-				c.noteAll(collectingFeatures(entries))
-				const scratch = yield* dir
-				const gateCheckout = yield* checkout
-				const workspace = yield* lockfile
-				const sandbox = sandboxOf(scratch, gateCheckout, workspace)
-				const made = yield* Effect.forEach(entries, (entry, index) =>
-					registered(sandbox, entry, index)
-				)
-				yield* Effect.forEach(made, (one) => befell(sandbox, one))
-				const { clones } = yield* clonedRepository(sandbox, 1)
-				yield* looked(sandbox, Arr.headNonEmpty(clones), 0, { stamp: false, stray: false })
-				const left = yield* keys(sandbox)
-				const entryKeys = Arr.map(made, (one) => one.key)
-				deepStrictEqual(
-					Arr.filter(left, (key) => Arr.contains(entryKeys, key)),
-					Arr.sort(
-						Arr.flatMap(made, (one) => (kept(one.entry) ? [one.key] : [])),
-						Order.String
+			Effect.scoped(
+				Effect.gen(function* () {
+					c.noteAll(collectingFeatures(entries))
+					const scratch = yield* dir
+					const gateCheckout = yield* checkout
+					const workspace = yield* lockfile
+					const sandbox = sandboxOf(scratch, gateCheckout, workspace)
+					const made = yield* Effect.forEach(entries, (entry, index) =>
+						registered(sandbox, entry, index)
 					)
-				)
-				deepStrictEqual(Arr.filter(left, (key) => !Arr.contains(entryKeys, key)).length, 1)
-			}),
+					yield* Effect.forEach(made, (one) => befell(sandbox, one))
+					const { clones } = yield* clonedRepository(sandbox, 1)
+					yield* looked(sandbox, Arr.headNonEmpty(clones), 0, { stamp: false, stray: false })
+					const left = yield* keys(sandbox)
+					const entryKeys = Arr.map(made, (one) => one.key)
+					deepStrictEqual(
+						Arr.filter(left, (key) => Arr.contains(entryKeys, key)),
+						Arr.sort(
+							Arr.flatMap(made, (one) => (kept(one.entry) ? [one.key] : [])),
+							Order.String
+						)
+					)
+					deepStrictEqual(Arr.filter(left, (key) => !Arr.contains(entryKeys, key)).length, 1)
+				})
+			),
 	oracle: {
 		kind: "specification",
-		name: "a run deletes each other key directory whose repository is gone (none of its listed clones still there under its key) and that holds no live lock, and leaves the old per-path layout alone"
+		name: "a run deletes each other key directory whose repository is gone (none of its listed clones still there under its key) and that no live run holds, and leaves alone a directory an older gate may be running in (the old per-path layout, an older gate's snapshot)"
 	},
 	kept: [],
 	kills: [
 		{
 			file: "packages/devtools/bin/gate.sh",
-			original: '[ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && return 0',
-			replacement: '[ -n "$pid" ] && return 0',
-			why: "A lock whose run has exited still holds its key directory, so a snapshot whose repository is gone stays while a stale pid file names it; the collection property fails."
+			original: "if flock -n -x 7; then",
+			replacement: "if true; then",
+			why: "A collect deletes a key directory a live run holds, under that run's snapshot, so the run checks a half-deleted tree; the collection property fails."
 		},
 		{
 			file: "packages/devtools/bin/gate.sh",
-			original: '[ -f "$dir/clones" ] || continue',
-			replacement: '[ -d "$dir" ] || continue',
-			why: "A directory of the old per-path layout, which lists no clones, is collected as gone, under an older gate that may be running in it; the collection property fails."
+			original: '[ ! -e "$dir/commit" ] && [ ! -e "$dir/push" ] || continue',
+			replacement: ":",
+			why: "A key directory that holds an older gate's one snapshot is deleted when its clones look gone, though that gate holds no lock this one reads and may be checking in it; the collection property fails."
 		},
 		{
 			file: "packages/devtools/bin/gate.sh",
