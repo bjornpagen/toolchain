@@ -21,18 +21,18 @@ const childProcesses = process.getBuiltinModule("node:child_process")
 const REMOVER = 'while read -r _; do :; done; exec rm -rf -- "$1"'
 
 /**
- * A temporary directory of this process's, under the run's temporary directory (TMPDIR, which the runner and its
- * workers share), named `<prefix><random>`, removed with everything in it when the enclosing scope closes or this
- * process ends, however it ends. Its remover (REMOVER) runs in a session of its own, so a signal to this process's group
+ * A temporary directory of this process's, named `<prefix><random>`, in `directory` or, where none is named, the run's
+ * temporary directory (TMPDIR, which the runner and its workers share), removed with everything in it when the
+ * enclosing scope closes or this process ends, however it ends. Its remover (REMOVER) runs in a session of its own, so a signal to this process's group
  * (the pool ending a worker's group, a hook's timeout) never ends it first; the scope's close ends its input and waits
  * for it, so the directory is gone when the close returns.
  */
 export const processScratch = (
-	prefix: string
+	at: Readonly<{ prefix: string; directory?: string }>
 ): Effect.Effect<string, PlatformError.PlatformError, FileSystem.FileSystem | Scope.Scope> =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem
-		const directory = yield* fs.makeTempDirectory({ prefix })
+		const directory = yield* fs.makeTempDirectory(at)
 		yield* Effect.acquireRelease(
 			Effect.sync(() =>
 				childProcesses.spawn("/bin/sh", ["-c", REMOVER, "sh", directory], {
@@ -60,7 +60,7 @@ export const processScratch = (
  * removed when the worker ends however it ends (processScratch).
  */
 const openRoot: Effect.Effect<string, NeedFailed, FileSystem.FileSystem | Scope.Scope> =
-	processScratch("toolchain-scratch-").pipe(
+	processScratch({ prefix: "toolchain-scratch-" }).pipe(
 		Effect.mapError((error) => NeedFailed.make({ need: key, message: error.message }))
 	)
 

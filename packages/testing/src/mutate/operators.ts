@@ -129,7 +129,7 @@ const coverageOf = <E>(
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem
 		const path = yield* Path.Path
-		const root = yield* processScratch("toolchain-coverage-")
+		const root = yield* processScratch({ prefix: "toolchain-coverage-" })
 		const passes = Arr.map(subjects, (subject, index) => ({
 			subject,
 			directory: path.join(root, String(index))

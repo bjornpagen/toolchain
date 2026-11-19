@@ -45,7 +45,7 @@ const madeAsProgram = (made: Made) =>
 	Effect.scoped(
 		Effect.gen(function* () {
 			const fs = yield* FileSystem.FileSystem
-			const directory = yield* processScratch("toolchain-scratch-test-")
+			const directory = yield* processScratch({ prefix: "toolchain-scratch-test-" })
 			yield* Effect.forEach(
 				Array.from({ length: made.files }, (_, i) => `${directory}/${String(i)}`),
 				(file) => fs.writeFileString(file, file),

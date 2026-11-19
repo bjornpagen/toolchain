@@ -52,7 +52,7 @@ export const imagesOf = Effect.fn("testing.mutate.imagesOf")(function* (
 	const fs = yield* FileSystem.FileSystem
 	const path = yield* Path.Path
 	const services = yield* Effect.context<FileSystem.FileSystem | Path.Path>()
-	const texts = yield* processScratch("toolchain-mutants-")
+	const texts = yield* processScratch({ prefix: "toolchain-mutants-" })
 	const written = yield* Ref.make(0)
 	const textFile = (text: string) =>
 		Effect.gen(function* () {
