@@ -21,6 +21,7 @@ import {
 	literalText,
 	placeOf,
 	placesIn,
+	programFile,
 	programGen,
 	statementsText,
 	renamedOf,
@@ -36,7 +37,8 @@ import { property } from "#property.ts"
  * The operators against programs built from statements whose mutants are known: each statement shape names exactly the
  * operators it must yield and how many of each, its identifiers distinct so no mutant is the statement unchanged. Every
  * mutant must replace the text it names, sit at the line and column it names, carry an id no other mutant carries, and
- * name the function it sits in; and the program's operators must be exactly the sum of its statements'.
+ * name the function it sits in; and the program's operators must be exactly the sum of its statements'. A program
+ * holding markup is a TSX module (programFile), whose markup only a TSX parse reads.
  */
 export const statementMutants = property.explore(programGen, {
 	needs: {},
@@ -45,10 +47,11 @@ export const statementMutants = property.explore(programGen, {
 		Effect.gen(function* () {
 			c.noteAll(Arr.map(statements, (statement) => statement.shape))
 			const text = statementsText(statements)
-			const mutants = yield* mutantsOf([{ file: "program.ts", text }], noFamilies)
+			const file = programFile(statements)
+			const mutants = yield* mutantsOf([{ file, text }], noFamilies)
 			for (const mutant of mutants) {
 				strictEqual(mutant.source, text)
-				strictEqual(mutant.file, "program.ts")
+				strictEqual(mutant.file, file)
 				strictEqual(mutant.fn, "run")
 				strictEqual(Str.slice(mutant.start, mutant.end)(text), mutant.original)
 				strictEqual(
@@ -80,6 +83,12 @@ export const statementMutants = property.explore(programGen, {
 				'const CHAINS = [\n\t[ts.SyntaxKind.AmpersandAmpersandToken, "conjunct", " && "],\n\t[ts.SyntaxKind.BarBarToken, "disjunct", " || "]\n] as const',
 			replacement: 'const CHAINS = [[ts.SyntaxKind.BarBarToken, "disjunct", " || "]] as const',
 			why: "An && chain yields no conjunct mutant; the property fails."
+		},
+		{
+			file: "packages/testing/src/mutants.ts",
+			original: `at: path.join(root, \`source-\${index}\${path.extname(source.file)}\`)`,
+			replacement: `at: path.join(root, \`source-\${index}.ts\`)`,
+			why: "Every source is parsed as a TypeScript module, so a TSX module's markup is read as type assertions and comparisons and its mutants are not its code's, as every .tsx file given to `mutate` was; the property fails."
 		}
 	]
 })

@@ -601,7 +601,7 @@ const idOf = (key: string): string => {
 /**
  * Every mutant of `sources` (each a file's name and its text) by the library's operators and those of `families`,
  * read through TypeScript 7's native compiler in a file system of their own, so nothing on disk but the compiler is
- * read. Each mutant's id is its key's idOf: its file, operator, enclosing function, original and replacement, and its
+ * read, each source parsed as its file's kind (its extension's: a .tsx file's markup is TSX). Each mutant's id is its key's idOf: its file, operator, enclosing function, original and replacement, and its
  * place among the mutants of one key, so it is stable across runs and across edits elsewhere in its file.
  */
 export const mutantsOf = Effect.fn("testing.mutants.of")(function* <O extends string>(
@@ -613,7 +613,7 @@ export const mutantsOf = Effect.fn("testing.mutants.of")(function* <O extends st
 	const config = path.join(root, "tsconfig.json")
 	const entries = Arr.map(sources, (source, index) => ({
 		source,
-		at: path.join(root, `source-${index}.ts`)
+		at: path.join(root, `source-${index}${path.extname(source.file)}`)
 	}))
 	const located = yield* Effect.try({
 		try: (): Result.Result<ReadonlyArray<Located<Operator | O>>, MutationSourceRefused> => {

@@ -24,7 +24,8 @@ export const SHAPES = [
 	"effect-fn",
 	"option-some",
 	"loose",
-	"negative"
+	"negative",
+	"markup"
 ] as const
 
 type Shape = (typeof SHAPES)[number]
@@ -93,6 +94,8 @@ const textOf = (statement: Statement, index: number): string => {
 			return `const ${v} = ${x} == ${y}`
 		case "negative":
 			return `if (${x} < -${n}) { return ${y} }`
+		case "markup":
+			return `const ${v} = <p>{${x} && <b>{${y}}</b>}</p>`
 	}
 }
 
@@ -157,6 +160,8 @@ export const expectedOf = (shape: Shape): Counts => {
 				["guard", 1],
 				["bound", 2]
 			]
+		case "markup":
+			return [["conjunct", 2]]
 	}
 }
 
@@ -165,6 +170,10 @@ export const counted = (counts: ReadonlyArray<Counts>) =>
 	Arr.reduce(Arr.flatten(counts), Rec.empty<string, number>(), (sum, [operator, n]) =>
 		Rec.set(sum, operator, (sum[operator] ?? 0) + n)
 	)
+
+/** The program's file: a TSX module when a statement holds markup, which only TSX reads, and a TypeScript one otherwise. */
+export const programFile = (statements: ReadonlyArray<Statement>): string =>
+	Arr.some(statements, (statement) => statement.shape === "markup") ? "program.tsx" : "program.ts"
 
 /** The program's text: its statements, one a line, in the body of a function named `run`. */
 export const statementsText = (statements: ReadonlyArray<Statement>) =>
