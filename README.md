@@ -14,6 +14,26 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: one typecheck script (2026-11-18)
+
+A package states its typecheck once: `"typecheck": "toolchain-typecheck"`. The from-scratch run, which reads no build
+info, is the same task with `--incremental false` passed through turbo (`turbo run typecheck -- --incremental false`),
+which turbo hashes apart, so it never replays an incremental pass, and passes to the named tasks alone, never their
+dependencies. There is no `typecheck:full` script to forget: edullm's qti-pie had none, so `pnpm check:full` never
+checked qti-pie's four packages. Before you move `vendor/toolchain` past this section:
+
+1. **Scripts.** Delete every package's and the root's `typecheck:full`. A script that runs more than one program
+   passes its arguments to each (`sh -c 'toolchain-typecheck -p a/tsconfig.json "$@" & toolchain-typecheck "$@"; …'
+   typecheck`).
+2. **turbo.json.** Delete the `typecheck:full` and `//#typecheck:full` tasks, and any package turbo.json's.
+3. **The from-scratch run.** Where `check` (or `check:full`) ran `typecheck:full`, it runs
+   `turbo run typecheck … -- --incremental false` in a turbo run of its own, since the arguments go to every task a
+   run names. A composite project that emits declarations cannot turn incremental off; its repository keeps a script
+   of its own for that (grizzle's `rm -rf types && toolchain-typecheck -p tsconfig.json`).
+
+Nothing else changes: the shared base is incremental as before, and the push gate's daily `check:full` still runs
+where a repository has one.
+
 ## Consumer migration: type-aware lint on tsrs (2026-11-18)
 
 oxlint's type-aware rules run in `tsrs --lint`, the TypeScript the typecheck runs (tsrs 0.25.0, TypeScript
@@ -135,7 +155,7 @@ are properties is the properties pack, which that repository's conversion turns 
   (`--maxWorkers`, `--minWorkers`, `--pool*`, `--no-file-parallelism`, `--runInBand`, `--threads` and their kin in a
   package script, lefthook's configuration or a shell script), `dead-paths` (an oxlint override's glob, or a
   `toolchain.config.ts` exception's path, that names no tracked file; the preset's own test globs excepted), and
-  `root-tasks` (a root script named as a turbo task every package runs, such as `typecheck`, `typecheck:full` or
+  `root-tasks` (a root script named as a turbo task every package runs, such as `typecheck` or
   `oxlint`, that turbo.json registers as no `//#<name>` task: turbo never runs the root's script for the generic task,
   so every `turbo run` of it passes over the root's own files; a root script that runs turbo itself is left alone), and
   `root-files` (a TypeScript file under no workspace package that the root tsconfig's `include` names neither by its
@@ -214,14 +234,12 @@ whole section, and do every part: the parts are one migration, in the order a re
   `"tsBuildInfoFile": "${configDir}/node_modules/.cache/typecheck.tsbuildinfo"` and keeps `"noEmit": true`; drop any
   `"incremental": false`. A composite project that emits declarations keeps its own `tsBuildInfoFile`.
 - `node_modules/` must be gitignored (it is in every repository).
-- Each package's scripts: `"typecheck": "toolchain-typecheck"`, `"typecheck:full": "toolchain-typecheck --incremental false"`,
-  `"oxlint": "toolchain-oxlint"`. Arguments pass through (`toolchain-typecheck -b`, `toolchain-typecheck -p
-  tsconfig.json`).
-- The root's scripts: `"types": "turbo run typecheck"` (with the repository's `--filter`s), `"typecheck":
-  "toolchain-typecheck"`, `"typecheck:full": "toolchain-typecheck --incremental false"`, and `check` runs
-  `typecheck:full` in place of `typecheck`.
-- turbo.json: a `typecheck:full` task with the `typecheck` task's `dependsOn` and `inputs`, and `//#typecheck:full`;
-  `NODE_OPTIONS` moves from `globalEnv` to `globalPassThroughEnv`. Never set `cacheDir`.
+- Each package's scripts: `"typecheck": "toolchain-typecheck"` and `"oxlint": "toolchain-oxlint"`. Arguments pass
+  through (`toolchain-typecheck -b`, `toolchain-typecheck -p tsconfig.json`). (The `typecheck:full` this part first
+  named is gone: "one typecheck script", above.)
+- The root's scripts: `"types": "turbo run typecheck"` (with the repository's `--filter`s) and `"typecheck":
+  "toolchain-typecheck"`; `check` runs the typecheck from scratch, `turbo run typecheck -- --incremental false`.
+- turbo.json: `NODE_OPTIONS` moves from `globalEnv` to `globalPassThroughEnv`. Never set `cacheDir`.
 - Agents' instructions: run `pnpm types` after an edit, never the root's `pnpm typecheck` (it checks the root's config
   files only); the hooks run the linters; never `--no-verify` in the main tree.
 

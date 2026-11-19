@@ -16,16 +16,7 @@
 			"dependsOn": ["^source"]
 		},
 		"typecheck": {
-			"description": "The incremental typecheck, `pnpm types`: each package's build info (node_modules/.cache/typecheck.tsbuildinfo, gitignored) lets a re-check check only what changed. The build info is no output: a hit replays the diagnostics, and a miss reads whatever build info the directory holds, which tsrs proves against the files' hashes. The dev tools' tsconfig bases, which the root tsconfig and every package extend, are inputs too.",
-			"dependsOn": ["^source"],
-			"inputs": [
-				"$TURBO_DEFAULT$",
-				"$TURBO_ROOT$/packages/devtools/tsconfig.base.json",
-				"$TURBO_ROOT$/packages/devtools/tsconfig.effect-free.json"
-			]
-		},
-		"typecheck:full": {
-			"description": "The full gate's typecheck, in `pnpm check`: from scratch (--incremental false), reading no build info, so a stale incremental result cannot pass the push. A task of its own, so it never replays a hit of the incremental one.",
+			"description": "The incremental typecheck, `pnpm types`: each package's build info (node_modules/.cache/typecheck.tsbuildinfo, gitignored) lets a re-check check only what changed. The build info is no output: a hit replays the diagnostics, and a miss reads whatever build info the directory holds, which tsrs proves against the files' hashes. `pnpm check` runs this same task from scratch, with --incremental false passed through, which turbo hashes, so it never replays an incremental pass. The dev tools' tsconfig bases, which the root tsconfig and every package extend, are inputs too.",
 			"dependsOn": ["^source"],
 			"inputs": [
 				"$TURBO_DEFAULT$",
@@ -61,7 +52,6 @@
 			]
 		},
 		"//#typecheck": {},
-		"//#typecheck:full": {},
 		"//#workspace-gate": {
 			"description": "The repository-wide checks: every tsconfig and package manifest, and every file name git shows. It reads the whole tree and opens no TypeScript program, so it costs about a second, and a cache would have to hash the whole tree to know it could skip it.",
 			"cache": false

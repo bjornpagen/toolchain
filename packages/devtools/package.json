@@ -30,7 +30,6 @@
 	},
 	"scripts": {
 		"typecheck": "toolchain-typecheck",
-		"typecheck:full": "toolchain-typecheck --incremental false",
 		"oxlint": "toolchain-oxlint",
 		"fixtures:style": "node src/style.ts --fixtures",
 		"fixtures:oxlint": "node src/oxlint/fixtures.ts",

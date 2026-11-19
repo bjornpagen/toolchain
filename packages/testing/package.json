@@ -53,7 +53,6 @@
 	},
 	"scripts": {
 		"typecheck": "toolchain-typecheck",
-		"typecheck:full": "toolchain-typecheck --incremental false",
 		"oxlint": "toolchain-oxlint",
 		"test": "toolchain-test run",
 		"bench": "vitest bench --run",
