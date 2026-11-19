@@ -30,10 +30,10 @@
 # commit or push waiting. A snapshot stays warm for whichever run claims it next: its install stays, and fill rewrites
 # only what changed.
 #
-# Cache layout: ${XDG_CACHE_HOME:-~/.cache}/toolchain-gate/<key>/, one directory per REPOSITORY, not per checkout. The key
-# is the first 12 hex digits of the git hash of the repository's identity: its origin remote URL when it has one,
-# written with no trailing / or .git (https://github.com/o/r.git and https://github.com/o/r are one repository), else
-# the absolute common git directory. Every clone of one repository (grizzle's lanes clone it under
+# Cache layout: ${XDG_CACHE_HOME:-~/.cache}/toolchain-snapshots/<key>/, one directory per REPOSITORY, not per checkout.
+# The key is the first 12 hex digits of the git hash of the repository's identity: its origin remote URL when it has
+# one, written with no trailing / or .git (https://github.com/o/r.git and https://github.com/o/r are one repository),
+# else the absolute common git directory. Every clone of one repository (grizzle's lanes clone it under
 # ~/.cache/grizzle-release/<LANE>/) therefore shares the snapshots, and the first run of the second clone is warm: the
 # install is there.
 #
@@ -42,11 +42,18 @@
 #   <key>/<mode>.<n>.lock        flock(1)ed, exclusive, by the run that uses that snapshot
 #   <key>/push.full              stamped when the daily check:full passed
 #   <key>/push.passed/<tree>     stamped when every check of the push gate passed on that tree
-#   .<key>.lock                  beside the key directory, flock(1)ed, shared, by every run in it
+#   .<key>.lock                  beside the key directory, flock(1)ed, shared, by every run of the repository
 #
 # Every hold is a kernel lock on an open file (flock(1), util-linux): a run's shell and every process it starts keep it
 # open, and the kernel lets it go when the last of them exits, however it exits. No pid names a holder, so no live run
-# is ever taken for a dead one, and no run reads a snapshot another run is filling.
+# is ever taken for a dead one, and no run reads a snapshot another run is filling. A run holds its repository's key
+# from before its first look at the cache until it and everything it started have exited, and a snapshot from its
+# claim until then too, so whatever holds a snapshot holds its key.
+#
+# The cache is this gate's alone. Every gate before it kept its snapshots in ${XDG_CACHE_HOME:-~/.cache}/toolchain-gate/
+# and deleted a key directory there by rules that see no flock(1) hold: one judged by a pid file inside each lock, and
+# by a key that kept a URL's .git, so the directory of a repository cloned with .git (effect-openapi-cli-generator's
+# 930250a4b854) read as gone and was deleted under its live run, four of its pushes in a row. No older gate looks here.
 #
 # A snapshot's git directory borrows objects (alternates) from ONE repository, and a snapshot serves several clones.
 # Each run rewrites the alternates to the objects of the clone whose commit it checks, while it holds the snapshot and
@@ -55,13 +62,14 @@
 # clone's objects instead would let a deleted clone's missing directory and an unrelated clone's stale objects take
 # part in every read.
 #
-# Garbage: a run that enters the cache deletes each other key directory whose repository is gone, meaning none of the
-# clones listed in its `clones` file still exists with that key as its identity, and that no run holds: it takes the
-# directory's lock alone (exclusive, without waiting) and renames the directory away under it, so a run either holds
-# the directory before the rename, and it stays, or makes a new one after it. A directory an older gate may be running
-# in is left alone, since that gate holds no lock this one reads: one holding a snapshot of the one-snapshot layout
-# (`commit` or `push`), as every older gate's does, the old per-path layout's (a hash of the checkout's path, with no
-# `clones` file) among them.
+# Garbage: once a run holds its key, it deletes each other key directory whose repository is gone and that no run
+# holds. The `clones` registry says only whether the repository is gone: none of the clones it lists still exists with
+# that key as its identity. Whether a run is in the directory is the lock's to say: the collect takes the key's lock
+# alone (exclusive, without waiting) and renames the directory away under it, then removes it, so a run either holds
+# the key before the rename, and the directory stays, or makes a new one after it. That rename is the one way anything
+# under the cache is deleted but a snapshot's own reset, which its claim's lock guards; what a collect killed between
+# the two left behind (a .gone.* directory) is removed by the next.
+#
 # Turbo's cache is the working tree's (.turbo/cache) unless TURBO_CACHE_DIR names one, so a task the working tree
 # already ran on the same content is a hit in the snapshot, and the other way round.
 set -eu
@@ -74,7 +82,7 @@ die() {
 root=$(git rev-parse --show-toplevel)
 git_dir=$(git rev-parse --absolute-git-dir)
 common_dir=$(git rev-parse --path-format=absolute --git-common-dir)
-cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/toolchain-gate"
+cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/toolchain-snapshots"
 newline='
 '
 
@@ -110,10 +118,6 @@ readonly GATE_FULL_CHECK_DAYS=1
 # the submodules.
 fill() (
 	mkdir -p "$3" "$(dirname -- "$4")"
-	# An older gate kept a fresh, empty repository in the snapshot itself.
-	if [ -d "$3/.git" ]; then
-		rm -rf "$3/.git"
-	fi
 	if [ ! -f "$4/HEAD" ] || [ ! -f "$3/.git" ]; then
 		rm -f "$3/.git"
 		git init --quiet --separate-git-dir="$4" "$3"
@@ -154,23 +158,15 @@ claim() {
 	snapshot="$cache/$1.$n"
 }
 
-# collect: registers this clone under its key, then deletes every other key directory whose repository is gone, that no
-# run holds and that no older gate may be running in. The key directory appears whole (renamed from a hidden one) so
-# a concurrent collect never reads a new directory as an old-layout one; hidden names are skipped. A deleted directory
-# is renamed to a hidden one under its lock and removed after, and so is any a collect left behind when it was killed.
+# collect: registers this clone under its key, then deletes every other key directory whose repository is gone and
+# that no run holds, by renaming it to a hidden one under its lock (hidden names are no key's) and removing that after,
+# with any a collect left behind when it was killed. It runs once this run holds its key, so its own directory, made
+# here on its repository's first run, is never one another collect can take.
 collect() {
-	if [ ! -d "$cache" ]; then
-		fresh=$(mktemp -d "$cache_root/.new.XXXXXX")
-		printf '%s\n' "$common_dir" >"$fresh/clones"
-		mv "$fresh" "$cache" 2>/dev/null || true
-		rm -rf "$fresh"
-	fi
+	mkdir -p "$cache"
 	grep -qxF -- "$common_dir" "$cache/clones" 2>/dev/null || printf '%s\n' "$common_dir" >>"$cache/clones"
 	for dir in "$cache_root"/*; do
 		[ -d "$dir" ] && [ "$dir" != "$cache" ] || continue
-		# An older toolchain's gate keeps one snapshot a mode, `commit` and `push`, here keyed by its repository or by its
-		# checkout's path (with no clones file), and holds no lock this gate reads: that repository may be mid-run in it.
-		[ ! -e "$dir/commit" ] && [ ! -e "$dir/push" ] || continue
 		alive=
 		clones=$(cat "$dir/clones" 2>/dev/null || true)
 		while IFS= read -r clone; do
@@ -208,10 +204,6 @@ indexed() {
 # and --offline failed (ERR_PNPM_NO_OFFLINE_META) whenever the metadata cache lacked one of them.
 enter() {
 	unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
-	mkdir -p "$cache_root"
-	exec 8>>"$cache_root/.$key.lock"
-	flock -s 8
-	collect
 	claim "$1"
 	fill "$git_dir" "$2" "$snapshot" "$snapshot.git" "$root"
 	export TURBO_CACHE_DIR="${TURBO_CACHE_DIR:-$root/.turbo/cache}"
@@ -238,6 +230,15 @@ report() {
 	fi
 	cat "$logs/$1"
 }
+
+# The run holds its repository's key, shared, on descriptor 8, from here until it and everything it starts have exited:
+# from before its first look at the cache (the push's stamps, a claim), so no collect deletes the directory under any
+# part of it. It waits only while a collect renames a gone repository's directory away, and then makes a new one.
+mkdir -p "$cache_root"
+exec 8>>"$cache_root/.$key.lock"
+flock -s 8
+collect
+printf 'toolchain-gate: holds %s\n' "$cache" >&2
 
 mode=${1:-}
 [ "$#" -gt 0 ] && shift

@@ -4,7 +4,9 @@ import { boolean, element, type Gen, int } from "@bjornpagen/testing/gen"
 import { type Need, NeedFailed } from "@bjornpagen/testing/property"
 import {
 	Array as Arr,
+	Deferred,
 	Effect,
+	Fiber,
 	FileSystem,
 	Option,
 	Order,
@@ -48,7 +50,7 @@ type Sandbox = Readonly<{
 export const sandboxOf = (dir: string, checkout: CheckoutDir, lockfile: string): Sandbox => ({
 	dir,
 	cache: `${dir}/xdg`,
-	root: `${dir}/xdg/toolchain-gate`,
+	root: `${dir}/xdg/toolchain-snapshots`,
 	gate: `${checkout}/bin/gate.sh`,
 	lockfile
 })
@@ -727,15 +729,11 @@ export type Lock = "none" | "live" | "stale"
 
 /**
  * A key directory of the cache beside the repository a run checks: the clones of another repository that ran the gate,
- * keyed by that repository's URL; a repository with no origin remote that ran the gate, keyed by its own path; a
- * directory of the old per-path layout, with no clones file, held by a live run or not; or the directory of a
- * repository whose clones are gone that holds an older gate's one snapshot of a mode.
+ * keyed by that repository's URL, or a repository with no origin remote that ran the gate, keyed by its own path.
  */
 export type Entry =
 	| Readonly<{ kind: "clones"; fates: Arr.NonEmptyReadonlyArray<Fate>; lock: Lock }>
 	| Readonly<{ kind: "repository"; fate: Fate; lock: Lock }>
-	| Readonly<{ kind: "old layout"; held: boolean }>
-	| Readonly<{ kind: "older snapshot" }>
 
 const FATES = ["present", "removed", "re-pointed"] as const
 
@@ -752,61 +750,40 @@ const fatesGen: Gen<Arr.NonEmptyReadonlyArray<Fate>> = (source) => {
 const lockGen: Gen<Lock> = (source) => source.draw(element(["none", "live", "stale"] as const))
 
 const entryGen: Gen<Entry> = (source) => {
-	const kind = source.draw(
-		element(["clones", "repository", "old layout", "older snapshot"] as const)
-	)
+	const kind = source.draw(element(["clones", "repository"] as const))
 	switch (kind) {
 		case "clones":
 			return { kind, fates: source.draw(fatesGen), lock: source.draw(lockGen) }
 		case "repository":
 			return { kind, fate: source.draw(fateGen), lock: source.draw(lockGen) }
-		case "old layout":
-			return { kind, held: source.draw(boolean) }
-		case "older snapshot":
-			return { kind }
 	}
 }
 
 /**
  * One key directory beside the one the run checks, of every kind: a repository's clones (one or two, each fate) or a
- * repository with no origin remote, each under no lock, a live one or a stale one; the old layout, held or not; or an
- * older gate's snapshot. Thirty-nine layouts; a run judges each key directory alone, so one a case reaches every
- * situation.
+ * repository with no origin remote, each under no lock, a live one or a stale one. Thirty-six layouts; a run judges
+ * each key directory alone, so one a case reaches every situation.
  */
 export const collectings: Gen<Arr.NonEmptyReadonlyArray<Entry>> = (source) => [
 	source.draw(entryGen)
 ]
 
-/** The fates of the clones a key directory lists, or none for one of the old layout, which lists none, and none still
- * there for an older gate's snapshot's, whose clones are gone. */
-const fatesOf = (entry: Entry): ReadonlyArray<Fate> => {
+/** The fates of the clones a key directory lists. */
+const fatesOf = (entry: Entry): Arr.NonEmptyReadonlyArray<Fate> => {
 	switch (entry.kind) {
 		case "clones":
 			return entry.fates
 		case "repository":
 			return [entry.fate]
-		case "old layout":
-			return []
-		case "older snapshot":
-			return ["removed"]
 	}
 }
 
 /**
- * Whether a run keeps a key directory, by the gate's contract: a directory an older gate may be running in always (the
- * old layout, or an older gate's snapshot), and any other while one of the clones it lists is still there under its key
- * or a live run holds its lock.
+ * Whether a run keeps a key directory, by the gate's contract: while one of the clones it lists is still there under its
+ * key, or a live run holds its lock.
  */
-export const kept = (entry: Entry): boolean => {
-	switch (entry.kind) {
-		case "old layout":
-		case "older snapshot":
-			return true
-		case "clones":
-		case "repository":
-			return Arr.contains(fatesOf(entry), "present") || entry.lock === "live"
-	}
-}
+export const kept = (entry: Entry): boolean =>
+	Arr.contains(fatesOf(entry), "present") || entry.lock === "live"
 
 /** The situations a key directory is in. */
 export type CollectingFeature =
@@ -816,41 +793,27 @@ export type CollectingFeature =
 	| "a stale lock keeps nothing"
 	| "a re-pointed clone counts as gone"
 	| "a repository with no origin remote, keyed by its path"
-	| "an old-layout directory left alone"
-	| "a held old-layout directory left alone"
-	| "an older gate's snapshot left alone"
 
 /** The situations an entry is in. */
 const entryFeatures = (entry: Entry): ReadonlyArray<CollectingFeature> => {
-	switch (entry.kind) {
-		case "old layout":
-			return [
-				entry.held ? "a held old-layout directory left alone" : "an old-layout directory left alone"
-			]
-		case "older snapshot":
-			return ["an older gate's snapshot left alone"]
-		case "clones":
-		case "repository": {
-			const fates = fatesOf(entry)
-			const gone = !Arr.contains(fates, "present")
-			return [
-				...(kept(entry) ? [] : ["a key directory whose clones are all gone is collected" as const]),
-				...(!gone && !Arr.every(fates, (fate) => fate === "present")
-					? ["a key directory kept by a clone still there among gone ones" as const]
-					: []),
-				...(gone && entry.lock === "live"
-					? ["a key directory whose clones are gone kept by a live lock" as const]
-					: []),
-				...(gone && entry.lock === "stale" ? ["a stale lock keeps nothing" as const] : []),
-				...(!kept(entry) && Arr.contains(fates, "re-pointed")
-					? ["a re-pointed clone counts as gone" as const]
-					: []),
-				...(entry.kind === "repository"
-					? ["a repository with no origin remote, keyed by its path" as const]
-					: [])
-			]
-		}
-	}
+	const fates = fatesOf(entry)
+	const gone = !Arr.contains(fates, "present")
+	return [
+		...(kept(entry) ? [] : ["a key directory whose clones are all gone is collected" as const]),
+		...(!gone && !Arr.every(fates, (fate) => fate === "present")
+			? ["a key directory kept by a clone still there among gone ones" as const]
+			: []),
+		...(gone && entry.lock === "live"
+			? ["a key directory whose clones are gone kept by a live lock" as const]
+			: []),
+		...(gone && entry.lock === "stale" ? ["a stale lock keeps nothing" as const] : []),
+		...(!kept(entry) && Arr.contains(fates, "re-pointed")
+			? ["a re-pointed clone counts as gone" as const]
+			: []),
+		...(entry.kind === "repository"
+			? ["a repository with no origin remote, keyed by its path" as const]
+			: [])
+	]
 }
 
 /** The situations the key directories of a case are in. */
@@ -951,7 +914,7 @@ const clonesRegistered = Effect.fn("clonesRegistered")(function* (
 /**
  * A key directory beside the repository a run checks, as the entry at `index` draws it. The clones of a repository
  * register under its URL, a run of the gate in each, and a repository with no remote under its path, by a run in
- * itself; a directory of the old layout is made as an older gate left it, a snapshot and no clones file.
+ * itself.
  */
 export const registered = Effect.fn("registered")(function* (
 	sandbox: Sandbox,
@@ -968,11 +931,6 @@ export const registered = Effect.fn("registered")(function* (
 			const made: Registered = { entry, key, registrants: clones }
 			return made
 		}
-		case "older snapshot": {
-			const { key, clones } = yield* clonesRegistered(sandbox, name, ["removed"], listed)
-			const made: Registered = { entry, key, registrants: clones }
-			return made
-		}
 		case "repository": {
 			const directory = yield* repository(sandbox, name)
 			yield* gated(sandbox, directory, "true")
@@ -980,20 +938,12 @@ export const registered = Effect.fn("registered")(function* (
 			const made: Registered = { entry, key, registrants: [directory] }
 			return made
 		}
-		case "old layout": {
-			const key = `00000000000${String(index)}`
-			yield* fs.makeDirectory(`${sandbox.root}/${key}/commit`, { recursive: true })
-			const made: Registered = { entry, key, registrants: [] }
-			return made
-		}
 	}
 })
 
 /** What becomes of a registered key directory before the run: each clone or repository that registered it meets its
- * fate, and the lock its entry draws is taken; an older gate's snapshot's clone is removed and the snapshot made, as an
- * older gate names it (`push`, one a mode). */
+ * fate, and the lock its entry draws is taken. */
 export const befell = Effect.fn("befell")(function* (sandbox: Sandbox, made: Registered) {
-	const fs = yield* FileSystem.FileSystem
 	const { entry } = made
 	switch (entry.kind) {
 		case "clones":
@@ -1006,13 +956,6 @@ export const befell = Effect.fn("befell")(function* (sandbox: Sandbox, made: Reg
 				befallen(sandbox, directory, entry.fate, "add")
 			)
 			return yield* locked(sandbox, made.key, entry.lock)
-		case "old layout":
-			return yield* locked(sandbox, made.key, entry.held ? "live" : "none")
-		case "older snapshot":
-			yield* Effect.forEach(made.registrants, (clone) =>
-				befallen(sandbox, clone, "removed", "set-url")
-			)
-			return yield* fs.makeDirectory(`${sandbox.root}/${made.key}/push`, { recursive: true })
 	}
 })
 
@@ -1121,6 +1064,264 @@ export const claimedBy = Effect.fn("claimedBy")(function* (sandbox: Sandbox, clo
 		(fields) => fields
 	)
 	return { seen: seenOf(stdout), snapshot: Arr.join(names, " ") }
+})
+
+/**
+ * Where a run of the gate is in its life when another repository's run collects garbage beside it: holding its key and
+ * reading the push's lines, before it claims a snapshot; filling the snapshot it claimed, while a file is checked out;
+ * checking, while its command runs; at exit, its shell gone and a process its command started still in the snapshot;
+ * or exited, with everything it started.
+ */
+export type Phase = "before claiming" | "while filling" | "while checking" | "at exit" | "exited"
+
+const PHASES = ["before claiming", "while filling", "while checking", "at exit", "exited"] as const
+
+/**
+ * How the collect beside a run reads the run's clone: still there under the run's key, or re-pointed at another
+ * repository since the run began, so the registry reads the repository gone, as every older gate read a clone whose
+ * origin ends in .git (effect-openapi-cli-generator's), and only the run's hold keeps its directory.
+ */
+export type Standing = "present" | "re-pointed"
+
+const STANDINGS = ["present", "re-pointed"] as const
+
+/** A run of one repository in a phase of its life, its clone as the collect beside it reads it. */
+export type Sweep = Readonly<{ phase: Phase; clone: Standing }>
+
+/** Every phase with each standing: ten layouts, the smallest that reach every situation. */
+export const sweeps: Gen<Sweep> = (source) => ({
+	phase: source.draw(element(PHASES)),
+	clone: source.draw(element(STANDINGS))
+})
+
+/** Whether a run in a phase still holds its key: in every phase but once it and everything it started have exited. */
+const holds = (phase: Phase): boolean => phase !== "exited"
+
+/** Whether the collect beside a run leaves the run's key directory, by the gate's contract: while anything of the run
+ * holds it, or while its clone is still there under its key. */
+export const keptThrough = (sweep: Sweep): boolean =>
+	holds(sweep.phase) || sweep.clone === "present"
+
+/** The situations a Sweep puts a run in. */
+export type SweepFeature =
+	| "a run holding its key before it claims a snapshot keeps it"
+	| "a run filling its snapshot keeps it"
+	| "a run checking keeps its snapshot"
+	| "a process a run left in its snapshot keeps it"
+	| "a run's hold alone keeps a repository its registry reads gone"
+	| "an exited run's repository read gone is collected"
+
+const PHASE_FEATURES: Readonly<Record<Phase, ReadonlyArray<SweepFeature>>> = {
+	"before claiming": ["a run holding its key before it claims a snapshot keeps it"],
+	"while filling": ["a run filling its snapshot keeps it"],
+	"while checking": ["a run checking keeps its snapshot"],
+	"at exit": ["a process a run left in its snapshot keeps it"],
+	exited: []
+}
+
+/** The situations a Sweep puts its run in. */
+export const sweepFeatures = (sweep: Sweep): ReadonlyArray<SweepFeature> => [
+	...PHASE_FEATURES[sweep.phase],
+	...(sweep.clone === "re-pointed"
+		? [
+				holds(sweep.phase)
+					? ("a run's hold alone keeps a repository its registry reads gone" as const)
+					: ("an exited run's repository read gone is collected" as const)
+			]
+		: [])
+]
+
+/** What the gate prints once a run holds its key (bin/gate.sh), before the push's lines are read. */
+const HOLDS = "toolchain-gate: holds "
+
+/** What a run's pause prints once the run is in its phase. */
+const pausedIn = (phase: Phase): string => `paused ${phase}`
+
+/** The line a run prints once it is in its phase, for the phases it is held in while it runs; none for one whose run has
+ * exited by then. */
+const reachedLine = (phase: Phase): Option.Option<string> => {
+	switch (phase) {
+		case "before claiming":
+			return Option.some(HOLDS)
+		case "while filling":
+		case "while checking":
+			return Option.some(pausedIn(phase))
+		case "at exit":
+		case "exited":
+			return Option.none()
+	}
+}
+
+/**
+ * The check a run's push gate runs, as a script outside its repository (the repository's check is `sh
+ * "$GATE_PROBE"`): it looks at the snapshot; while checking, it says so and waits for `go` first; at exit, it leaves a
+ * process in the snapshot that waits for `go` and then looks into `seen`, and returns at once.
+ */
+const probeOf = (phase: Phase, go: string, seen: string): string => {
+	switch (phase) {
+		case "while checking":
+			return Arr.join([`echo '${pausedIn(phase)}' >&2`, `read _ <'${go}'`, ...LOOK], "\n")
+		case "at exit":
+			return Arr.join(
+				["(", `read _ <'${go}'`, "{", ...LOOK, `} >'${seen}'`, ") </dev/null >/dev/null 2>&1 &"],
+				"\n"
+			)
+		case "before claiming":
+		case "while filling":
+		case "exited":
+			return Arr.join(LOOK, "\n")
+	}
+}
+
+/**
+ * The git configuration of a run: while filling, the filter `pause`, which the repository has paused.txt checked out
+ * through, says so, waits for `go` and passes the file through; every other run has none, as every other command of a
+ * case.
+ */
+const configOf = Effect.fn("configOf")(function* (sandbox: Sandbox, phase: Phase, go: string) {
+	const fs = yield* FileSystem.FileSystem
+	if (phase !== "while filling") {
+		return "/dev/null"
+	}
+	const pause = `${sandbox.dir}/pause.sh`
+	const config = `${sandbox.dir}/pause.gitconfig`
+	yield* fs.writeFileString(
+		pause,
+		Arr.join([`echo '${pausedIn(phase)}' >&2`, `read _ <'${go}'`, "exec cat", ""], "\n")
+	)
+	yield* fs.writeFileString(config, `[filter "pause"]\n\tsmudge = sh ${pause}\n`)
+	return config
+})
+
+/** A FIFO named `name` in the case's scratch directory. */
+const fifo = Effect.fn("fifo")(function* (sandbox: Sandbox, name: string) {
+	const path = `${sandbox.dir}/${name}`
+	yield* sh(sandbox, sandbox.dir, "mkfifo", path)
+	return path
+})
+
+/**
+ * A repository whose check is the probe (package.json's check, `sh "$GATE_PROBE"`) and whose paused.txt is checked out
+ * through the filter `pause`, which only a run's own configuration defines, and a clone of it that has run the gate
+ * once, leaving a stamp under node_modules in the snapshot, then committed a change to paused.txt the snapshot has not
+ * seen, so the next fill checks it out again.
+ */
+const sweptClone = Effect.fn("sweptClone")(function* (sandbox: Sandbox) {
+	const fs = yield* FileSystem.FileSystem
+	const origin = yield* repository(sandbox, "swept")
+	yield* fs.writeFileString(
+		`${origin}/package.json`,
+		`{"name":"swept","private":true,"scripts":{"check":"sh \\"$GATE_PROBE\\""}}\n`
+	)
+	yield* fs.writeFileString(`${origin}/.gitattributes`, "paused.txt filter=pause\n")
+	yield* fs.writeFileString(`${origin}/paused.txt`, "0\n")
+	yield* committed(sandbox, origin, "a probed check")
+	const clone = yield* cloneOf(sandbox, origin, "swept-c0")
+	yield* gated(sandbox, clone, "mkdir -p node_modules && echo warm >node_modules/stamp-warm")
+	yield* fs.writeFileString(`${clone}/paused.txt`, "1\n")
+	yield* committed(sandbox, clone, "a change the snapshot has not seen")
+	return clone
+})
+
+/** Writes a line into a FIFO, once a reader has it open. */
+const signalled = (sandbox: Sandbox, path: string) =>
+	sh(sandbox, sandbox.dir, "sh", "-c", `echo go >"$1"`, "sh", path)
+
+/**
+ * A run of the push gate on a clone's HEAD, as git sends a new branch, brought to the phase `sweep` draws; then the
+ * clone meets its standing and another repository's run collects garbage beside it, and the run goes on. Answers the
+ * run's status, what its check (at exit, the process it left) saw of the snapshot, the files of the clone's HEAD, and
+ * whether the run's key directory was still there after the collect.
+ */
+export const sweptBeside = Effect.fn("sweptBeside")(function* (sandbox: Sandbox, sweep: Sweep) {
+	const fs = yield* FileSystem.FileSystem
+	const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+	const clone = yield* sweptClone(sandbox)
+	const key = yield* onlyKey(sandbox)
+	const otherOrigin = yield* repository(sandbox, "other")
+	const other = yield* cloneOf(sandbox, otherOrigin, "other-c0")
+	const go = yield* fifo(sandbox, "go")
+	const seen = yield* fifo(sandbox, "seen")
+	const probe = `${sandbox.dir}/probe.sh`
+	yield* fs.writeFileString(probe, probeOf(sweep.phase, go, seen))
+	const config = yield* configOf(sandbox, sweep.phase, go)
+	const head = yield* Effect.map(sh(sandbox, clone, "git", "rev-parse", "HEAD"), Str.trim)
+	const sent = yield* Deferred.make<void>()
+	const handle = yield* spawner.spawn(
+		ChildProcess.make("sh", [sandbox.gate, "push"], {
+			cwd: clone,
+			stdin: {
+				stream: Stream.fromEffect(Deferred.await(sent)).pipe(
+					Stream.map(() =>
+						new TextEncoder().encode(
+							`refs/heads/main ${head} refs/heads/main ${Str.repeat(40)("0")}\n`
+						)
+					)
+				)
+			},
+			extendEnv: true,
+			env: {
+				...IDENTITY,
+				GIT_CONFIG_GLOBAL: config,
+				GATE_PROBE: probe,
+				XDG_CACHE_HOME: sandbox.cache
+			}
+		})
+	)
+	const reached = yield* Deferred.make<void>()
+	const ended = yield* Deferred.make<number>()
+	const awaited = reachedLine(sweep.phase)
+	yield* Effect.forkScoped(
+		Stream.runForEach(Stream.splitLines(Stream.decodeText(handle.stderr)), (line) =>
+			Option.exists(awaited, (start) => Str.startsWith(start)(line))
+				? Deferred.succeed(reached, undefined)
+				: Effect.void
+		)
+	)
+	const stdout = yield* Effect.forkScoped(Stream.mkString(Stream.decodeText(handle.stdout)))
+	yield* Effect.forkScoped(
+		Effect.flatMap(handle.exitCode, (status) => Deferred.succeed(ended, status))
+	)
+	if (sweep.phase !== "before claiming") {
+		yield* Deferred.succeed(sent, undefined)
+	}
+	yield* Option.match(awaited, {
+		onNone: () => Deferred.await(ended),
+		onSome: () =>
+			Effect.raceFirst(
+				Deferred.await(reached),
+				Effect.flatMap(Deferred.await(ended), (status) =>
+					Effect.sync(() => fail(`the run exited ${String(status)} before it was ${sweep.phase}`))
+				)
+			)
+	})
+	if (sweep.clone === "re-pointed") {
+		yield* sh(sandbox, clone, "git", "remote", "set-url", "origin", `${sandbox.dir}/elsewhere`)
+	}
+	yield* gated(sandbox, other, "true")
+	const after = yield* keys(sandbox)
+	const left = Arr.contains(after, key)
+	switch (sweep.phase) {
+		case "before claiming":
+			yield* Deferred.succeed(sent, undefined)
+			break
+		case "while filling":
+		case "while checking":
+			yield* Effect.raceFirst(signalled(sandbox, go), Deferred.await(ended))
+			break
+		case "at exit":
+			yield* signalled(sandbox, go)
+			break
+		case "exited":
+			break
+	}
+	const status = yield* Deferred.await(ended)
+	const looked =
+		sweep.phase === "at exit"
+			? yield* sh(sandbox, sandbox.dir, "cat", seen)
+			: yield* Fiber.join(stdout)
+	const tree = yield* treeOf(sandbox, clone)
+	return { status, seen: seenOf(looked), tree, left }
 })
 
 /** How a push-mode run of the gate is called: by hand with nothing, as git calls the pre-push hook (the remote's name

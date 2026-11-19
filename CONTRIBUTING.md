@@ -139,7 +139,7 @@ working tree, so lanes that share one checkout never fail or pass each other's w
   which reads the commits a push sends from git's pre-push lines; `toolchain-gate run <index|commit> <command>` runs
   any command on what the index holds or on a commit (`toolchain-gate run index pnpm check` is the old
   `scripts/check-staged.sh`).
-- A snapshot is a directory under `${XDG_CACHE_HOME:-~/.cache}/toolchain-gate/<the repository's key>/` (the cache layout
+- A snapshot is a directory under `${XDG_CACHE_HOME:-~/.cache}/toolchain-snapshots/<the repository's key>/` (the cache layout
   is below) that git keeps in
   step with an index of its own (`read-tree --reset -u`): a run rewrites only the files that changed, deletes the ones
   that went, and keeps what `.gitignore` names (node_modules, the build info, the tools' caches), so the install and
@@ -166,7 +166,7 @@ changes.
 
 ### The cache layout
 
-The cache is per repository, not per checkout: `${XDG_CACHE_HOME:-~/.cache}/toolchain-gate/<key>/`, where the key is the
+The cache is per repository, not per checkout: `${XDG_CACHE_HOME:-~/.cache}/toolchain-snapshots/<key>/`, where the key is the
 first 12 hex digits of the git hash of the repository's identity, its origin remote URL when it has one, written with
 no trailing `/` or `.git` (`https://github.com/o/r.git` and `https://github.com/o/r` are one repository, which keyed
 two caches for grizzle until the gate wrote them alike), else its absolute common git directory. Every clone of one
@@ -187,10 +187,11 @@ installed in the snapshot online by hand.
 | `push.full`              | Stamped when the daily `check:full` passed.                                                                                 |
 | `push.passed/<tree>`     | Stamped when every check of the push gate passed on that tree: a push sending it again claims no snapshot and runs nothing. |
 
-Beside each key directory, `.<key>.lock` is locked (flock(1), shared) by every run in it. Every hold is the kernel's lock
-on an open file, which the run's shell and everything it starts keep open and which the kernel lets go of when the last
-of them exits, however it exits: no pid names a holder, so a live run is never taken for a dead one, and no run reads a
-snapshot another is filling. A snapshot a killed run left half-filled is reset whole by the next run that claims it
+Beside each key directory, `.<key>.lock` is locked (flock(1), shared) by every run of the repository, from before its
+first look at the cache (the push's stamps, a claim) until it and everything it started have exited, so whatever holds
+a snapshot holds its key. Every hold is the kernel's lock on an open file, which the run's shell and everything it
+starts keep open and which the kernel lets go of when the last of them exits, however it exits: no pid names a holder,
+so a live run is never taken for a dead one, and no run reads a snapshot another is filling. A snapshot a killed run left half-filled is reset whole by the next run that claims it
 (`read-tree --reset -u` rewrites every tracked file whose stat differs, and `clean` removes the strays).
 
 A snapshot's git directory borrows objects (alternates) from one repository. Each run rewrites the alternates to the
@@ -199,12 +200,20 @@ one certain to hold the commit (the commit gate's commit of the index exists now
 snapshot until it exits, so no other clone's rewrite takes the objects away mid-run. The semantics are unchanged: `read-tree --reset -u`,
 `git clean -fd` without `-x`, submodules filled from the checking clone's submodule repositories.
 
-A run that enters the cache collects garbage: it deletes every other key directory none of whose listed clones still
-exists with that key as its identity, unless a live run holds it: the collect takes the directory's lock alone, without
-waiting, and renames the directory away under it, so a run holds the directory before the rename and it stays, or
-makes a new one after it. A directory holding an older gate's one snapshot of a mode (`commit` or `push`, the per-path
-layout's among them) is left alone, since that gate holds no lock this one reads. A clone moved or deleted therefore
-costs its repository one cold snapshot at most, when the last clone is gone.
+A run collects garbage once it holds its key: it deletes every other key directory none of whose listed clones still
+exists with that key as its identity, unless a run holds it. The `clones` registry only says whether a repository is
+gone; whether a run is in its directory is the lock's to say: the collect takes the directory's lock alone, without
+waiting, and renames the directory away under it, then removes it, so a run holds the key before the rename and the
+directory stays, or makes a new one after it. That rename is the one way anything under the cache is deleted, but a
+snapshot's own reset, which its claim's lock guards. A clone moved or deleted therefore costs its repository one cold
+snapshot at most, when the last clone is gone.
+
+The cache is this gate's alone. Every gate before it kept its snapshots in `${XDG_CACHE_HOME:-~/.cache}/toolchain-gate/`,
+and its collect sees no flock(1) hold: it judged a directory by a pid file inside each lock and by a key that kept a
+URL's `.git`, so the directory of a repository cloned with `.git` read as gone and was deleted under its live run
+(effect-openapi-cli-generator's 930250a4b854, four pushes in a row on 2026-11-19, with `spawn /bin/sh ENOENT` and "No
+package.json"). No older gate looks in `toolchain-snapshots/`. `toolchain-gate/` is dead weight once no repository on the
+machine pins a toolchain older than this gate; delete it then.
 
 A snapshot directory is safe to delete when no gate is running; the next run builds it again.
 

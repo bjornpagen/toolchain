@@ -6,14 +6,15 @@
  * Each case draws the shape of a scenario (how many clones of one repository and how they write its URL, what each
  * commits and leaves uncommitted, which clone each run checks, whether the repository has a submodule and at which
  * commit, what a run's command leaves behind, which snapshots live or exited runs hold, the key directories beside it
- * and what became of their clones and locks), builds it from real git repositories in a scratch directory of its own,
+ * and what became of their clones and locks, the phase a run is in when another repository's run collects beside it),
+ * builds it from real git repositories in a scratch directory of its own,
  * and runs the gate over its clones with a cache of its own (XDG_CACHE_HOME), so nothing here touches the real cache.
  * Oracle: the specification, the gate's header: a command the gate runs on a commit sees exactly that commit's files, a
  * submodule's at the commit it records; a file a first run left under .gitignore (node_modules) is still there for a
  * second clone's first run, which is what a warm snapshot is; a run beside live runs takes the first snapshot none of
  * them holds, or a new one, and fills it to exactly its commit whatever a killed run left there; and a run collects
- * every other key directory whose repository is gone and that no live run holds, leaving alone what an older gate may
- * be running in.
+ * every other key directory whose repository is gone and that no live run holds, and never one a run of its
+ * repository holds in any phase of its life, from before it claims a snapshot to the last process it started.
  */
 import { deepStrictEqual } from "@bjornpagen/testing/assert"
 import { Checkout } from "@bjornpagen/testing/checkout"
@@ -41,6 +42,7 @@ import {
 	fillingFeatures,
 	fillings,
 	kept,
+	keptThrough,
 	keys,
 	looked,
 	objectsOf,
@@ -58,6 +60,9 @@ import {
 	slotted,
 	spelledClones,
 	stampsBefore,
+	sweepFeatures,
+	sweeps,
+	sweptBeside,
 	takesCall,
 	submoduleClones,
 	treeOf,
@@ -307,10 +312,7 @@ export const collectedSnapshots = property.exhaust(finite(collectings), {
 		"a key directory whose clones are gone kept by a live lock",
 		"a stale lock keeps nothing",
 		"a re-pointed clone counts as gone",
-		"a repository with no origin remote, keyed by its path",
-		"an old-layout directory left alone",
-		"a held old-layout directory left alone",
-		"an older gate's snapshot left alone"
+		"a repository with no origin remote, keyed by its path"
 	],
 	check:
 		({ dir, checkout, lockfile }, c) =>
@@ -342,7 +344,7 @@ export const collectedSnapshots = property.exhaust(finite(collectings), {
 			),
 	oracle: {
 		kind: "specification",
-		name: "a run deletes each other key directory whose repository is gone (none of its listed clones still there under its key) and that no live run holds, and leaves alone a directory an older gate may be running in (the old per-path layout, an older gate's snapshot)"
+		name: "a run deletes each other key directory whose repository is gone (none of its listed clones still there under its key) and that no live run holds"
 	},
 	kept: [],
 	kills: [
@@ -354,15 +356,64 @@ export const collectedSnapshots = property.exhaust(finite(collectings), {
 		},
 		{
 			file: "packages/devtools/bin/gate.sh",
-			original: '[ ! -e "$dir/commit" ] && [ ! -e "$dir/push" ] || continue',
-			replacement: ":",
-			why: "A key directory that holds an older gate's one snapshot is deleted when its clones look gone, though that gate holds no lock this one reads and may be checking in it; the collection property fails."
-		},
-		{
-			file: "packages/devtools/bin/gate.sh",
 			original: 'if [ -d "$clone" ] && [ "$(key_of "$clone")" = "$(basename -- "$dir")" ]; then',
 			replacement: 'if [ -d "$clone" ]; then',
 			why: "A listed clone re-pointed at another repository still keeps its old key directory alive; the collection property fails."
+		}
+	]
+})
+
+export const sweptRun = property.exhaust(finite(sweeps), {
+	box: "a run of one repository's push gate in each phase of its life, its clone still there or re-pointed, while another repository's run collects garbage beside it",
+	needs: { dir: Scratch.dir, checkout: Checkout.dir, lockfile: workspaceLockfile },
+	situations: [
+		"a run holding its key before it claims a snapshot keeps it",
+		"a run filling its snapshot keeps it",
+		"a run checking keeps its snapshot",
+		"a process a run left in its snapshot keeps it",
+		"a run's hold alone keeps a repository its registry reads gone",
+		"an exited run's repository read gone is collected"
+	],
+	check:
+		({ dir, checkout, lockfile }, c) =>
+		(sweep) =>
+			Effect.scoped(
+				Effect.gen(function* () {
+					c.noteAll(sweepFeatures(sweep))
+					const scratch = yield* dir
+					const gateCheckout = yield* checkout
+					const workspace = yield* lockfile
+					const sandbox = sandboxOf(scratch, gateCheckout, workspace)
+					const run = yield* sweptBeside(sandbox, sweep)
+					deepStrictEqual(run.left, keptThrough(sweep))
+					deepStrictEqual(run.status, 0)
+					deepStrictEqual(run.seen.files, run.tree)
+					deepStrictEqual(run.seen.stamps, ["stamp-warm"])
+				})
+			),
+	oracle: {
+		kind: "specification",
+		name: "a run holds its repository's key from before it claims a snapshot until the last process it started exits, so a collect beside it never deletes its key directory or snapshot whatever the registry reads, and takes the directory of a repository read gone once nothing of its runs is left"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/devtools/bin/gate.sh",
+			original: "if flock -n -x 7; then",
+			replacement: "if true; then",
+			why: "The collect takes the registry alone as its test of a live run, as every gate before the flock(1) holds did: a key directory whose clones read gone is renamed away and removed under the run that holds it (effect-openapi-cli-generator's 930250a4b854, under four pushes in a row); the swept-run property fails."
+		},
+		{
+			file: "packages/devtools/bin/gate.sh",
+			original: "flock -s 8",
+			replacement: ":",
+			why: "A run never holds its key, so a collect beside it takes the key alone and deletes the directory under the run, whatever phase it is in; the swept-run property fails."
+		},
+		{
+			file: "packages/devtools/bin/gate.sh",
+			original: '\tclaim "$1"\n',
+			replacement: '\tclaim "$1"\n\tflock -u 8\n',
+			why: "A run lets go of its key once it holds a snapshot, as if the snapshot's lock kept the directory, but the collect reads the key's lock alone, so it deletes the directory under a run filling or checking its snapshot and under a process the run left there; the swept-run property fails."
 		}
 	]
 })
