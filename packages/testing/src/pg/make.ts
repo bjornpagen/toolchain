@@ -207,20 +207,6 @@ const manifestOf = (life: Life): Effect.Effect<Option.Option<Manifest>, ClusterF
 const familySize = (life: Life): number => membersOf(life.cluster.sizing, testWorkers)
 
 /**
- * The members of a recorded family that serve a run of this machine's width: its first familySize, each sized for the
- * workers it serves (a spread family's workersPerMember), so a family recorded larger, made at a wider width or by a
- * wider machine, serves a narrower run from its first members as it is, and its others stay for the wider runs beside
- * it; agreeing refuses one smaller than asked.
- */
-const servedOf = <A>(
-	cluster: LocalCluster,
-	members: Arr.NonEmptyReadonlyArray<A>
-): Arr.NonEmptyReadonlyArray<A> => [
-	Arr.headNonEmpty(members),
-	...Arr.take(Arr.tailNonEmpty(members), membersOf(cluster.sizing, testWorkers) - 1)
-]
-
-/**
  * The manifest of `life`'s cluster, refused unless it is one this spec and server made at this machine's width: an
  * owner, template, extensions or durability of another spec (another repository's cluster on this port), another
  * server's version (a repin), or another count of members (a machine of another width; `toolchain-pg init --adopt`
@@ -805,7 +791,7 @@ export const madeMembers = (
 				`it was made for another spec: ${Arr.join(differences, "; ")}`
 			)
 		}
-		return Arr.map(servedOf(cluster, recorded.value.members), (member) =>
+		return Arr.map(recorded.value.members, (member) =>
 			describedMember(cluster, state.member(member))
 		)
 	})
@@ -923,9 +909,7 @@ const upCluster = (
 				)
 				yield* record(life, manifest.members)
 			}
-			return yield* Effect.forEach(servedOf(life.cluster, members), (member) =>
-				memberOf(life, member)
-			)
+			return yield* Effect.forEach(members, (member) => memberOf(life, member))
 		})
 	)
 
@@ -965,9 +949,7 @@ const takenRunning = (
 		if (!Arr.every(whole, (up) => up)) {
 			return Option.none()
 		}
-		const facts = yield* Effect.forEach(servedOf(life.cluster, members), (member) =>
-			memberOf(life, member)
-		)
+		const facts = yield* Effect.forEach(members, (member) => memberOf(life, member))
 		return Option.some(facts)
 	})
 
@@ -1058,8 +1040,11 @@ const resizeMember = (
  * `adopt` keeps the recorded members, their data
  * untouched, sizes each to its share of this machine's family (resizeMember) and makes the members the family's size
  * asks beyond them (grow): how a family made on a narrower machine, or before a spec's sizing changed, becomes this
- * machine's. A family recorded with more members than its size keeps them all, each sized as a member of its size: a run
- * of this width is served by its first ones (servedOf), a wider run's by more.
+ * machine's. A family recorded with more members than its size keeps them all, each sized as a member of its size, and
+ * every run is served by all of them, its workers spread over every member (worker i on member i mod the family's
+ * size), so a run leases its workers' share of each member and runs beside it lease the rest, where a narrower run was
+ * served by the first members alone and every run on the machine queued behind them (5491 and 5442, 2026-11-20: each
+ * run took all 16 slots of the first two of four members, the other two idle).
  */
 export const initCluster = (
 	cluster: LocalCluster,

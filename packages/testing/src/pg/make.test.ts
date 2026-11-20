@@ -447,10 +447,12 @@ export const adoptingACluster = property.exhaust(holdings, {
 })
 
 /**
- * A family recorded larger than a run's width asks serves that run from its first members, as it is (make.ts servedOf):
- * a throwaway family made at two members (workersPerMember half the machine's workers), met by a spec that asks one
- * (every worker on one member, as a run of half the width meets a family made at the full width), is brought up or
- * adopted and serves its first member, while its manifest keeps both members for a wider run. Each case's cluster is its own, under a home of the case's own, on a port free when it began.
+ * A family recorded larger than a run's width asks serves that run from every member, as it is: a throwaway family made
+ * at two members (workersPerMember half the machine's workers), met by a spec that asks one (every worker on one
+ * member, as a run of half the width meets a family made at the full width), is brought up or adopted and serves both,
+ * the run's workers spread over them, so the run leases its workers' share of each member and the family's other slots
+ * stay for the runs beside it, while its manifest keeps both members. Each case's cluster is its own, under a home of
+ * the case's own, on a port free when it began.
  */
 export const familyServesNarrowerRun = property.exhaust(narrowings, {
 	box: "a family of two members brought up or adopted by a spec that asks one",
@@ -488,8 +490,8 @@ export const familyServesNarrowerRun = property.exhaust(narrowings, {
 			)
 			assert.deepEqual(
 				Arr.map(served, (member) => member.port),
-				[Arr.headNonEmpty(made).port],
-				"a run asking one member is served by the family's first"
+				Arr.map(made, (member) => member.port),
+				"a run asking one member is served by every member of the family, its workers spread over them"
 			)
 			const manifest = yield* Effect.flatMap(
 				fs.readFileString(`${root}/cluster.json`),
@@ -505,7 +507,7 @@ export const familyServesNarrowerRun = property.exhaust(narrowings, {
 		}).pipe(Effect.scoped),
 	oracle: {
 		kind: "specification",
-		name: "a family recorded larger than a run's width asks serves it from its first members, keeping the rest"
+		name: "a family recorded larger than a run's width asks serves it from every member, keeping them all"
 	},
 	kept: [],
 	kills: [
@@ -514,6 +516,14 @@ export const familyServesNarrowerRun = property.exhaust(narrowings, {
 			original: "\tif (manifest.members.length < familySize(life)) {",
 			replacement: "\tif (manifest.members.length !== familySize(life)) {",
 			why: "A family recorded larger than the width asks is refused, as it was: a run at half the machine's width could not take grizzle's four-member family without a re-make that would end the runs on it; the property fails."
+		},
+		{
+			file: "packages/testing/src/pg/make.ts",
+			original:
+				"\t\tconst facts = yield* Effect.forEach(members, (member) => memberOf(life, member))\n",
+			replacement:
+				"\t\tconst facts = yield* Effect.forEach([Arr.headNonEmpty(members)], (member) => memberOf(life, member))\n",
+			why: "A narrower run is served by the family's first members alone, as a15bef4 served it: every run on the machine leases all the slots of those members and queues behind the others while the rest of the family idles (5491 and 5442, 2026-11-20); the property fails."
 		}
 	]
 })

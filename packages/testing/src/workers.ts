@@ -19,6 +19,15 @@ export const testWorkers: number = Math.max(1, Math.floor(availableParallelism()
 export const processors: number = availableParallelism()
 
 /**
+ * How many workers a run of `properties` properties holds: testWorkers, or fewer when it has fewer properties, one at
+ * least, since a run never holds more workers than it has work (main's ruling, 2026-11-20): every worker a run holds
+ * leases a slot of each cluster its needs reach for the run's life, so a lane's run of four properties that held
+ * testWorkers leased 32 slots of a shared family where it needed 4, and twelve such runs queued two at a time on 5491.
+ */
+export const runWorkers = (properties: number): number =>
+	Math.max(1, Math.min(testWorkers, properties))
+
+/**
  * How many threads one task of a run takes when the run executes `tasksAtOnce` tasks at once on `cpus` logical
  * CPUs: the CPUs over the tasks, rounded down, and one at least (GATETHREADS, 2026-11-20: each gate task's oxlint sized
  * its pool to the whole machine, 64 threads a task under a turbo of 32, and one live gate's oxlint ran at about 5,400%

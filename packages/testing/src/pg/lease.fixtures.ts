@@ -38,3 +38,35 @@ export const blockedOn = (directory: string): Effect.Effect<number, never, FileS
 			}).length
 		})
 	)
+
+/**
+ * The members of the spread-lease property's family (lease.test.ts runsLeaseTheirWork): four, as grizzle's 5442 and
+ * 5491 have, each a lease directory of the case's own.
+ */
+export const SPREAD_MEMBERS = 4
+
+/**
+ * The slots each member of the spread-lease property's family admits: 16, as each of 5491's does (its capacity over its
+ * workers' connections), so four runs of 16 workers each, spread over four members, fit at once.
+ */
+const SPREAD_SLOTS = 16
+
+/** A family of SPREAD_MEMBERS members under `directory`, each a lease directory admitting SPREAD_SLOTS workers of one connection. */
+export const spreadFamily = (directory: string) =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		const members = yield* Effect.forEach(
+			Array.from({ length: SPREAD_MEMBERS }, (_, at) => at + 1),
+			(port) =>
+				Effect.gen(function* () {
+					const lease = `${directory}/${port}`
+					yield* fs.makeDirectory(lease, { recursive: true })
+					yield* fs.writeFileString(`${lease}/capacity`, `${SPREAD_SLOTS}\n`)
+					return { port, lease }
+				})
+		)
+		return yield* Option.match(Arr.head(members), {
+			onNone: () => Effect.die("the spread family has no member"),
+			onSome: (first) => Effect.succeed([first, ...Arr.drop(members, 1)] as const)
+		})
+	})

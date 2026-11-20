@@ -86,10 +86,20 @@ const capacityOf = (
 	})
 
 /**
+ * The workers of a run of `workers` workers that reach the member at `at` of `members` members: worker i reaches
+ * member i mod their count, so the first `workers mod members` members take one more than the rest, and a member no
+ * worker reaches takes none.
+ */
+const workersOn = (workers: number, members: number, at: number): number =>
+	Math.floor(workers / members) + (at < workers % members ? 1 : 0)
+
+/**
  * The reservation of a run of `workers` workers on the cluster named `cluster` whose members are `members`, in member
- * order: worker i reaches member i mod their count, so each member's need is its share of the workers, rounded up, out
- * of the slots its capacity admits for `demand`. A member that admits fewer than its share is refused, never leased
- * narrower: a run keeps its width, and `toolchain-pg init --adopt` sizes the member for it.
+ * order: worker i reaches member i mod their count, so each member's need is the workers that reach it (workersOn), out
+ * of the slots its capacity admits for `demand`, and a member none reaches is no part of it, so a run leases a slot for
+ * each of its workers and no more (a run of one worker one slot, where it took one on every member). A member that
+ * admits fewer than its need is refused, never leased narrower: a run keeps its width, and `toolchain-pg init --adopt`
+ * sizes the member for it.
  */
 export const reservationOf = (
 	cluster: number,
@@ -98,8 +108,11 @@ export const reservationOf = (
 	workers: number
 ): Effect.Effect<Reservation, LeaseFailed, FileSystem.FileSystem> =>
 	Effect.gen(function* () {
-		const need = Math.ceil(workers / members.length)
-		const reserved = yield* Effect.forEach(members, (member) =>
+		const reached = Arr.filter(
+			Arr.map(members, (member, at) => ({ member, need: workersOn(workers, members.length, at) })),
+			({ need }) => need > 0
+		)
+		const reserved = yield* Effect.forEach(reached, ({ member, need }) =>
 			Effect.flatMap(capacityOf(cluster, member), (capacity) => {
 				const slots = leaseSlots(capacity, demand)
 				return need > slots
@@ -112,11 +125,14 @@ export const reservationOf = (
 					: Effect.succeed({ port: member.port, lease: member.lease, slots, need })
 			})
 		)
-		return {
-			cluster,
-			gate: gateFile(Arr.headNonEmpty(members)),
-			members: [Arr.headNonEmpty(reserved), ...Arr.tailNonEmpty(reserved)]
-		}
+		return yield* Arr.match(reserved, {
+			onEmpty: () =>
+				Effect.fail(
+					LeaseFailed.make({ cluster, message: `a run of ${workers} workers reaches no member` })
+				),
+			onNonEmpty: (some): Effect.Effect<Reservation> =>
+				Effect.succeed({ cluster, gate: gateFile(Arr.headNonEmpty(members)), members: some })
+		})
 	})
 
 /** The slots of a member's lease, each a file of its lease directory. */

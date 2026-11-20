@@ -39,7 +39,7 @@ import type { Reach, Verdict } from "#runner/protocol.ts"
 import { ModuleClosure, RunLease, WorkerIndex } from "#runner/services.ts"
 import { labelOf, runOfLabel, type Stack } from "#runner/stack.ts"
 import type { RunUsage } from "#runner/usage.ts"
-import { testWorkers } from "#workers.ts"
+import { runWorkers } from "#workers.ts"
 
 /**
  * A run of a package's properties on the pool, as every command reads it: which properties, by identity or module, at
@@ -366,7 +366,8 @@ export const runSeedLogged: Effect.Effect<RunSeed, Config.ConfigError | Schema.S
 
 /**
  * Runs a package's properties on the pool, every property's search at once, its cases spread over every worker:
- * loads the package's runner config and the test modules the request names, forks the pool (one worker a core, under
+ * loads the package's runner config and the test modules the request names, forks the pool (a worker for every two
+ * cores, and never more workers than the run has properties, runWorkers, so a run leases no slot it has no work for, under
  * this process's flags, the hardened flags and the config's conditions among them), and gives each property's verdict.
  * The pool is closed before it returns, every worker ended and what its needs held released (a lease's permit, a
  * seat's clone), so what the caller runs next (the kills' trials of `run` and `affected`, on workers of their own)
@@ -403,7 +404,7 @@ export const runPackage = (
 			}))
 			const shared = Arr.isReadonlyArrayNonEmpty(weighed)
 				? placesShared(
-						testWorkers,
+						runWorkers(runs.length),
 						Arr.map(weighed, ({ properties }) => properties)
 					)
 				: []
