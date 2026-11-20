@@ -28,3 +28,15 @@ export const isTestScope = (path: string): boolean => {
 		Arr.some(Arr.dropRight(segments, 1), (segment) => Arr.contains(SCOPE_DIRECTORIES, segment))
 	)
 }
+
+/** Whether a path from the repository root is product source: a file the repository holds, outside test scope. */
+export type Product = (file: string) => boolean
+
+/**
+ * Product source in a repository that holds `tracked` (paths from its root, a submodule's files none of them): a file
+ * of them outside test scope, which a kill must edit to show its property caught a bug.
+ */
+export const productOf =
+	(tracked: ReadonlySet<string>): Product =>
+	(file) =>
+		tracked.has(file) && !isTestScope(file)

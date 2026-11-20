@@ -14,6 +14,16 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: a landing carries its verdicts (2026-11-20)
+
+`toolchain-test verified <ref>` refuses a landing that touches a property (a file of its closure, a file one of its
+kills edits, or the lockfile its closure reads, changed since `<ref>`: affected.ts touchedBy, which `affected` counts
+"changed since" by) whose verdict key holds no pass at the closure it lands; it runs nothing. A repository whose push
+gate runs no property (grizzle's, whose database properties run only in the machine's one database job) calls it on the
+landed tip against what the remote held before, after the landing ran its affected properties
+(`toolchain-test affected <ref>`, a database property in the database job), whose passes every clone of the repository
+shares. Nothing changes for a repository that does not call it.
+
 ## Consumer migration: the census of caught bugs (2026-11-19)
 
 `toolchain-test census [paths | ids]`, run from a package root, says of each property whether it has caught a bug
@@ -25,12 +35,15 @@ cannot type). Product source is every file the repository itself tracks outside 
 or an oracle shows nothing, nor does a kill of a submodule's file, nor a kept case on its own (write the defect it pins
 back as a kill). Standard output is a table, a tab-separated row a property; standard error has each property's
 standing as it settles and the counts; it exits 1 when any property never caught a bug or cannot be judged. A
-property's kills are judged first; only a property no product kill turned red faces mutants, each typed by the
-package and tried on a worker of its own until one turns it red, every property still looking sharing the pool's width.
+property's kills are judged first; only a property no product kill turned red faces mutants, each tried on a worker of
+its own until one turns it red that the package types (only a red mutant is typed: a survivor shows nothing either way),
+every property still looking sharing the pool's width.
 Database properties run the census through the machine's one database job, as any run of them does. A test module
 another runner runs (a Vitest file) is judged where it is, never converted first: `--foreign-command '<command>'
 --foreign <module>...` runs each module as `<command> <module>` in the package root, a fresh worker tree under a mutant,
-its run whole its one witness, red on a non-zero exit (mutate/foreign.ts). Before you move
+its run whole its one witness, red on a non-zero exit (mutate/foreign.ts), facing every place of each product file its
+import closure reaches (another runner transforms what it loads, and its workers write no coverage); a census of foreign
+modules alone needs no runner config. Before you move
 `vendor/toolchain` past this section:
 
 1. **Test scope moved.** `TEST_SCOPE`, `TEST_SUFFIXES` and `isTestScope` are `@bjornpagen/testing/scope`

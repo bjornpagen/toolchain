@@ -164,6 +164,9 @@ export const expectedForeignOf = (check: Check): Report => {
 	return check.product === "strict" ? "catches by mutant" : "never-caught"
 }
 
+/** What every check imports of the repository: the product file and the harness, each a path from the checkout. */
+export const IMPORTED: ReadonlyArray<string> = [PRODUCT, HARNESS]
+
 /** The census's sources in the checkout: the product file alone, the one TypeScript file of product source. */
 export const SOURCES: ReadonlyArray<string> = [PRODUCT]
 

@@ -19,7 +19,7 @@ import {
 	mutantsOf
 } from "#mutants.ts"
 import type { Loading } from "#mutate/checkout.ts"
-import { type CoverageMap, coverageMapOf, type DumpUnread } from "#mutate/coverage.ts"
+import { type CoverageMap, coverageMapOf, type DumpUnread, type Ran } from "#mutate/coverage.ts"
 import type { Images } from "#mutate/image.ts"
 import { type Judged, killsOf, redText } from "#mutate/kills.ts"
 import { type MutatedFile, probeOf, type RealPath, realPathOf } from "#mutate/mutated.ts"
@@ -33,7 +33,7 @@ import { fnv1a32, mix } from "#random.ts"
 import { type EditVerdicts, type KillVerdicts, withKills } from "#runner/affected.ts"
 import { editOf, type VerdictCacheUnusable } from "#runner/cache.ts"
 import type { RunLease } from "#runner/services.ts"
-import { isTestScope } from "#scope.ts"
+import type { Product } from "#scope.ts"
 
 /**
  * The census: which properties have caught a bug (Bjorn, 2026-11-16: "all tests that have never caught a bug need to be
@@ -46,15 +46,6 @@ import { isTestScope } from "#scope.ts"
  * product file it ran whose mutants its workers never load (the file's probe survives it), or a file whose mutants the
  * package cannot type.
  */
-
-/** Whether a path from the repository root is product source: a file the repository holds, outside test scope. */
-export type Product = (file: string) => boolean
-
-/** Product source in a repository that holds `tracked` (paths from its root): a file of them outside test scope. */
-export const productOf =
-	(tracked: ReadonlySet<string>): Product =>
-	(file) =>
-		tracked.has(file) && !isTestScope(file)
 
 /** What showed that a property caught a bug: a kill of product source, or an operator mutant of it. */
 export type Catch =
@@ -98,8 +89,19 @@ export type CensusRun<O extends string> = Readonly<{
 	equivalent: ReadonlyArray<Equivalent>
 	kills: KillVerdicts
 	edits: EditVerdicts
+	reading: Reading
 	settled: (counted: Counted) => Effect.Effect<void>
 }>
+
+/**
+ * How the census reads which places of product source a subject ran: by the V8 coverage of its witnesses (`places`),
+ * whose offsets are the file's own where Node runs it as written (types stripped in place), or by the files it imports
+ * (`files`, from importClosure: each a path from the checkout), every place of each, for a foreign command's module,
+ * which another runner transforms as it loads (so no offset is the file's) in workers whose coverage it never writes.
+ */
+export type Reading =
+	| Readonly<{ kind: "places" }>
+	| Readonly<{ kind: "files"; importClosure: (id: PropertyId) => ReadonlyArray<string> }>
 
 /** A product file the census may mutate: its path from the checkout, its canonical path, and its text. */
 type Source = Readonly<{ file: string; target: RealPath; text: string }>
@@ -162,8 +164,9 @@ const nextOf = (pursuits: ReadonlyArray<Pursuit>): Option.Option<readonly [Pursu
  * left alone and the rest judged (mutate/kills.ts killsOf), each verdict recorded; then, for each property no kill of
  * product source turned red, a coverage pass of its witnesses over the product files (which a property red with no
  * mutant fails, unjudged, as it fails its kills' baseline), and the operator mutants at the
- * places it ran, each typed by the package (one with a type error is no mutant anyone could commit) and tried against
- * it alone on a worker of its own until one turns it red, every property still looking sharing the pool's width,
+ * places it ran, each tried against it alone on a worker of its own until one turns it red that the package types (one
+ * with a type error is no mutant anyone could commit, so a red one shows nothing; only a red mutant is typed, since a
+ * survivor shows nothing either way, which keeps the one typing session off the trials' path), every property still looking sharing the pool's width,
  * each verdict recorded and a verdict the cache holds tried no more; last, for each property no mutant turned red, the
  * probe of every product file it faced a mutant of, which must turn it red, or its mutants never reached it. A file it
  * ran with no mutant at a place it ran (a module it imports and never calls) is no file it could catch a bug in.
@@ -245,10 +248,30 @@ export const censusOf = <E, O extends string>(
 			Arr.map(sources, (source) => source.target)
 		)
 		const byCoverage = new Map<PropertyId, Counted>()
+		const reading = run.reading
+		const readOf = (ran: Ran<Subject>): Ran<Subject> => {
+			switch (reading.kind) {
+				case "places":
+					return ran
+				case "files": {
+					const imported = new Set(reading.importClosure(ran.property.id))
+					return {
+						property: ran.property,
+						files: new Map(
+							Arr.flatMap(sources, (source) =>
+								imported.has(source.file)
+									? [[source.target, [{ start: 0, end: source.text.length }]] as const]
+									: []
+							)
+						)
+					}
+				}
+			}
+		}
 		const ran = Arr.flatMap(covered, (one: Covered) => {
 			switch (one.kind) {
 				case "ran":
-					return [one.ran]
+					return [readOf(one.ran)]
 				case "red":
 					byCoverage.set(
 						one.subject.id,
@@ -342,14 +365,7 @@ export const censusOf = <E, O extends string>(
 					pursuit.found = Option.orElse(pursuit.found, () => Option.some(faced.mutant))
 					return
 				}
-				const typed = yield* Effect.result(mistyped(faced.mutated))
-				if (Result.isFailure(typed)) {
-					pursuit.untyped = Option.some(
-						`the mutants of ${faced.mutant.file} could not be typed: ${typed.failure.message}`
-					)
-					return
-				}
-				if (typed.success || Option.isSome(pursuit.found)) {
+				if (Option.isSome(pursuit.found)) {
 					return
 				}
 				const [verdict] = yield* trialsOn<E | TreeFailed, Loading>(
@@ -359,9 +375,18 @@ export const censusOf = <E, O extends string>(
 					"one each"
 				)
 				pursuit.tried += 1
-				const red = verdict?.kind === "red"
-				yield* run.edits.record(pursuit.subject.id, edit, red)
-				if (red) {
+				if (verdict?.kind !== "red") {
+					return
+				}
+				const typed = yield* Effect.result(mistyped(faced.mutated))
+				if (Result.isFailure(typed)) {
+					pursuit.untyped = Option.some(
+						`the mutants of ${faced.mutant.file} could not be typed: ${typed.failure.message}`
+					)
+					return
+				}
+				if (!typed.success) {
+					yield* run.edits.record(pursuit.subject.id, edit, true)
 					pursuit.found = Option.orElse(pursuit.found, () => Option.some(faced.mutant))
 				}
 			}).pipe(

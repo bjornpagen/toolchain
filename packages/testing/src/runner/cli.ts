@@ -40,6 +40,8 @@ import { reportOf, type UsageReport, usageJson, usageLines } from "#runner/usage
  *                                               or stale kill (mutate/commands.ts)
  *   toolchain-test mutate <file>... [options]  operator mutation of the files, a measurement (mutate/commands.ts)
  *   toolchain-test affected <ref>               the push gate: every property with no cached pass, and its kills
+ *   toolchain-test verified <ref>               the push gate of a repository whose gate runs no property: every
+ *                                               property the landing touched carries a green verdict at its closure
  *   toolchain-test fuzz <fuzztime> [paths | ids] the scheduled fuzz budget: fresh seeds round after round
  *   toolchain-test keep <id> <value file>       kept values as replay tokens, to paste into the property's kept
  *
@@ -251,6 +253,8 @@ const commands: Readonly<Record<string, Command>> = {
 		failing(Effect.flatMap(mutateModule, (module) => module.killsCommand(root, args))),
 	mutate: (args) =>
 		failing(Effect.flatMap(mutateModule, (module) => module.mutateCommand(root, args))),
+	verified: (args) =>
+		failing(Effect.flatMap(affectedModule, (module) => module.verified(root, args))),
 	affected: (args) =>
 		failing(
 			Effect.flatMap(

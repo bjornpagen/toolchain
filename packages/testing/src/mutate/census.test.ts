@@ -21,10 +21,11 @@ import {
 	expectedOf,
 	KILLS,
 	reportOf,
+	IMPORTED,
 	SOURCES,
 	TRACKED
 } from "#mutate/census.fixtures.ts"
-import { censusOf, productOf } from "#mutate/census.ts"
+import { censusOf } from "#mutate/census.ts"
 import { Checkout } from "#mutate/checkout.ts"
 import { foreignPool, foreignSubject } from "#mutate/foreign.ts"
 import { imagesOf } from "#mutate/image.ts"
@@ -35,6 +36,7 @@ import { property, PropertyId, ReplayToken } from "#property.ts"
 import { noVerdicts } from "#runner/affected.ts"
 import { digests } from "#runner/cache.fixtures.ts"
 import { runnerLimits } from "#runner/limits.ts"
+import { productOf } from "#scope.ts"
 
 export const censusOfChecks = property.explore(
 	(source): Census => ({
@@ -83,6 +85,7 @@ export const censusOfChecks = property.explore(
 						equivalent: [],
 						kills: noVerdicts.kills,
 						edits: noVerdicts.edits,
+						reading: { kind: "places" },
 						settled: () => Effect.void
 					}).pipe(Effect.provideService(Digest.Digest, sha))
 					const reported = Arr.map(counted, reportOf)
@@ -111,7 +114,7 @@ export const censusOfChecks = property.explore(
 		kept: [],
 		kills: [
 			{
-				file: "packages/testing/src/mutate/census.ts",
+				file: "packages/testing/src/scope.ts",
 				original: "tracked.has(file) && !isTestScope(file)",
 				replacement: "tracked.has(file)",
 				why: "A kill of the harness counts as a catch, so a check that pins only its own support code, and runs the product without asserting it, is kept as one that caught a bug."
@@ -184,6 +187,7 @@ export const censusOfForeignModules = property.explore(
 							equivalent: [],
 							kills: noVerdicts.kills,
 							edits: noVerdicts.edits,
+							reading: { kind: "files", importClosure: () => IMPORTED },
 							settled: () => Effect.void
 						}
 					).pipe(Effect.provideService(Digest.Digest, sha))
@@ -206,6 +210,12 @@ export const censusOfForeignModules = property.explore(
 				original: "return answered(code === 0, Str.slice(-2000)(printed))",
 				replacement: "return answered(true, Str.slice(-2000)(printed))",
 				why: "A foreign module's exit code is not read, so every run of it is green: one that pins the product survives every mutant and one red with no mutant is judged, both read as never having caught a bug."
+			},
+			{
+				file: "packages/testing/src/mutate/census.ts",
+				original: "imported.has(source.file)",
+				replacement: "false",
+				why: "A foreign module's import closure is not read, so the product files it runs, which no coverage of another runner's transformed modules names, face it with no mutant, and one that pins the product is counted as never having caught a bug."
 			}
 		]
 	}

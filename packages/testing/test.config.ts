@@ -44,6 +44,7 @@ export default defineRunner({
 		"src/runner/resolutions.test.ts",
 		"src/runner/schedule.test.ts",
 		"src/runner/steer.test.ts",
+		"src/runner/touched.test.ts",
 		"src/mutate/*.test.ts",
 		"src/oxlint/rules.test.ts",
 		"src/mutants.test.ts",

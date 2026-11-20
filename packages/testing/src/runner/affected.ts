@@ -119,6 +119,13 @@ export const gitOf = (cwd: string, args: ReadonlyArray<string>) =>
 		})
 	)
 
+/** The files the repository at `repository` holds, paths from its root: a submodule's files are another repository's. */
+export const trackedIn = (repository: string) =>
+	Effect.map(
+		required(repository, ["ls-files", "-z"], `git ls-files failed in ${repository}`),
+		(text): ReadonlySet<string> => new Set(Arr.filter(Str.split("\0")(text), Str.isNonEmpty))
+	)
+
 /** A git answer that must exist, or the refusal `why` states. */
 const required = (cwd: string, args: ReadonlyArray<string>, why: string) =>
 	Effect.flatMap(gitOf(cwd, args), (answer) =>
@@ -160,7 +167,7 @@ const changedSince = (repository: string, base: string) =>
 	)
 
 /** Whether a file, or a directory above it (a submodule's gitlink), is among the changed. */
-const isChanged = (changed: ReadonlySet<string>, file: string): boolean =>
+export const isChanged = (changed: ReadonlySet<string>, file: string): boolean =>
 	Arr.reduce(Str.split("/")(file), { prefix: "", found: false }, (state, segment) => {
 		const prefix = state.prefix === "" ? segment : `${state.prefix}/${segment}`
 		return { prefix, found: state.found || changed.has(prefix) }
@@ -192,6 +199,37 @@ type Weighed = Readonly<{
 	key: Option.Option<VerdictKey>
 	killEdits: ReadonlyArray<readonly [Kill, Option.Option<Edit>]>
 }>
+
+/**
+ * A property as a landing touches it: the files of its closure, whether its closure holds an installed package (whose
+ * lockfile entry it reads), the files its kills edit, and whether its verdict key holds a pass.
+ */
+export type Touched = Readonly<{
+	id: PropertyId
+	files: ReadonlyArray<string>
+	packages: boolean
+	kills: ReadonlyArray<string>
+	passed: boolean
+}>
+
+/**
+ * Whether a landing whose changed files are `changed` touches a property: a file of its closure or one its kills edit is
+ * among them (or below a changed submodule's gitlink), or the lockfile is, where its closure holds a package.
+ */
+export const touchedBy = (changed: ReadonlySet<string>, one: Touched): boolean =>
+	Arr.some(one.files, (file) => isChanged(changed, file)) ||
+	(one.packages && changed.has("pnpm-lock.yaml")) ||
+	Arr.some(one.kills, (file) => isChanged(changed, file))
+
+/**
+ * The properties a landing touched that carry no green verdict at the closure it lands (`verified`'s refusals): each
+ * one `touchedBy` the landing whose key holds no pass.
+ */
+export const unverifiedOf = (
+	changed: ReadonlySet<string>,
+	properties: ReadonlyArray<Touched>
+): ReadonlyArray<PropertyId> =>
+	Arr.flatMap(properties, (one) => (touchedBy(changed, one) && !one.passed ? [one.id] : []))
 
 /** A judged kill as the gate reports it. */
 export const killLine = (judged: Judged): string => {
@@ -622,6 +660,15 @@ const passingOf = (
 		)
 	)
 
+/** A weighed property as a landing touches it, its key holding a pass or not. */
+const touchedOf = (one: Weighed, passed: boolean): Touched => ({
+	id: one.found.id,
+	files: one.closure.files,
+	packages: Arr.isReadonlyArrayNonEmpty(one.closure.packages),
+	kills: Arr.map(one.found.property.kills, (kill) => kill.file),
+	passed
+})
+
 /** Records each weighed property's verdict under its key: a pass when it is passing, a failure otherwise. */
 const recorded = (
 	cache: VerdictCache,
@@ -722,12 +769,8 @@ export const affected = (root: string, args: ReadonlyArray<string>) =>
 				return 0
 			}
 			const changed = yield* changedSince(weighing.repository, base)
-			const changedCount = Arr.filter(
-				due,
-				(one) =>
-					Arr.some(one.closure.files, (file) => isChanged(changed, file)) ||
-					(Arr.isReadonlyArrayNonEmpty(one.closure.packages) && changed.has("pnpm-lock.yaml")) ||
-					Arr.some(one.found.property.kills, (kill) => isChanged(changed, kill.file))
+			const changedCount = Arr.filter(due, (one) =>
+				touchedBy(changed, touchedOf(one, false))
 			).length
 			const { seed } = yield* runSeedLogged
 			const outcome = yield* runPackage({
@@ -766,5 +809,105 @@ export const affected = (root: string, args: ReadonlyArray<string>) =>
 				)
 			)
 			return failing > 0 ? 1 : 0
+		})
+	)
+
+/**
+ * `verified <ref>` in the package at `root`, the push gate of a repository whose gate runs no property itself (grizzle's,
+ * whose database properties run only in the machine's one database job): every property the landing touched since
+ * `<ref>` (touchedBy: a file of its closure, a file a kill of it edits, or the lockfile its closure reads) must carry a
+ * green verdict at the closure it lands, a pass its verdict key holds, which `toolchain-test affected` or `run` records
+ * wherever the repository's clones run it (the cache is the repository's, cache.ts). It runs nothing: 1, naming each, when
+ * a touched property carries none, so a landing never carries a property that did not run at its closure, as
+ * grizzle's write/instants did from c79ffa503 on, its clock query a syntax error no run had read.
+ */
+export const verified = (root: string, args: ReadonlyArray<string>) =>
+	Effect.scoped(
+		Effect.gen(function* () {
+			const [ref, ...extra] = args
+			if (ref === undefined || Arr.isReadonlyArrayNonEmpty(extra)) {
+				return yield* AffectedRefused.make({
+					message:
+						"verified takes one ref, what the landing is weighed against: toolchain-test verified <ref>"
+				})
+			}
+			const grounds = yield* groundsOf(root)
+			const repository = yield* Effect.mapError(Effect.fromOption(grounds.repository), () =>
+				AffectedRefused.make({ message: `${root} lies in no git repository` })
+			)
+			const { config, discovered } = yield* loadPackage(grounds.packageRoot, [])
+			const weighing = yield* weighingOf(grounds.packageRoot, repository, config, discovered)
+			const base = yield* required(
+				weighing.repository,
+				["rev-parse", "--verify", "--quiet", `${ref}^{tree}`],
+				`${ref} names no commit or tree`
+			)
+			const changed = yield* changedSince(weighing.repository, base)
+			const properties = yield* Effect.forEach(weighing.weighed, (one) =>
+				Effect.map(
+					Option.match(one.key, {
+						onNone: () => Effect.succeed(false),
+						onSome: (key) =>
+							weighing.cache
+								.passed(key)
+								.pipe(Effect.catchTag("VerdictCorrupt", () => Effect.succeed(false)))
+					}),
+					(passed) => touchedOf(one, passed)
+				)
+			)
+			const touched = Arr.filter(properties, (one) => touchedBy(changed, one))
+			const unverified = unverifiedOf(changed, properties)
+			yield* Console.log(
+				Arr.join(
+					[
+						...Arr.map(
+							unverified,
+							(id) =>
+								`${id}: UNVERIFIED: the landing touches it and no green verdict stands at its closure`
+						),
+						`${String(touched.length)} of ${String(properties.length)} properties touched since ${ref}: ${String(touched.length - unverified.length)} carry a green verdict at the closure they land, ${String(unverified.length)} do not${Arr.isReadonlyArrayNonEmpty(unverified) ? `; run them first: toolchain-test affected ${ref}, a database property in the machine's database job` : ""}`
+					],
+					"\n"
+				)
+			)
+			return Arr.isReadonlyArrayNonEmpty(unverified) ? 1 : 0
+		})
+	)
+
+/**
+ * The repository files each of `modules` (paths from the package root at `root`) imports, itself and every module it
+ * reaches by any import, under no export condition but Node's: what a foreign test command's module runs of the
+ * repository's code, which another runner transforms as it loads, so no coverage offset of it is the file's own.
+ */
+export const importClosuresAt = (root: string, modules: ReadonlyArray<string>) =>
+	Effect.scoped(
+		Effect.gen(function* () {
+			const grounds = yield* groundsOf(root)
+			const repository = yield* Effect.mapError(Effect.fromOption(grounds.repository), () =>
+				AffectedRefused.make({ message: `${root} lies in no git repository` })
+			)
+			const hashing = yield* Layer.build(Layer.merge(moduleSyntax, layerDigest))
+			const tree = yield* workingTree(repository)
+			const paths = yield* Effect.forEach(modules, (module) =>
+				Effect.map(
+					underRepository(repository, `${grounds.packageRoot}/${module}`),
+					(path) => [module, path] as const
+				)
+			)
+			const closures = yield* closuresOf({
+				tree,
+				conditions: [],
+				runtime: process.version,
+				roots: Arr.map(paths, ([, path]) => path)
+			}).pipe(Effect.provide(hashing))
+			return new Map(
+				Arr.map(paths, ([module, path]): readonly [string, ReadonlyArray<string>] => [
+					module,
+					Option.match(Option.fromUndefinedOr(closures.get(path)), {
+						onNone: () => [],
+						onSome: (closure) => closure.files
+					})
+				])
+			)
 		})
 	)

@@ -15,23 +15,24 @@ import {
 import type { ChildProcessSpawner } from "effect/process"
 import { liveMillis } from "#live.ts"
 import { applied, OPERATORS } from "#mutants.ts"
-import { type Catch, type Counted, censusOf, productOf, type Standing } from "#mutate/census.ts"
+import { type Catch, type Counted, censusOf, type Reading, type Standing } from "#mutate/census.ts"
 import { loadingOf } from "#mutate/checkout.ts"
 import { foreignPool, foreignSubject } from "#mutate/foreign.ts"
 import { imagesOf } from "#mutate/image.ts"
 import { type Judged, killsOf, redText } from "#mutate/kills.ts"
 import { mutatorPool } from "#mutate/lease.ts"
-import { type RealPath, realPathOf } from "#mutate/mutated.ts"
+import { realPathOf } from "#mutate/mutated.ts"
 import { type Choice, type MutantJudged, mutationOf } from "#mutate/operators.ts"
 import type { MutantPool } from "#mutate/pool.ts"
 import type { Subject } from "#mutate/schedule.ts"
 import { treesOf } from "#mutate/tree.ts"
-import { gitOf, verdictsAt } from "#runner/affected.ts"
+import { importClosuresAt, noVerdicts, trackedIn, verdictsAt } from "#runner/affected.ts"
 import { editOf } from "#runner/cache.ts"
 import type { Mutation, RunnerConfig } from "#runner/config.ts"
 import { runnerLimits } from "#runner/limits.ts"
-import type { Discovered } from "#runner/load.ts"
+import { configOf, type Discovered } from "#runner/load.ts"
 import { loadPackage } from "#runner/run.ts"
+import { productOf } from "#scope.ts"
 
 /**
  * The mutator's commands, `toolchain-test kills` and `toolchain-test mutate` (runner/cli.ts's entries), run from a
@@ -403,19 +404,6 @@ export const mutateCommand = (root: string, args: ReadonlyArray<string>) =>
 		})
 	)
 
-/** The files a checkout's repository holds, paths from its root: a submodule's files are another repository's. */
-const trackedIn = (checkout: RealPath) =>
-	Effect.flatMap(gitOf(checkout, ["ls-files", "-z"]), (listed) =>
-		Option.match(listed, {
-			onNone: () =>
-				Effect.fail(MutatorRefused.make({ message: `git ls-files failed in ${checkout}` })),
-			onSome: (text) =>
-				Effect.succeed<ReadonlySet<string>>(
-					new Set(Arr.filter(Str.split("\0")(text), Str.isNonEmpty))
-				)
-		})
-	)
-
 /** Whether a file is TypeScript the mutator mutates: a module, never a declaration file. */
 const isMutable = (file: string): boolean =>
 	Arr.some([".ts", ".tsx", ".mts", ".cts"], (extension) => Str.endsWith(extension)(file)) &&
@@ -555,10 +543,23 @@ export const censusCommand = (root: string, args: ReadonlyArray<string>) =>
 			const packageRoot = yield* realPathOf(root)
 			const runsProperties =
 				Arr.isReadonlyArrayNonEmpty(parsed.selected) || Option.isNone(parsed.foreign)
-			const { config, discovered } = yield* loadPackage(root, parsed.selected)
-			const properties = runsProperties ? discovered : []
-			const mutation = yield* loadedMutation(config)
-			const verdicts = yield* verdictsAt(root, config, properties)
+			const loaded = runsProperties
+				? yield* Effect.asSome(loadPackage(root, parsed.selected))
+				: Option.none()
+			const config = Option.isSome(loaded)
+				? Option.some(loaded.value.config)
+				: yield* Effect.option(configOf(root))
+			const properties = Option.match(loaded, {
+				onNone: () => [],
+				onSome: (package_) => package_.discovered
+			})
+			const mutation = yield* Option.match(config, {
+				onNone: () => Effect.succeed<Mutation>({ families: [], equivalent: [] }),
+				onSome: loadedMutation
+			})
+			const verdicts = Option.isSome(config)
+				? yield* verdictsAt(root, config.value, properties)
+				: noVerdicts
 			const tracked = yield* Effect.mapError(trackedIn(checkout), (refused) =>
 				MutatorRefused.make({ message: refused.message })
 			)
@@ -579,7 +580,7 @@ export const censusCommand = (root: string, args: ReadonlyArray<string>) =>
 					Arr.join(Arr.filter([`${one.id}: ${one.standing.kind}`, by, why], Str.isNonEmpty), "; ")
 				)
 			}
-			const census = <E>(pool: MutantPool<E>, subjects: ReadonlyArray<Subject>) =>
+			const census = <E>(pool: MutantPool<E>, subjects: ReadonlyArray<Subject>, reading: Reading) =>
 				censusOf(pool, images, {
 					witnesses: { seed: 0, limits: runnerLimits },
 					checkout,
@@ -591,16 +592,23 @@ export const censusCommand = (root: string, args: ReadonlyArray<string>) =>
 					equivalent: mutation.equivalent,
 					kills: verdicts.kills,
 					edits: verdicts.edits,
+					reading,
 					settled
 				}).pipe(Effect.provide(digest))
 			const pool = mutatorPool(checkout, packageRoot)
-			const ofProperties = yield* census(pool, subjectsOf(properties))
+			const ofProperties = yield* census(pool, subjectsOf(properties), { kind: "places" })
 			const ofForeign = yield* Option.match(parsed.foreign, {
 				onNone: () => Effect.succeed([]),
 				onSome: ({ command, modules }) =>
-					census(
-						foreignPool({ argv: command, directory: within }, spawner),
-						Arr.map(modules, foreignSubject)
+					Effect.flatMap(importClosuresAt(root, modules), (closures) =>
+						census(
+							foreignPool({ argv: command, directory: within }, spawner),
+							Arr.map(modules, foreignSubject),
+							{
+								kind: "files",
+								importClosure: (id) => Arr.map(closures.get(id) ?? [], (file) => file)
+							}
+						)
 					)
 			})
 			const rows = [
