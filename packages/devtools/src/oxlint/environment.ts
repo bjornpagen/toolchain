@@ -5,9 +5,9 @@ import type { RestrictedGlobal, RestrictedImports, RestrictedProperty } from "#p
  * What the library may not read: the environment, which is its caller's to hand it. The preset holds a repository's
  * library files to these lists beside its own (eslint/no-restricted-imports, eslint/no-restricted-properties and
  * eslint/no-restricted-globals, with node/no-process-env), and lifts them in the sanctioned readers. They read syntax
- * alone: a value of Node's process, os and v8 modules or of Effect's Config and ConfigProvider, by an import of it, a
- * property of the `process` global (`process.cwd()`, `process["env"]`, `const { env } = process`), `globalThis.process`,
- * or the `navigator` global.
+ * alone: a value of Node's process, os and v8 modules (but os's constants table, the platform's) or of Effect's Config
+ * and ConfigProvider, by an import of it, a property of the `process` global (`process.cwd()`, `process["env"]`,
+ * `const { env } = process`), `globalThis.process`, or the `navigator` global.
  */
 
 const MESSAGE =
@@ -55,15 +55,26 @@ const V8_READS: ReadonlyArray<string> = [
 	"getHeapCodeStatistics"
 ]
 
+/** The value of Node's os module that is no reading of the environment: its constants table, the platform's signal,
+ * error, priority and dlopen numbers, which a library names (a child's exit by `constants.signals.SIGTERM`) as it names
+ * any other constant. Every other value of the module is the machine's (its processors, memory, host, user, network and
+ * load), and its default export and namespace hold them all. */
+const OS_CONSTANTS: ReadonlyArray<string> = ["constants"]
+
 /** The imports the library may not make: the process module's environment and its default export, which is the
- * process itself; every value of the os module; v8's heap readings; and Effect's configuration modules. An `import type`
- * reads nothing, so each admits one. */
+ * process itself; every value of the os module but its constants table; v8's heap readings; and Effect's configuration
+ * modules. An `import type` reads nothing, so each admits one. */
 export const ENVIRONMENT_IMPORTS: RestrictedImports = {
 	paths: [
 		...Arr.flatMap(["node:process", "process"], (name) => [
 			{ name, importNames: [...PROCESS_READS, "default"], allowTypeImports: true, message: MESSAGE }
 		]),
-		...Arr.map(["node:os", "os"], (name) => ({ name, allowTypeImports: true, message: MESSAGE })),
+		...Arr.map(["node:os", "os"], (name) => ({
+			name,
+			allowImportNames: OS_CONSTANTS,
+			allowTypeImports: true,
+			message: MESSAGE
+		})),
 		...Arr.map(["node:v8", "v8"], (name) => ({
 			name,
 			importNames: V8_READS,

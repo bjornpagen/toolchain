@@ -45,6 +45,10 @@ of a narrower `restrictedImports` list, added zod as a devDependency and importe
    of the root's lists into restrictions over the files that may not (edullm's IMPORT_OWNERS: the root's clerk policy
    becomes a restriction over `./`, its narrower scopes after it), and refactor what needs a relative import
    (edullm's next.config.ts).
+5. **The environment bans admit os's `constants`.** The library may import `constants` from `node:os` or `os`, the
+   platform's signal, error, priority and dlopen numbers, which read no environment; every other value of the module,
+   its default import and its namespace stay banned. A block that lifted the environment bans for it goes with nothing
+   in its place (grizzle's over packages/grizzle/src/adapter/live/call-error.ts).
 
 ## Consumer migration: the dependency bump of 2026-11-20
 

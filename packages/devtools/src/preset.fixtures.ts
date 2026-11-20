@@ -1,6 +1,6 @@
 import { boolean, element, type Gen, subset } from "@bjornpagen/testing/gen"
 import { Array as Arr, Option, Order, Record, Schema, String as Str } from "effect"
-import type { DummyRule, OxlintConfig } from "oxlint"
+import type { DummyRule, DummyRuleMap, OxlintConfig } from "oxlint"
 import { toolchain } from "#config.ts"
 import {
 	ENVIRONMENT_GLOBALS,
@@ -119,8 +119,8 @@ const names = (path: string, file: string): boolean =>
 const isUnder = (file: string, directory: string): boolean =>
 	directory === "." || Str.startsWith(`${directory}/`)(file)
 
-/** The configuration the preset builds for a case's project. */
-export const configOf = (c: Case): OxlintConfig =>
+/** The configuration the preset builds for a case's project, whatever its file. */
+export const configOf = (c: Omit<Case, "file">): OxlintConfig =>
 	standard(
 		toolchain({
 			rejected: { rules: {}, diagnostics: {} },
@@ -206,19 +206,24 @@ const entriesOfRule = (rule: string, value: DummyRule | undefined): ReadonlyArra
 	)
 }
 
-/** The lists oxlint holds a file to under a configuration: its top-level rules, then every block whose globs match the
+/** The rules oxlint holds a file to under a configuration: its top-level rules, then every block whose globs match the
  * file and whose excluded globs do not, a later one winning by rule. */
-export const resolvedOf = (config: OxlintConfig, file: string): Entries => {
+export const heldRulesOf = (config: OxlintConfig, file: string): DummyRuleMap => {
 	const matching = Arr.filter(
 		config.overrides ?? [],
 		(block) =>
 			Arr.some(block.files, (glob) => globMatches(glob, file)) &&
 			!Arr.some(block.excludeFiles ?? [], (glob) => globMatches(glob, file))
 	)
-	const rules = Arr.reduce(matching, { ...config.rules }, (held, block) => ({
+	return Arr.reduce(matching, { ...config.rules }, (held, block) => ({
 		...held,
 		...block.rules
 	}))
+}
+
+/** The lists oxlint holds a file to under a configuration (heldRulesOf). */
+export const resolvedOf = (config: OxlintConfig, file: string): Entries => {
+	const rules = heldRulesOf(config, file)
 	return {
 		"eslint/no-restricted-imports": entriesOfRule(
 			"eslint/no-restricted-imports",

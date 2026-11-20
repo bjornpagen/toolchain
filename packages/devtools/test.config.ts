@@ -10,6 +10,7 @@ export default defineRunner({
 		"src/gate.test.ts",
 		"src/preset.test.ts",
 		"src/preset-types.test.ts",
+		"src/oxlint/environment.test.ts",
 		"src/workspace/tsconfigs.test.ts",
 		"src/oxlint/rules/bearer-owners.test.ts",
 		"src/oxlint/rules/side-effect-free.test.ts",

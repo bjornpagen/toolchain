@@ -38,6 +38,17 @@ export type FixtureRules<P extends Plugin, Unmarked extends keyof P["rules"] = n
 /** Every fixture is TSX, so a JSX rule and a TypeScript rule read their fixtures alike. */
 const EXTENSION = ".tsx"
 
+/** Every category of oxlint's built-in rules off, so a configuration runs only the rules it names. */
+export const NO_CATEGORIES = {
+	correctness: "off",
+	nursery: "off",
+	pedantic: "off",
+	perf: "off",
+	restriction: "off",
+	style: "off",
+	suspicious: "off"
+} as const satisfies OxlintConfig["categories"]
+
 /**
  * The oxlint configuration a plugin's fixtures run under: no built-in rule, and each of the plugin's marked rules on its
  * own fixture directory only, with options that point into that directory. The specifier and the fixtures' directory
@@ -54,15 +65,7 @@ export const fixturesConfig = (
 	defineConfig({
 		plugins: [],
 		jsPlugins: [input.specifier],
-		categories: {
-			correctness: "off",
-			nursery: "off",
-			pedantic: "off",
-			perf: "off",
-			restriction: "off",
-			style: "off",
-			suspicious: "off"
-		},
+		categories: NO_CATEGORIES,
 		options: { respectEslintDisableDirectives: false },
 		overrides: Arr.map(Record.toEntries(input.rules), ([rule, options]) => ({
 			files: [`${input.fixtures}/${rule}/**`],
@@ -135,6 +138,38 @@ const oxlintCommand = Effect.gen(function* () {
 	return path.join(path.dirname(manifestFile), manifest.bin.oxlint)
 })
 
+/** oxlint's diagnostics over some files under a configuration file, each file read by its path, so no ignore file and
+ * no nested configuration hides or changes one: the oxlint the dev tools install, run from `cwd`, against which its
+ * report's file names are relative. */
+export const oxlintDiagnostics = (
+	input: Readonly<{ config: string; cwd: string; files: Arr.NonEmptyReadonlyArray<string> }>
+) =>
+	Effect.gen(function* () {
+		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+		const command = yield* oxlintCommand
+		const output = yield* spawner
+			.string(
+				ChildProcess.make(
+					command,
+					[
+						"-c",
+						input.config,
+						"--format",
+						"json",
+						"--disable-nested-config",
+						"--no-ignore",
+						...input.files
+					],
+					{ cwd: input.cwd }
+				)
+			)
+			.pipe(Effect.mapError(failureFrom("oxlint did not run")))
+		const report = yield* decodeReport(output).pipe(
+			Effect.mapError(failureFrom(`oxlint printed no JSON report:\n${output}`))
+		)
+		return report.diagnostics
+	})
+
 /** One diagnostic oxlint reported, at its first label's line when it has one. */
 type Reported = Readonly<{
 	file: string
@@ -183,7 +218,6 @@ export const proveFixtures = (input: PluginFixtures) =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem
 		const path = yield* Path.Path
-		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
 		const { root } = yield* Repository
 		const directory = path.dirname(input.config)
 		const code = (rule: string): string => `${input.plugin.meta.name}(${rule})`
@@ -213,33 +247,13 @@ export const proveFixtures = (input: PluginFixtures) =>
 		 * rule's own directory, and each directory beneath it that holds a fixture. */
 		const sets = Arr.dedupe([...rules, ...Arr.map(files, (file) => path.dirname(file))])
 		const ruleOf = (set: string): string => Arr.headNonEmpty(Str.split("/")(set))
-		const command = yield* oxlintCommand
-		/** oxlint's diagnostics over the files, each read by its path, so no ignore file of the repository hides one. */
-		const lint = (paths: Arr.NonEmptyReadonlyArray<string>) =>
-			Effect.gen(function* () {
-				const output = yield* spawner
-					.string(
-						ChildProcess.make(
-							command,
-							[
-								"-c",
-								input.config,
-								"--format",
-								"json",
-								"--disable-nested-config",
-								"--no-ignore",
-								...Arr.map(paths, (file) => `${input.fixtures}/${file}`)
-							],
-							{ cwd: directory }
-						)
-					)
-					.pipe(Effect.mapError(failureFrom("oxlint did not run")))
-				const report = yield* decodeReport(output).pipe(
-					Effect.mapError(failureFrom(`oxlint printed no JSON report:\n${output}`))
-				)
-				return report.diagnostics
-			})
-		const diagnostics = Arr.isReadonlyArrayNonEmpty(files) ? yield* lint(files) : []
+		const diagnostics = Arr.isReadonlyArrayNonEmpty(files)
+			? yield* oxlintDiagnostics({
+					config: input.config,
+					cwd: directory,
+					files: Arr.map(files, (file) => `${input.fixtures}/${file}`)
+				})
+			: []
 		const reported = Arr.map(diagnostics, (diagnostic): Reported => ({
 			file: path.resolve(directory, diagnostic.filename),
 			code: Option.fromUndefinedOr(diagnostic.code),
