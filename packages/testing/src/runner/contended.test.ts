@@ -58,7 +58,9 @@ export const contendedLeaseWaits = property.exhaust(holders, {
 								[shortCase(RESERVES, runnerLimits.deadline, OPEN_MILLIS)],
 								() => true
 							)
-							return Arr.map(Arr.flatten(results), (result) => result.outcome.kind)
+							return Arr.map(Arr.flatten(results), (result) =>
+								result.outcome.kind === "lost" ? result.outcome.report : result.outcome.kind
+							)
 						})
 					)
 					assert.deepEqual(outcomes, [outcomeBehind(holder)])
