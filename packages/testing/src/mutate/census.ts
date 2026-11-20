@@ -106,8 +106,11 @@ export type Reading =
 /** A product file the census may mutate: its path from the checkout, its canonical path, and its text. */
 type Source = Readonly<{ file: string; target: RealPath; text: string }>
 
-/** One mutant a property faces: the mutant, its file's text with it applied, and its file. */
-type Faced = Readonly<{ mutant: Mutant<string>; mutated: MutatedFile }>
+/**
+ * One mutant a property faces: the mutant, its file's text with it applied, its file, and the hash of its identity
+ * (`drawn`), taken once, which every property's order of its mutants draws from (orderFor).
+ */
+type Faced = Readonly<{ mutant: Mutant<string>; mutated: MutatedFile; drawn: number }>
 
 /**
  * A property the census pursues with operator mutants: the mutants of product source at places its witnesses ran, in
@@ -130,9 +133,17 @@ type Probe = Readonly<{ pursuit: Pursuit; source: Source }>
 /** A mutant's place among the judgments: its file and its id. */
 const judgedKey = (file: string, mutant: string): string => `${file}\u0000${mutant}`
 
-/** A property's mutants in its own order: drawn by its identity, so two properties meet the same mutants differently. */
-const orderFor = (id: PropertyId) =>
-	Order.mapInput(Order.Number, (faced: Faced) => mix(fnv1a32(id) ^ fnv1a32(faced.mutant.id)))
+/**
+ * A property's mutants in its own order: drawn by its identity, so two properties meet the same mutants differently.
+ * Each side of a comparison is two integers mixed, its identity's hash taken once per property and each mutant's once
+ * per census, where every comparison hashed both texts again: a queue of grizzle's 170,642 mutants took 2.7 million
+ * comparisons, 13 s of one thread with a 190-character identity hashed twice in each, for each of the hundred properties
+ * its census pursued while every worker sat idle; 0.3 s now, in the same order.
+ */
+const orderFor = (id: PropertyId) => {
+	const own = fnv1a32(id)
+	return Order.mapInput(Order.Number, (faced: Faced) => mix(own ^ faced.drawn))
+}
 
 /**
  * The next mutant to try and the pursuit it is for: of the pursuits still looking, the one with the fewest trials in
@@ -318,7 +329,8 @@ export const censusOf = <E, O extends string>(
 						Arr.filter(mutants, (mutant) => !equivalent.has(judgedKey(source.file, mutant.id))),
 						(mutant): Faced => ({
 							mutant,
-							mutated: { target: source.target, text: applied(mutant) }
+							mutated: { target: source.target, text: applied(mutant) },
+							drawn: fnv1a32(mutant.id)
 						})
 					)
 				)
