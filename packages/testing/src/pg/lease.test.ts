@@ -15,16 +15,18 @@ import { int } from "#gen.ts"
 import { Checkout } from "#mutate/checkout.ts"
 import {
 	blockedOn,
+	blockedOnFile,
 	familyIn,
 	heldUntil,
 	holderOf,
 	SPREAD_MEMBERS,
 	shieldIn,
+	shieldsIn,
 	signalled,
 	spreadFamily,
 	stopped
 } from "#pg/lease.fixtures.ts"
-import { type Placement, reservationOf, reserved } from "#pg/lease.ts"
+import { type LeaseFailed, type Placement, reservationOf, reserved } from "#pg/lease.ts"
 import { spawnedBy } from "#pg/make.fixtures.ts"
 import { property } from "#property.ts"
 import { Scratch } from "#resources/scratch.ts"
@@ -249,9 +251,11 @@ export const fitsBesideTheQueue = property.explore(
 						const family = yield* familyIn(scratch, 2, slots)
 						const of = (workers: number) =>
 							reservationOf(1, family, { perLessee: 1, outside: 0 }, workers)
-						const blocked = Effect.map(
-							Effect.forEach(family, (member) => blockedOn(member.lease)),
-							Arr.reduce(0, (sum, waiters: number) => sum + waiters)
+						const first = Arr.headNonEmpty(family).lease
+						const lineOf = Effect.map(blockedOnFile(first, "gate.lock"), (line) => line.length)
+						const shielding = Effect.map(
+							Effect.forEach(family, (member) => shieldsIn(member.lease)),
+							Arr.some((shields) => shields.length > 0)
 						)
 						const release = yield* Deferred.make<void>()
 						const holding = yield* of(held)
@@ -261,7 +265,7 @@ export const fitsBesideTheQueue = property.explore(
 						const waiting = yield* of(large)
 						const queued = yield* heldUntil(waiting, never)
 						yield* awaitFact(
-							Effect.map(blocked, (waiters) => (waiters >= 1 ? Option.some(true) : Option.none()))
+							Effect.map(shielding, (shields) => (shields ? Option.some(true) : Option.none()))
 						)
 						const one = yield* of(1)
 						const beside = yield* Effect.forEach(
@@ -273,8 +277,8 @@ export const fitsBesideTheQueue = property.explore(
 							Arr.filter((done: boolean) => done)
 						)
 						const atOnce = yield* awaitFact(
-							Effect.map(Effect.all([started, blocked]), ([done, waiters]) =>
-								done.length + waiters - 1 >= small ? Option.some(done.length) : Option.none()
+							Effect.map(Effect.all([started, lineOf]), ([done, waiters]) =>
+								done.length + waiters >= small ? Option.some(done.length) : Option.none()
 							)
 						)
 						const queuedMeanwhile = !(yield* Deferred.isDone(queued))
@@ -294,9 +298,10 @@ export const fitsBesideTheQueue = property.explore(
 		kills: [
 			{
 				file: "packages/testing/scripts/hold.pl",
-				original: "\tmy $fit = fits();\n",
-				replacement: "\tmy $fit = 0;\n",
-				why: "Every lease takes the family's queue first, which the run that waits holds while it waits, as a run held the cluster's gate (PERFIO-push held 5491's gate and slot 0 for 17 minutes with 3 slots free, every run of one worker behind it): the runs that fit wait behind it; the property fails."
+				original: '\tflock($lease->{choose}, LOCK_EX) or fail("flock: $!");\n\tmy $fit = fits();\n',
+				replacement:
+					'\tflock($lease->{queue}, LOCK_EX) or fail("flock: $!");\n\tmy $fit = fits();\n',
+				why: "Every lease takes the family's queue before it looks, which the run that waits holds while it waits, as a run held the cluster's gate (PERFIO-push held 5491's gate and slot 0 for 17 minutes with 3 slots free, every run of one worker behind it): the runs that fit wait behind it; the property fails."
 			}
 		]
 	}
@@ -336,13 +341,13 @@ export const queueTakesItsShield = property.explore(
 						const queued = yield* heldUntil(whole, never)
 						const handed = yield* Effect.forEach(
 							Array.from({ length: slots }, (_, at) => at),
-							(step) =>
+							() =>
 								Effect.gen(function* () {
 									const shield = yield* awaitFact(shieldIn(lease))
-									yield* Effect.acquireRelease(signalled(shield.holder, "SIGSTOP"), () =>
-										signalled(shield.holder, "SIGCONT")
+									yield* Effect.acquireRelease(signalled(shield.waiter, "SIGSTOP"), () =>
+										signalled(shield.waiter, "SIGCONT")
 									)
-									yield* awaitFact(stopped(shield.holder))
+									yield* awaitFact(stopped(shield.waiter))
 									const previous = yield* awaitFact(holderOf(lease, shield.slot))
 									yield* signalled(previous, "SIGKILL")
 									yield* awaitFact(
@@ -355,12 +360,12 @@ export const queueTakesItsShield = property.explore(
 										Effect.map(
 											Effect.all([Deferred.isDone(prober), blockedOn(lease)]),
 											([done, waiters]) =>
-												done || waiters > step ? Option.some(true) : Option.none()
+												done || waiters >= slots ? Option.some(true) : Option.none()
 										)
 									)
-									yield* signalled(shield.holder, "SIGCONT")
+									yield* signalled(shield.waiter, "SIGCONT")
 									const taker = yield* awaitFact(holderOf(lease, shield.slot))
-									return taker === shield.holder
+									return taker === shield.waiter
 								})
 						)
 						assert.deepEqual(
@@ -376,7 +381,7 @@ export const queueTakesItsShield = property.explore(
 				),
 		oracle: {
 			kind: "specification",
-			name: "the run that holds the family's queue is handed each slot it waits for when that slot is let go, though it is stopped then and another run looks for a free slot before it wakes, and holds once it has them all"
+			name: "the run that holds the family's queue is handed each slot it waits for when that slot is let go, though the child that waits for it is stopped then and another run looks for a free slot before it wakes, and holds once it has them all"
 		},
 		kept: [],
 		kills: [
@@ -384,7 +389,201 @@ export const queueTakesItsShield = property.explore(
 				file: "packages/testing/scripts/hold.pl",
 				original: "\t\t\tnext unless taken_now($slots[$at]{door});\n",
 				replacement: "",
-				why: "A lease takes a free slot whatever its door, so a run that looks for one in the instant between a slot's release and the queue's holder's waking takes the slot it waits for, and the queue's holder may wait for ever while runs that fit keep coming; the property fails."
+				why: "A lease takes a free slot whatever its door, so a run that looks for one in the instant between a slot's release and the queue's holder's child waking takes the slot it waits for, and the queue's holder may wait for ever while runs that fit keep coming; the property fails."
+			}
+		]
+	}
+)
+
+export const waitersInOrder = property.explore(
+	(source) => {
+		const slots = source.draw(int(3, 4))
+		const medium = source.draw(int(1, slots - 2))
+		return {
+			slots,
+			medium,
+			later: Array.from({ length: medium }, (_, at) => (at === 0 ? 1 : source.draw(int(1, 2))))
+		}
+	},
+	{
+		needs: { dir: Scratch.dir, checkout: Checkout.dir },
+		situations: [],
+		check:
+			({ dir }) =>
+			({ slots, medium, later }) =>
+				Effect.scoped(
+					Effect.gen(function* () {
+						const scratch = yield* dir
+						const family = yield* familyIn(scratch, 1, slots)
+						const lease = Arr.headNonEmpty(family).lease
+						const of = (workers: number) =>
+							reservationOf(1, family, { perLessee: 1, outside: 0 }, workers)
+						const never = yield* Deferred.make<void>()
+						const one = yield* of(1)
+						const holders = yield* Effect.forEach(
+							Array.from({ length: slots }, (_, at) => at),
+							() => heldUntil(one, never)
+						)
+						yield* Effect.forEach(holders, Deferred.await, { discard: true })
+						const order = yield* Ref.make<ReadonlyArray<string>>([])
+						const finishing = (name: string, held: Deferred.Deferred<Placement, LeaseFailed>) =>
+							Effect.forkScoped(
+								Effect.andThen(Deferred.await(held), Ref.update(order, Arr.append(name)))
+							)
+						const releaseMedium = yield* Deferred.make<void>()
+						const mediumRun = yield* of(medium)
+						const mediumHeld = yield* heldUntil(mediumRun, releaseMedium)
+						yield* finishing("the medium run", mediumHeld)
+						yield* awaitFact(
+							Effect.map(shieldsIn(lease), (shields) =>
+								shields.length > 0 ? Option.some(true) : Option.none()
+							)
+						)
+						const queued = blockedOnFile(lease, "gate.lock")
+						const largeRun = yield* of(slots - 1)
+						const largeHeld = yield* heldUntil(largeRun, never)
+						yield* finishing("the large run", largeHeld)
+						yield* awaitFact(
+							Effect.map(queued, (waiting) =>
+								waiting.length > 0 ? Option.some(true) : Option.none()
+							)
+						)
+						const churned = Array.from({ length: slots - 1 }, (_, at) => `${at + 1}.lock`)
+						const kill = (slot: string) =>
+							Effect.flatMap(awaitFact(holderOf(lease, slot)), (pid) => signalled(pid, "SIGKILL"))
+						const newcomers = yield* Effect.forEach(
+							Arr.zip(Arr.take(churned, medium), later),
+							([freed, need]) =>
+								Effect.gen(function* () {
+									yield* kill(freed)
+									const before = yield* queued
+									const newcomerRun = yield* of(need)
+									const newcomer = yield* heldUntil(newcomerRun, never)
+									yield* finishing("a newcomer", newcomer)
+									yield* awaitFact(
+										Effect.map(Effect.all([Deferred.isDone(newcomer), queued]), ([done, waiting]) =>
+											done || Arr.some(waiting, (pid) => !Arr.contains(before, pid))
+												? Option.some(true)
+												: Option.none()
+										)
+									)
+									return newcomer
+								})
+						)
+						const first = yield* awaitFact(
+							Effect.map(
+								Effect.all([Ref.get(order), Effect.forEach(newcomers, Deferred.isDone)]),
+								([finished, arrived]) =>
+									Arr.isReadonlyArrayNonEmpty(finished) || Arr.some(arrived, (held) => held)
+										? Option.some(finished)
+										: Option.none()
+							)
+						)
+						assert.deepEqual(first, ["the medium run"])
+						yield* Deferred.succeed(releaseMedium, undefined)
+						yield* Effect.forEach(Arr.drop(churned, medium), kill, { discard: true })
+						const finished = yield* awaitFact(
+							Effect.map(Ref.get(order), (done) =>
+								Arr.contains(done, "the large run") ? Option.some(done) : Option.none()
+							)
+						)
+						assert.deepEqual(finished, ["the medium run", "the large run"])
+					})
+				),
+		oracle: {
+			kind: "specification",
+			name: "runs waiting for a family complete in the order they came, the older first (a medium run of one or two slots, then a large one), while later runs of one and two slots keep coming and one slot stays held: each slot let go while the queue's holder waits is its own until it holds its need, never a newer run's"
+		},
+		kept: [],
+		kills: [
+			{
+				file: "packages/testing/scripts/hold.pl",
+				original: "\t\t\tcollector([$member, $at]);\n",
+				replacement: "\t\t\tcollector([$member, $at]);\n\t\t\treturn;\n",
+				why: "The queue's holder shields one slot at a time, as it did, bound to that slot's holder however long it holds, while every other slot let go goes to a newer run of one slot (CLOSEDBITS' fin/fold, 10 slots, behind a stream of small runs on 5491): the newer runs start and the older waits; the property fails."
+			}
+		]
+	}
+)
+
+export const headHoldsItsNeed = property.explore(
+	(source) => {
+		const slots = source.draw(int(3, 4))
+		return { slots, need: source.draw(int(1, slots - 2)) }
+	},
+	{
+		needs: { dir: Scratch.dir, checkout: Checkout.dir },
+		situations: [],
+		check:
+			({ dir }) =>
+			({ slots, need }) =>
+				Effect.scoped(
+					Effect.gen(function* () {
+						const scratch = yield* dir
+						const family = yield* familyIn(scratch, 1, slots)
+						const lease = Arr.headNonEmpty(family).lease
+						const of = (workers: number) =>
+							reservationOf(1, family, { perLessee: 1, outside: 0 }, workers)
+						const never = yield* Deferred.make<void>()
+						const one = yield* of(1)
+						const holders = yield* Effect.forEach(
+							Array.from({ length: slots }, (_, at) => at),
+							() => heldUntil(one, never)
+						)
+						yield* Effect.forEach(holders, Deferred.await, { discard: true })
+						const run = yield* of(need)
+						const queued = yield* heldUntil(run, never)
+						const shields = yield* awaitFact(
+							Effect.map(shieldsIn(lease), (found) =>
+								Arr.isReadonlyArrayNonEmpty(found) && found.length === slots
+									? Option.some(found)
+									: Option.none()
+							)
+						)
+						const head = Arr.headNonEmpty(shields).holder
+						yield* Effect.acquireRelease(signalled(head, "SIGSTOP"), () =>
+							signalled(head, "SIGCONT")
+						)
+						yield* awaitFact(stopped(head))
+						const freed = Array.from({ length: need + 1 }, (_, at) => `${at + 1}.lock`)
+						yield* Effect.forEach(
+							freed,
+							(slot) =>
+								Effect.gen(function* () {
+									const previous = yield* awaitFact(holderOf(lease, slot))
+									yield* signalled(previous, "SIGKILL")
+									yield* awaitFact(
+										Effect.map(holderOf(lease, slot), (holder) =>
+											Option.exists(holder, (pid) => pid !== previous)
+												? Option.some(true)
+												: Option.none()
+										)
+									)
+								}),
+							{ discard: true }
+						)
+						yield* signalled(head, "SIGCONT")
+						const placement = yield* Deferred.await(queued)
+						const free = yield* Effect.forEach(freed, (slot) =>
+							Effect.map(holderOf(lease, slot), Option.isNone)
+						)
+						assert.deepEqual(
+							{ held: placement.length, free: Arr.filter(free, (isFree) => isFree).length },
+							{ held: need, free: 1 }
+						)
+					})
+				),
+		oracle: {
+			kind: "specification",
+			name: "the queue's holder holds exactly its need when it starts, letting go at once of every slot its children took past it, which runs of one slot then take"
+		},
+		kept: [],
+		kills: [
+			{
+				file: "packages/testing/scripts/hold.pl",
+				original: "\tif (@mine >= $lease->{need}) {\n",
+				replacement: "\tif (0) {\n",
+				why: "The queue's holder keeps every slot its children took, past its need, and sits on slots it will not use while runs of one slot wait for them; the property fails."
 			}
 		]
 	}

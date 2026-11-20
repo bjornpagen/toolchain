@@ -66,6 +66,18 @@ export const blockedOn = (directory: string): Effect.Effect<number, never, FileS
 		(locks) => Arr.filter(locks, (lock) => lock.blocked && lock.name !== "choose.lock").length
 	)
 
+/** The processes that wait, blocked, on the lock of the file `name` in `directory`. */
+export const blockedOnFile = (
+	directory: string,
+	name: string
+): Effect.Effect<ReadonlyArray<number>, never, FileSystem.FileSystem> =>
+	Effect.map(locksIn(directory), (locks) =>
+		Arr.map(
+			Arr.filter(locks, (lock) => lock.blocked && lock.name === name),
+			(lock) => lock.pid
+		)
+	)
+
 /** The process that holds the lock of the file `name` in `directory`, if one does. */
 export const holderOf = (
 	directory: string,
@@ -79,27 +91,56 @@ export const holderOf = (
 	)
 
 /**
- * The slot the family's queue's holder waits for in `directory`, a lease directory, once it waits for it there: the
- * name of the slot's file, beside the door it holds (scripts/hold.pl's `<at>.door` for `<at>.lock`), and the queue's
- * holder, blocked on the slot's lock.
+ * The slots the family's queue's holder waits for in `directory`, a lease directory, each once a child of its own waits
+ * for it there (scripts/hold.pl's collector): the name of the slot's file, beside the door the queue's holder holds
+ * (`<at>.door` for `<at>.lock`), the queue's holder, and its child blocked on the slot's lock.
  */
-export const shieldIn = (
+export const shieldsIn = (
 	directory: string
 ): Effect.Effect<
-	Option.Option<Readonly<{ slot: string; holder: number }>>,
+	ReadonlyArray<Readonly<{ slot: string; holder: number; waiter: number }>>,
 	never,
 	FileSystem.FileSystem
 > =>
-	Effect.map(locksIn(directory), (locks) =>
-		Arr.findFirst(locks, (door) => {
+	Effect.gen(function* () {
+		const locks = yield* locksIn(directory)
+		const parents = yield* Effect.forEach(
+			Arr.filter(locks, (lock) => lock.blocked),
+			(lock) => Effect.map(parentOf(lock.pid), (parent) => ({ lock, parent }))
+		)
+		return Arr.flatMap(locks, (door) => {
 			const slot = Str.replace(".door", ".lock")(door.name)
-			return !door.blocked &&
-				Str.endsWith(".door")(door.name) &&
-				Arr.some(locks, (lock) => lock.blocked && lock.pid === door.pid && lock.name === slot)
-				? Option.some({ slot, holder: door.pid })
-				: Option.none()
+			return door.blocked || !Str.endsWith(".door")(door.name)
+				? []
+				: Option.toArray(
+						Option.map(
+							Arr.findFirst(
+								parents,
+								({ lock, parent }) => lock.name === slot && Option.contains(parent, door.pid)
+							),
+							({ lock }) => ({ slot, holder: door.pid, waiter: lock.pid })
+						)
+					)
 		})
-	)
+	})
+
+/** The first of shieldsIn, once there is one. */
+export const shieldIn = (directory: string) => Effect.map(shieldsIn(directory), Arr.head)
+
+/** A process's parent, by its /proc/<pid>/stat (the field after its state); none for a process gone. */
+const parentOf = (
+	pid: number
+): Effect.Effect<Option.Option<number>, never, FileSystem.FileSystem> =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		const stat = yield* Effect.orElseSucceed(fs.readFileString(`/proc/${pid}/stat`), () => "")
+		return Option.flatMap(Str.lastIndexOf(")")(stat), (end) =>
+			Option.map(
+				Arr.get(Arr.filter(Str.split(" ")(Str.slice(end + 1)(stat)), Str.isNonEmpty), 1),
+				Number
+			)
+		)
+	})
 
 /**
  * The members of the spread-lease property's family (lease.test.ts runsLeaseTheirWork): four, as grizzle's 5442 and

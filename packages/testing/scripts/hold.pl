@@ -26,27 +26,30 @@
 # kernel ends with the process holding the other end, however that process ends.
 #
 # A lease is NEED of the members' slots, held all at once or not at all, each slot one worker's place on its member. A
-# slot is free when its lock and its door's are: a door is held only by the queue's holder, which shields with it the
-# one slot it waits for. Every look at the slots is under the CHOOSE lock, which is held only while this program looks,
-# taking free slots without waiting, never while it waits, so its holder waits for nothing. A lease that NEED free slots
-# meet takes them there at once, whatever waits elsewhere: each from the member where it holds fewest, then the one with
-# the most free slots, the earlier member on a tie, so a lease spreads over the members and leases taken one after
-# another fill them evenly: N leases of one slot land on N members. A lease they do not meet lets go of what it looked
-# at and takes the QUEUE lock, holding nothing while it waits for it, so leases that wait wait for the queue's holder,
-# in the kernel's order. The queue's holder takes no free slot while it cannot finish, so leases that fit go on beside
-# it, and it finishes once the slots it holds and the free ones meet NEED, taking those it lacks; until then it waits
-# for one slot another lease holds, on the member where it holds fewest, the earlier on a tie, its door held first under
-# CHOOSE. flock(2) waits for one lock and never for the first of several, so the queue's holder is bound to that slot
-# while another may free; but no lease takes a slot whose door is held, so when the slot is let go it is the queue's
-# holder's, however long the kernel takes to wake it: each slot it waits for is its own at that slot's next release, and
-# no lease that fits starves it. No wait closes a cycle: only the queue's holder holds slots while it waits, and every
-# lease whose slot it waits for holds all its own and waits for nothing. The QUEUE lock is the file an older toolchain's
-# holder takes as its gate and holds while it waits for slots (`gate.lock`), so such a holder and the queue's holder
-# never both hold slots while they wait.
+# slot is free when its lock and its door's are: a door is held only by the queue's holder, which shields with it a slot
+# it waits for. Every look at the slots is under the CHOOSE lock, which is held only while this program looks, taking
+# free slots without waiting, never while it waits, so its holder waits for nothing. A lease that NEED free slots meet
+# takes them there at once, whatever waits: each from the member where it holds fewest, then the one with the most free
+# slots, the earlier member on a tie, so a lease spreads over the members and leases taken one after another fill them
+# evenly: N leases of one slot land on N members. A lease they do not meet lets go of what it looked at and takes the
+# QUEUE lock, holding nothing while it waits for it, so leases that wait are served in the kernel's order. The queue's
+# holder takes no free slot while it cannot finish, so a lease that fits the free slots goes on beside it; it shields
+# every slot another lease holds, its door held under CHOOSE, each waited for by a child of its own on this program's
+# open file of it, so each is the queue's holder's when its holder lets it go, whoever that was, and no lease takes a
+# shielded slot. Each time it collects one it looks again and shields what it newly finds held, and it finishes once the
+# slots it holds and the free ones meet NEED, taking those it lacks; then it lets go of every shield and of any slot a
+# child took past its need, so it never holds a slot it will not use. A stream of leases that fit cannot starve it:
+# every slot let go while it waits is its own until it holds its need. flock(2) waits for one lock and never for the
+# first of several, so each slot it waits for has a child of its own. No wait closes a cycle: only the queue's holder
+# holds slots while it waits, and every lease whose slot it waits for holds all its own and waits for nothing. The QUEUE
+# lock is the file an older toolchain's holder takes as its gate and holds while it waits for slots (`gate.lock`), so
+# such a holder and the queue's holder never both hold slots while they wait. A signal that ends this program ends its
+# children first.
 use strict;
 use warnings;
 use Errno qw(EWOULDBLOCK);
 use Fcntl qw(:flock);
+use POSIX ();
 
 # Every lock this run took.
 my @taken;
@@ -106,8 +109,9 @@ while (@words) {
 			shift @words;
 			my @slots;
 			while (@words && $words[0] ne "member" && !exists $verbs{ $words[0] }) {
+				my $path = $words[0];
 				my $slot = path_of("slot", shift @words);
-				push @slots, { slot => $slot, door => path_of("door", shift @words) };
+				push @slots, { slot => $slot, path => $path, door => path_of("door", shift @words) };
 			}
 			@slots or fail("a lease's member names no slot");
 			push @members, \@slots;
@@ -146,6 +150,9 @@ my @mine;
 my %ours;
 my %seen_free;
 
+# The slots the queue's holder shields, each by the child that waits for it.
+my %shielded;
+
 # free(): under CHOOSE, every slot this lease does not hold whose lock and door are free now, by member, each slot's
 # lock taken; its door let go at once.
 sub free {
@@ -155,7 +162,7 @@ sub free {
 		my @slots = @{ $lease->{members}[$member] };
 		push @found, [];
 		for my $at (0 .. $#slots) {
-			next if $ours{"$member $at"};
+			next if $ours{"$member $at"} || $shielded{"$member $at"};
 			next unless taken_now($slots[$at]{door});
 			if (taken_now($slots[$at]{slot})) {
 				push @{ $found[$member] }, $at;
@@ -201,23 +208,62 @@ sub fits {
 	return $free >= $lacks;
 }
 
-# shield(): under CHOOSE, the slot the queue's holder waits for, its door held: one it does not hold and another lease
-# does (it was not free at the look fits() took), on the member where it holds fewest, the earlier member and slot on a
-# tie.
-sub shield {
-	my %held;
-	$held{ $_->[0] }++ for @mine;
-	my $best;
+# The children of the queue's holder, each by its pid: the slot each waits for, as [member, slot].
+my %children;
+
+# A signal that ends this run ends its children first, so none waits on after it.
+for my $signal (qw(TERM INT HUP)) {
+	$SIG{$signal} = sub {
+		kill("KILL", keys %children);
+		fail("ended by SIG$signal");
+	};
+}
+
+# collector(slot): a child of this run that waits for the lock of `slot`, [member, slot], on this run's own open file of
+# it, so the lock is this run's once the child holds it, and exits.
+sub collector {
+	my ($slot) = @_;
+	my $file = $lease->{members}[ $slot->[0] ][ $slot->[1] ]{slot};
+	my $pid = fork() // fail("fork: $!");
+	if ($pid == 0) {
+		$SIG{$_} = "DEFAULT" for qw(TERM INT HUP);
+		flock($file, LOCK_EX);
+		POSIX::_exit(0);
+	}
+	$children{$pid} = $slot;
+	$shielded{"$slot->[0] $slot->[1]"} = $pid;
+	return $pid;
+}
+
+# collected(pid): the slot the child `pid` waited for, which this run now holds, its shield let go: kept while the run
+# lacks slots, and let go too once it holds its need, so it never holds a slot it will not use.
+sub collected {
+	my ($pid) = @_;
+	my $slot = delete $children{$pid} // return;
+	delete $shielded{"$slot->[0] $slot->[1]"};
+	my $taken = $lease->{members}[ $slot->[0] ][ $slot->[1] ];
+	flock($taken->{door}, LOCK_UN);
+	if (@mine >= $lease->{need}) {
+		flock($taken->{slot}, LOCK_UN);
+		return;
+	}
+	push @mine, $slot;
+	$ours{"$slot->[0] $slot->[1]"} = 1;
+	push @taken, $taken->{slot};
+}
+
+# shield_held(): under CHOOSE, after fits() looked, every slot another lease holds (it was not free at the look) and
+# this run does not shield yet shielded, its door held, and waited for by a collector of its own.
+sub shield_held {
 	for my $member (0 .. $#{ $lease->{members} }) {
 		my @slots = @{ $lease->{members}[$member] };
-		my ($at) = grep { !$ours{"$member $_"} && !$seen_free{"$member $_"} } 0 .. $#slots;
-		next unless defined $at;
-		$best = [$member, $at] if !defined($best) || ($held{$member} // 0) < ($held{ $best->[0] } // 0);
+		for my $at (0 .. $#slots) {
+			my $key = "$member $at";
+			next if $ours{$key} || $seen_free{$key} || defined $shielded{$key};
+			taken_now($slots[$at]{door}) or fail("a door is held beside the queue's holder");
+			collector([$member, $at]);
+		}
 	}
-	defined $best or fail("a lease of $lease->{need} lacks slots and finds none another lease holds");
-	my $slot = $lease->{members}[ $best->[0] ][ $best->[1] ];
-	taken_now($slot->{door}) or fail("a door is held beside the queue's holder");
-	return $best;
 }
 
 if ($claims[0]{verb} eq "lease") {
@@ -231,16 +277,22 @@ if ($claims[0]{verb} eq "lease") {
 		while (1) {
 			flock($lease->{choose}, LOCK_EX) or fail("flock: $!");
 			last if fits();
-			my $waited = shield();
+			shield_held();
 			flock($lease->{choose}, LOCK_UN);
-			my $slot = $lease->{members}[ $waited->[0] ][ $waited->[1] ];
-			flock($slot->{slot}, LOCK_EX) or fail("flock: $!");
-			push @mine, $waited;
-			$ours{"$waited->[0] $waited->[1]"} = 1;
-			push @taken, $slot->{slot};
-			flock($slot->{door}, LOCK_UN);
+			collected(waitpid(-1, 0));
+			while ((my $pid = waitpid(-1, POSIX::WNOHANG())) > 0) {
+				collected($pid);
+			}
 		}
 		flock($lease->{choose}, LOCK_UN);
+		for my $pid (keys %children) {
+			kill("KILL", $pid);
+			waitpid($pid, 0);
+			my $slot = delete $children{$pid};
+			my $left = $lease->{members}[ $slot->[0] ][ $slot->[1] ];
+			flock($left->{slot}, LOCK_UN);
+			flock($left->{door}, LOCK_UN);
+		}
 		flock($lease->{queue}, LOCK_UN);
 	}
 	$| = 1;
