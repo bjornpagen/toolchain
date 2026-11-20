@@ -14,6 +14,35 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: `pnpm land` (2026-11-20)
+
+Bjorn, 2026-11-20: "pnpm land is a GREAT idea, must go into all of our codebases immediately", after metis's
+3f46d57 ended its stale-refusal loop: a push gate that waited its turn and then found the trunk moved, rebased and
+queued again, ran O(N²) gates for N lanes. `toolchain-land` (packages/devtools/bin/land.sh) waits for the machine's push
+lock for the repository and, holding it, fetches the trunk, rebases the clone onto it (aborting on a conflict, nothing
+pushed) and pushes, so the push gate, the clone's own pre-push hook, runs once, on the commit that lands, and the push
+is a fast-forward of a trunk no other landing can move meanwhile. A push to the trunk that is no landing's is refused
+by the push gate (`toolchain-gate push` runs `land.sh pre-push` on git's pre-push lines before any check) and, where the
+origin is a local hub, by the hub's pre-receive hook, which each landing installs there. Before you move
+`vendor/toolchain` past this section, in the same commit:
+
+1. **toolchain.config.ts states `land`** (required): `{ lock: "~/<path>", branch: "<trunk>" }`, the lock file every
+   clone of the repository on the machine takes, written from the home directory, and the branch landings push to.
+   A lock another tool already takes on the same file (flock(1), grizzle's interim push.sh) keeps it and a landing out
+   of each other.
+2. **The root package.json's `land` script** is `sh vendor/toolchain/packages/devtools/bin/land.sh`, by path, as the
+   hooks run the gate (no bin, so no consumer's install goes stale by it). Delete the repository's own landing script
+   (metis's scripts/land.sh and scripts/hub-hooks/pre-receive, grizzle's ~/.cache/grizzle-release/pushlock/push.sh).
+3. **Every clone has a pre-push hook,** since a landing refuses a clone without one (its push would go out ungated):
+   the root's `prepare` runs `lefthook install`.
+4. **A pre-push hook that is not `toolchain-gate push`** runs `sh vendor/toolchain/packages/devtools/bin/land.sh
+   pre-push` on git's pre-push lines first (lefthook.yml's `use_stdin: true`), so it refuses a push to the trunk that is
+   no landing's (grizzle's `.lefthook/pre-push/gate.sh`, before its `run HEAD pnpm check`).
+
+Lanes land with `pnpm land` from their clone, on the trunk, with a clean tree; `TOOLCHAIN_LAND_AFTER_REBASE`, when set,
+is a command run inside the lock after the rebase, whose tracked changes are folded into the last commit. The proof
+that a push is a landing's reads /proc (Linux).
+
 ## Consumer migration: zod banned, lists only added to (2026-11-20)
 
 Bjorn, 2026-11-20: "zod is banned from this codebase, effect schema only", and "strengthen the linters even harder so

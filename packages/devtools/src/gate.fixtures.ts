@@ -25,7 +25,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process"
 
 /** The environment every command of a case runs with: a git identity, local file transport for submodules, and no
  * global or system git configuration. */
-const IDENTITY: Readonly<Record<string, string>> = Object.freeze({
+export const IDENTITY: Readonly<Record<string, string>> = Object.freeze({
 	GIT_AUTHOR_NAME: "gate-test",
 	GIT_AUTHOR_EMAIL: "gate-test@localhost",
 	GIT_COMMITTER_NAME: "gate-test",
@@ -38,7 +38,7 @@ const IDENTITY: Readonly<Record<string, string>> = Object.freeze({
 /** A case's sandbox, in its scratch directory: the directory its repositories are made in, its gate cache
  * (XDG_CACHE_HOME), the cache's root, where the key directories are, the gate it runs (the checkout's bin/gate.sh, so a
  * mutant of the gate in a worker tree is the gate the case runs), and the lockfile its repositories commit. */
-type Sandbox = Readonly<{
+export type Sandbox = Readonly<{
 	dir: string
 	cache: string
 	root: string
@@ -55,10 +55,22 @@ export const sandboxOf = (dir: string, checkout: CheckoutDir, lockfile: string):
 	lockfile
 })
 
-/** The files of a pnpm workspace with no package of its own, as every scenario's repository holds them. */
+/**
+ * The toolchain.config.ts of a scenario's repository: a toolchain of no decisions whose clones land on `trunk` under
+ * the lock `~/land.lock` (bin/land.sh), a plain object, since the repository installs no dev tools to import.
+ */
+export const toolchainConfig = (trunk: string): string =>
+	`export default { rejected: { rules: {}, diagnostics: {} }, exceptions: [], effectFree: [], packs: {}, bannedPackages: [], land: { lock: "~/land.lock", branch: "${trunk}" } }\n`
+
+/**
+ * The files of a pnpm workspace with no package of its own, as every scenario's repository holds them. Its trunk is a
+ * branch no case of the gate's pushes, so the push mode's landing check (bin/land.sh pre-push, land.test.ts's) passes
+ * every push the gate's cases send, main among them.
+ */
 const WORKSPACE: ReadonlyArray<readonly [path: string, text: string]> = [
 	[".gitignore", "node_modules\n"],
-	["pnpm-workspace.yaml", "packages: []\n"]
+	["pnpm-workspace.yaml", "packages: []\n"],
+	["toolchain.config.ts", toolchainConfig("trunk")]
 ]
 
 /**
@@ -143,7 +155,7 @@ const ran = Effect.fn("ran")(function* (
 })
 
 /** Runs a command that must succeed, answering its output. */
-const sh = Effect.fn("sh")(function* (
+export const sh = Effect.fn("sh")(function* (
 	sandbox: Sandbox,
 	cwd: string,
 	command: string,
@@ -170,7 +182,7 @@ const gated = Effect.fn("gated")(function* (sandbox: Sandbox, clone: string, scr
 })
 
 /** Stages every change of a working tree and commits it. */
-const committed = (sandbox: Sandbox, directory: string, message: string) =>
+export const committed = (sandbox: Sandbox, directory: string, message: string) =>
 	sh(sandbox, directory, "git", "add", "-A").pipe(
 		Effect.andThen(sh(sandbox, directory, "git", "commit", "-qm", message))
 	)
@@ -179,7 +191,7 @@ const committed = (sandbox: Sandbox, directory: string, message: string) =>
  * A repository of the files every scenario's has, committed on main: a workspace and its lockfile, node_modules under
  * .gitignore, and a readme naming it.
  */
-const repository = Effect.fn("repository")(function* (sandbox: Sandbox, name: string) {
+export const repository = Effect.fn("repository")(function* (sandbox: Sandbox, name: string) {
 	const fs = yield* FileSystem.FileSystem
 	const path = yield* Path.Path
 	const directory = path.join(sandbox.dir, name)

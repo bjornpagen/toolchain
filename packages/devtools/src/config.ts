@@ -47,6 +47,21 @@ export type PackName = keyof typeof Packs.fields
 export const packNamesOf = (packs: Packs): ReadonlyArray<PackName> =>
 	Arr.filter(Record.keys(Packs.fields), (name) => packs[name] !== undefined)
 
+/**
+ * How the repository's clones land on its trunk, which `toolchain-land` (bin/land.sh, `pnpm land`) reads: `lock`, the
+ * file every clone of the repository on the machine takes the push lock on, written from the home directory (`~/`);
+ * and `branch`, the branch a landing pushes to, which only a push holding the lock may update (the push gate's check,
+ * `toolchain-land pre-push`, and a local hub's pre-receive hook). A landing waits for the lock, rebases the clone's
+ * branch onto the remote's inside it and pushes, so the push gate (the clone's pre-push hook) runs once, on the commit
+ * that lands, which nothing else can move while it runs.
+ */
+export const Land = Schema.Struct({
+	lock: Schema.TemplateLiteral(["~/", Schema.NonEmptyString]),
+	branch: Schema.NonEmptyString
+})
+
+export type Land = typeof Land.Type
+
 /** The web pack's options, which a repository may build in a module of its own. */
 export type { WebOptions } from "#style/options.ts"
 
@@ -62,6 +77,8 @@ export type Toolchain = Readonly<{
 	/** The packages the repository bans beside the standard's, which no manifest, catalog or lockfile importer of it
 	 * may name (the workspace gate's banned-packages) and no file may import, the package or a subpath of it. */
 	bannedPackages: BannedPackages
+	/** How the repository's clones land on its trunk (`pnpm land`). */
+	land: Land
 }>
 
 /** A key a toolchain.config.ts may not write: every key no Toolchain holds, such as the `core` and `own` that the

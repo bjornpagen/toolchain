@@ -27,6 +27,7 @@
 		"dead-code": "fallow dead-code",
 		"dedupe": "pnpm dedupe --check",
 		"fuzz": "node packages/testing/scripts/fuzz.ts",
+		"land": "sh packages/devtools/bin/land.sh",
 		"test": "turbo run test"
 	},
 	"devDependencies": {

@@ -127,7 +127,8 @@ export const configOf = (c: Omit<Case, "file">): OxlintConfig =>
 			exceptions: [],
 			effectFree: c.effectFree,
 			packs: {},
-			bannedPackages: []
+			bannedPackages: [],
+			land: { lock: "~/.cache/toolchain-land/preset.lock", branch: "main" }
 		})
 	).lintConfig({
 		...c.root,

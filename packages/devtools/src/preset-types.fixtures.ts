@@ -51,7 +51,7 @@ const programOf = (checkout: string, cells: ReadonlyArray<Cell>): string =>
 		[
 			`import { toolchain } from "${checkout}/src/config.ts"`,
 			`import { standard } from "${checkout}/src/preset.ts"`,
-			"const { active } = standard(toolchain({ rejected: { rules: {}, diagnostics: {} }, exceptions: [], effectFree: [], packs: {}, bannedPackages: [] }))",
+			"const { active } = standard(toolchain({ rejected: { rules: {}, diagnostics: {} }, exceptions: [], effectFree: [], packs: {}, bannedPackages: [], land: { lock: '~/.cache/toolchain-land/preset.lock', branch: 'main' } }))",
 			...Arr.map(cells, (cell, at) => `export const case${at} = active({ "${cell.rule}": "off" })`),
 			""
 		],

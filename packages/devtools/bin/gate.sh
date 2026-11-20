@@ -10,7 +10,9 @@
 #                                   none): a push lands its commits together, so the tip is the commit that matters;
 #                                   once a day `pnpm check:full` instead, where the repository has one; then, in each
 #                                   package with a test.config.ts, `toolchain-test affected <what the remote held>`:
-#                                   every property with no cached pass, and its kills, at full width
+#                                   every property with no cached pass, and its kills, at full width. A push that
+#                                   updates the repository's trunk is refused first, before any check runs, unless
+#                                   it is a landing's, holding the push lock (`toolchain-land pre-push`, bin/land.sh)
 #   toolchain-gate run <index|commit> <command> [arguments]
 #                                   any command on what the index holds, or on a commit
 #
@@ -83,6 +85,7 @@ die() {
 }
 
 holder="$(dirname -- "$(realpath -- "$0")")/../../testing/scripts/hold.pl"
+land="$(dirname -- "$(realpath -- "$0")")/land.sh"
 root=$(git rev-parse --show-toplevel)
 git_dir=$(git rev-parse --absolute-git-dir)
 common_dir=$(git rev-parse --path-format=absolute --git-common-dir)
@@ -288,13 +291,14 @@ case $mode in
 		# Each line names a ref the push updates, the commit it sends and the commit the remote held; a commit of zeros
 		# sends nothing to check (a deletion). What the remote held is what `toolchain-test affected` counts changes
 		# against: the empty tree when the ref is new or the remote's commit is not here. With no lines at all (run by
-		# hand), the push is HEAD's, against its upstream.
+		# hand), the push is HEAD's, against its upstream. The lines are read once, for the landing's check and the gate.
+		sent=
+		[ -t 0 ] || sent=$(cat)
+		printf '%s' "$sent" | sh "$land" pre-push
 		empty=$(git hash-object -t tree /dev/null)
 		pushed=
-		lines=0
-		if [ ! -t 0 ]; then
+		if [ -n "$sent" ]; then
 			while read -r _ local_commit _ remote_commit; do
-				lines=$((lines + 1))
 				case $local_commit in
 					*[!0]*) ;;
 					*) continue ;;
@@ -304,10 +308,12 @@ case $mode in
 					*[!0]*) git cat-file -e "$remote_commit^{commit}" 2>/dev/null && base=$remote_commit ;;
 				esac
 				pushed="$pushed $local_commit:$base"
-			done
-		fi
-		[ "$lines" -gt 0 ] ||
+			done <<EOF
+$sent
+EOF
+		else
 			pushed="$(git rev-parse HEAD):$(git rev-parse --verify --quiet '@{upstream}' || printf '%s' "$empty")"
+		fi
 		origin=$(git --git-dir="$common_dir" config --get remote.origin.url || true)
 		for pair in $pushed; do
 			commit=${pair%%:*}

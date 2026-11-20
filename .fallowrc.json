@@ -2,6 +2,7 @@
 	"$schema": "./node_modules/fallow/schema.json",
 	"entry": [
 		"oxlint.ast.config.ts",
+		"packages/devtools/src/land.ts",
 		"packages/devtools/src/oxlint/fixtures.config.ts",
 		"packages/devtools/src/style/classes.config.ts",
 		"packages/testing/src/mutate/hook.ts",
