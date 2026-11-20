@@ -24,7 +24,8 @@ import { stalledShareOfCpu } from "#runner/limits.ts"
 
 /**
  * @formatConstant Linux's /proc/<pid>/stat (proc(5)): its fields after the command's closing parenthesis, from the third
- * (the state); the parent's pid the 4th; the process's user and system time the 14th and 15th, those of the children it
+ * (the state); the parent's pid the 4th; its major page faults (each a page read from storage or swap) the 12th; the
+ * process's user and system time the 14th and 15th, those of the children it
  * has waited for the 16th and 17th, and the moment it started the 22nd, since the machine booted; every time in clock
  * ticks of USER_HZ, which Linux fixes at 100 a second for every program whatever the kernel's own tick.
  * /proc/<pid>/task/<tid>/children lists the children each thread started.
@@ -32,6 +33,7 @@ import { stalledShareOfCpu } from "#runner/limits.ts"
 const PROC = {
 	firstField: 3,
 	parent: 4,
+	majorFaults: 12,
 	user: 14,
 	system: 15,
 	childrenUser: 16,
@@ -89,21 +91,102 @@ const childrenOf = (pid: string): ReadonlyArray<string> =>
 	)
 
 /**
- * The CPU (ms) of a process's live descendants started at or after `since` (ms since the machine booted), each one's own
- * and its waited-for children's: a descendant started earlier (a helper a need left running) is another case's, or no
- * case's, and counts with none of its own descendants either. A descendant reaped between two reads is counted in its
- * reaper's waited-for children from then on.
+ * A process's live descendants started at or after `since` (ms since the machine booted): a descendant started earlier
+ * (a helper a need left running) is another case's, or no case's, and none of its own descendants is either. A
+ * descendant reaped between two reads is counted in its reaper's waited-for children from then on.
  */
-const descendantsSince = (pid: string, since: number): number =>
-	Arr.reduce(childrenOf(pid), 0, (total, child) =>
+const descendantsOf = (pid: string, since: number): ReadonlyArray<string> =>
+	Arr.flatMap(childrenOf(pid), (child) =>
 		Option.match(statOf(child), {
-			onNone: () => total,
+			onNone: () => [],
 			onSome: (field) =>
-				field(PROC.started) + TICK_MILLIS < since
-					? total
-					: total + allOf(field) + descendantsSince(child, since)
+				field(PROC.started) + TICK_MILLIS < since ? [] : [child, ...descendantsOf(child, since)]
 		})
 	)
+
+/**
+ * What a process tree has done that a guard counts beside its CPU: `queued`, the milliseconds its processes waited on a
+ * runqueue while runnable, the machine's delay of work that wants to run; and `stored`, its storage work, the bytes it
+ * read from and wrote to storage and the pages it faulted in, a process blocked on storage or swap doing its work. Both
+ * only grow; a process blocked on something that does not come (a lock, a pipe, a stop) moves neither.
+ */
+export type Stir = Readonly<{ queued: number; stored: number }>
+
+/** No stir: a tree of no other process. */
+const noStir: Stir = { queued: 0, stored: 0 }
+
+/**
+ * @formatConstant Linux's /proc/<pid>/schedstat (Documentation/scheduler/sched-stats.rst): three numbers on a line, the
+ * time the process ran, the time it spent runnable on a runqueue waiting to run, both in nanoseconds, and the timeslices
+ * it ran; and /proc/<pid>/io (proc(5)): `name: value` lines, read_bytes and write_bytes the bytes it caused to be read
+ * from and written to storage.
+ */
+const SCHEDSTAT = {
+	waited: 1,
+	nanosPerMilli: 1_000_000,
+	read: "read_bytes",
+	written: "write_bytes"
+} as const
+
+/**
+ * A process tree's work as a guard reads it at once: the CPU (ms) its processes spent, each one's own and its
+ * waited-for children's, and what they did beside (Stir), read in one walk of the tree, so a reading costs its process
+ * no more than its CPU's reading did.
+ */
+export type Effort = Readonly<{ cpu: number; stir: Stir }>
+
+/** No effort: no process. */
+const noEffort: Effort = { cpu: 0, stir: noStir }
+
+/**
+ * What a process has done, its CPU and its stir: the time it waited to run while runnable, in milliseconds
+ * (/proc/<pid>/schedstat, its first thread's), and its storage work, the bytes it read from and wrote to storage and the
+ * pages it faulted in (/proc/<pid>/io, its stat's major faults); none for a process gone or a system without /proc.
+ */
+const effortOfProcess = (pid: string): Effort =>
+	Option.match(fieldsOf(pid), {
+		onNone: () => noEffort,
+		onSome: (field) => {
+			const queued = Option.match(
+				Option.flatMap(textOf(`/proc/${pid}/schedstat`), (text) =>
+					Arr.get(Str.split(" ")(Str.trim(text)), SCHEDSTAT.waited)
+				),
+				{ onNone: () => 0, onSome: (nanos) => Number(nanos) / SCHEDSTAT.nanosPerMilli }
+			)
+			const io = Option.match(textOf(`/proc/${pid}/io`), {
+				onNone: () => 0,
+				onSome: (text) =>
+					Arr.reduce(Str.split("\n")(text), 0, (total, line) => {
+						const [name, value] = Str.split(":")(line)
+						return name === SCHEDSTAT.read || name === SCHEDSTAT.written
+							? total + Number(value)
+							: total
+					})
+			})
+			const ticks = (at: number) => (field(at) * millisPerSecond) / PROC.ticksPerSecond
+			return {
+				cpu:
+					ticks(PROC.user) +
+					ticks(PROC.system) +
+					ticks(PROC.childrenUser) +
+					ticks(PROC.childrenSystem),
+				stir: { queued, stored: io + field(PROC.majorFaults) }
+			}
+		}
+	})
+
+/** The effort of processes, each one's summed. */
+const effortOfAll = (pids: ReadonlyArray<string>): Effort =>
+	Arr.reduce(pids, noEffort, (total, pid) => {
+		const one = effortOfProcess(pid)
+		return {
+			cpu: total.cpu + one.cpu,
+			stir: {
+				queued: total.stir.queued + one.stir.queued,
+				stored: total.stir.stored + one.stir.stored
+			}
+		}
+	})
 
 /** This process's own CPU so far, every thread's, in milliseconds: process.cpuUsage, a system call and no file. */
 export const ownCpu = (): number => {
@@ -258,6 +341,7 @@ const ownLocked = (): ReadonlyArray<string> => lockedFiles(processWaits().locks)
 export type Held = Readonly<{
 	runs: ReadonlyArray<number>
 	cpu: number
+	stir: Stir
 	enclosing: Option.Option<Enclosing>
 }>
 
@@ -268,8 +352,8 @@ export type Held = Readonly<{
  */
 export type Enclosing = Readonly<{ file: string; waiter: number; holder: number; run: number }>
 
-/** A wait for no lock: no holder, no CPU. */
-const unheld: Held = { runs: [], cpu: 0, enclosing: Option.none() }
+/** A wait for no lock: no holder, no CPU, no stir. */
+const unheld: Held = { runs: [], cpu: 0, stir: noStir, enclosing: Option.none() }
 
 /**
  * @formatConstant Linux's /proc/locks (proc(5)): a line a lock, its fields split by spaces: the lock's number and a
@@ -327,13 +411,6 @@ const lineageOf = (pid: number): ReadonlyArray<number> => [
 	pid,
 	...Option.match(parentOf(pid), { onNone: () => [], onSome: lineageOf })
 ]
-
-/** The CPU (ms) a process's tree has spent: its own, its waited-for children's, and every live descendant's. */
-const treeCpuOf = (pid: number): number =>
-	Option.match(statOf(String(pid)), {
-		onNone: () => 0,
-		onSome: (field) => allOf(field) + descendantsSince(String(pid), 0)
-	})
 
 /**
  * Whose work the wait of the work whose process is `work` waits on, for locks on `files` (Held): the processes holding
@@ -395,7 +472,10 @@ const heldOf = (files: ReadonlyArray<string>, work: number): Held => {
 				)
 		)
 	)
-	return { runs, cpu: Arr.reduce(runs, 0, (total, run) => total + treeCpuOf(run)), enclosing }
+	const effort = effortOfAll(
+		Arr.flatMap(runs, (run) => [String(run), ...descendantsOf(String(run), 0)])
+	)
+	return { runs, cpu: effort.cpu, stir: effort.stir, enclosing }
 }
 
 /** The wall milliseconds this process has spent in declared waits by `wall`. */
@@ -409,18 +489,16 @@ const ownWaited = (wall: number): number => waitedBy(processWaits().waits, wall)
  */
 export type TreeWork = Readonly<{
 	began: Reading
-	cpu: () => number
 	waited: (wall: number) => number
 	held: () => Held
+	effort: () => Effort
 }>
 
 /** A reading of `work` at `wall` on the live clock. */
-export const readingOf = (work: TreeWork, wall: number): Reading => ({
-	wall,
-	cpu: work.cpu(),
-	waited: work.waited(wall),
-	held: work.held()
-})
+export const readingOf = (work: TreeWork, wall: number): Reading => {
+	const effort = work.effort()
+	return { wall, cpu: effort.cpu, waited: work.waited(wall), held: work.held(), stir: effort.stir }
+}
 
 /** Whose work this process's lock waits wait on now. */
 const ownHeld = (): Held => heldOf(ownLocked(), process.pid)
@@ -440,28 +518,31 @@ export const ownWork = (wall: number, own: number): TreeWork => {
 			wall,
 			cpu: own + Option.match(self, { onNone: () => 0, onSome: reapedOf }),
 			waited: ownWaited(wall),
-			held: ownHeld()
+			held: ownHeld(),
+			stir: noStir
 		},
 		waited: ownWaited,
 		held: ownHeld,
-		cpu: () =>
-			ownCpu() +
-			Option.match(statOf("self"), {
-				onNone: () => 0,
-				onSome: (field) =>
-					reapedOf(field) +
-					Option.match(since, {
-						onNone: () => 0,
-						onSome: (at) => descendantsSince("self", at)
-					})
-			})
+		effort: () => {
+			const descendants = effortOfAll(
+				Option.match(since, { onNone: () => [], onSome: (at) => descendantsOf("self", at) })
+			)
+			return {
+				cpu:
+					ownCpu() +
+					Option.match(statOf("self"), { onNone: () => 0, onSome: reapedOf }) +
+					descendants.cpu,
+				stir: descendants.stir
+			}
+		}
 	}
 }
 
 /**
  * Another process's work, begun at `wall` on the live clock (the pool's watch of a worker): its own CPU, its waited-for
  * children's, and its live descendants' started since, the wall time `waited` says it spent in declared waits on work,
- * and whose work the locks `locked` says its lock waits wait for are held by, as it reported them. A process this one
+ * whose work the locks `locked` says its lock waits wait for are held by, as it reported them, and the stir of its
+ * descendants: the worker's own is a guard's process's too (its own guards wake it), judged by its CPU alone. A process this one
  * cannot read (none started, gone, or no /proc) reads as spending nothing, so its work never moves and a guard ends it
  * after one deadline of wall time outside its waits, as the live clock did.
  */
@@ -485,19 +566,23 @@ export const processWork = (
 			onNone: () => unheld,
 			onSome: (id) => heldOf(locked(), id)
 		})
+	const descendants = (): Effort =>
+		effortOfAll(
+			Option.getOrElse(
+				Option.zipWith(pid, since, (id, at) => descendantsOf(String(id), at)),
+				(): ReadonlyArray<string> => []
+			)
+		)
+	const effort = (): Effort => {
+		const theirs = descendants()
+		return { cpu: own() + theirs.cpu, stir: theirs.stir }
+	}
+	const began = effort()
 	return {
-		began: { wall, cpu: own(), waited: waited(wall), held: held() },
+		began: { wall, cpu: began.cpu, waited: waited(wall), held: held(), stir: began.stir },
 		waited,
 		held,
-		cpu: () =>
-			own() +
-			Option.match(
-				Option.zipWith(pid, since, (id, at) => descendantsSince(String(id), at)),
-				{
-					onNone: () => 0,
-					onSome: (descendants) => descendants
-				}
-			)
+		effort
 	}
 }
 
@@ -508,15 +593,18 @@ export const processWork = (
  * thread reaps only through a synchronous spawn, whose child it counts while the child lives.
  */
 export const heldWork = (wall: number, own: number): TreeWork => ({
-	began: { wall, cpu: own, waited: ownWaited(wall), held: ownHeld() },
+	began: { wall, cpu: own, waited: ownWaited(wall), held: ownHeld(), stir: noStir },
 	waited: ownWaited,
 	held: ownHeld,
-	cpu: () =>
-		ownCpu() +
-		Option.match(sinceBootAt(statOf("self"), wall), {
-			onNone: () => 0,
-			onSome: (at) => descendantsSince("self", at)
-		})
+	effort: () => {
+		const descendants = effortOfAll(
+			Option.match(sinceBootAt(statOf("self"), wall), {
+				onNone: () => [],
+				onSome: (at) => descendantsOf("self", at)
+			})
+		)
+		return { cpu: ownCpu() + descendants.cpu, stir: descendants.stir }
+	}
 })
 
 /**
@@ -543,9 +631,16 @@ export const judgeOf = (work: TreeWork, deadline: number): ((wall: number) => bo
 
 /**
  * A reading of a case's work: the live clock, the CPU its process tree has spent, and the wall time it has spent in
- * declared waits on work (Waits), all in milliseconds; and whose work its lock waits wait on (Held).
+ * declared waits on work (Waits), all in milliseconds; whose work its lock waits wait on (Held); and the stir of the
+ * processes of its tree but the guard's own (Stir).
  */
-export type Reading = Readonly<{ wall: number; cpu: number; waited: number; held: Held }>
+export type Reading = Readonly<{
+	wall: number
+	cpu: number
+	waited: number
+	held: Held
+	stir: Stir
+}>
 
 /**
  * Where a case stands against its deadline at a reading: working, with the window it is judged over next (the reading
@@ -556,10 +651,11 @@ export type Standing = Readonly<{ kind: "working"; window: Reading; readAgainAt:
 
 /**
  * Which of a guard's legs a piece of work is over its `deadline` milliseconds by, with what it measured: `spent`, its
- * tree's CPU since it began (`spent`, ms) at the deadline, a runaway; `stalled`, its tree's CPU and its lock holders'
- * moved by `moved` ms (`held` of it the holders') over a window of `over` ms of wall time outside its declared waits on
- * work, a whole deadline, which is less than the `progress` ms that shows progress there, so it waited on something
- * that did not come; `waited`, the window's wall time in declared waits on work besides, which the leg counts none of;
+ * tree's CPU since it began (`spent`, ms) at the deadline, a runaway; `stalled`, its tree's CPU moved by `moved` ms
+ * over a window of `over` ms of wall time outside its declared waits on work, a whole deadline, which is less than the
+ * `progress` ms that shows progress there, while no other process of its tree and no holder of a lock it waits for
+ * moved at all (othersMoved), so it waited on something that did not come; `waited`, the window's wall time in declared
+ * waits on work besides, which the leg counts none of;
  * or `deadlocked`, a lock it waits for held by a run that encloses the run that waits for it (Enclosing), so the wait
  * never ends.
  */
@@ -568,7 +664,6 @@ export type Overrun =
 	| Readonly<{
 			kind: "stalled"
 			moved: number
-			held: number
 			over: number
 			waited: number
 			progress: number
@@ -585,7 +680,7 @@ export const overrunText = (overrun: Overrun): string => {
 		case "spent":
 			return `its process tree spent ${seconds(overrun.spent)} of CPU, its bound ${seconds(overrun.deadline)}`
 		case "stalled":
-			return `its process tree's CPU moved ${(overrun.moved - overrun.held).toFixed(0)} ms and its lock holders' ${overrun.held.toFixed(0)} ms over ${seconds(overrun.over)} of wall time outside declared waits on work (${seconds(overrun.waited)} in them besides), under the ${overrun.progress.toFixed(0)} ms that shows progress over its bound of ${seconds(overrun.deadline)}`
+			return `its process tree's CPU moved ${overrun.moved.toFixed(0)} ms over ${seconds(overrun.over)} of wall time outside declared waits on work (${seconds(overrun.waited)} in them besides), under the ${overrun.progress.toFixed(0)} ms that shows progress over its bound of ${seconds(overrun.deadline)}, and no other process of its tree nor any holder of a lock it waits for ran, waited to run or did storage work`
 		case "deadlocked":
 			return `it waits for the lock on ${overrun.file}, which process ${String(overrun.waiter)} takes for it, and process ${String(overrun.holder)} holds it for process ${String(overrun.run)}, whose run encloses the one that waits, so it lets the lock go only after the wait has ended: the wait never ends`
 	}
@@ -602,17 +697,29 @@ const progressOver = (deadline: number): number =>
 /** Whether two readings' lock holders are the same runs. */
 const sameRuns = Arr.makeEquivalence(Equivalence.Number)
 
+/** Whether a tree stirred between two readings: it waited to run or did storage work, by any amount. */
+const stirred = (before: Stir, after: Stir): boolean =>
+	after.queued > before.queued || after.stored > before.stored
+
 /**
- * How far the work of a wait's lock holders moved between two readings, in milliseconds: their runs' CPU, when the same
- * runs hold at both; `progress` when they differ, since a holder let go or another took hold, so the queue moved.
+ * Whether the processes a case's work counts beside the guard's own moved at all between two readings: a holder of a
+ * lock it waits for let go or another took hold, or the holders' runs ran, waited to run or did storage work, or a
+ * process of its tree but the guard's own did. Any move counts, however small: each is work of a process the guard does
+ * not run in, which a process blocked on something that does not come never does, so no threshold stands between them;
+ * the guard's own process, whose own wake-ups to read its work wait to run and spend CPU, is judged by its CPU alone,
+ * against progressOver.
  */
-const heldMoved = (before: Held, after: Held, progress: number): number =>
-	sameRuns(before.runs, after.runs) ? Math.max(0, after.cpu - before.cpu) : progress
+const othersMoved = (before: Reading, after: Reading): boolean =>
+	!sameRuns(before.held.runs, after.held.runs) ||
+	after.held.cpu > before.held.cpu ||
+	stirred(before.held.stir, after.held.stir) ||
+	stirred(before.stir, after.stir)
 
 /**
  * A case's standing at `now`, having begun at `began`, its current window begun at `window`, under `deadline`
  * milliseconds. A window is whole once a deadline of its wall time lies outside declared waits on work; its work moves
- * by its tree's CPU and its lock holders' (heldMoved). A working case is read again when its window could next be
+ * by its tree's CPU, or by any move of the processes it counts beside the guard's own (othersMoved): a holder or a
+ * child the machine keeps waiting to run, or one blocked on storage or swap, is working. A working case is read again when its window could next be
  * whole, or sooner when its remaining CPU, spent at one CPU, would reach the deadline first. A case whose lock is held
  * by a run that encloses its own is deadlocked at the reading that finds it so.
  */
@@ -630,11 +737,10 @@ export const standingOf = (
 	const waited = now.waited - window.waited
 	const over = now.wall - window.wall - waited
 	const progress = progressOver(deadline)
-	const held = heldMoved(window.held, now.held, progress)
-	const moved = now.cpu - window.cpu + held
+	const moved = now.cpu - window.cpu
 	const whole = over >= deadline
-	if (whole && moved < progress) {
-		return { kind: "stalled", moved, held, over, waited, progress, deadline }
+	if (whole && moved < progress && !othersMoved(window, now)) {
+		return { kind: "stalled", moved, over, waited, progress, deadline }
 	}
 	return {
 		kind: "working",

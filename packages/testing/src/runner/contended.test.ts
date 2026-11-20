@@ -85,8 +85,9 @@ export const contendedLeaseWaits = property.exhaust(holders, {
 		},
 		{
 			file: "packages/testing/src/runner/work.ts",
-			original: "? Math.max(0, after.cpu - before.cpu) : progress",
-			replacement: "? 0 : progress",
+			original:
+				"\t!sameRuns(before.held.runs, after.held.runs) ||\n\tafter.held.cpu > before.held.cpu ||\n\tstirred(before.held.stir, after.held.stir) ||\n",
+			replacement: "",
 			why: "A lock wait's holders' work never moves for the waiter, so a worker behind a holder that works is judged by its own CPU, which waiting spends none of, and stalled at its open bound; the property fails behind the holder that works."
 		},
 		{

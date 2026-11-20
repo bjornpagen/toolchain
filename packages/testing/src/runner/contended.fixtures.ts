@@ -42,24 +42,27 @@ const argumentsText = Schema.encodeEffect(Schema.fromJsonString(Schema.Array(Sch
 
 /**
  * The program of the run that holds: it starts the holder of kernel locks with the arguments `holderArguments` states
- * (argumentsText), says `held` once the holder does, then ticks for HOLD_MILLIS, spending BURST_MILLIS of its own CPU
- * at each tick when it `works` and nothing when it does not, and exits, which ends the holder's standard input and lets
- * the slot go.
+ * (argumentsText), says `held` once the holder does, and exits HOLD_MILLIS later, which ends the holder's standard
+ * input and lets the slot go; meanwhile, when it `works`, it spends BURST_MILLIS of its own CPU at each tick, and when it
+ * does not, it does nothing at all: no tick wakes it, so neither it nor its holder runs, waits to run or does storage
+ * work until it exits, which is a holder stopped.
  */
 const holderProgram = (holderArguments: string, works: boolean): string =>
 	`const { spawn } = process.getBuiltinModule("node:child_process")
 const holder = spawn("perl", ${holderArguments}, { stdio: ["pipe", "pipe", "inherit"] })
 const cpu = () => { const used = process.cpuUsage(); return (used.user + used.system) / 1000 }
-const ends = Date.now() + ${String(HOLD_MILLIS)}
 const tick = () => {
-	if (Date.now() >= ends) { process.exit(0) }
-	if (${String(works)}) { const until = cpu() + ${String(BURST_MILLIS)}; while (cpu() < until) {} }
+	const until = cpu() + ${String(BURST_MILLIS)}
+	while (cpu() < until) {}
 	setTimeout(tick, ${String(TICK_MILLIS)})
 }
 let said = ""
 holder.stdout.on("data", (chunk) => {
 	said += chunk.toString("utf8")
-	if (said === "held\\n") { process.stdout.write("held\\n"); tick() }
+	if (said !== "held\\n") { return }
+	process.stdout.write("held\\n")
+	setTimeout(() => process.exit(0), ${String(HOLD_MILLIS)})
+	if (${String(works)}) { tick() }
 })`
 
 /**

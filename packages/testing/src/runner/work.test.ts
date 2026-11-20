@@ -25,22 +25,28 @@ import { Effect } from "effect"
 import { assert } from "#assert.ts"
 import { finite } from "#gen.ts"
 import { property } from "#property.ts"
+import { Scratch } from "#resources/scratch.ts"
 import { searchedAt, verdictKind } from "#runner/search.fixtures.ts"
 import {
 	childBurns,
+	childStir,
+	storedSizes,
 	childSeen,
 	deadlockedCase,
 	deadlocks,
 	INNER_SEED,
 	innerRun,
+	otherMoves,
 	runawayCase,
 	runaways,
 	SLOW_DEADLINE,
 	slowCase,
 	slowShapes,
 	STATED_CPU_SHORTFALL_MILLIS,
-	waitingCase
+	waitingCase,
+	windowOf
 } from "#runner/work.fixtures.ts"
+import { standingOf } from "#runner/work.ts"
 
 export const slowIsNotHung = property.exhaust(finite(slowShapes), {
 	box: "a slow case's bursts of CPU and stalls on the live clock, three shapes past a 3,000 ms deadline in wall time",
@@ -62,7 +68,7 @@ export const slowIsNotHung = property.exhaust(finite(slowShapes), {
 	kills: [
 		{
 			file: "packages/testing/src/runner/work.ts",
-			original: "\tif (whole && moved < progress) {",
+			original: "\tif (whole && moved < progress && !othersMoved(window, now)) {",
 			replacement: "\tif (whole) {",
 			why: "A case is hung once a deadline of wall time passes, as the live clock's old deadline judged it: the slow case, whose CPU moves and stays a tenth of its deadline, is hung; the slow-case property fails."
 		}
@@ -86,8 +92,8 @@ export const childWorkCounts = property.exhaust(finite(childBurns), {
 	kills: [
 		{
 			file: "packages/testing/src/runner/work.ts",
-			original: '\t\t\t\t\t\tonSome: (at) => descendantsSince("self", at)',
-			replacement: "\t\t\t\t\t\tonSome: () => 0",
+			original: "\t\t\t\t\tdescendants.cpu,\n",
+			replacement: "\t\t\t\t\t0,\n",
 			why: "A live child's CPU is left out until the child is reaped, so a case that waits on a working child spends nothing of its own and is stalled after a window; the child-work property fails."
 		}
 	]
@@ -140,7 +146,7 @@ export const deadlockIsHung = property.exhaust(finite(deadlocks), {
 	kills: [
 		{
 			file: "packages/testing/src/runner/work.ts",
-			original: "\tif (whole && moved < progress) {",
+			original: "\tif (whole && moved < progress && !othersMoved(window, now)) {",
 			replacement: "\tif (whole && moved < 0) {",
 			why: "No window is ever stalled: a case that waits spends nothing and never reaches its CPU budget, so it waits to its end and passes; the deadlock property fails."
 		}
@@ -177,6 +183,66 @@ export const declaredWaitIsNoStall = property.exhaust(finite(deadlocks), {
 				"\t\tEffect.flatMap(liveMillis, (wall) => Effect.sync(() => enterWait(wall))),\n\t\t() => effect,\n\t\t() => Effect.flatMap(liveMillis, (wall) => Effect.sync(() => leaveWait(wall)))",
 			replacement: "\t\tEffect.void,\n\t\t() => effect,\n\t\t() => Effect.void",
 			why: "waitingOn declares nothing, so a declared wait's wall time is a stall after all; the property fails."
+		}
+	]
+})
+
+export const othersMoveTheWork = property.exhaust(finite(otherMoves), {
+	box: "a whole window of a work whose own process spent no CPU, in which nothing else moved or one other process moved by the least a counter moves",
+	needs: {},
+	situations: [],
+	check: () => (move) =>
+		Effect.sync(() => {
+			const standing = standingOf({ began: windowOf(move).window, ...windowOf(move) })
+			assert.equal(standing.kind, move === "none" ? "stalled" : "working")
+		}),
+	oracle: {
+		kind: "specification",
+		name: "a window is stalled only when the work's own CPU did not move past progress and no other process it counts moved at all: a holder that let go or ran, waited to run or did storage work, or a child that waited to run or did storage work, keeps it working"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/runner/work.ts",
+			original: "\tif (whole && moved < progress && !othersMoved(window, now)) {",
+			replacement: "\tif (whole && moved < progress) {",
+			why: "The guard reads CPU alone in its window, as it did: a holder or a child the machine keeps waiting to run, or one blocked on storage or swap, is no move, so a wait behind it is stalled (land #4's contended red, 2026-11-20, load 230 to 330, memory pressure full near 20%); the property fails."
+		},
+		{
+			file: "packages/testing/src/runner/work.ts",
+			original: "\tafter.queued > before.queued || after.stored > before.stored",
+			replacement: "\tafter.queued > before.queued + 1 || after.stored > before.stored + 1",
+			why: "A move counts only past a threshold, so the least a counter moves, which a starved or paging process may move by in a window, is none; the property fails."
+		}
+	]
+})
+
+export const othersStirRead = property.exhaust(finite(storedSizes), {
+	box: "a child that writes a quarter of a mebibyte or a whole one and syncs it to storage, alive",
+	needs: { dir: Scratch.dir },
+	situations: [],
+	check:
+		({ dir }) =>
+		(bytes) =>
+			Effect.gen(function* () {
+				const directory = yield* dir
+				const stir = yield* childStir(directory, bytes)
+				assert.deepEqual(
+					{ stored: stir.stored >= bytes, queued: stir.queued >= 0 },
+					{ stored: true, queued: true }
+				)
+			}),
+	oracle: {
+		kind: "specification",
+		name: "a live process's stir reads its storage work and its runqueue wait from /proc: a child that synced some bytes to storage has stored them at least, and its wait to run is a count of milliseconds"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/runner/work.ts",
+			original: "\t\t\t\t\t\treturn name === SCHEDSTAT.read || name === SCHEDSTAT.written\n",
+			replacement: "\t\t\t\t\t\treturn false\n",
+			why: "A process's storage work is read as none, so a child or holder blocked on storage or swap is no move, and a wait behind it is stalled; the property fails."
 		}
 	]
 })

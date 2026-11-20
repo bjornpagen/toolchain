@@ -1,10 +1,10 @@
-import { Duration, Effect, String as Str } from "effect"
-import { type Gen, int, map } from "#gen.ts"
+import { Duration, Effect, Option, String as Str } from "effect"
+import { element, type Gen, int, map } from "#gen.ts"
 import { liveMillis, liveSleep, waitingOn } from "#live.ts"
 import { type Property, property } from "#property.ts"
 import { type Limits, runnerLimits } from "#runner/limits.ts"
 import { fullRun, type InnerRun } from "#runner/search.fixtures.ts"
-import { ownCpu, ownWork } from "#runner/work.ts"
+import { type Held, ownCpu, ownWork, type Reading, type Stir } from "#runner/work.ts"
 
 /**
  * What the meta-tests of a case's deadline as a budget of its work (runner/work.ts, case.ts guarded) share: inner
@@ -106,7 +106,7 @@ export const childSeen = (burnMillis: number): Effect.Effect<ChildSeen> =>
 				if (!Str.includes("\n")(said)) {
 					return
 				}
-				const treeCpu = work.cpu() - work.began.cpu
+				const treeCpu = work.effort().cpu - work.began.cpu
 				child.stdin.end()
 				resume(Effect.succeed({ childCpu: Number(Str.trim(said)), treeCpu }))
 			})
@@ -199,3 +199,127 @@ export const innerRun = (id: string, seed: number, deadline: number): InnerRun =
 	const limits: Limits = { ...runnerLimits, deadline, runs: 1, floor: 1, steered: 0 }
 	return { ...fullRun(id, seed), limits }
 }
+
+/**
+ * Which of the processes a guard counts beside its own moved in a window (runner/work.ts othersMoved): none, so the
+ * window is stalled; or one of them, the window then working: a holder of a lock the work waits for let go
+ * (`holders changed`), or the holders' runs ran, waited to run or did storage work, or a child of the work's process
+ * waited to run or did storage work.
+ */
+export type OtherMove =
+	| "none"
+	| "holders changed"
+	| "holders ran"
+	| "holders waited to run"
+	| "holders stored"
+	| "a child waited to run"
+	| "a child stored"
+
+/** Every move, one case each. */
+export const otherMoves: Gen<OtherMove> = (source) =>
+	source.draw(
+		element([
+			"none",
+			"holders changed",
+			"holders ran",
+			"holders waited to run",
+			"holders stored",
+			"a child waited to run",
+			"a child stored"
+		] as const)
+	)
+
+/** The deadline of the drawn windows, in milliseconds, and the amount each move moves by: one, the least a counter moves. */
+const WINDOW_DEADLINE = 1000
+
+/**
+ * A whole window of a work whose own process spent no CPU, its two readings, `move` the one thing that moved between
+ * them: what standingOf judges at its second reading.
+ */
+export const windowOf = (
+	move: OtherMove
+): Readonly<{ window: Reading; now: Reading; deadline: number }> => {
+	const quiet: Stir = { queued: 10, stored: 10 }
+	const held: Held = { runs: [7], cpu: 10, stir: quiet, enclosing: Option.none() }
+	const window: Reading = { wall: 0, cpu: 5, waited: 0, held, stir: quiet }
+	const moved = (stir: Stir, by: "queued" | "stored"): Stir =>
+		by === "queued" ? { ...stir, queued: stir.queued + 1 } : { ...stir, stored: stir.stored + 1 }
+	const later: Reading = { ...window, wall: WINDOW_DEADLINE }
+	switch (move) {
+		case "none":
+			return { window, now: later, deadline: WINDOW_DEADLINE }
+		case "holders changed":
+			return { window, now: { ...later, held: { ...held, runs: [8] } }, deadline: WINDOW_DEADLINE }
+		case "holders ran":
+			return {
+				window,
+				now: { ...later, held: { ...held, cpu: held.cpu + 1 } },
+				deadline: WINDOW_DEADLINE
+			}
+		case "holders waited to run":
+			return {
+				window,
+				now: { ...later, held: { ...held, stir: moved(quiet, "queued") } },
+				deadline: WINDOW_DEADLINE
+			}
+		case "holders stored":
+			return {
+				window,
+				now: { ...later, held: { ...held, stir: moved(quiet, "stored") } },
+				deadline: WINDOW_DEADLINE
+			}
+		case "a child waited to run":
+			return { window, now: { ...later, stir: moved(quiet, "queued") }, deadline: WINDOW_DEADLINE }
+		case "a child stored":
+			return { window, now: { ...later, stir: moved(quiet, "stored") }, deadline: WINDOW_DEADLINE }
+	}
+}
+
+/**
+ * The program of a child that writes as many bytes as its second argument says to the file its first argument names
+ * and syncs it to storage, then waits, alive, for its stdin to close.
+ */
+const STORING_PROGRAM = `const fs = process.getBuiltinModule("node:fs")
+const descriptor = fs.openSync(process.argv[1], "w")
+fs.writeSync(descriptor, Buffer.alloc(Number(process.argv[2]), 1))
+fs.fsyncSync(descriptor)
+fs.closeSync(descriptor)
+process.stdout.write("stored\\n")
+process.stdin.resume()
+process.stdin.on("end", () => process.exit(0))`
+
+/** How many bytes the storing child writes and syncs: a quarter of a mebibyte or a whole one. */
+export const storedSizes: Gen<number> = map(int(0, 1), (step) => (1 << 18) << (2 * step))
+
+/**
+ * Starts a child that stores `bytes` in a file under `directory` and syncs them, and once it says so, while it is alive,
+ * reads its stir as this process's guard reads a child of its work (ownWork); then ends it.
+ */
+export const childStir = (directory: string, bytes: number): Effect.Effect<Stir> =>
+	Effect.flatMap(liveMillis, (wall) =>
+		Effect.callback<Stir>((resume) => {
+			const work = ownWork(wall, ownCpu())
+			const child = process
+				.getBuiltinModule("node:child_process")
+				.spawn(
+					process.execPath,
+					["-e", STORING_PROGRAM, `${directory}/stored.bin`, String(bytes)],
+					{
+						stdio: ["pipe", "pipe", "ignore"]
+					}
+				)
+			let said = ""
+			child.stdout.on("data", (chunk: Buffer) => {
+				said += chunk.toString("utf8")
+				if (!Str.includes("\n")(said)) {
+					return
+				}
+				const { stir } = work.effort()
+				child.stdin.end()
+				resume(Effect.succeed(stir))
+			})
+			return Effect.sync(() => {
+				child.kill("SIGKILL")
+			})
+		})
+	)
