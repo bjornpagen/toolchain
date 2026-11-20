@@ -110,5 +110,6 @@ export default toolchain({
 	},
 	exceptions: [],
 	effectFree: [],
-	packs: { grizzle: true, properties: true }
+	packs: { grizzle: true, properties: true },
+	bannedPackages: []
 })

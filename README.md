@@ -14,6 +14,38 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: zod banned, lists only added to (2026-11-20)
+
+Bjorn, 2026-11-20: "zod is banned from this codebase, effect schema only", and "strengthen the linters even harder so
+this can never happen again", after a lane lifted alphatest-novus's zod ban for one package's tests with an override
+of a narrower `restrictedImports` list, added zod as a devDependency and imported `zod/v3`, which a ban of the path
+`zod` never matched. Before you move `vendor/toolchain` past this section:
+
+1. **Zod is the standard's.** The preset's `BANNED_PACKAGES` bans zod in every repository: every block's
+   `eslint/no-restricted-imports` holds the pattern `zod`, `zod/**`, whatever lists the repository passes. Delete the
+   repository's own zod ban (grizzle's `ZOD` and engineImports' zod entry, den's and the toolchain's `ZOD`,
+   superstarter's, edullm's `zod` pattern in importListsOf, alphatest-novus's `ZOD_BAN`).
+2. **toolchain.config.ts states `bannedPackages`,** the packages it bans beside the standard's (`[]` for none), each
+   `{ name, message }`: banned from every import, by pattern, and from every manifest.
+3. **The workspace gate's banned-packages law** refuses a dependency, devDependency, peerDependency or
+   optionalDependency of the root's or any workspace package's package.json, a catalog or named catalog entry of
+   pnpm-workspace.yaml, and a lockfile importer's direct edge, that installs a banned package, by name or under an
+   `npm:` alias. A third party's own edges (the lockfile's packages and snapshots: zod as the AI SDK's or Drizzle's
+   peer) are out of its scope. No exception names it. alphatest-novus's catalog entry and devDependency for zod go.
+4. **An override names no rule the preset builds from lists.** `eslint/no-restricted-imports`,
+   `no-restricted-globals`, `no-restricted-properties` and `import/no-unassigned-import`, under any prefix oxlint
+   resolves (none, `eslint/`, `typescript/`, `@typescript-eslint/`), are a type error in an override's rules
+   (ActiveRules), and `restrictedImports` and `restrictedProperties` are no longer exported. A block that added lists
+   becomes an entry of lintConfig's new `restrictions` (`[]` for none): `{ paths, restrictedImports,
+   restrictedGlobals, restrictedProperties }`, its paths repository-relative, a directory written with its trailing
+   `/` (`packages/engine/` for `packages/engine/**`), a file without. A restriction only adds: its files keep the shared
+   bans, the root lists and the environment and Effect-free bans of their place, and a file several restrictions name
+   takes the last one's lists whole (one of empty lists holds its files to the root's alone). A block that turned a
+   list off, or narrowed it below the root's, has no spelling now: move what the root bans that some files may use out
+   of the root's lists into restrictions over the files that may not (edullm's IMPORT_OWNERS: the root's clerk policy
+   becomes a restriction over `./`, its narrower scopes after it), and refactor what needs a relative import
+   (edullm's next.config.ts).
+
 ## Consumer migration: the dependency bump of 2026-11-20
 
 The catalog moves to `@effect/tsgo` 0.73.2, `tsrs` 7.1.0-beta.tsrs3 (tsrs's own numbering of its TypeScript 7.1.0-beta

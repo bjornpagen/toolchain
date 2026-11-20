@@ -2,7 +2,7 @@
 
 import { Array as Arr, Console, Effect, FileSystem, Option, Record, String as Str } from "effect"
 import { packNamesOf } from "#config.ts"
-import { STANDARD_GLOBS } from "#preset.ts"
+import { BANNED_PACKAGES, STANDARD_GLOBS } from "#preset.ts"
 import { invocationOf } from "#shared/arguments.ts"
 import {
 	CONFIG_FILE,
@@ -15,6 +15,7 @@ import { type Finding, renderFindings, statusOf } from "#shared/finding.ts"
 import { gitFilesUnder } from "#shared/git.ts"
 import { relativeTo, Repository } from "#shared/repository.ts"
 import { runDevtool } from "#shared/run.ts"
+import { bannedPackageFindings, LOCKFILE, WORKSPACE_MANIFEST } from "#workspace/banned-packages.ts"
 import { deadPathFindings } from "#workspace/dead-paths.ts"
 import { tsOnlyExtensionFindings } from "#workspace/extensions.ts"
 import { parentSnapshot } from "#workspace/parent.ts"
@@ -36,7 +37,9 @@ import { tsconfigFindings, workspaceFixtureMismatches } from "#workspace/tsconfi
  * TypeScript file under no workspace package to a path the root tsconfig's include names, which the root's typecheck
  * and its lint (`toolchain-oxlint-root`) both read, and the root's oxlint script to that lint (root-files), and the
  * test system's gates (workspace/test-system.ts): no worker flag in a script, and, in a repository that runs the
- * properties pack, no Vitest configuration, no plant and no numbered shard of a test module.
+ * properties pack, no Vitest configuration, no plant and no numbered shard of a test module; and the banned-packages
+ * law (workspace/banned-packages.ts): no manifest, catalog or lockfile importer of the repository names a banned
+ * package, which no exception excuses.
  * The repository's decisions come from its toolchain.config.ts: its rejected diagnostics, its Effect-free packages, and
  * its exceptions, which excuse the files they list from one of these rules and name no other. `--fixtures` runs the
  * tsconfig gate against its fixture workspaces instead. Exit status 1 means findings, 2 that the gate itself failed.
@@ -163,10 +166,32 @@ const checkRepository = Effect.gen(function* () {
 		tsconfig: rootTsconfig.text,
 		manifest
 	})
-	const findings = Arr.filter(
-		[...tsconfigs, ...extensions, ...testSystem, ...deadPaths, ...rootTasks, ...rootFiles],
-		(finding) => !isExcepted(config.exceptions, root, finding)
+	const optionalText = (path: string) =>
+		Effect.flatMap(
+			fs.exists(`${root}/${path}`).pipe(Effect.mapError(failureFrom(`${path} could not be read`))),
+			(present) => (present ? Effect.asSome(read(path)) : Effect.succeed(Option.none<string>()))
+		)
+	const manifestPaths = Arr.dedupe([
+		ROOT_MANIFEST,
+		...Arr.map(packages, (directory) => `${relativeTo(root)(directory)}/${ROOT_MANIFEST}`)
+	])
+	const manifests = yield* Effect.forEach(manifestPaths, (path) =>
+		Effect.map(read(path), (text) => ({ path, text }))
 	)
+	const bannedPackages = yield* bannedPackageFindings({
+		root,
+		banned: [...BANNED_PACKAGES, ...config.bannedPackages],
+		manifests,
+		workspace: yield* optionalText(WORKSPACE_MANIFEST),
+		lockfile: yield* optionalText(LOCKFILE)
+	})
+	const findings = [
+		...Arr.filter(
+			[...tsconfigs, ...extensions, ...testSystem, ...deadPaths, ...rootTasks, ...rootFiles],
+			(finding) => !isExcepted(config.exceptions, root, finding)
+		),
+		...bannedPackages
+	]
 	yield* Console.log(renderFindings({ tool: "workspace-gate", root, findings }))
 	return statusOf(findings)
 })

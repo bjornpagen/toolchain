@@ -45,6 +45,14 @@ export const Exceptions = Schema.Array(
 
 export type Exceptions = typeof Exceptions.Type
 
+/** Packages a repository bans beside the standard's (the preset's BANNED_PACKAGES), each by its name on npm and why,
+ * which every refusal quotes: a repository adds to the standard's and never lifts one. */
+export const BannedPackages = Schema.Array(
+	Schema.Struct({ name: Schema.NonEmptyString, message: Schema.NonEmptyString })
+)
+
+export type BannedPackages = typeof BannedPackages.Type
+
 /** The workspace packages that use no Effect, by repository-relative directory without a trailing "/": each runs
  * the Effect-free lint rules, its tsconfig extends the dev tools' Effect-free base, and it depends on no `effect`. */
 export const EffectFree = Schema.Array(Schema.String)

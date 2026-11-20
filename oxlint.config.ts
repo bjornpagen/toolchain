@@ -12,19 +12,14 @@ import toolchain from "#toolchain.config.ts"
 
 const { active, lintConfig } = standard(toolchain)
 
-const ZOD = {
-	name: "zod",
-	message:
-		"Zod is banned. Effect Schema admits a foreign value once at its boundary, into a type that carries the proof."
-} as const
-
 /** The toolchain repository's lists for the shared standard; everything else comes from the dev tools' preset. */
 export default defineConfig(
 	lintConfig({
 		ignorePatterns: ["packages/devtools/src/*/fixtures/**", "out/**"],
-		restrictedImports: { paths: [ZOD], patterns: [] },
+		restrictedImports: { paths: [], patterns: [] },
 		restrictedGlobals: [],
 		restrictedProperties: [],
+		restrictions: [],
 		unassignedImports: [],
 		environment: { library: [], readers: [] },
 		ceremony: ["packages/devtools/**"],

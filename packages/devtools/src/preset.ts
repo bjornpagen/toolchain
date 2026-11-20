@@ -20,6 +20,7 @@ import {
 	TAILWIND_PLUGIN_PATH
 } from "#style/classes.ts"
 import type { AppStyleOptions } from "#style/options.ts"
+import type { BannedPackages } from "#workspace/rules.ts"
 
 /**
  * The shared lint preset. A repository's root oxlint.config.ts calls `standard` with its toolchain.config.ts, which
@@ -38,8 +39,23 @@ type PartsOf<T extends Toolchain> = "core" | Extract<keyof T["packs"], PackName>
 /** The rules a toolchain rejects, by name. */
 type RejectedOf<T extends Toolchain> = Extract<keyof T["rejected"]["rules"], string>
 
-/** A block's rules: naming one of the repository's rejected rules is a type error. */
-export type ActiveRules<Rejected extends string> = DummyRuleMap & Partial<Record<Rejected, never>>
+/** The rules the preset builds from a repository's lists, by the name oxlint gives each after its plugin's prefix. */
+type ListedName =
+	| "no-restricted-globals"
+	| "no-restricted-imports"
+	| "no-restricted-properties"
+	| "no-unassigned-import"
+
+/**
+ * A block's rules: naming one of the repository's rejected rules is a type error, and so is naming a rule the preset
+ * builds from lists, spelled any way oxlint reads it (`eslint/no-restricted-imports`, `no-restricted-imports`,
+ * `typescript/no-restricted-imports`, `@typescript-eslint/no-restricted-imports` are one rule to oxlint): a block that
+ * set one would replace the lists on its files, the shared bans and the repository's own with them, so a block adds to
+ * the lists only through a restriction (Project's `restrictions`), which keeps them.
+ */
+export type ActiveRules<Rejected extends string> = DummyRuleMap &
+	Partial<Record<Rejected, never>> &
+	Readonly<Record<`${string}${ListedName}`, never>>
 
 /** oxlint's built-in plugins, in the order a configuration lists them, each with the part that runs it. */
 const PLUGINS = [
@@ -252,10 +268,30 @@ const EFFECT_METRICS_MESSAGE =
 const PLATFORM_INDEX_MESSAGE =
 	'Import each platform module from its own path (`import * as NodeServices from "@effect/platform-node/NodeServices"`): the index loads every platform module, its Redis client\'s 647 among them, about 0.39 s of CPU in every process that imports it.'
 
-/** eslint/no-restricted-imports with a project's lists and the shared bans: the relative-import ban, Effect's metrics
- * and the platform's index. A project's exception block that narrows the lists for some files calls it too, so the
- * shared bans stay on there. */
-export const restrictedImports = (lists: RestrictedImports): DummyRule => [
+/**
+ * The packages every repository bans (Bjorn, 2026-11-20: "zod is banned from this codebase, effect schema only"): no
+ * file imports one or a subpath of it, and no manifest, catalog or lockfile importer names one (the workspace gate's
+ * banned-packages). A repository adds its own in toolchain.config.ts's bannedPackages and lifts none of these.
+ */
+export const BANNED_PACKAGES: BannedPackages = [
+	{
+		name: "zod",
+		message:
+			'Zod is banned in every repository: Effect Schema is the one schema library. Admit a foreign value once, at its boundary, with Effect Schema (`import { Schema } from "effect"`).'
+	}
+]
+
+/** A banned package's import ban: the package and every subpath of it (`zod`, `zod/v3`, `zod/v4/core`), where a ban
+ * of the path `zod` alone let `zod/v3` through (alphatest-novus, 2026-11-20). */
+const bannedImportOf = (banned: BannedPackages[number]): RestrictedPattern => ({
+	group: [banned.name, `${banned.name}/**`],
+	message: banned.message
+})
+
+/** eslint/no-restricted-imports with a block's lists and the shared bans: the banned packages, the relative-import
+ * ban, Effect's metrics and the platform's index. Every block the preset makes builds the rule here, and no block of a
+ * repository's may name it (ActiveRules), so no file is held to a list without the shared bans. */
+const restrictedImports = (banned: BannedPackages, lists: RestrictedImports): DummyRule => [
 	"error",
 	{
 		paths: [
@@ -263,7 +299,7 @@ export const restrictedImports = (lists: RestrictedImports): DummyRule => [
 			{ name: "effect/Metric", message: EFFECT_METRICS_MESSAGE },
 			{ name: "@effect/platform-node", message: PLATFORM_INDEX_MESSAGE }
 		],
-		patterns: [...lists.patterns, RELATIVE_IMPORTS]
+		patterns: [...lists.patterns, ...Arr.map(banned, bannedImportOf), RELATIVE_IMPORTS]
 	}
 ]
 
@@ -276,9 +312,8 @@ const EFFECT_METRICS: ReadonlyArray<RestrictedProperty> = Arr.map(
 	(property) => ({ object: "Metric", property, message: EFFECT_METRICS_MESSAGE })
 )
 
-/** eslint/no-restricted-properties with a project's list and the shared metrics ban. A project's exception block
- * that narrows the list for some files calls it too, so the metrics ban stays on there. */
-export const restrictedProperties = (list: ReadonlyArray<RestrictedProperty>): DummyRule => [
+/** eslint/no-restricted-properties with a block's list and the shared metrics ban. */
+const restrictedProperties = (list: ReadonlyArray<RestrictedProperty>): DummyRule => [
 	"error",
 	...list,
 	...EFFECT_METRICS
@@ -323,22 +358,121 @@ export type Environment = Readonly<{
 const isWithin = (path: string, directory: string): boolean =>
 	path === directory || Str.startsWith(`${directory}/`)(path)
 
-/** The library's directories that are Effect-free code: each library directory within an Effect-free one, and each
- * Effect-free directory within a library one. */
-const effectFreeLibraryOf = (
-	library: ReadonlyArray<string>,
-	effectFree: ReadonlyArray<string>
-): ReadonlyArray<string> =>
-	Arr.dedupe(
-		Arr.flatMap(library, (directory) =>
-			Arr.filterMap(effectFree, (free): Result.Result<string, void> => {
-				if (isWithin(directory, free)) {
-					return Result.succeed(directory)
-				}
-				return isWithin(free, directory) ? Result.succeed(free) : Result.failVoid
-			})
-		)
+/** A block's lists: the imports, globals and properties it bans. */
+export type Lists = Readonly<{
+	restrictedImports: RestrictedImports
+	restrictedGlobals: ReadonlyArray<RestrictedGlobal>
+	restrictedProperties: ReadonlyArray<RestrictedProperty>
+}>
+
+/**
+ * Lists a repository adds on some of its files, beside its root lists. A restriction only adds: every file it names
+ * keeps the shared bans, the repository's root lists and the environment and Effect-free bans its place holds it to,
+ * and takes the restriction's lists beside them. A file several restrictions name takes the last one's lists whole, as
+ * a scope narrower than another restates what of the wider one's it keeps: a restriction of empty lists holds its files
+ * to the root's alone.
+ */
+export type Restriction = Lists &
+	Readonly<{
+		/** Repository-relative paths: one ending in "/" names a directory and every file beneath it, any other one file. */
+		paths: ReadonlyArray<string>
+	}>
+
+/** The files a block holds, as the preset reads the paths a repository states: every file, a directory and every file
+ * beneath it, or one file. Paths meet exactly, where globs do not, so the preset knows every place a restriction's
+ * files share with the library and the Effect-free code, and holds each to both. */
+type Area = Readonly<
+	{ kind: "everything" } | { kind: "directory"; path: string } | { kind: "file"; path: string }
+>
+
+/** A directory as toolchain.config.ts's effectFree and the environment's library name it: "." is every file. */
+const directoryArea = (path: string): Area =>
+	path === "." ? { kind: "everything" } : { kind: "directory", path }
+
+/** A restriction's path: one ending in "/" names a directory, any other one file. */
+const restrictedArea = (path: string): Area =>
+	Str.endsWith("/")(path) ? directoryArea(Str.slice(0, -1)(path)) : { kind: "file", path }
+
+/** Whether every file of `inner` lies in `outer`. */
+const liesIn = (inner: Area, outer: Area): boolean => {
+	switch (outer.kind) {
+		case "everything":
+			return true
+		case "directory":
+			return inner.kind !== "everything" && isWithin(inner.path, outer.path)
+		case "file":
+			return inner.kind === "file" && inner.path === outer.path
+	}
+}
+
+/** The files two lists of areas both hold: of each pair, the area that lies in the other. */
+const meet = (left: ReadonlyArray<Area>, right: ReadonlyArray<Area>): ReadonlyArray<Area> =>
+	Arr.flatMap(left, (outer) =>
+		Arr.flatMap(right, (inner) => {
+			if (liesIn(outer, inner)) {
+				return [outer]
+			}
+			return liesIn(inner, outer) ? [inner] : []
+		})
 	)
+
+/** An area's files as one oxlint glob. */
+const globOfArea = (area: Area): string => {
+	switch (area.kind) {
+		case "everything":
+			return "**"
+		case "directory":
+			return `${area.path}/**`
+		case "file":
+			return area.path
+	}
+}
+
+/** What a place holds a file's lists to beyond its block's: the environment bans (the library, outside its sanctioned
+ * readers) and Math.random's (the Effect-free code). */
+type Region = Readonly<{ environment: boolean; effectFree: boolean }>
+
+const PLAIN: Region = { environment: false, effectFree: false }
+
+/** One place the preset holds to a region, in the order it writes their blocks: a later place wins on the files it
+ * shares with an earlier one, so the library's Effect-free code follows the library and the readers follow both. */
+type Place = Readonly<{ areas: ReadonlyArray<Area>; region: Region }>
+
+/** The places of a repository's library and Effect-free code, beyond every file's. */
+const placesOf = (
+	effectFree: ReadonlyArray<string>,
+	environment: Environment
+): ReadonlyArray<Place> => {
+	const free = Arr.map(effectFree, directoryArea)
+	const library = Arr.map(environment.library, directoryArea)
+	const readers = Arr.map(environment.readers, (path): Area => ({ kind: "file", path }))
+	const freeReaders = meet(readers, free)
+	return [
+		{ areas: free, region: { environment: false, effectFree: true } },
+		{ areas: library, region: { environment: true, effectFree: false } },
+		{ areas: meet(library, free), region: { environment: true, effectFree: true } },
+		{
+			areas: Arr.filter(readers, (reader) => !Arr.some(free, (area) => liesIn(reader, area))),
+			region: PLAIN
+		},
+		{ areas: freeReaders, region: { environment: false, effectFree: true } }
+	]
+}
+
+/** The lists a block may state, each by the rule it sets. */
+const LISTED = {
+	restrictedGlobals: "eslint/no-restricted-globals",
+	restrictedImports: "eslint/no-restricted-imports",
+	restrictedProperties: "eslint/no-restricted-properties"
+} as const satisfies Readonly<Record<keyof Lists, string>>
+
+type Listed = keyof typeof LISTED
+
+const NO_LISTS: Lists = {
+	restrictedImports: { paths: [], patterns: [] },
+	restrictedGlobals: [],
+	restrictedProperties: []
+}
 
 /** The built-in rules the preset builds from a repository's lists. */
 type ListedRule =
@@ -595,27 +729,29 @@ const testingAdds = (tests: Tests): TestingAdds => {
 
 /** What a repository states about itself in its oxlint.config.ts, beside its toolchain. Every field is required: a
  * repository with nothing to say states it empty. Globs are relative to the repository root. */
-export type Project<Rejected extends string, P extends Part> = Readonly<{
-	/** Paths oxlint never reads: vendored code, generated code, fixtures. */
-	ignorePatterns: ReadonlyArray<string>
-	restrictedImports: RestrictedImports
-	restrictedGlobals: ReadonlyArray<RestrictedGlobal>
-	restrictedProperties: ReadonlyArray<RestrictedProperty>
-	/** The side-effect imports a project allows (`server-only`, stylesheets). */
-	unassignedImports: ReadonlyArray<string>
-	/** The library that reads no environment, and its sanctioned readers; both empty where there is no library to
-	 * guard. */
-	environment: Environment
-	/** Tests, scripts and bench: no-shadow guards long passes and is ceremony there. */
-	ceremony: ReadonlyArray<string>
-	/** The shared plugin's names for the parts the repository runs, one options object per rule that takes them. */
-	plugin: PluginOptions<P>
-	/** The repository's own oxlint plugins, each made by `ownPlugin`. */
-	ownPlugins: ReadonlyArray<OwnPlugin>
-	tests: Tests
-	/** The project's exceptions, in order; later blocks win. */
-	overrides: ReadonlyArray<Readonly<{ files: ReadonlyArray<string>; rules: ActiveRules<Rejected> }>>
-}>
+export type Project<Rejected extends string, P extends Part> = Lists &
+	Readonly<{
+		/** Paths oxlint never reads: vendored code, generated code, fixtures. */
+		ignorePatterns: ReadonlyArray<string>
+		/** The lists the repository adds on some of its files, in order, beside its root lists, which hold every file. */
+		restrictions: ReadonlyArray<Restriction>
+		/** The side-effect imports a project allows (`server-only`, stylesheets). */
+		unassignedImports: ReadonlyArray<string>
+		/** The library that reads no environment, and its sanctioned readers; both empty where there is no library to
+		 * guard. */
+		environment: Environment
+		/** Tests, scripts and bench: no-shadow guards long passes and is ceremony there. */
+		ceremony: ReadonlyArray<string>
+		/** The shared plugin's names for the parts the repository runs, one options object per rule that takes them. */
+		plugin: PluginOptions<P>
+		/** The repository's own oxlint plugins, each made by `ownPlugin`. */
+		ownPlugins: ReadonlyArray<OwnPlugin>
+		tests: Tests
+		/** The project's exceptions, in order; later blocks win. A block names no rule the preset builds from lists. */
+		overrides: ReadonlyArray<
+			Readonly<{ files: ReadonlyArray<string>; rules: ActiveRules<Rejected> }>
+		>
+	}>
 
 /** The standard bound to one repository's toolchain: `active` types an exception block's rules against what the
  * repository rejects, and `lintConfig` builds its oxlint configuration. */
@@ -639,6 +775,7 @@ export const standard = <const T extends Toolchain>(
 	const parts: ReadonlyArray<Part> = ["core", ...packNamesOf(toolchain.packs)]
 	const runs = (part: Part): boolean => Arr.contains(parts, part)
 	const off: DummyRuleMap = Record.map(toolchain.rejected.rules, (): DummyRule => "off")
+	const banned: BannedPackages = [...BANNED_PACKAGES, ...toolchain.bannedPackages]
 	const plugins = Arr.map(
 		Arr.filter(PLUGINS, (builtIn) => runs(builtIn.part)),
 		(builtIn) => builtIn.name
@@ -707,61 +844,61 @@ export const standard = <const T extends Toolchain>(
 		lintConfig: (project) => {
 			const names: Readonly<Record<string, unknown>> = project.plugin
 			const testing = testingAdds(project.tests)
-			const { library, readers } = project.environment
-			const globals = ["error", ...project.restrictedGlobals, TEMPORAL] as const
-			/** The readers in Effect-free code, where node/no-process-env stays on, as everywhere there. */
-			const freeReaders = Arr.filter(readers, (reader) =>
-				Arr.some(toolchain.effectFree, (directory) => isWithin(reader, directory))
-			)
-			/** The library's blocks, after the Effect-free code's: the environment bans on its directories beside the
-			 * repository's own lists, which a block's lists replace, so each block restates them; Math.random's ban again
-			 * where the library is Effect-free code; and the repository's lists alone in the sanctioned readers. */
-			const environment: ReadonlyArray<OxlintOverride> = [
-				...block(
-					Arr.map(library, (directory) => `${directory}/**`),
-					{
-						"node/no-process-env": "error",
-						"eslint/no-restricted-globals": [...globals, ...ENVIRONMENT_GLOBALS],
-						"eslint/no-restricted-imports": restrictedImports({
-							paths: [...project.restrictedImports.paths, ...ENVIRONMENT_IMPORTS.paths],
-							patterns: project.restrictedImports.patterns
-						}),
-						"eslint/no-restricted-properties": restrictedProperties([
-							...project.restrictedProperties,
-							...ENVIRONMENT_PROPERTIES
-						])
-					}
-				),
-				...block(
-					Arr.map(
-						effectFreeLibraryOf(library, toolchain.effectFree),
-						(directory) => `${directory}/**`
-					),
-					{
-						"eslint/no-restricted-properties": restrictedProperties([
-							...project.restrictedProperties,
-							...ENVIRONMENT_PROPERTIES,
-							MATH_RANDOM
-						])
-					}
-				),
-				...block(
-					Arr.filter(readers, (reader) => !Arr.contains(freeReaders, reader)),
-					{
-						"node/no-process-env": "off",
-						"eslint/no-restricted-globals": [...globals],
-						"eslint/no-restricted-imports": restrictedImports(project.restrictedImports),
-						"eslint/no-restricted-properties": restrictedProperties(project.restrictedProperties)
-					}
-				),
-				...block(freeReaders, {
-					"eslint/no-restricted-globals": [...globals],
-					"eslint/no-restricted-imports": restrictedImports(project.restrictedImports),
-					"eslint/no-restricted-properties": restrictedProperties([
+			const places = placesOf(toolchain.effectFree, project.environment)
+			/** The lists' rules in a region: each the root's list, the region's bans and `lists`' own. */
+			const listedRules = (lists: Lists, region: Region): DummyRuleMap => {
+				const { environment, effectFree } = region
+				const rules: { readonly [L in Listed]: DummyRule } = {
+					restrictedGlobals: [
+						"error",
+						...project.restrictedGlobals,
+						TEMPORAL,
+						...(environment ? ENVIRONMENT_GLOBALS : []),
+						...lists.restrictedGlobals
+					],
+					restrictedImports: restrictedImports(banned, {
+						paths: [
+							...project.restrictedImports.paths,
+							...(environment ? ENVIRONMENT_IMPORTS.paths : []),
+							...lists.restrictedImports.paths
+						],
+						patterns: [
+							...project.restrictedImports.patterns,
+							...(environment ? ENVIRONMENT_IMPORTS.patterns : []),
+							...lists.restrictedImports.patterns
+						]
+					}),
+					restrictedProperties: restrictedProperties([
 						...project.restrictedProperties,
-						MATH_RANDOM
+						...(environment ? ENVIRONMENT_PROPERTIES : []),
+						...(effectFree ? [MATH_RANDOM] : []),
+						...lists.restrictedProperties
 					])
-				})
+				}
+				return Record.fromEntries(
+					Arr.map(Record.keys(LISTED), (listed) => [LISTED[listed], rules[listed]] as const)
+				)
+			}
+			/** A block's lists on its areas: their rules on every file of them, then again on each place they share with
+			 * the library or the Effect-free code, held to that place's bans too. */
+			const listBlocks = (
+				areas: ReadonlyArray<Area>,
+				lists: Lists
+			): ReadonlyArray<OxlintOverride> =>
+				Arr.flatMap([{ areas, region: PLAIN }, ...places], (place) =>
+					block(
+						Arr.dedupe(Arr.map(meet(areas, place.areas), globOfArea)),
+						listedRules(lists, place.region)
+					)
+				)
+			/** The root's lists on every place beyond every file's, and each restriction's on its paths, in order. */
+			const lists: ReadonlyArray<OxlintOverride> = [
+				...Arr.flatMap(places, (place) =>
+					block(Arr.dedupe(Arr.map(place.areas, globOfArea)), listedRules(NO_LISTS, place.region))
+				),
+				...Arr.flatMap(project.restrictions, (restriction) =>
+					listBlocks(Arr.map(restriction.paths, restrictedArea), restriction)
+				)
 			]
 			return {
 				plugins: [...plugins],
@@ -782,16 +919,14 @@ export const standard = <const T extends Toolchain>(
 				ignorePatterns: [...project.ignorePatterns],
 				rules: {
 					...generic,
-					"eslint/no-restricted-globals": [...globals],
-					"eslint/no-restricted-imports": restrictedImports(project.restrictedImports),
-					"eslint/no-restricted-properties": restrictedProperties(project.restrictedProperties),
-					"import/no-unassigned-import": ["error", { allow: [...project.unassignedImports] }],
 					...pluginRules(names, "every file"),
 					...testing.everyFile,
 					...Arr.reduce(project.ownPlugins, {}, (rules: DummyRuleMap, own): DummyRuleMap => ({
 						...rules,
 						...own.rules
 					})),
+					...listedRules(NO_LISTS, PLAIN),
+					"import/no-unassigned-import": ["error", { allow: [...project.unassignedImports] }],
 					...off
 				},
 				overrides: [
@@ -799,18 +934,9 @@ export const standard = <const T extends Toolchain>(
 						Arr.map(toolchain.effectFree, (directory) =>
 							directory === "." ? "**" : `${directory}/**`
 						),
-						{
-							...pluginRules(names, "effect-free code"),
-							...EFFECT_FREE_BANS,
-							"eslint/no-restricted-properties": [
-								"error",
-								...project.restrictedProperties,
-								...EFFECT_METRICS,
-								MATH_RANDOM
-							]
-						}
+						{ ...pluginRules(names, "effect-free code"), ...EFFECT_FREE_BANS }
 					),
-					...environment,
+					...lists,
 					...Arr.flatMap(apps, appBlocks),
 					{
 						files: [...TEST_SCOPE],

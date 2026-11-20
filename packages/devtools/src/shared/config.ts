@@ -2,7 +2,7 @@ import { Effect, FileSystem, Path, Schema } from "effect"
 import { Packs, type Toolchain } from "#config.ts"
 import { DevtoolFailure, failureFrom } from "#shared/devtool.ts"
 import { Repository } from "#shared/repository.ts"
-import { EffectFree, Exceptions } from "#workspace/rules.ts"
+import { BannedPackages, EffectFree, Exceptions } from "#workspace/rules.ts"
 
 /** The file every repository holds its toolchain in, at its root. */
 export const CONFIG_FILE = "toolchain.config.ts"
@@ -19,7 +19,8 @@ const ToolchainSchema = Schema.Struct({
 	rejected: Schema.Struct({ rules: Reasons, diagnostics: Reasons }),
 	exceptions: Exceptions,
 	effectFree: EffectFree,
-	packs: Packs
+	packs: Packs,
+	bannedPackages: BannedPackages
 })
 
 /** The module a toolchain.config.ts is, as far as the loader reads it: its default export. */

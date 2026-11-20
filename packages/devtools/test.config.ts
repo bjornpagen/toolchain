@@ -8,6 +8,8 @@ import { Layer } from "effect"
 export default defineRunner({
 	include: [
 		"src/gate.test.ts",
+		"src/preset.test.ts",
+		"src/preset-types.test.ts",
 		"src/workspace/tsconfigs.test.ts",
 		"src/oxlint/rules/bearer-owners.test.ts",
 		"src/oxlint/rules/side-effect-free.test.ts",
@@ -15,6 +17,7 @@ export default defineRunner({
 		"src/oxlint/rules/no-plant.test.ts",
 		"src/oxlint/rules/single-permit-owners.test.ts",
 		"src/shared/git.test.ts",
+		"src/workspace/banned-packages.test.ts",
 		"src/workspace/dead-paths.test.ts",
 		"src/workspace/quarantine.test.ts",
 		"src/workspace/root-files.test.ts",

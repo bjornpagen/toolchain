@@ -1,6 +1,6 @@
 import { Array as Arr, Record, Schema } from "effect"
 import { WebOptions } from "#style/options.ts"
-import type { Exceptions } from "#workspace/rules.ts"
+import type { BannedPackages, Exceptions } from "#workspace/rules.ts"
 
 /**
  * A repository's toolchain: the one value its root `toolchain.config.ts` exports by default, typed here and decoded by
@@ -59,6 +59,9 @@ export type Toolchain = Readonly<{
 	effectFree: ReadonlyArray<string>
 	/** The packs the repository runs beside the core. */
 	packs: Packs
+	/** The packages the repository bans beside the standard's, which no manifest, catalog or lockfile importer of it
+	 * may name (the workspace gate's banned-packages) and no file may import, the package or a subpath of it. */
+	bannedPackages: BannedPackages
 }>
 
 /** A key a toolchain.config.ts may not write: every key no Toolchain holds, such as the `core` and `own` that the
