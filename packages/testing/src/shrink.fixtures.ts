@@ -624,11 +624,13 @@ export const judgedOf = (ran: Ran): Judged<ReadonlyArray<number>, never> => {
 const through = (source: Source): Chooser => ({
 	exhausted: () => false,
 	draw: (lo, hi, _at, spread) => {
-		switch (spread) {
+		switch (spread.kind) {
 			case "leaning":
 				return source.choose(lo, hi)
 			case "uniform":
 				return source.pick(lo, hi)
+			case "weighted":
+				return lo + source.weigh(spread)
 			case "recalled":
 				return source.recall(hi)
 		}

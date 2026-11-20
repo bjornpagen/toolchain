@@ -1,7 +1,14 @@
 import { Array as Arr, Option, Schema } from "effect"
 import { enumerated, firstBranch, nextBranch } from "#enumerate.ts"
 import type { Pending, Reached } from "#features.ts"
-import { forcedChooser, type Generated, generate, recorder, type Source } from "#source.ts"
+import {
+	forcedChooser,
+	type Generated,
+	generate,
+	recorder,
+	type Source,
+	weightsOf
+} from "#source.ts"
 import type { Tape } from "#tape.ts"
 
 /**
@@ -178,30 +185,17 @@ export type Weight = Exclude<Below<100>, 0>
 /** One option and how often it is drawn. */
 export type Weighted<A> = readonly [weight: Weight, generator: Gen<A>]
 
-/** The option a pick below the arms' total weight selects: each arm owns the next `weight` picks, and the last arm
- * owns the picks after every earlier arm's. */
-const armOf = <A>(arms: Arr.NonEmptyReadonlyArray<Weighted<A>>, pick: number): Gen<A> => {
-	let rest = pick
-	for (let at = 0; at < arms.length - 1; at += 1) {
-		const [weight, generator] = Arr.getUnsafe(arms, at)
-		if (rest < weight) {
-			return generator
-		}
-		rest -= weight
-	}
-	return Arr.lastNonEmpty(arms)[1]
-}
-
 /**
- * One of several generators, drawn in proportion to their weights, and shrinking toward the first. The draw is uniform
- * over the total weight, so no option is favoured by its position or by an encoding. Every weight is at least one, so
- * the total never is zero.
+ * One of several generators, drawn in proportion to their weights, and shrinking toward the first: one weighted
+ * decision (Source.weigh), which a random search draws uniformly over the total weight, so no option is favoured by its
+ * position or by an encoding, and which an enumeration meets once an option, so an exhaustive search runs each option's
+ * cases once whatever its weight. Every weight is at least one, so the total never is zero.
  */
 export const weighted = <A>(options: Arr.NonEmptyReadonlyArray<Weighted<A>>): Gen<A> => {
-	const total = Arr.reduce(options, 0, (sum, [weight]) => sum + weight)
+	const weights = weightsOf(Arr.map(options, ([weight]) => weight))
 	return (source) => {
 		source.open("weighted")
-		const value = armOf(options, source.pick(0, total - 1))(source)
+		const value = Arr.getUnsafe(options, source.weigh(weights))[1](source)
 		source.close()
 		return value
 	}
@@ -211,8 +205,8 @@ export const weighted = <A>(options: Arr.NonEmptyReadonlyArray<Weighted<A>>): Ge
  * One of several generators in proportion to weights computed when the generator is built (a share of a total, a count
  * a model holds), where `weighted` takes weights written in the source. A weight is a whole number, and zero for an
  * option that cannot be drawn there. An option alone in having weight is no choice and draws nothing; when every weight
- * is zero the first option, the floor, is drawn the same way, as a swarm choice draws its floor. The draw is uniform
- * over the total weight and shrinks toward the first option with weight.
+ * is zero the first option, the floor, is drawn the same way, as a swarm choice draws its floor. The draw is one
+ * weighted decision over the options with weight (Source.weigh) and shrinks toward the first of them.
  */
 export const proportional =
 	<A>(options: Arr.NonEmptyReadonlyArray<readonly [weight: number, generator: Gen<A>]>): Gen<A> =>
@@ -224,18 +218,9 @@ export const proportional =
 		if (live.length === 1) {
 			return Arr.headNonEmpty(live)[1](source)
 		}
-		const total = Arr.reduce(live, 0, (sum, [weight]) => sum + Math.floor(weight))
 		source.open("weighted")
-		let rest = source.pick(0, total - 1)
-		let chosen = Arr.lastNonEmpty(live)[1]
-		for (const [weight, generator] of live) {
-			if (rest < Math.floor(weight)) {
-				chosen = generator
-				break
-			}
-			rest -= Math.floor(weight)
-		}
-		const value = chosen(source)
+		const chosen = source.weigh(weightsOf(Arr.map(live, ([weight]) => Math.floor(weight))))
+		const value = Arr.getUnsafe(live, chosen)[1](source)
 		source.close()
 		return value
 	}
@@ -491,6 +476,13 @@ const drawnWithDecisions = <A>(
 			}
 			return value
 		},
+		weigh: (weights) => {
+			const value = source.weigh(weights)
+			if (weights.weights.length > 1) {
+				taken.push(value)
+			}
+			return value
+		},
 		recall: (count) => {
 			const value = source.recall(count)
 			taken.push(value)
@@ -649,6 +641,11 @@ export const clone =
 				taken.push(value)
 				return value
 			},
+			weigh: (weights) => {
+				const value = source.weigh(weights)
+				taken.push(value)
+				return value
+			},
 			recall: (options) => {
 				const value = source.recall(options)
 				taken.push(value)
@@ -668,6 +665,7 @@ export const clone =
 				...source,
 				choose: next,
 				pick: next,
+				weigh: () => next(0),
 				recall: () => next(0),
 				draw: (inner) => inner(replayed),
 				span: (_label, run) => run(),

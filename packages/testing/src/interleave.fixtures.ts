@@ -564,7 +564,17 @@ export const walkScript = (scripted: Scripted): Walked => {
 export const caseChooser = <F extends string>(c: Case<F>): Chooser => ({
 	exhausted: () => false,
 	draw: (lo, hi, _at, spread) =>
-		c.draw((source) => (spread === "leaning" ? source.choose(lo, hi) : source.pick(lo, hi)))
+		c.draw((source) => {
+			switch (spread.kind) {
+				case "leaning":
+					return source.choose(lo, hi)
+				case "weighted":
+					return lo + source.weigh(spread)
+				case "uniform":
+				case "recalled":
+					return source.pick(lo, hi)
+			}
+		})
 })
 
 /** The nature of a recording: what a run draws and what the system decided go on the recording's tape. */

@@ -827,9 +827,10 @@ export const swarmWeights = property.exhaust(finite(swarmWeightsBox), {
 	kills: [
 		{
 			file: "packages/testing/src/swarm.ts",
-			original: "\t\treturn weight === 3 || (weight > 0 && source.pick(0, 2) >= 3 - weight)",
+			original:
+				"\t\treturn weight === 3 || (weight > 0 && source.weigh(weightsOf([3 - weight, weight])) === 1)",
 			replacement:
-				"\t\treturn weight === 3 || weight === 1 || (weight > 0 && source.pick(0, 2) >= 3 - weight)",
+				"\t\treturn weight === 3 || weight === 1 || (weight > 0 && source.weigh(weightsOf([3 - weight, weight])) === 1)",
 			why: "keep keeps a feature of weight 1 at every place; the swarm weights exhaustion fails."
 		}
 	]

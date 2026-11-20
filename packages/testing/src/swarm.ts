@@ -1,5 +1,6 @@
 import { Array as Arr } from "effect"
 import type { Gen } from "#gen.ts"
+import { type Weights, weightsOf } from "#source.ts"
 
 /** A feature's weight in one case: off, or present at a third, two thirds or every place it could appear. */
 export type SwarmWeight = 0 | 1 | 2 | 3
@@ -26,15 +27,28 @@ export const OMISSIONS = ["five-sixths", "half", "one-sixth"] as const
 export type Omission = (typeof OMISSIONS)[number]
 
 /**
- * A feature's gate is one decision of eighteen values: the first `OFF[omission]` turn it off, and the rest give weights
- * 1, 2 and 3 in equal thirds. Eighteen divides by six and by three, so every rate and every third is exact, and a gate
- * shrinks toward zero, toward the feature being off.
+ * A feature's gate is one weighted decision (Source.weigh) over eighteen parts: off for `OFF[omission]` of them, and
+ * weights 1, 2 and 3 in equal thirds of the rest. Eighteen divides by six and by three, so every rate and every third is
+ * exact; an enumeration meets each of the four once, and a gate shrinks toward the first, the feature being off.
  */
 const GATES = 18
 
 const OFF: Readonly<Record<Omission, number>> = { "five-sixths": 15, half: 9, "one-sixth": 3 }
 
 const PRESENCES = [1, 2, 3] as const
+
+/** A gate's weights under an omission that turns a feature off for `off` of GATES parts: off, then each presence. */
+const gateOf = (off: number): Weights => {
+	const third = (GATES - off) / 3
+	return weightsOf([off, third, third, third])
+}
+
+/** Each omission's gate (gateOf). */
+const GATE_WEIGHTS: Readonly<Record<Omission, Weights>> = {
+	"five-sixths": gateOf(OFF["five-sixths"]),
+	half: gateOf(OFF.half),
+	"one-sixth": gateOf(OFF["one-sixth"])
+}
 
 /**
  * Draws a swarm over a generator's features: first the one feature every case has, then an omission, then one decision
@@ -48,16 +62,16 @@ export const swarm =
 	(source) => {
 		source.open("swarm")
 		const forced = source.pick(0, features.length - 1)
-		const off = OFF[Arr.getUnsafe(OMISSIONS, source.pick(0, OMISSIONS.length - 1))]
+		const gate = GATE_WEIGHTS[Arr.getUnsafe(OMISSIONS, source.pick(0, OMISSIONS.length - 1))]
 		const on: Partial<Record<F, Presence>> = {}
 		for (const [index, feature] of features.entries()) {
 			if (index === forced) {
 				on[feature] = Arr.getUnsafe(PRESENCES, source.pick(0, PRESENCES.length - 1))
 				continue
 			}
-			const gate = source.pick(0, GATES - 1)
-			if (gate >= off) {
-				on[feature] = Arr.getUnsafe(PRESENCES, Math.floor(((gate - off) * 3) / (GATES - off)))
+			const presence = source.weigh(gate)
+			if (presence > 0) {
+				on[feature] = Arr.getUnsafe(PRESENCES, presence - 1)
 			}
 		}
 		source.close()
@@ -85,7 +99,7 @@ export const keep =
 	<F extends string>(drawn: Swarm<F>, feature: F): Gen<boolean> =>
 	(source) => {
 		const weight = weightOf(drawn, feature)
-		return weight === 3 || (weight > 0 && source.pick(0, 2) >= 3 - weight)
+		return weight === 3 || (weight > 0 && source.weigh(weightsOf([3 - weight, weight])) === 1)
 	}
 
 /**
@@ -105,13 +119,8 @@ export const swarmChoice =
 		if (on.length === 1) {
 			return Arr.headNonEmpty(on)
 		}
-		const total = Arr.reduce(on, 0, (sum, option) => sum + weightOf(drawn, option))
-		let rest = source.pick(0, total - 1)
-		for (const option of options) {
-			rest -= weightOf(drawn, option)
-			if (rest < 0) {
-				return option
-			}
-		}
-		return Arr.lastNonEmpty(options)
+		return Arr.getUnsafe(
+			on,
+			source.weigh(weightsOf(Arr.map(on, (option) => weightOf(drawn, option))))
+		)
 	}

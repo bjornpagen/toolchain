@@ -71,7 +71,7 @@ export const nothingDrawnReachesARecordedValue = property.explore(recordedCases,
 		},
 		{
 			file: "packages/testing/src/source.ts",
-			original: '\t\treturn append(value, lo, spread === "recalled" ? value : hi)',
+			original: '\t\treturn append(value, lo, spread.kind === "recalled" ? value : hi)',
 			replacement: "\t\treturn append(value, lo, hi)",
 			why: "A recalled decision's tape spans every recorded value, so a mutation moves a drawn case's recalled decision off 0 onto a recorded value, and a unique key's repair walks onto one."
 		},
@@ -107,7 +107,7 @@ export const anEnumerationCountsTheSpaceAlone = property.explore(recordedCases, 
 	kills: [
 		{
 			file: "packages/testing/src/source.ts",
-			original: '\t\treturn append(value, lo, spread === "recalled" ? value : hi)',
+			original: '\t\treturn append(value, lo, spread.kind === "recalled" ? value : hi)',
 			replacement: "\t\treturn append(value, lo, hi)",
 			why: "A recalled decision's tape spans every recorded value, so an enumeration branches onto each of them after its space's cases."
 		}
@@ -162,8 +162,8 @@ export const aTokenDrawsItsRecordedValue = property.explore(recordedCases, {
 		},
 		{
 			file: "packages/testing/src/source.ts",
-			original: '\t\trecall: (count) => decide(0, count, "recalled"),',
-			replacement: '\t\trecall: (count) => decide(0, count - 1, "recalled"),',
+			original: "\t\trecall: (count) => decide(0, count, RECALLED),",
+			replacement: "\t\trecall: (count) => decide(0, count - 1, RECALLED),",
 			why: "A recalled decision stops one short of its count, so the last recorded value's token overruns."
 		}
 	]
@@ -201,9 +201,9 @@ export const aShrinkMovesARecalledDecisionTowardZero = property.explore(recorded
 	kills: [
 		{
 			file: "packages/testing/src/source.ts",
-			original: '\t\treturn append(value, lo, spread === "recalled" ? value : hi)',
+			original: '\t\treturn append(value, lo, spread.kind === "recalled" ? value : hi)',
 			replacement:
-				'\t\treturn append(value, spread === "recalled" ? value : lo, spread === "recalled" ? value : hi)',
+				'\t\treturn append(value, spread.kind === "recalled" ? value : lo, spread.kind === "recalled" ? value : hi)',
 			why: "A recalled decision's tape is bounded below by the value it took, so a shrink never lowers it and a recorded case keeps its own value."
 		}
 	]
@@ -235,8 +235,9 @@ export const keepFindsEveryRecordedValue = property.explore(recordedCases, {
 	kills: [
 		{
 			file: "packages/testing/src/runner/keep.ts",
-			original: '\t\tcase "uniform":\n\t\tcase "recalled":\n',
-			replacement: '\t\tcase "recalled":\n\t\t\treturn [lo]\n\t\tcase "uniform":\n',
+			original: '\t\tcase "uniform":\n\t\tcase "weighted":\n\t\tcase "recalled":\n',
+			replacement:
+				'\t\tcase "recalled":\n\t\t\treturn [lo]\n\t\tcase "uniform":\n\t\tcase "weighted":\n',
 			why: "keep never tries a recalled decision past 0, so no recorded value's token is found."
 		}
 	]

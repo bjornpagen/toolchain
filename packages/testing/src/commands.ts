@@ -9,7 +9,7 @@ import type {
 	Resources,
 	Space
 } from "#property.ts"
-import type { Source } from "#source.ts"
+import { type Source, weightsOf } from "#source.ts"
 import { type Swarm, weightOf } from "#swarm.ts"
 
 /** The model accepts a step, and predicts the state the system enters after it. */
@@ -167,34 +167,16 @@ const claimedAfter = <M, V extends string>(before: M, verdict: Verdict<M, V>): M
 }
 
 /** The greatest common divisor of two whole numbers. */
-const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b))
-
 /**
- * One of weighted commands, drawn in proportion to their weights, in the order given: each owns the next share of a
- * pick below the total, its weight over the weights' greatest common divisor, so commands of equal weight draw from as
- * many values as there are commands, and an enumeration meets no two values that name the same command for the same
- * reason. One command with weight is no choice and draws nothing.
+ * One of weighted commands, drawn in proportion to their weights, in the order given: one weighted decision
+ * (Source.weigh), which an enumeration meets once a command, so no two of its values name the same command. One
+ * command with weight is no choice and draws nothing.
  */
 const pickOf = <K>(
 	source: Source,
 	weighted: Arr.NonEmptyReadonlyArray<readonly [name: K, weight: number]>
-): K => {
-	if (weighted.length === 1) {
-		return Arr.headNonEmpty(weighted)[0]
-	}
-	const divisor = Arr.reduce(weighted, 0, (common, [, weight]) => gcd(weight, common))
-	let rest = source.pick(
-		0,
-		Arr.reduce(weighted, 0, (sum, [, weight]) => sum + weight / divisor) - 1
-	)
-	for (const [name, weight] of weighted) {
-		if (rest < weight / divisor) {
-			return name
-		}
-		rest -= weight / divisor
-	}
-	return Arr.lastNonEmpty(weighted)[0]
-}
+): K =>
+	Arr.getUnsafe(weighted, source.weigh(weightsOf(Arr.map(weighted, ([, weight]) => weight))))[0]
 
 /**
  * Programs of between `size.min` and `size.max` steps over the commands `drawn` turns on, each as often as its weight
@@ -432,7 +414,7 @@ const reactiveStep =
 			return Option.none()
 		}
 		return source.span("element", () => {
-			if (at >= size.min && source.pick(0, size.max - size.min) === 0) {
+			if (at >= size.min && source.weigh(weightsOf([1, size.max - size.min])) === 0) {
 				return Option.none()
 			}
 			const named = pickOf(source, on)

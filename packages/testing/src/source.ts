@@ -8,7 +8,10 @@ export type Observed = "as-recorded" | "diverged"
 /**
  * What a generator draws its decisions from. `choose` makes one bounded decision about a magnitude, which a random
  * search leans toward the ends of a wide range (`biased`); `pick` makes one bounded decision among options, which a
- * random search draws uniformly however wide, so a choice's stated distribution is its distribution; `recall` makes
+ * random search draws uniformly however wide, so a choice's stated distribution is its distribution; `weigh` makes one
+ * decision among options in proportion to their weights (Weights), which a random search draws as often as each one's
+ * weight and every other search sees as one value an option, so an enumeration meets each option once, never once a
+ * unit of its weight, and a shrink moves toward the first; `recall` makes
  * one decision of 0 to `count` that every search takes at 0 and only a replay takes past it, the arm of a recorded
  * space (gen.ts recorded), which only a token reaches; `draw` runs
  * another generator on the same decisions, so a struct, a tuple or a dependent value is a plain function body; `span`
@@ -21,6 +24,7 @@ export type Observed = "as-recorded" | "diverged"
 export type Source = Readonly<{
 	choose: (lo: number, hi: number) => number
 	pick: (lo: number, hi: number) => number
+	weigh: (weights: Weights) => number
 	recall: (count: number) => number
 	draw: <A>(generator: (source: Source) => A) => A
 	span: <A>(label: string, generate: () => A) => A
@@ -30,13 +34,51 @@ export type Source = Readonly<{
 }>
 
 /**
- * How a random search spreads a decision over its range: a magnitude leans toward the ends of a wide range, where code
- * branches, an option is drawn uniformly, so no option is favoured by where it sits, and a recalled decision is taken at
- * its least, so no drawn case reaches a value a regression recorded. Only a random search spreads by it, and a recording
- * bounds a recalled decision's tape by the value it took (recorder); a replay, an enumeration and a shrink see the same
- * decision with the same bounds.
+ * Options' weights as a weighted decision (Source.weigh) takes them: each a whole number from one, an option's in its
+ * place, and their sum (weightsOf).
  */
-export type Spread = "leaning" | "uniform" | "recalled"
+export type Weights = Readonly<{
+	kind: "weighted"
+	weights: Arr.NonEmptyReadonlyArray<number>
+	total: number
+}>
+
+/** Options' whole-number weights, each at least one, as a weighted decision takes them. */
+export const weightsOf = (weights: Arr.NonEmptyReadonlyArray<number>): Weights => ({
+	kind: "weighted",
+	weights,
+	total: Arr.reduce(weights, 0, (sum, weight) => sum + weight)
+})
+
+/** The option a unit of weight below the total falls in: each option owns the next `weight` units, in order. */
+export const optionAt = (weights: Weights, unit: number): number => {
+	let rest = unit
+	for (const [option, weight] of weights.weights.entries()) {
+		if (rest < weight) {
+			return option
+		}
+		rest -= weight
+	}
+	return weights.weights.length - 1
+}
+
+/**
+ * How a random search spreads a decision over its range: a magnitude leans toward the ends of a wide range, where code
+ * branches; an option is drawn uniformly, so no option is favoured by where it sits; a weighted option is drawn as often
+ * as its weight (a unit of the total, uniformly, read as the option that owns it: optionAt); and a recalled decision is
+ * taken at its least, so no drawn case reaches a value a regression recorded. Only a random search spreads by it, and a
+ * recording bounds a recalled decision's tape by the value it took (recorder); a replay, an enumeration and a shrink see
+ * the same decision with the same bounds, a weighted one's an option a value.
+ */
+export type Spread =
+	| Readonly<{ kind: "leaning" }>
+	| Readonly<{ kind: "uniform" }>
+	| Readonly<{ kind: "recalled" }>
+	| Weights
+
+const LEANING: Spread = { kind: "leaning" }
+const UNIFORM: Spread = { kind: "uniform" }
+const RECALLED: Spread = { kind: "recalled" }
 
 /**
  * Where a recording's values come from: `draw` answers the decision at position `at`, spread as `spread` says, and
@@ -51,11 +93,13 @@ export type Chooser = Readonly<{
 export const randomChooser = (words: Words): Chooser => ({
 	exhausted: () => false,
 	draw: (lo, hi, _at, spread) => {
-		switch (spread) {
+		switch (spread.kind) {
 			case "leaning":
 				return biased(words, lo, hi)
 			case "uniform":
 				return between(words, lo, hi)
+			case "weighted":
+				return lo + optionAt(spread, between(words, 0, spread.total - 1))
 			case "recalled":
 				return lo
 		}
@@ -157,13 +201,14 @@ export const recorder = (): Recorder => {
 			status = "overrun"
 		}
 		const value = fits ? offered : lo
-		return append(value, lo, spread === "recalled" ? value : hi)
+		return append(value, lo, spread.kind === "recalled" ? value : hi)
 	}
 	const source: Source = {
 		draw: (inner) => inner(source),
-		choose: (lo, hi) => decide(lo, hi, "leaning"),
-		pick: (lo, hi) => decide(lo, hi, "uniform"),
-		recall: (count) => decide(0, count, "recalled"),
+		choose: (lo, hi) => decide(lo, hi, LEANING),
+		pick: (lo, hi) => decide(lo, hi, UNIFORM),
+		weigh: (weights) => decide(0, weights.weights.length - 1, weights),
+		recall: (count) => decide(0, count, RECALLED),
 		open: (label) => {
 			const index = spanLabel.length
 			spanLabel.push(label)
@@ -191,7 +236,7 @@ export const recorder = (): Recorder => {
 		observe: (value) => {
 			const offered = chooser.exhausted(length)
 				? value
-				: chooser.draw(value, value, length, "uniform")
+				: chooser.draw(value, value, length, UNIFORM)
 			append(value, value, value)
 			return offered === value ? "as-recorded" : "diverged"
 		}

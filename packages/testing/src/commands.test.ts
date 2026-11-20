@@ -275,9 +275,9 @@ export const commandWeights = property.explore(
 		kills: [
 			{
 				file: "packages/testing/src/commands.ts",
-				original: "\t\tif (rest < weight / divisor) {",
-				replacement: "\t\tif (rest <= weight / divisor) {",
-				why: "Each command's pick owns one value past its share, so commands are drawn off their weights."
+				original: "source.weigh(weightsOf(Arr.map(weighted, ([, weight]) => weight)))",
+				replacement: "source.weigh(weightsOf(Arr.map(weighted, () => 1)))",
+				why: "Every command is drawn equally often whatever its weight, so commands are drawn off their weights."
 			}
 		]
 	}

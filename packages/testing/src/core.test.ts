@@ -37,11 +37,13 @@ import { replayOf, replayTokenOf } from "#replay.ts"
 import {
 	forcedChooser,
 	generate,
+	optionAt,
 	prefixChooser,
 	randomChooser,
 	recorder,
 	sample,
-	simplestChooser
+	simplestChooser,
+	weightsOf
 } from "#source.ts"
 import { tokenOf, valuesFromToken } from "#tape.ts"
 
@@ -216,7 +218,12 @@ export const replayRunsOutOnSimplest = property.explore(cutTapes, {
 	]
 })
 
-/** A weighted choice draws each option exactly in proportion to its weight, however large the total. */
+/**
+ * A weighted choice draws each option exactly in proportion to its weight, however large the total, and an enumeration
+ * meets each option once: the random chooser reads a unit of the total as the option that owns it (optionAt), each
+ * option owning its weight of the units, and the space's every case is one option, in order, so an exhaustive search
+ * runs each option's cases once, where it ran them once a unit of the option's weight (option's some six times).
+ */
 export const weightedShares = property.explore(weightLists, {
 	needs: {},
 	situations: ["a total past 256"],
@@ -226,30 +233,53 @@ export const weightedShares = property.explore(weightLists, {
 			if (total > 256) {
 				c.note("a total past 256")
 			}
-			const cases = everyCase(
-				weighted(Arr.map(weights, (weight, at): Weighted<number> => [weight, constant(at)]))
+			const space = weighted(
+				Arr.map(weights, (weight, at): Weighted<number> => [weight, constant(at)])
 			)
+			const cases = everyCase(space)
+			const owned = Array.from({ length: total }, (_, unit) => optionAt(weightsOf(weights), unit))
 			assert.deepEqual(
-				Arr.map(weights, (_weight, at) => shareOf(cases, (drawnAt) => drawnAt === at)),
-				Arr.map(weights, (weight) => fraction(BigInt(weight), BigInt(total)))
+				{
+					shares: Arr.map(weights, (_weight, at) => shareOf(cases, (drawnAt) => drawnAt === at)),
+					units: Arr.map(
+						weights,
+						(_weight, at) => Arr.filter(owned, (option) => option === at).length
+					),
+					support: everyValue(space)
+				},
+				{
+					shares: Arr.map(weights, (weight) => fraction(BigInt(weight), BigInt(total))),
+					units: Arr.map(weights, (weight) => weight),
+					support: Arr.map(weights, (_weight, at) => at)
+				}
 			)
 		}),
 	oracle: {
 		kind: "specification",
-		name: "each option's weight over the total, by exact enumeration"
+		name: "each option's weight over the total, by exact enumeration, and each option once in the space"
 	},
 	kept: [],
 	kills: [
 		{
-			file: "packages/testing/src/gen.ts",
+			file: "packages/testing/src/source.ts",
 			original: "\t\tif (rest < weight) {",
 			replacement: "\t\tif (rest <= weight) {",
-			why: "Each arm of a weighted choice but the last takes one pick more than its weight; the weighted shares property fails."
+			why: "Each option of a weighted choice but the last owns one unit more than its weight; the weighted shares property fails."
+		},
+		{
+			file: "packages/testing/src/source.ts",
+			original: "\t\tweigh: (weights) => decide(0, weights.weights.length - 1, weights),\n",
+			replacement:
+				"\t\tweigh: (weights) => optionAt(weights, decide(0, weights.total - 1, UNIFORM)),\n",
+			why: "A weighted choice is a pick over the units of its total, as it was: an enumeration meets an option once a unit of its weight, so an exhaustive search runs option's some branch six times and a weight of 99 ninety-nine times; the property fails on the support."
 		}
 	]
 })
 
-/** The random chooser draws an option uniformly and a magnitude leaning toward the ends, from the same words. */
+/**
+ * The random chooser draws an option uniformly, a magnitude leaning toward the ends, and a weighted option as the unit
+ * of its total it draws uniformly owns it, from the same words.
+ */
 export const chooserSpreads = property.explore(seededRanges, {
 	needs: {},
 	situations: [],
@@ -257,12 +287,23 @@ export const chooserSpreads = property.explore(seededRanges, {
 		() =>
 		({ seed, lo, hi }) =>
 			Effect.sync(() => {
+				const weights = weightsOf(
+					Arr.prepend(
+						Array.from({ length: hi - lo }, (_, at) => at + 2),
+						1
+					)
+				)
 				assert.deepEqual(
 					[
-						randomChooser(wordsOf(seed)).draw(lo, hi, 0, "uniform"),
-						randomChooser(wordsOf(seed)).draw(lo, hi, 0, "leaning")
+						randomChooser(wordsOf(seed)).draw(lo, hi, 0, { kind: "uniform" }),
+						randomChooser(wordsOf(seed)).draw(lo, hi, 0, { kind: "leaning" }),
+						randomChooser(wordsOf(seed)).draw(lo, hi, 0, weights)
 					],
-					[between(wordsOf(seed), lo, hi), biased(wordsOf(seed), lo, hi)]
+					[
+						between(wordsOf(seed), lo, hi),
+						biased(wordsOf(seed), lo, hi),
+						lo + optionAt(weights, between(wordsOf(seed), 0, weights.total - 1))
+					]
 				)
 			}),
 	oracle: { kind: "second-implementation", name: "the word source's own between and biased" },
@@ -273,6 +314,12 @@ export const chooserSpreads = property.explore(seededRanges, {
 			original: "\t\t\t\treturn biased(words, lo, hi)",
 			replacement: "\t\t\t\treturn between(words, lo, hi)",
 			why: "The random chooser draws a leaning magnitude uniformly, as between does, never as biased does; the chooser property fails."
+		},
+		{
+			file: "packages/testing/src/source.ts",
+			original: "\t\t\t\treturn lo + optionAt(spread, between(words, 0, spread.total - 1))\n",
+			replacement: "\t\t\t\treturn between(words, lo, hi)\n",
+			why: "The random chooser draws a weighted option uniformly, whatever its weight, so option draws none one case in two; the chooser property fails."
 		}
 	]
 })
