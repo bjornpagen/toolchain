@@ -9,6 +9,7 @@ import {
 	Option,
 	Order,
 	Path,
+	Result,
 	Schema,
 	String as Str
 } from "effect"
@@ -24,6 +25,7 @@ import { mutatorPool } from "#mutate/lease.ts"
 import { realPathOf } from "#mutate/mutated.ts"
 import { type Choice, type MutantJudged, mutationOf } from "#mutate/operators.ts"
 import type { MutantPool } from "#mutate/pool.ts"
+import { isMutable, listedReport, namedFiles } from "#mutate/report.ts"
 import type { Subject } from "#mutate/schedule.ts"
 import { treesOf } from "#mutate/tree.ts"
 import { importClosuresAt, noVerdicts, trackedIn, verdictsAt } from "#runner/affected.ts"
@@ -183,13 +185,13 @@ const Seed = Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThanO
 const refusedWith = (message: string) => () => MutatorRefused.make({ message })
 
 /**
- * `mutate <file>... [--against <path | id>]... [--operator <name>]... [--sample <n> --seed <s> | --mutant <id>...]`,
- * the files from the package root.
+ * `mutate <file | directory>... [--against <path | id>]... [--operator <name>]... [--sample <n> --seed <s> | --mutant <id>...]`,
+ * the files and source directories from the package root.
  */
 const mutateArgsOf = (args: ReadonlyArray<string>) =>
 	Effect.gen(function* () {
 		const usage =
-			"mutate <file>... [--against <path | id>]... [--operator <name>]... [--sample <n> --seed <s> | --mutant <id>...]"
+			"mutate <file | directory>... [--against <path | id>]... [--operator <name>]... [--sample <n> --seed <s> | --mutant <id>...]"
 		const { values, positionals } = yield* Effect.try({
 			try: () =>
 				parseArgs({
@@ -283,47 +285,15 @@ const operatorsLine = (
 		", "
 	)}`
 
-/** A judged mutant as a survivor line prints it: its id, place, function, edit and the properties it faced. */
-const survivorLine = ({ mutant, verdict }: MutantJudged<string>): ReadonlyArray<string> =>
-	verdict.kind === "survived"
-		? [
-				`      ${mutant.id} ${String(mutant.line)}:${String(mutant.column)} in ${mutant.fn}: ${Str.replaceAll("\n", " ")(mutant.original)} -> ${Str.replaceAll("\n", " ")(mutant.replacement)}`,
-				`        faced ${Arr.join(verdict.faced, ", ")}`
-			]
-		: []
-
-/** The survivors of a run, by file and then by operator, each group with its count. */
-const survivorsReport = (judged: ReadonlyArray<MutantJudged<string>>): ReadonlyArray<string> => {
-	const survivors = Arr.filter(judged, ({ verdict }) => verdict.kind === "survived")
-	const keys = (
-		key: (one: MutantJudged<string>) => string,
-		of: ReadonlyArray<MutantJudged<string>>
-	) => Arr.sort(Arr.dedupe(Arr.map(of, key)), Order.String)
-	return Arr.flatMap(
-		keys(({ mutant }) => mutant.file, survivors),
-		(file) => {
-			const inFile = Arr.filter(survivors, ({ mutant }) => mutant.file === file)
-			return [
-				`  ${file}`,
-				...Arr.flatMap(
-					keys(({ mutant }) => mutant.operator, inFile),
-					(operator) => {
-						const these = Arr.filter(inFile, ({ mutant }) => mutant.operator === operator)
-						return [`    ${operator}: ${String(these.length)}`, ...Arr.flatMap(these, survivorLine)]
-					}
-				)
-			]
-		}
-	)
-}
-
 /**
- * `mutate <file>... [--against <path | id>]... [--operator <name>]... [--sample <n> --seed <s> | --mutant <id>...]`:
- * operator mutation of the files (paths from the package root) by the library's operators and the runner config's
+ * `mutate <file | directory>... [--against <path | id>]... [--operator <name>]... [--sample <n> --seed <s> | --mutant <id>...]`:
+ * operator mutation of the files the paths name (from the package root: a file, or a source directory, every mutable
+ * file of product source below it, report.ts namedFiles; a path naming none is refused) by the library's operators and the runner config's
  * families, but for the mutants it judges equivalent (its Mutation, loadedMutation), against the properties
  * `--against` names (every property of the package when it names none), on the pool (mutate/operators.ts), each kill
  * recorded in the verdict cache under its edit (runner/affected.ts EditVerdicts), which the census reads. A
- * measurement: it prints its counts, its score, its mutants by operator and its survivors by file and operator, and
+ * measurement: it prints its counts, its score, its mutants by operator, and its survivors and its uncovered mutants
+ * (those no property it ran against ran), each by file and operator (report.ts listedReport), and
  * answers 0 whatever it measured; a refusal (an equivalent judgment gone stale, a property red with no mutant, a probe a
  * property survived, a package that does not typecheck) is the command's failure.
  */
@@ -353,8 +323,22 @@ export const mutateCommand = (root: string, args: ReadonlyArray<string>) =>
 					message: `no operator is named ${Arr.join(unknown, ", ")}; the operators are ${Arr.join(every, ", ")}`
 				})
 			}
-			const files = Arr.map(parsed.files, (file): string =>
-				path.relative(checkout, path.resolve(root, file))
+			const tracked = yield* Effect.mapError(trackedIn(checkout), (refused) =>
+				MutatorRefused.make({ message: refused.message })
+			)
+			const files = yield* Result.match(
+				namedFiles(
+					tracked,
+					productOf(tracked),
+					Arr.map(parsed.files, (file): string => path.relative(checkout, path.resolve(root, file)))
+				),
+				{
+					onSuccess: (named) => Effect.succeed(named),
+					onFailure: (unnamed) =>
+						MutatorRefused.make({
+							message: `${Arr.join(unnamed, ", ")} names no file of the repository and no source directory holding one`
+						})
+				}
 			)
 			const pool = mutatorPool(checkout, packageRoot)
 			const trees = yield* treesOf(checkout)
@@ -394,7 +378,10 @@ export const mutateCommand = (root: string, args: ReadonlyArray<string>) =>
 						`mutate: ${String(judged.length)} mutants of ${Arr.join(files, ", ")} against ${String(subjects.length)} properties: ${String(killed)} killed, ${String(survived)} survived, ${String(count("invalid"))} invalid, ${String(count("uncovered"))} uncovered, ${String(count("equivalent"))} equivalent; score ${String(killed)}/${String(killed + survived)}, in ${String(Math.round(ended - began))} ms on ${String(pool.width)} workers`,
 						operatorsLine(Arr.dedupe(operators), judged),
 						...(survived > 0
-							? ["survivors, by file and operator:", ...survivorsReport(judged)]
+							? ["survivors, by file and operator:", ...listedReport(judged, "survived")]
+							: []),
+						...(count("uncovered") > 0
+							? ["uncovered, by file and operator:", ...listedReport(judged, "uncovered")]
 							: [])
 					],
 					"\n"
@@ -403,11 +390,6 @@ export const mutateCommand = (root: string, args: ReadonlyArray<string>) =>
 			return 0
 		})
 	)
-
-/** Whether a file is TypeScript the mutator mutates: a module, never a declaration file. */
-const isMutable = (file: string): boolean =>
-	Arr.some([".ts", ".tsx", ".mts", ".cts"], (extension) => Str.endsWith(extension)(file)) &&
-	!Arr.some([".d.ts", ".d.mts", ".d.cts"], (extension) => Str.endsWith(extension)(file))
 
 /** A text on one line of a table: its tabs and line breaks as spaces. */
 const cell = (text: string): string =>
