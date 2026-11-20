@@ -1421,3 +1421,76 @@ export const pushedAs = Effect.fn("pushedAs")(function* (
 ) {
 	return yield* ran(sandbox, clone, "sh", [sandbox.gate, "push", ...argumentsOf(call, origin)])
 })
+
+/** What a run of the push gate whose snapshot's lock was made again under it says as it stops (gate.sh held). */
+const RELOCKED = "is no longer the file this run locked"
+
+/** When a run of the push gate starts its check: the line it writes then. */
+const CHECKING = "toolchain-gate: pnpm check on "
+
+/**
+ * A run of the push gate on a clone's HEAD, as git sends a new branch, whose check (the probe) waits on a FIFO; while
+ * it waits, its snapshot's lock file is deleted and made again, held by another process when `heldAgain` (a later
+ * run's claim) or by none, as a hand's rm or a collect that sees no hold would leave it; then the check ends, and the
+ * run goes on to its affected properties. Answers the run's status, whether it said it stopped for its lock, and
+ * whether it stamped a tree as passed.
+ */
+export const relockedRun = Effect.fn("relockedRun")(function* (
+	sandbox: Sandbox,
+	heldAgain: boolean
+) {
+	const fs = yield* FileSystem.FileSystem
+	const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+	const origin = yield* repository(sandbox, "relocked")
+	yield* fs.writeFileString(
+		`${origin}/package.json`,
+		`{"name":"relocked","private":true,"scripts":{"check":"sh \\"$GATE_PROBE\\""}}\n`
+	)
+	yield* committed(sandbox, origin, "a probed check")
+	const clone = yield* cloneOf(sandbox, origin, "relocked-c0")
+	const go = yield* fifo(sandbox, "go")
+	const probe = `${sandbox.dir}/probe.sh`
+	yield* fs.writeFileString(probe, `read _ <'${go}'\n`)
+	const head = yield* Effect.map(sh(sandbox, clone, "git", "rev-parse", "HEAD"), Str.trim)
+	const handle = yield* spawner.spawn(
+		ChildProcess.make("sh", [sandbox.gate, "push"], {
+			cwd: clone,
+			stdin: {
+				stream: Stream.make(
+					new TextEncoder().encode(
+						`refs/heads/main ${head} refs/heads/main ${Str.repeat(40)("0")}\n`
+					)
+				)
+			},
+			extendEnv: true,
+			env: { ...IDENTITY, GATE_PROBE: probe, XDG_CACHE_HOME: sandbox.cache }
+		})
+	)
+	const checking = yield* Deferred.make<void>()
+	const said = yield* Effect.forkScoped(
+		Stream.runFoldEffect(
+			Stream.splitLines(Stream.decodeText(handle.stderr)),
+			() => "",
+			(text, line) =>
+				Effect.as(
+					Str.startsWith(CHECKING)(line) ? Deferred.succeed(checking, undefined) : Effect.void,
+					`${text}${line}\n`
+				)
+		)
+	)
+	yield* Effect.forkScoped(Stream.runDrain(handle.stdout))
+	yield* Deferred.await(checking)
+	const key = yield* onlyKey(sandbox)
+	const lock = pushLock(sandbox, key, 0)
+	yield* fs.remove(lock)
+	yield* heldAgain ? holding(sandbox, lock, "-x") : fs.writeFileString(lock, "")
+	yield* signalled(sandbox, go)
+	const status = yield* handle.exitCode
+	const stderr = yield* Fiber.join(said)
+	const stamps = yield* fs.readDirectory(`${sandbox.root}/${key}`)
+	return {
+		status: Number(status),
+		refused: Str.includes(RELOCKED)(stderr),
+		stamped: Arr.contains(stamps, "push.passed")
+	}
+})

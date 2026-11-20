@@ -18,7 +18,7 @@
  */
 import { assert } from "@bjornpagen/testing/assert"
 import { Checkout } from "@bjornpagen/testing/checkout"
-import { finite } from "@bjornpagen/testing/gen"
+import { boolean, finite } from "@bjornpagen/testing/gen"
 import { property } from "@bjornpagen/testing/property"
 import { Scratch } from "@bjornpagen/testing/resources"
 import { Array as Arr, Effect, Order, String as Str } from "effect"
@@ -54,6 +54,7 @@ import {
 	pushLock,
 	REFUSED_CALL,
 	registered,
+	relockedRun,
 	sandboxOf,
 	sharingFeatures,
 	sharings,
@@ -462,6 +463,38 @@ export const pushCall = property.exhaust(finite(pushCalls), {
 				'if [ "$#" -ne 0 ] && { [ "$#" -ne 2 ] || { [ "$1" != "$2" ] && ! git remote get-url -- "$1" >/dev/null 2>&1; }; }; then',
 			replacement: 'if [ "$#" -ne 0 ] && [ "$#" -ne 2 ]; then',
 			why: "The push mode takes any two arguments as git's, so a lane's `run index` checks HEAD; the push-call property fails."
+		}
+	]
+})
+
+export const relockedSnapshot = property.exhaust(finite(boolean), {
+	box: "a run of the push gate whose snapshot's lock file is deleted and made again while its check runs, held by another process or by none",
+	needs: { dir: Scratch.dir, checkout: Checkout.dir, lockfile: workspaceLockfile },
+	situations: [],
+	check:
+		({ dir, checkout, lockfile }) =>
+		(heldAgain) =>
+			Effect.scoped(
+				Effect.gen(function* () {
+					const scratch = yield* dir
+					const gateCheckout = yield* checkout
+					const workspace = yield* lockfile
+					const sandbox = sandboxOf(scratch, gateCheckout, workspace)
+					const run = yield* relockedRun(sandbox, heldAgain)
+					assert.deepEqual(run, { status: 2, refused: true, stamped: false })
+				})
+			),
+	oracle: {
+		kind: "specification",
+		name: "a run whose snapshot's lock file is no longer the one it locked stops, saying so, before its affected properties, and stamps nothing as passed (gate.sh held)"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/devtools/bin/gate.sh",
+			original: 'git config remote.origin.url "$origin"\n\t\t\t\theld\n',
+			replacement: 'git config remote.origin.url "$origin"\n',
+			why: "A run never looks again at the lock it took, so one whose snapshot's lock was deleted and made again under it (another run's claim) goes on to its affected properties in a snapshot another run may be rewriting, and stamps its tree as passed; the property fails."
 		}
 	]
 })

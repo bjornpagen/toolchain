@@ -173,6 +173,17 @@ claim() {
 	snapshot="$cache/$1.$n"
 }
 
+# held: dies unless the lock file of this run's snapshot is still the file this run locked, on descriptor 9 (the same
+# device and inode): a lock file deleted and made again under a live run (by hand, or by a gate whose collect sees no
+# hold) is a new lock another run can claim, so two runs would fill and check one snapshot, and this run stops before it
+# rewrites it again or stamps a tree it may not have checked. It looks before the fill and again before the affected
+# properties, the run's two writes after its claim.
+held() {
+	perl -e 'open(my $held, "<&=", 9) or exit 2; my @held = stat($held); my @named = stat($ARGV[0]) or exit 1;
+		exit($held[0] == $named[0] && $held[1] == $named[1] ? 0 : 1)' "$snapshot.lock" ||
+		die "the lock of $snapshot is no longer the file this run locked (deleted and made again under it): another run may hold the snapshot, so this run stops"
+}
+
 # collect: registers this clone under its key, then deletes every other key directory whose repository is gone and
 # that no run holds, by renaming it to a hidden one under its lock (hidden names are no key's) and removing that after,
 # with any a collect left behind when it was killed. It runs once this run holds its key, so its own directory, made
@@ -220,6 +231,7 @@ indexed() {
 enter() {
 	unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
 	claim "$1"
+	held
 	fill "$git_dir" "$2" "$snapshot" "$snapshot.git" "$root"
 	export TURBO_CACHE_DIR="${TURBO_CACHE_DIR:-$root/.turbo/cache}"
 	cd "$snapshot"
@@ -343,6 +355,7 @@ EOF
 				# The snapshot carries the repository's origin, so toolchain-test names the repository as every clone does
 				# and reads the verdicts their runs cached (${XDG_CACHE_HOME:-~/.cache}/toolchain-test/<key>/verdicts).
 				[ -z "$origin" ] || git config remote.origin.url "$origin"
+				held
 				# Each package with a runner config runs the properties whose verdict key holds no cached pass, and the
 				# kills of each that passes (packages/testing/src/runner/affected.ts). A submodule's packages are its own
 				# repository's to gate: git lists its gitlink, not its files.
