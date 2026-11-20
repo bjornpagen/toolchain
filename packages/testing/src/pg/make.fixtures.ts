@@ -282,3 +282,8 @@ export const madeSynchronously = (
 	Effect.runSyncExit(
 		Effect.provideService(madeMembers(spec), ConfigProvider.ConfigProvider, environment)
 	)
+
+/** How a narrower run meets a family made wider: by bringing it up (clusterUp) or by adopting it (`init --adopt`). */
+export const narrowings = finite((source) =>
+	source.draw(element(["brought up", "adopted"] as const))
+)

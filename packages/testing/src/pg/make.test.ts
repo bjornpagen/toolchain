@@ -31,6 +31,7 @@ import {
 	machineBin,
 	madeSynchronously,
 	membersOfLife,
+	narrowings,
 	postmasters,
 	spawnedBy,
 	specOf,
@@ -399,6 +400,78 @@ export const adoptingACluster = property.exhaust(holdings, {
 			original: `held.database ? [] : [\`CREATE DATABASE \${owner} OWNER \${owner} TEMPLATE \${template}\`]`,
 			replacement: `[\`CREATE DATABASE \${owner} OWNER \${owner} TEMPLATE \${template}\`]`,
 			why: "The owner's database the adopted cluster holds is created again, which PostgreSQL refuses (42P04); the property fails."
+		}
+	]
+})
+
+/**
+ * A family recorded larger than a run's width asks serves that run from its first members, as it is (make.ts servedOf):
+ * a throwaway family made at two members (workersPerMember half the machine's workers), met by a spec that asks one
+ * (every worker on one member, as a run of half the width meets a family made at the full width), is brought up or
+ * adopted and serves its first member, while its manifest keeps both members for a wider run. Each case's cluster is its own, under a home of the case's own, on a port free when it began.
+ */
+export const familyServesNarrowerRun = property.exhaust(narrowings, {
+	box: "a family of two members brought up or adopted by a spec that asks one",
+	needs: {},
+	situations: ["brought up", "adopted"],
+	check: (_resources, c) => (narrowing) =>
+		Effect.gen(function* () {
+			const fs = yield* FileSystem.FileSystem
+			const home = yield* fs.makeTempDirectoryScoped({ prefix: "tpg-" })
+			const port = yield* freePort([])
+			const root = `${home}/.local/var/toolchain-pg/${port}`
+			yield* Effect.addFinalizer(() => stopEvery(root))
+			const environment = ConfigProvider.fromEnvRecord({
+				HOME: home,
+				TOOLCHAIN_PG_CLUSTER: `${port}`
+			})
+			const inCase = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+				Effect.provideService(effect, ConfigProvider.ConfigProvider, environment)
+			const wide = specOf(
+				{ durability: "throwaway", sizedBy: { kind: "leased", members: 2 }, atOnce: 1 },
+				port,
+				"narrowed_owner"
+			)
+			const narrow = specOf(
+				{ durability: "throwaway", sizedBy: { kind: "leased", members: 1 }, atOnce: 1 },
+				port,
+				"narrowed_owner"
+			)
+			const made = yield* inCase(clusterUp(wide))
+			assert.equal(made.length, 2, "the wide spec makes a family of two")
+			const served = yield* inCase(
+				narrowing === "adopted"
+					? Effect.andThen(initCluster(narrow, { kind: "adopt" }), clusterUp(narrow))
+					: clusterUp(narrow)
+			)
+			assert.deepEqual(
+				Arr.map(served, (member) => member.port),
+				[Arr.headNonEmpty(made).port],
+				"a run asking one member is served by the family's first"
+			)
+			const manifest = yield* Effect.flatMap(
+				fs.readFileString(`${root}/cluster.json`),
+				Schema.decodeEffect(ManifestFile)
+			)
+			assert.deepEqual(
+				manifest.members,
+				Arr.map(made, (member) => member.port),
+				"the manifest keeps every member for a wider run"
+			)
+			yield* inCase(stopCluster(wide))
+			c.note(narrowing)
+		}).pipe(Effect.scoped),
+	oracle: {
+		kind: "specification",
+		name: "a family recorded larger than a run's width asks serves it from its first members, keeping the rest"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/pg/make.ts",
+			original: "\tif (manifest.members.length < familySize(life)) {",
+			replacement: "\tif (manifest.members.length !== familySize(life)) {",
+			why: "A family recorded larger than the width asks is refused, as it was: a run at half the machine's width could not take grizzle's four-member family without a re-make that would end the runs on it; the property fails."
 		}
 	]
 })
