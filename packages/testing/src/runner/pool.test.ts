@@ -653,9 +653,9 @@ export const closedOnReturn = property.exhaust(finite(boolean), {
 		{
 			file: "packages/testing/src/runner/run.ts",
 			original:
-				"\tEffect.scoped(\n\t\tEffect.gen(function* () {\n\t\t\tconst began = yield* liveMillis",
+				"\t\t\tEffect.scoped(\n\t\t\t\tEffect.gen(function* () {\n\t\t\t\t\tconst runs = Arr.map(discovered",
 			replacement:
-				"\t(<A>(effect: A) => effect)(\n\t\tEffect.gen(function* () {\n\t\t\tconst began = yield* liveMillis",
+				"\t\t\t(<A>(effect: A) => effect)(\n\t\t\t\tEffect.gen(function* () {\n\t\t\t\t\tconst runs = Arr.map(discovered",
 			why: "A run's pool stays open in its caller's scope past its properties, as before: its workers hold what their services drew (a lease's permit) while the caller runs the kills' trials, which wait for it (GZ-NETWORK: 32 network modules hung, 64 idle workers holding their leases and five trials waiting on the lease gate); this property fails."
 		}
 	]

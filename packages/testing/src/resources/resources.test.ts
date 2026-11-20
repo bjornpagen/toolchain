@@ -17,12 +17,15 @@ import {
 	Number as Num,
 	Option,
 	Ref,
-	Scope
+	Scope,
+	String as Str
 } from "effect"
 import { assert } from "#assert.ts"
+import { awaitFact } from "#fact.ts"
 import type { Reached } from "#features.ts"
 import { array, boolean, finite, int } from "#gen.ts"
 import { liveSleep } from "#live.ts"
+import { Checkout } from "#mutate/checkout.ts"
 import { type Case, property } from "#property.ts"
 import { PgCluster, quoteIdent, run as runIn, single } from "#resources/cluster.ts"
 import {
@@ -47,6 +50,8 @@ import {
 	seatReset,
 	seatTemplate,
 	services,
+	superuserSessionIn,
+	superuserSessions,
 	fixturesModule,
 	templateNameOf,
 	tokenTemplate,
@@ -54,6 +59,8 @@ import {
 	unpopulatedViewTemplate
 } from "#resources/resources.fixtures.ts"
 import type { DatabaseTemplate } from "#resources/template.ts"
+import { defineRunner, noMutation } from "#runner/config.ts"
+import { collectedAround } from "#runner/run.ts"
 import { ModuleClosure, WorkerIndex } from "#runner/services.ts"
 
 export const freshIsolation = property.explore(array(int(-5, 5), { min: 0, max: 6 }), {
@@ -198,10 +205,8 @@ export const derivedKeepsItsOrigin = property.explore(int(0, 3), {
 	kills: [
 		{
 			file: "packages/testing/src/resources/template.ts",
-			original:
-				"\t\t\t\t\tonSome: (origin) =>\n\t\t\t\t\t\tEffect.flatMap(replayOf(owner, origin.name), (inherited) =>",
-			replacement:
-				"\t\t\t\t\tonSome: (origin) =>\n\t\t\t\t\t\tEffect.flatMap(replayOf(owner, origin.name), () =>",
+			original: "\t\t\t\t\tonSome: (origin) => replayed(origin.name, building)\n",
+			replacement: "\t\t\t\t\tonSome: () => Effect.void\n",
 			why: "A template built from another is copied without its origin's settings and privileges, as before: grizzle's installTemplate over its base lost default_transaction_isolation and deadlock_timeout, and a build that writes failed (GZ-PG-RUNTIME); this property fails."
 		}
 	]
@@ -277,6 +282,193 @@ export const builtOnce = property.explore(int(2, 8), {
 	},
 	kept: [],
 	kills: []
+})
+
+export const templatesTakeNoSession = property.exhaust(finite(int(2, 8)), {
+	box: "two to eight openers at once of one template whose build wrote",
+	needs: { services },
+	situations: [],
+	check:
+		({ services: context }) =>
+		(cloners) =>
+			Effect.gen(function* () {
+				const ctx = yield* context
+				const outcome = yield* Effect.provideContext(
+					Effect.gen(function* () {
+						const cluster = yield* PgCluster
+						const member = yield* Effect.map(cluster.members, Arr.headNonEmpty)
+						const inMaintenance = (statement: string, params: ReadonlyArray<string>) =>
+							Effect.scoped(
+								Effect.flatMap(cluster.connect(member, cluster.maintenance), (session) =>
+									single(session, statement, params)
+								)
+							)
+						const token = yield* inMaintenance("SELECT pg_catalog.gen_random_uuid()::text", [])
+						const template = tokenTemplate(token ?? "", (target) =>
+							Effect.flatMap(cluster.connect(target.member, target.name), (session) =>
+								runIn(
+									session,
+									"CREATE TABLE rows AS SELECT g AS id FROM pg_catalog.generate_series(1, 100) AS g",
+									[]
+								)
+							)
+						)
+						const names = yield* Effect.forEach(
+							Array.from({ length: cloners }, () => template.open),
+							(open) =>
+								Effect.scoped(
+									Effect.flatMap(open, (opened) => Effect.map(opened.clone, (clone) => clone.name))
+								),
+							{ concurrency: "unbounded" }
+						)
+						const templateName =
+							(yield* inMaintenance(
+								"SELECT datname::text FROM pg_catalog.pg_database WHERE datistemplate AND pg_catalog.shobj_description(oid, 'pg_database') LIKE $1",
+								[`%token ${token ?? ""}%`]
+							)) ?? ""
+						const statistics = yield* inMaintenance(
+							"SELECT pg_catalog.pg_stat_get_db_sessions(oid)::text FROM pg_catalog.pg_database WHERE datname = $1",
+							[templateName]
+						)
+						const building = yield* inMaintenance(
+							"SELECT pg_catalog.count(*)::text FROM pg_catalog.pg_database WHERE datname = $1",
+							[`${Str.slice(0, -36)(templateName)}tpb_${Str.slice(-32)(templateName)}`]
+						)
+						yield* dropTemplate({ member, name: templateNameOf(templateName) })
+						return { cloned: new Set(names).size, statistics, building }
+					}),
+					ctx
+				)
+				assert.deepEqual(outcome, { cloned: cloners, statistics: "0", building: "0" })
+			}),
+	oracle: {
+		kind: "specification",
+		name: "a template whose build wrote is copied by concurrent openers, each its own clone, and no session has ever been in it, so PostgreSQL keeps no statistics of it and autovacuum never enters it; its build's database is gone"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/resources/template.ts",
+			original: `\t\t\t\t\t\`CREATE DATABASE \${quoteIdent(name)} TEMPLATE \${quoteIdent(building)} STRATEGY \${strategy}\`,\n`,
+			replacement: `\t\t\t\t\t\`ALTER DATABASE \${quoteIdent(building)} RENAME TO \${quoteIdent(name)}\`,\n`,
+			why: "The template is the database its build ran in, as it was: PostgreSQL keeps its statistics, so autovacuum enters it and holds up every copy of it, which CREATE DATABASE refuses when the worker has not left in five seconds (metis's 5451, 2026-11-20: sixteen copies refused); the property fails."
+		}
+	]
+})
+
+export const refusedDropCollected = property.exhaust(finite(int(1, 3)), {
+	box: "one to three clones whose drop is refused at their case's end, in one run",
+	needs: { services, checkout: Checkout.dir },
+	situations: [],
+	check:
+		({ services: context, checkout }) =>
+		(clones) =>
+			Effect.gen(function* () {
+				const ctx = yield* context
+				const root = yield* checkout
+				const worker = Context.get(ctx, WorkerIndex)
+				const token = yield* Effect.provideContext(
+					Effect.gen(function* () {
+						const cluster = yield* PgCluster
+						const member = yield* Effect.map(cluster.members, Arr.headNonEmpty)
+						return yield* Effect.scoped(
+							Effect.flatMap(cluster.connect(member, cluster.maintenance), (session) =>
+								single(
+									session,
+									"SELECT pg_catalog.substr(pg_catalog.md5(pg_catalog.gen_random_uuid()::text), 1, 12)",
+									[]
+								)
+							)
+						)
+					}),
+					ctx
+				)
+				const prefix = `tcr${token ?? ""}_`
+				const template = tokenTemplate(prefix, () => Effect.void)
+				const runnerClosures = Context.get(ctx, ModuleClosure)
+				const config = defineRunner({
+					include: [],
+					smallStack: [],
+					conditions: [],
+					layer: ownCluster(prefix),
+					mutation: noMutation
+				})
+				const run = Effect.scoped(
+					Effect.gen(function* () {
+						const cluster = yield* Layer.build(ownCluster(prefix))
+						return yield* Effect.provideContext(
+							Effect.gen(function* () {
+								const opened = yield* template.open
+								return yield* Effect.forEach(
+									Array.from({ length: clones }, (_, at) => at),
+									() =>
+										Effect.gen(function* () {
+											const holding = yield* Scope.make()
+											const made = yield* Effect.scoped(
+												Effect.gen(function* () {
+													const clone = yield* opened.clone
+													yield* Scope.provide(superuserSessionIn(clone), holding)
+													yield* awaitFact(
+														Effect.map(superuserSessions(clone), (sessions) =>
+															sessions > 0 ? Option.some(true) : Option.none()
+														)
+													)
+													return clone
+												})
+											)
+											const refused = yield* exists(made)
+											yield* Scope.close(holding, Exit.void)
+											yield* awaitFact(
+												Effect.map(superuserSessions(made), (sessions) =>
+													sessions === 0 ? Option.some(true) : Option.none()
+												)
+											)
+											return { made, refused }
+										})
+								)
+							}),
+							Context.merge(
+								cluster,
+								Context.merge(
+									Context.make(ModuleClosure, {
+										hashOf: () => runnerClosures.hashOf(fixturesModule)
+									}),
+									Context.make(WorkerIndex, worker)
+								)
+							)
+						)
+					})
+				)
+				const ran = yield* collectedAround(config, root, [template])(run)
+				const after = yield* Effect.scoped(
+					Effect.flatMap(Layer.build(ownCluster(prefix)), (cluster) =>
+						Effect.provideContext(
+							Effect.forEach(ran, ({ made }) => exists(made)),
+							cluster
+						)
+					)
+				)
+				assert.deepEqual(
+					{ refused: Arr.map(ran, ({ refused }) => refused), survived: after },
+					{
+						refused: Array.from({ length: clones }, () => true),
+						survived: Array.from({ length: clones }, () => false)
+					}
+				)
+			}),
+	oracle: {
+		kind: "specification",
+		name: "a clone whose drop the server refused when its case ended, a session the owner cannot end still in it, does not fail the case, and the collection at its run's end drops it once that session has gone"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/runner/run.ts",
+			original: "\t\t\tEffect.ensuring(effect, collected(config, root, templates))\n",
+			replacement: "\t\t\teffect\n",
+			why: "A run collects the cluster only before it, as it did: a clone whose drop was refused at its case's end outlives the run, and every such clone a run leaves stays until another run (metis's 5451, 2026-11-20: a clone's DROP refused under autovacuum, its clones and templates left by the thousand); the property fails."
+		}
+	]
 })
 
 export const pooledOnce = property.explore(array(boolean, { min: 1, max: 12 }), {
@@ -569,7 +761,7 @@ export const inUseKept = property.exhaust(
 			{
 				file: "packages/testing/src/resources/collect.ts",
 				original:
-					'\t\t\t\t\t\t!(yield* took(collector, lockKey("$1"), digest)) ||\n\t\t\t\t\t\t!(yield* took(collector, useKey("$1"), digest))',
+					'\t\t\t\t\t\t!(yield* took(collector, lockKey("$1"), digest)) ||\n\t\t\t\t\t\t(database.kind === "template" && !(yield* took(collector, useKey("$1"), digest)))',
 				replacement: '\t\t\t\t\t\t!(yield* took(collector, lockKey("$1"), digest))',
 				why: "Collection drops a template whatever worker holds it in use; this property fails."
 			},

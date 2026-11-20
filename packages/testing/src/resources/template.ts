@@ -24,7 +24,7 @@ import {
 	useKey
 } from "#resources/cluster.ts"
 import type { Database, TemplateDatabase } from "#resources/database.ts"
-import { cloneName, templateName } from "#resources/names.ts"
+import { buildName, cloneName, templateName } from "#resources/names.ts"
 import { ModuleClosure, NeedFailed, WorkerIndex } from "#runner/services.ts"
 
 /**
@@ -384,16 +384,25 @@ const createdFresh = (
  * Makes sure the identified template is built on `member`. A built template (a template refusing connections) is
  * taken as it is. Otherwise the builder waits in the server for the session-level advisory lock of the template's
  * digest, in the owner's database, on a session of its own: the one gate, so concurrent builders of one template on one
- * member, in any worker of any run, build it once and the rest find it built once the lock is theirs (awaitAdvisory). Holding the lock,
- * a database of the name that is not a built template is a builder's that ended mid-build, and is dropped. The build
- * copies the origin (built first, the same way), gives a copy of a template the template's settings and privileges,
- * which CREATE DATABASE does not copy (replayOf, as a clone is given its template's), so a template built from another
- * keeps what its origin's build set (GZ-PG-RUNTIME: grizzle's installTemplate over its base lost the base's
- * default_transaction_isolation and deadlock_timeout, and a build that writes failed), runs the template's build on it
- * in a scope of its own, whose close
- * ends the build's sessions, and marks it a template that refuses connections, which is what built means. A session
- * the build left open fails the first clone, once PostgreSQL's own wait for it ends (CREATE DATABASE refuses a template
- * other sessions use, dbcommands.c CountOtherDBBackends).
+ * member, in any worker of any run, build it once and the rest find it built once the lock is theirs (awaitAdvisory).
+ * Holding the lock, a database of the template's name that is not a built template, and the template's build database
+ * (names.ts buildName), are a builder's that ended mid-build, and are dropped.
+ *
+ * The build runs in the build database, a copy of the origin (built first, the same way) given the origin's settings and
+ * privileges, which CREATE DATABASE does not copy (replayOf, as a clone is given its template's), so a template built
+ * from another keeps what its origin's build set (GZ-PG-RUNTIME: grizzle's installTemplate over its base lost the base's
+ * default_transaction_isolation and deadlock_timeout, and a build that writes failed); the build runs in a scope of its
+ * own, whose close ends its sessions. The template is then a copy of the build database under the template's name,
+ * given the build database's settings and privileges in turn, and the build database is dropped; the copy is marked a
+ * template that refuses connections, which is what built means. So nothing ever connects to a template: PostgreSQL keeps
+ * statistics of a database only once a session has connected to it, and autovacuum enters a database it keeps
+ * statistics of, templates and databases refusing connections among them (its workers skip datallowconn), where it
+ * holds up every CREATE DATABASE ... TEMPLATE of it, which waits five seconds for it to leave once signalled and is
+ * refused when it has not (CountOtherDBBackends: metis's 5451, 2026-11-20, sixteen copies refused, a worker held 11.5 s
+ * by another drop's ProcSignalBarrier). A copy no session has entered has no statistics, and autovacuum leaves it alone
+ * but for wraparound, past autovacuum_freeze_max_age of its frozen transaction id (PostgreSQL 19: neither strategy of
+ * CREATE DATABASE, of the template or from it, gives the copy statistics). A session the build left open fails the
+ * copy, once PostgreSQL's own wait for it ends.
  */
 const ensureBuilt = (
 	cluster: PgClusterShape,
@@ -423,37 +432,47 @@ const ensureBuilt = (
 				if (state === "partial") {
 					yield* run(gate, `DROP DATABASE ${quoteIdent(name)} WITH (FORCE)`, [])
 				}
+				const building = buildName(cluster.prefix, digest)
+				yield* run(gate, `DROP DATABASE IF EXISTS ${quoteIdent(building)} WITH (FORCE)`, [])
 				yield* Option.match(identified.origin, {
 					onNone: () =>
 						template.from.kind === "fresh"
-							? createdFresh(gate, template, name, template.from.locale, strategy)
+							? createdFresh(gate, template, building, template.from.locale, strategy)
 							: run(
 									gate,
-									`CREATE DATABASE ${quoteIdent(name)} TEMPLATE ${quoteIdent(cluster.base)} STRATEGY ${strategy}`,
+									`CREATE DATABASE ${quoteIdent(building)} TEMPLATE ${quoteIdent(cluster.base)} STRATEGY ${strategy}`,
 									[]
 								),
 					onSome: (origin) =>
 						run(
 							gate,
-							`CREATE DATABASE ${quoteIdent(name)} TEMPLATE ${quoteIdent(origin.name)} STRATEGY ${strategy}`,
+							`CREATE DATABASE ${quoteIdent(building)} TEMPLATE ${quoteIdent(origin.name)} STRATEGY ${strategy}`,
 							[]
 						)
 				})
+				const replayed = (from: DatabaseName, onto: DatabaseName) =>
+					Effect.flatMap(replayOf(owner, from), (inherited) =>
+						Effect.forEach(inherited(quoteIdent(onto)), (statement) => run(gate, statement, []), {
+							discard: true
+						})
+					)
+				yield* Option.match(identified.origin, {
+					onNone: () => Effect.void,
+					onSome: (origin) => replayed(origin.name, building)
+				})
+				yield* Effect.scoped(template.build({ member, name: building }))
+				yield* run(
+					gate,
+					`CREATE DATABASE ${quoteIdent(name)} TEMPLATE ${quoteIdent(building)} STRATEGY ${strategy}`,
+					[]
+				)
 				yield* run(
 					gate,
 					`COMMENT ON DATABASE ${quoteIdent(name)} IS ${quoteLiteral(canonicalText({ template: template.name, declaredIn: template.declaredIn, closure }))}`,
 					[]
 				)
-				yield* Option.match(identified.origin, {
-					onNone: () => Effect.void,
-					onSome: (origin) =>
-						Effect.flatMap(replayOf(owner, origin.name), (inherited) =>
-							Effect.forEach(inherited(quoteIdent(name)), (statement) => run(gate, statement, []), {
-								discard: true
-							})
-						)
-				})
-				yield* Effect.scoped(template.build({ member, name }))
+				yield* replayed(building, name)
+				yield* run(gate, `DROP DATABASE IF EXISTS ${quoteIdent(building)} WITH (FORCE)`, [])
 				yield* run(gate, `ALTER DATABASE ${quoteIdent(name)} ALLOW_CONNECTIONS false`, [])
 				yield* run(gate, `ALTER DATABASE ${quoteIdent(name)} IS_TEMPLATE true`, [])
 			})
@@ -493,8 +512,11 @@ type BuiltTemplate = Readonly<{
 /**
  * Opens `template` on the worker's member: the cluster and the closure hashes from the run, the member the worker
  * reaches, the template held in use for the worker's life (holdInUse) and built there once (ensureBuilt), the strategy
- * the member clones with, and what each clone gets again. A clone is created in the caller's scope, which drops it when it closes (DROP DATABASE ... WITH (FORCE)),
- * then given its template's privileges and settings, and refused unless they are the template's.
+ * the member clones with, and what each clone gets again. A clone is created in the caller's scope, which drops it when
+ * it closes (DROP DATABASE ... WITH (FORCE)), then given its template's privileges and settings, and refused unless they
+ * are the template's. A drop the server refuses (a session still in the clone past the drop's wait, an autovacuum
+ * worker held up under load) never fails the case, whose verdict its teardown is not: the clone is its worker's, by its
+ * owner key, and the run's collection drops it once the worker has ended (runner/run.ts collected).
  */
 const openDatabaseTemplate = (
 	template: DatabaseTemplate

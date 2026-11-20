@@ -1,7 +1,9 @@
 import * as NodeServices from "@effect/platform-node/NodeServices"
 import { Array as Arr, Brand, Context, Effect, Layer, Option, Ref, type Scope } from "effect"
+import { ChildProcess } from "effect/process"
 import { boolean, characterOf, type Gen, int, string } from "#gen.ts"
 import testingCluster from "#pg.config.ts"
+import { machineBin } from "#pg/make.fixtures.ts"
 import { pgOwnerSession } from "#pg/session.ts"
 import type { Need } from "#property.ts"
 import {
@@ -301,3 +303,47 @@ export const countedConnections = (
 			cluster.connect(member, database)
 		)
 })
+
+/**
+ * A session of the member's bootstrap superuser in `database`, over the member's socket by peer authentication (psql,
+ * its standard input held open), for the enclosing scope: a session the owner cannot end, which pg_signal_backend never
+ * lets it terminate, so the owner's DROP DATABASE ... WITH (FORCE) of the database is refused while it lasts, as a drop
+ * is refused when a session it signals has not left in time (an autovacuum worker under load).
+ */
+export const superuserSessionIn = (database: TemplateDatabase) =>
+	Effect.gen(function* () {
+		const bin = yield* machineBin
+		yield* ChildProcess.make(
+			`${bin}/psql`,
+			[
+				"-X",
+				"-q",
+				"-h",
+				database.member.socket,
+				"-p",
+				`${database.member.port}`,
+				"-U",
+				"postgres",
+				"-d",
+				database.name
+			],
+			{ stdin: "pipe", stdout: "ignore", stderr: "ignore" }
+		)
+	})
+
+/** How many sessions of the bootstrap superuser are in `database` now. */
+export const superuserSessions = (
+	database: TemplateDatabase
+): Effect.Effect<number, NeedFailed, PgCluster> =>
+	Effect.scoped(
+		Effect.gen(function* () {
+			const cluster = yield* PgCluster
+			const session = yield* cluster.connect(database.member, cluster.maintenance)
+			const found = yield* single(
+				session,
+				"SELECT pg_catalog.count(*)::text FROM pg_catalog.pg_stat_activity WHERE datname = $1::name AND usename = 'postgres'",
+				[database.name]
+			)
+			return Number(found)
+		})
+	)

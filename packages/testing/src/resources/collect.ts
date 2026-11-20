@@ -83,7 +83,9 @@ const took = (
 /**
  * Drops every template no declared template's chain names (stale: its declaration, its content or its module's
  * closure changed), unless a builder holds its gate or a live worker holds it in use (template.ts holdInUse: another
- * run's, of other properties or other code, a kill trial's among them). A template is first made no template, which
+ * run's, of other properties or other code, a kill trial's among them), and every template's build database
+ * (names.ts buildName) unless a builder holds its gate: one outside its build is a builder's that ended mid-build. A
+ * template is first made no template, which
  * DROP DATABASE requires; a database a drop left invalid (dbcommands.c dropdb, interrupted after it marked the
  * database) is no template, and PostgreSQL lets nothing but a drop touch it, so it is dropped as it is.
  */
@@ -92,7 +94,10 @@ const templatesCollected: CollectionPhase = (collector) =>
 		Effect.flatMap(listed(collector), (named) =>
 			Effect.forEach(named, ({ database, template }) =>
 				Effect.gen(function* () {
-					if (database.kind !== "template" || collector.declared.has(database.name)) {
+					if (
+						database.kind === "clone" ||
+						(database.kind === "template" && collector.declared.has(database.name))
+					) {
 						return Option.none<string>()
 					}
 					const digest = Str.slice(
@@ -101,7 +106,7 @@ const templatesCollected: CollectionPhase = (collector) =>
 					)(database.name)
 					if (
 						!(yield* took(collector, lockKey("$1"), digest)) ||
-						!(yield* took(collector, useKey("$1"), digest))
+						(database.kind === "template" && !(yield* took(collector, useKey("$1"), digest)))
 					) {
 						return Option.none<string>()
 					}

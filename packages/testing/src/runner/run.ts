@@ -279,10 +279,12 @@ export const loadPackage = (
 	})
 
 /**
- * Collects the cluster before a run whose properties declare database templates: once, in this process, with the
- * repository's services built here (its PgCluster), every clone of an ended worker and every template none of the run's
- * properties declares is dropped (resources/collect.ts), so what killed runs and stale declarations left on the
- * cluster is gone before the run clones again. A run that declares no template builds no service and collects nothing;
+ * Collects the cluster before a run whose properties declare database templates, and again once it has ended, its
+ * pools closed and every worker gone: each time in this process, with the repository's services built here (its
+ * PgCluster), every clone of an ended worker and every template none of the run's properties declares is dropped
+ * (resources/collect.ts), so what killed runs and stale declarations left on the cluster is gone before the run clones
+ * again, and a clone whose drop the server refused when its case ended (a session still in it past the drop's wait, an
+ * autovacuum worker's under load) goes with the run that made it, never left to the next. A run that declares no template builds no service and collects nothing;
  * a repository that provides no cluster has nothing to collect. A collection that fails says so on stderr and the run
  * goes on: its properties' needs open, or fail, as they would.
  */
@@ -331,6 +333,18 @@ const collected = (
 			)
 		: Effect.void
 
+/**
+ * `effect`, a run, between two collections of the cluster (collected): one before it, and one once it has ended, however
+ * it ends, its pools closed and every worker gone, so a clone whose drop the server refused at its case's end (a session
+ * still in it past the drop's wait) goes with the run that made it.
+ */
+export const collectedAround =
+	(config: RunnerConfig, root: string, templates: ReadonlyArray<DatabaseTemplate>) =>
+	<A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R | NodeServices> =>
+		Effect.andThen(
+			collected(config, root, templates),
+			Effect.ensuring(effect, collected(config, root, templates))
+		)
 /** A 32-bit run seed as a person writes it: decimal, or hexadecimal after `0x`. */
 const SeedText = Schema.String.check(Schema.isPattern(regex("^(0x[0-9a-fA-F]{1,8}|[0-9]{1,10})$")))
 
@@ -378,109 +392,119 @@ export const runSeedLogged: Effect.Effect<RunSeed, Config.ConfigError | Schema.S
 export const runPackage = (
 	request: RunRequest
 ): Effect.Effect<RunOutcome, LoadFailed | PoolFailed, NodeServices | RunLease> =>
-	Effect.scoped(
-		Effect.gen(function* () {
-			const began = yield* liveMillis
-			const { config, discovered, stackOf } = yield* loadPackage(request.root, request.selected)
-			yield* collected(
-				config,
-				request.root,
-				Arr.flatMap(discovered, (found) => templatesOf(found.property.needs))
-			)
-			const runs = Arr.map(discovered, (found) => ({ found, stack: stackOf(found) }))
-			const kinds = new Map(
-				Arr.map(runs, ({ found, stack }) => {
-					const kind = workersOf(stack, found)
-					return [labelOfWorkers(kind), kind] as const
-				})
-			)
-			const weighed = Arr.map(Arr.fromIterable(kinds), ([label, kind]) => ({
-				label,
-				kind,
-				properties: Arr.filter(
-					runs,
-					({ found, stack }) => labelOfWorkers(workersOf(stack, found)) === label
-				).length
-			}))
-			const shared = Arr.isReadonlyArrayNonEmpty(weighed)
-				? placesShared(
-						runWorkers(runs.length),
-						Arr.map(weighed, ({ properties }) => properties)
-					)
-				: []
-			const pools = new Map<string, Pool>()
-			for (const [{ label, kind }, places] of Arr.zip(weighed, shared)) {
-				const [stack, guide] = kind
-				const pool = yield* poolOf({
-					entry: WORKER_ENTRY,
-					root: request.root,
-					cwd: request.root,
-					env: {},
-					places,
-					execArgv: flagsOf(stack),
-					served: Option.none(),
-					guide,
-					open: runnerLimits.open
-				})
-				pools.set(label, pool)
-			}
-			const properties = yield* Effect.forEach(
-				runs,
-				({ found, stack }) =>
-					Effect.gen(function* () {
-						const start = yield* liveMillis
-						const label = labelOf(found.id, stack)
-						const pool = yield* Effect.mapError(
-							Effect.fromOption(
-								Option.fromUndefinedOr(pools.get(labelOfWorkers(workersOf(stack, found))))
-							),
-							() => PoolFailed.make({ message: `no pool was forked for ${label}` })
-						)
-						const evaluator = pool.evaluator
-						const verdict = yield* found.property.search({
-							id: label,
-							seed: request.seed,
-							limits: runnerLimits,
-							evaluator,
-							reach: request.reach
+	Effect.gen(function* () {
+		const began = yield* liveMillis
+		const { config, discovered, stackOf } = yield* loadPackage(request.root, request.selected)
+		const templates = Arr.flatMap(discovered, (found) => templatesOf(found.property.needs))
+		return yield* collectedAround(
+			config,
+			request.root,
+			templates
+		)(
+			Effect.scoped(
+				Effect.gen(function* () {
+					const runs = Arr.map(discovered, (found) => ({ found, stack: stackOf(found) }))
+					const kinds = new Map(
+						Arr.map(runs, ({ found, stack }) => {
+							const kind = workersOf(stack, found)
+							return [labelOfWorkers(kind), kind] as const
 						})
-						yield* pool.retire(label)
-						const end = yield* liveMillis
-						return {
-							id: found.id,
-							stack,
-							label,
-							module: found.module,
-							kind: found.property.kind,
-							oracle: found.property.oracle,
-							kills: found.property.kills,
-							verdict,
-							millis: end - start
+					)
+					const weighed = Arr.map(Arr.fromIterable(kinds), ([label, kind]) => ({
+						label,
+						kind,
+						properties: Arr.filter(
+							runs,
+							({ found, stack }) => labelOfWorkers(workersOf(stack, found)) === label
+						).length
+					}))
+					const shared = Arr.isReadonlyArrayNonEmpty(weighed)
+						? placesShared(
+								runWorkers(runs.length),
+								Arr.map(weighed, ({ properties }) => properties)
+							)
+						: []
+					const pools = new Map<string, Pool>()
+					for (const [{ label, kind }, places] of Arr.zip(weighed, shared)) {
+						const [stack, guide] = kind
+						const pool = yield* poolOf({
+							entry: WORKER_ENTRY,
+							root: request.root,
+							cwd: request.root,
+							env: {},
+							places,
+							execArgv: flagsOf(stack),
+							served: Option.none(),
+							guide,
+							open: runnerLimits.open
+						})
+						pools.set(label, pool)
+					}
+					const properties = yield* Effect.forEach(
+						runs,
+						({ found, stack }) =>
+							Effect.gen(function* () {
+								const start = yield* liveMillis
+								const label = labelOf(found.id, stack)
+								const pool = yield* Effect.mapError(
+									Effect.fromOption(
+										Option.fromUndefinedOr(pools.get(labelOfWorkers(workersOf(stack, found))))
+									),
+									() => PoolFailed.make({ message: `no pool was forked for ${label}` })
+								)
+								const evaluator = pool.evaluator
+								const verdict = yield* found.property.search({
+									id: label,
+									seed: request.seed,
+									limits: runnerLimits,
+									evaluator,
+									reach: request.reach
+								})
+								yield* pool.retire(label)
+								const end = yield* liveMillis
+								return {
+									id: found.id,
+									stack,
+									label,
+									module: found.module,
+									kind: found.property.kind,
+									oracle: found.property.oracle,
+									kills: found.property.kills,
+									verdict,
+									millis: end - start
+								}
+							}),
+						{ concurrency: "unbounded" }
+					)
+					const counted = yield* Effect.forEach(
+						Arr.fromIterable(pools.values()),
+						(pool) => pool.cases
+					)
+					const held = yield* Effect.forEach(Arr.fromIterable(pools.values()), (pool) => pool.held)
+					const usages = yield* Effect.forEach(
+						Arr.fromIterable(pools.values()),
+						(pool) => pool.usage
+					)
+					const parent = yield* Effect.sync(() => process.cpuUsage())
+					const ended = yield* liveMillis
+					return {
+						properties,
+						millis: ended - began,
+						workers: Arr.flatten(counted),
+						held: Arr.flatten(held),
+						usage: {
+							parent: (parent.user + parent.system) / 1000,
+							properties: Arr.flatMap(usages, (usage) => usage.properties),
+							workers: Arr.flatMap(usages, (usage) => usage.workers),
+							children: Arr.every(usages, (usage) => usage.children === "stated")
+								? ("stated" as const)
+								: ("unstated" as const)
 						}
-					}),
-				{ concurrency: "unbounded" }
+					}
+				})
 			)
-			const counted = yield* Effect.forEach(Arr.fromIterable(pools.values()), (pool) => pool.cases)
-			const held = yield* Effect.forEach(Arr.fromIterable(pools.values()), (pool) => pool.held)
-			const usages = yield* Effect.forEach(Arr.fromIterable(pools.values()), (pool) => pool.usage)
-			const parent = yield* Effect.sync(() => process.cpuUsage())
-			const ended = yield* liveMillis
-			return {
-				properties,
-				millis: ended - began,
-				workers: Arr.flatten(counted),
-				held: Arr.flatten(held),
-				usage: {
-					parent: (parent.user + parent.system) / 1000,
-					properties: Arr.flatMap(usages, (usage) => usage.properties),
-					workers: Arr.flatMap(usages, (usage) => usage.workers),
-					children: Arr.every(usages, (usage) => usage.children === "stated")
-						? "stated"
-						: "unstated"
-				}
-			}
-		})
-	)
+		)
+	})
 
 /** Replays one token on a pool of one worker: the case it names, as it ran, under the run's flags and services. */
 export const replayToken = (
