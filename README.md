@@ -14,6 +14,21 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: the dependency bump of 2026-11-20
+
+The catalog moves to `@effect/tsgo` 0.73.2, `tsrs` 7.1.0-beta.tsrs3 (tsrs's own numbering of its TypeScript 7.1.0-beta
+port, which follows 0.25.0-ts7.1.0-beta), `oxlint` 1.94.0, `oxfmt` 0.79.0, `turbo` 2.11.13, `vitest` 5.1.1,
+`fallow` 3.44.0, `arkregex` 0.0.15 and pnpm 12.21.0, the machine's. Before you move `vendor/toolchain` past this
+section, in the same commit:
+
+1. **Catalog.** Set those versions in `pnpm-workspace.yaml`'s catalog, then `pnpm install` and `pnpm dedupe --check`.
+2. **Diagnostics.** @effect/tsgo 0.73.2 ships five new Effect diagnostics, which the shared base lists at `"error"`:
+   `flatMapMapToZipWith`, `flatMapProvideServiceToProvideServiceEffect`, `forLoopPushToForEach`,
+   `promiseAllInEffect` and `promiseRaceInEffect`. Every tsconfig that restates the `@effect/language-service` plugin
+   lists them at `"error"` too, unless the owner rejects one in `toolchain.config.ts`'s `rejected.diagnostics`. The
+   workspace gate's diagnostic-roster compares the base with the installed @effect/tsgo, so the pin and the catalog
+   move together: the base at this commit under @effect/tsgo 0.69.0 lists five diagnostics it does not ship.
+
 ## Consumer migration: a landing carries its verdicts (2026-11-20)
 
 `toolchain-test verified <ref>` refuses a landing that touches a property (a file of its closure, a file one of its

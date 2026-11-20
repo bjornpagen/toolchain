@@ -78,11 +78,11 @@
 		"pg": "catalog:"
 	},
 	"peerDependencies": {
-		"oxlint": "^1.93.0",
+		"oxlint": "^1.94.0",
 		"pg": "^8.23.1",
 		"typescript": "^7.1.0-beta",
 		"vite": "^8.3.8",
-		"vitest": "^5.1.0"
+		"vitest": "^5.1.1"
 	},
 	"peerDependenciesMeta": {
 		"oxlint": {
