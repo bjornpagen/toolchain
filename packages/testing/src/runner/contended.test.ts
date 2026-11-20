@@ -59,7 +59,11 @@ export const contendedLeaseWaits = property.exhaust(holders, {
 								() => true
 							)
 							return Arr.map(Arr.flatten(results), (result) =>
-								result.outcome.kind === "lost" ? result.outcome.report : result.outcome.kind
+								result.outcome.kind === "lost"
+									? result.outcome.report
+									: result.outcome.kind === "unopened" && holder === "a holder that works"
+										? result.outcome.message
+										: result.outcome.kind
 							)
 						})
 					)
