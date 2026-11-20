@@ -4,6 +4,7 @@ import {
 	Duration,
 	Effect,
 	Fiber,
+	Inspectable,
 	Option,
 	Order,
 	Queue,
@@ -104,11 +105,21 @@ type Phase = "readying" | "evaluating"
 /**
  * A worker process and what the parent knows of it: the units it was sent and has not finished, the one it runs and in
  * what phase, the idle worker its unstarted tail is being revoked for, the busy worker whose tail it waits for, the
- * last of what it wrote, the last message it sent and when (`heard`), why the pool ended it, should it have (`silenced`,
- * the leg of its watch that fired), its declared waits as it reported them, on the parent's clock (`waits`), what its
+ * last of what it wrote, the last message it sent and when (`heard`), why the pool ended it, should it have (`ended`),
+ * its declared waits as it reported them, on the parent's clock (`waits`), what its
  * process reported of its CPU, and since when (on the parent's clock) its next unit to finish has held it, with the
  * readying in that time to take out.
  */
+/**
+ * Why the pool ended a worker: silent past a phase's bound and the grace (the leg of its watch that fired), or for a
+ * message it sent that the pool's protocol does not read, as a worker whose own modules no longer speak the protocol
+ * sends (a mutant of them, in a kill trial or the census), which would otherwise hold its unit unanswered for the
+ * unit's whole bound.
+ */
+type Ending =
+	| Readonly<{ kind: "silent"; overrun: Overrun }>
+	| Readonly<{ kind: "unread"; message: string }>
+
 type Worker = {
 	readonly index: number
 	child: ChildProcess
@@ -119,7 +130,7 @@ type Worker = {
 	awaiting: Option.Option<Worker>
 	output: string
 	heard: Option.Option<Readonly<{ kind: string; at: number }>>
-	silenced: Option.Option<Overrun>
+	ended: Option.Option<Ending>
 	waits: Waits
 	usage: { started: number; reported: number }
 	occupiedSince: number
@@ -328,12 +339,20 @@ const boundOf = (unit: Unit, phase: Phase): number => {
 
 /**
  * Who ended a worker whose unit is lost: the pool, past the phase's bound and the grace, by the leg of its watch that
- * fired (live.ts overrun); or no watch of the pool's, so the worker crashed or something else killed it.
+ * fired (live.ts overrun), or for a message it sent that the protocol does not read; or not the pool, so the worker
+ * crashed or something else killed it.
  */
-const endedBy = (silenced: Option.Option<Overrun>): string =>
-	Option.match(silenced, {
+const endedBy = (ended: Option.Option<Ending>): string =>
+	Option.match(ended, {
 		onNone: () => "by a crash or a signal the pool did not send",
-		onSome: (verdict) => `by the pool, past its bound and the grace: ${overrunText(verdict)}`
+		onSome: (ending) => {
+			switch (ending.kind) {
+				case "silent":
+					return `by the pool, past its bound and the grace: ${overrunText(ending.overrun)}`
+				case "unread":
+					return `by the pool, for a message it sent that the pool's protocol does not read: ${ending.message}`
+			}
+		}
 	})
 
 /** The last message a worker sent, its kind and how long before `now`, or that it sent none. */
@@ -621,7 +640,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 				awaiting: Option.none(),
 				output: "",
 				heard: Option.none(),
-				silenced: Option.none(),
+				ended: Option.none(),
 				waits: noWaits,
 				usage: { started: 0, reported: 0 },
 				occupiedSince: now,
@@ -745,7 +764,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 								(running) => running.unit.id === event.unit && running.phase === event.phase
 							)
 						) {
-							worker.silenced = Option.some(event.overrun)
+							worker.ended = Option.some({ kind: "silent", overrun: event.overrun })
 							yield* endGroup(worker.child)
 						}
 						return
@@ -763,7 +782,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 						worker.ready = false
 						Option.map(lost, ({ unit, phase }) => {
 							const how = event.signal ?? `exit ${event.code}`
-							const report = `${lostIn(unit, phase)} ended (${how}) ${endedBy(worker.silenced)}; ${heardText(worker.heard, now)}; what it last wrote:\n${worker.output}`
+							const report = `${lostIn(unit, phase)} ended (${how}) ${endedBy(worker.ended)}; ${heardText(worker.heard, now)}; what it last wrote:\n${worker.output}`
 							finish(worker, unit, doneWith(unit.work, lostResult(report)))
 						})
 						handBack(worker, [])
@@ -785,6 +804,11 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 					case "message": {
 						const decoded = decode(event.message)
 						if (Option.isNone(decoded)) {
+							worker.ended = Option.some({
+								kind: "unread",
+								message: Str.slice(0, OUTPUT_TAIL)(Inspectable.toStringUnknown(event.message, 0))
+							})
+							yield* endGroup(worker.child)
 							return
 						}
 						const received = decoded.value

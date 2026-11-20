@@ -407,6 +407,45 @@ export const slowlyWorkingProperty = (inChild: boolean): string =>
 		? "src/runner/pool.fixtures.ts#slowlyWorkingChild"
 		: "src/runner/pool.fixtures.ts#slowlyWorking"
 
+/**
+ * What a worker that no longer speaks the pool's protocol says, as one whose own modules a mutant changed can (a "done"
+ * whose results its schema refuses): a message of no kind the pool reads.
+ */
+export const UNREAD_MESSAGE = { kind: "a message of no kind the pool reads" } as const
+
+/**
+ * The case deadline the property planted to speak out of the protocol runs under, in milliseconds: short, so a pool
+ * that drops its message, as it once did, ends the case as hung within it rather than reporting the worker lost.
+ */
+export const UNREAD_DEADLINE = 2000
+
+/**
+ * The planted properties of the pool's protocol: one whose case sends its parent a message the protocol does not read
+ * (UNREAD_MESSAGE) and then waits for nothing, so only the pool ends it; or one that passes at once.
+ */
+export const speakerOf = (unread: boolean): string =>
+	unread
+		? "src/runner/pool.fixtures.ts#sendsAnUnreadMessage"
+		: "src/runner/pool.fixtures.ts#passesAtOnce"
+
+/** A property planted to send its parent a message the pool's protocol does not read, then wait for nothing. */
+export const sendsAnUnreadMessage = property.exhaust(finite(int(0, 1)), {
+	box: "two values",
+	needs: {},
+	situations: [],
+	check: () => () =>
+		Effect.andThen(
+			Effect.sync(() => process.send?.(UNREAD_MESSAGE)),
+			Effect.never
+		),
+	oracle: {
+		kind: "specification",
+		name: "a property planted to send its parent a message the pool's protocol does not read"
+	},
+	kept: [],
+	kills: []
+})
+
 /** A property planted to pass at once, with no need: the next unit a silenced worker is sent. */
 export const passesAtOnce = property.exhaust(finite(int(0, 1)), {
 	box: "two values",

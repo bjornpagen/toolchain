@@ -44,6 +44,8 @@ import {
 	silenceSpace,
 	silencerOf,
 	silencing,
+	speakerOf,
+	UNREAD_DEADLINE,
 	WAITS_DECLARED,
 	slowlyWorkingProperty,
 	unreadyRoot
@@ -351,7 +353,8 @@ export const lostNamesItsLeg = property.exhaust(finite(silenceSpace), {
 	kills: [
 		{
 			file: "packages/testing/src/runner/pool.ts",
-			original: "\t\t\t\t\t\t\tworker.silenced = Option.some(event.overrun)\n",
+			original:
+				'\t\t\t\t\t\t\tworker.ended = Option.some({ kind: "silent", overrun: event.overrun })\n',
 			replacement: "",
 			why: "The pool ends a silent worker without keeping the leg that fired, so its lost unit reads as a crash, as every lost report read before (SELECTWHOLE: thirteen kills unjudged, lost with nothing said); the property fails."
 		},
@@ -367,6 +370,67 @@ export const lostNamesItsLeg = property.exhaust(finite(silenceSpace), {
 			original: "\t\t\t\t\t\tworker.heard = Option.some({ kind: received.kind, at: now })\n",
 			replacement: "",
 			why: "The worker's last message is never kept, so a lost report says it sent none; the property fails."
+		}
+	]
+})
+
+export const unreadMessageEndsItsWorker = property.exhaust(finite(boolean), {
+	box: "a worker whose case sends its parent a message the pool's protocol does not read, then waits for nothing, and one whose case passes at once",
+	needs: { checkout: Checkout.dir },
+	situations: [],
+	check:
+		({ checkout }) =>
+		(unread) =>
+			Effect.gen(function* () {
+				const root = yield* checkout
+				const outcomes = yield* Effect.scoped(
+					Effect.gen(function* () {
+						const pool = yield* poolOf({
+							entry: WORKER_ENTRY,
+							root,
+							cwd: root,
+							env: {},
+							places: placesOf(1),
+							execArgv: process.execArgv,
+							served: Option.none(),
+							guide: "notes",
+							open: runnerLimits.open
+						})
+						const evaluated = yield* pool.evaluator.evaluate(
+							[shortCase(speakerOf(unread), UNREAD_DEADLINE, 1000)],
+							() => true
+						)
+						return Arr.flatten(evaluated)
+					})
+				)
+				assert.deepEqual(
+					Arr.map(outcomes, (result) => result.outcome.kind),
+					[unread ? "lost" : "passed"]
+				)
+				assert.deepEqual(
+					Arr.map(
+						Arr.flatMap(outcomes, (result) =>
+							result.outcome.kind === "lost" ? [result.outcome.report] : []
+						),
+						(report) =>
+							Str.includes("for a message it sent that the pool's protocol does not read")(report)
+					),
+					unread ? [true] : []
+				)
+			}),
+	oracle: {
+		kind: "specification",
+		name: "a worker that sends a message the pool's protocol does not read is ended by the pool at once, its unit lost with the report saying why, and one that speaks the protocol passes"
+	},
+	budget: { runs: 2, steered: 0 },
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/runner/pool.ts",
+			original:
+				'\t\t\t\t\t\t\tworker.ended = Option.some({\n\t\t\t\t\t\t\t\tkind: "unread",\n\t\t\t\t\t\t\t\tmessage: Str.slice(0, OUTPUT_TAIL)(Inspectable.toStringUnknown(event.message, 0))\n\t\t\t\t\t\t\t})\n\t\t\t\t\t\t\tyield* endGroup(worker.child)\n',
+			replacement: "",
+			why: "A message the protocol does not read is dropped, as it was: a worker whose code no longer speaks the protocol (a mutant of case.ts made its \"done\" one the schema refuses) keeps its unit unanswered for the unit's whole bound, every case's deadline added up, so the toolchain's own census waited on one trial for hours; here the case runs to its deadline and is hung, and the property fails."
 		}
 	]
 })
