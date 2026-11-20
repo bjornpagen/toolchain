@@ -11,7 +11,7 @@ import {
 	String as Str
 } from "effect"
 import { Family, Property, type PropertyId, PropertyId as propertyId } from "#property.ts"
-import { RunnerConfig } from "#runner/config.ts"
+import { HARDENED_FLAGS, RunnerConfig } from "#runner/config.ts"
 
 /**
  * What the runner loads at run time, by paths it learns only then: a package's runner config and its test modules.
@@ -69,6 +69,39 @@ export const configOf = (root: string): Effect.Effect<RunnerConfig, LoadFailed, 
 					})
 				)
 	})
+
+/**
+ * The runner config of the package at `root` where it states one (a test.config.ts), or none: a package whose tests
+ * another runner runs alone (Vitest modules, which a census judges as foreign commands) states no runner config. A
+ * config that is there but does not load fails, as configOf does.
+ */
+export const statedConfigOf = (
+	root: string
+): Effect.Effect<Option.Option<RunnerConfig>, LoadFailed, FileSystem.FileSystem | Path.Path> =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		const paths = yield* Path.Path
+		const stated = yield* Effect.mapError(fs.exists(paths.join(root, CONFIG_FILE)), (cause) =>
+			LoadFailed.make({
+				path: CONFIG_FILE,
+				message: `${CONFIG_FILE} could not be looked for: ${cause.message}`
+			})
+		)
+		return stated ? yield* Effect.asSome(configOf(root)) : Option.none()
+	})
+
+/**
+ * The flags a command must run under in the package at `root`: the hardened flags, and the export conditions of the
+ * runner config it states, where it states one (statedConfigOf).
+ */
+export const requiredFlagsAt = (root: string) =>
+	Effect.map(statedConfigOf(root), (stated): ReadonlyArray<string> => [
+		...HARDENED_FLAGS,
+		...Option.match(stated, {
+			onNone: () => [],
+			onSome: (config) => Arr.map(config.conditions, (condition) => `--conditions=${condition}`)
+		})
+	])
 
 /** One property a test module exports: its identity, its module's path from the package root, and the property. */
 export type Discovered = Readonly<{ id: PropertyId; module: string; property: Property }>

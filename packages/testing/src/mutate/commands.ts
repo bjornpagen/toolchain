@@ -30,7 +30,7 @@ import { importClosuresAt, noVerdicts, trackedIn, verdictsAt } from "#runner/aff
 import { editOf } from "#runner/cache.ts"
 import type { Mutation, RunnerConfig } from "#runner/config.ts"
 import { runnerLimits } from "#runner/limits.ts"
-import { configOf, type Discovered } from "#runner/load.ts"
+import { type Discovered, statedConfigOf } from "#runner/load.ts"
 import { loadPackage } from "#runner/run.ts"
 import { productOf } from "#scope.ts"
 
@@ -548,7 +548,7 @@ export const censusCommand = (root: string, args: ReadonlyArray<string>) =>
 				: Option.none()
 			const config = Option.isSome(loaded)
 				? Option.some(loaded.value.config)
-				: yield* Effect.option(configOf(root))
+				: yield* statedConfigOf(root)
 			const properties = Option.match(loaded, {
 				onNone: () => [],
 				onSome: (package_) => package_.discovered

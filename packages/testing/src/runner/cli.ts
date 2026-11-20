@@ -17,10 +17,9 @@ import {
 import { replayOf, replayTokenOf } from "#replay.ts"
 import { toolchainTestCache } from "#runner/cache-home.ts"
 import { compileCached } from "#runner/compile-cache.ts"
-import { HARDENED_FLAGS } from "#runner/config.ts"
 import { fuzz } from "#runner/fuzz.ts"
 import { runOfItsOwn } from "#runner/leases.ts"
-import { configOf, keptValuesAt } from "#runner/load.ts"
+import { keptValuesAt, requiredFlagsAt } from "#runner/load.ts"
 import { type LoadKeying, loadCommand } from "#runner/loads.ts"
 import { failureLines, lineOf } from "#runner/report.ts"
 import { loadPackage, replayToken, runPackage, runSeedLogged } from "#runner/run.ts"
@@ -269,19 +268,13 @@ const commands: Readonly<Record<string, Command>> = {
 	keep: (args) => failing(keep(args))
 }
 
-/** The flags this process must run under: the hardened flags and the config's export conditions. */
-const requiredFlags = Effect.map(configOf(root), (config) => [
-	...HARDENED_FLAGS,
-	...Arr.map(config.conditions, (condition) => `--conditions=${condition}`)
-])
-
 /**
  * Runs a command under the flags it needs: in this process when it already has them, otherwise in a new process of
  * this script with them added, whose exit status this one answers.
  */
 const main = Effect.gen(function* () {
 	const [name, ...args] = Arr.drop(process.argv, 2)
-	const required = yield* requiredFlags
+	const required = yield* requiredFlagsAt(root)
 	const missing = Arr.filter(required, (flag) => !Arr.contains(process.execArgv, flag))
 	if (Arr.isReadonlyArrayNonEmpty(missing)) {
 		const child = process
