@@ -9,6 +9,7 @@ export default defineRunner({
 	include: [
 		"src/gate.test.ts",
 		"src/land.test.ts",
+		"src/threads.test.ts",
 		"src/preset.test.ts",
 		"src/preset-types.test.ts",
 		"src/oxlint/environment.test.ts",

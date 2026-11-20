@@ -77,6 +77,14 @@
 #
 # Turbo's cache is the working tree's (.turbo/cache) unless TURBO_CACHE_DIR names one, so a task the working tree
 # already ran on the same content is a hit in the snapshot, and the other way round.
+#
+# Each tool a run starts takes its share of the machine (GATETHREADS, 2026-11-20): a repository's check runs its turbo
+# through toolchain-turbo, which sets TURBO_CONCURRENCY to the tasks the run executes at once (the fewer of turbo's
+# concurrency and the tasks it plans), and the toolchain's wrappers of the tools (toolchain-oxlint, toolchain-typecheck,
+# toolchain-oxfmt, toolchain-fallow) hand each tool the machine's logical CPUs over it, so a run's tools hold the
+# machine's CPUs at most, where each sized its pool to the whole machine. The commit gate runs its staged-file format
+# and lint side by side, a run of two, before its typecheck, so neither run's tools hold more than the machine's CPUs
+# with the other's.
 set -eu
 
 die() {
@@ -278,18 +286,19 @@ case $mode in
 		[ -f oxlint.ast.config.ts ] || die "the repository has no oxlint.ast.config.ts, the commit gate's AST-only oxlint"
 		logs=$(mktemp -d)
 		failed=
-		started types pnpm types
 		set -f
 		IFS=$newline
+		# The staged files' format and lint, side by side: a run of two tasks, each its tool's share of it.
 		# shellcheck disable=SC2086
-		[ -z "$staged" ] || started format pnpm exec oxfmt --check --no-error-on-unmatched-pattern $staged
+		[ -z "$staged" ] || started format env TURBO_CONCURRENCY=2 pnpm exec toolchain-oxfmt --check --no-error-on-unmatched-pattern $staged
 		# shellcheck disable=SC2086
-		[ -z "$lintable" ] || started lint pnpm exec oxlint -c oxlint.ast.config.ts --no-error-on-unmatched-pattern $lintable
+		[ -z "$lintable" ] || started lint env TURBO_CONCURRENCY=2 pnpm exec toolchain-oxlint -c oxlint.ast.config.ts --no-error-on-unmatched-pattern $lintable
 		unset IFS
 		set +f
-		report types
 		report format
 		report lint
+		started types pnpm types
+		report types
 		rm -rf "$logs"
 		[ -z "$failed" ] || die "failed:$failed"
 		;;

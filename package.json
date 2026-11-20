@@ -17,18 +17,18 @@
 	},
 	"scripts": {
 		"prepare": "effect-tsgo patch",
-		"check": "turbo run typecheck --continue=dependencies-successful -- --incremental false; typecheck=$?; turbo run oxlint format dead-code dedupe workspace-gate fixtures:style fixtures:oxlint fixtures:workspace-gate load --continue=dependencies-successful && exit $typecheck",
-		"types": "turbo run typecheck",
+		"check": "toolchain-turbo run typecheck --continue=dependencies-successful -- --incremental false; typecheck=$?; toolchain-turbo run oxlint format dead-code dedupe workspace-gate fixtures:style fixtures:oxlint fixtures:workspace-gate load --continue=dependencies-successful && exit $typecheck",
+		"types": "toolchain-turbo run typecheck",
 		"typecheck": "toolchain-typecheck",
 		"workspace-gate": "workspace-gate",
 		"oxlint": "toolchain-oxlint-root",
-		"format": "oxfmt --check .",
-		"format:write": "oxfmt .",
-		"dead-code": "fallow dead-code",
+		"format": "toolchain-oxfmt --check .",
+		"format:write": "toolchain-oxfmt .",
+		"dead-code": "toolchain-fallow dead-code",
 		"dedupe": "pnpm dedupe --check",
 		"fuzz": "node packages/testing/scripts/fuzz.ts",
 		"land": "sh packages/devtools/bin/land.sh",
-		"test": "turbo run test"
+		"test": "toolchain-turbo run test"
 	},
 	"devDependencies": {
 		"@bjornpagen/devtools": "workspace:*",

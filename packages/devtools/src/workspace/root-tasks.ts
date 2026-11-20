@@ -25,6 +25,9 @@ export const ROOT_TASK = "//#"
 /** The command a script that runs turbo names, as a word of its own or a path's last segment. */
 export const TURBO = "turbo"
 
+/** The dev tools' turbo, which runs turbo at the width of its run (shared/threads.ts runWidth): a script's turbo too. */
+export const TOOLCHAIN_TURBO = "toolchain-turbo"
+
 /** The characters a shell or a manifest separates a command's words by. */
 const SEPARATORS: ReadonlyArray<string> = [" ", "\t", "\n", ";", "&", "|", "(", ")", '"', "'", "`"]
 
@@ -52,9 +55,11 @@ const wordsOf = (command: string): ReadonlyArray<string> =>
 		Str.isNonEmpty
 	)
 
-/** Whether a script runs turbo: a word of it is `turbo`, or a path ending in `/turbo`. */
+/** Whether a script runs turbo: a word of it is `turbo` or `toolchain-turbo`, or a path ending in either. */
 const runsTurbo = (command: string): boolean =>
-	Arr.some(wordsOf(command), (word) => word === TURBO || Str.endsWith(`/${TURBO}`)(word))
+	Arr.some(wordsOf(command), (word) =>
+		Arr.some([TURBO, TOOLCHAIN_TURBO], (turbo) => word === turbo || Str.endsWith(`/${turbo}`)(word))
+	)
 
 /** The 1-based line of turbo.json that first holds a task's key, else the first, as the gate's other lines fall back. */
 const keyLine = (text: string, name: string): number =>

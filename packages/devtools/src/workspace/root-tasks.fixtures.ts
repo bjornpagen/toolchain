@@ -1,6 +1,12 @@
 import { boolean, element, type Gen } from "@bjornpagen/testing/gen"
 import { Array as Arr, Effect, Option, Order } from "effect"
-import { ROOT_TASK, rootTaskFindings, TURBO, TURBO_CONFIG } from "#workspace/root-tasks.ts"
+import {
+	ROOT_TASK,
+	rootTaskFindings,
+	TOOLCHAIN_TURBO,
+	TURBO,
+	TURBO_CONFIG
+} from "#workspace/root-tasks.ts"
 
 /**
  * The repositories the root-tasks property draws (root-tasks.test.ts), from a grammar of the gate's contract read over
@@ -42,7 +48,9 @@ const TURBO_COMMANDS = [
 	`sh -c '${TURBO} run task'`,
 	`(${TURBO} run task)`,
 	`cd sub&&${TURBO} run task`,
-	`true;${TURBO} run task|cat`
+	`true;${TURBO} run task|cat`,
+	`${TOOLCHAIN_TURBO} run task --filter=//`,
+	`${TOOLCHAIN_TURBO} run a; status=$?; node_modules/.bin/${TOOLCHAIN_TURBO} run b && exit $status`
 ] as const
 
 /** What the root's script of a name runs: none, a command of its own, or turbo. */

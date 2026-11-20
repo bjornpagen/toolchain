@@ -14,3 +14,16 @@ import { availableParallelism } from "node:os"
  * half the machine's CPUs at most.
  */
 export const testWorkers: number = Math.max(1, Math.floor(availableParallelism() / 2))
+
+/** The logical CPUs this process may use, availableParallelism(), which testWorkers and every task's threads derive from. */
+export const processors: number = availableParallelism()
+
+/**
+ * How many threads one task of a run takes when the run executes `tasksAtOnce` tasks at once on `cpus` logical
+ * CPUs: the CPUs over the tasks, rounded down, and one at least (GATETHREADS, 2026-11-20: each gate task's oxlint sized
+ * its pool to the whole machine, 64 threads a task under a turbo of 32, and one live gate's oxlint ran at about 5,400%
+ * CPU). A run of at most `cpus` tasks at once so hands out at most `cpus` threads in all; a run of more
+ * hands each task its one.
+ */
+export const threadsPerTask = (cpus: number, tasksAtOnce: number): number =>
+	Math.max(1, Math.floor(cpus / tasksAtOnce))

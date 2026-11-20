@@ -14,6 +14,26 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: each tool of the gate takes its task's share (2026-11-20)
+
+The gate's tools sized their thread pools to the whole machine under a turbo of many tasks (each oxlint task "using 64
+threads" under a turbo of 32; one live gate's oxlint at about 5,400% CPU). Now a repository's scripts run turbo through
+`toolchain-turbo run …`, which sets TURBO_CONCURRENCY to the tasks the run executes at once, the fewer of turbo's
+concurrency and the tasks its dry run plans, and turbo runs at it and passes it to every task; the toolchain's wrappers
+hand each tool the machine's logical CPUs over it, one at least (testing's `threadsPerTask`): `toolchain-oxlint` and
+`toolchain-oxlint-root` (oxlint's `--threads`), `toolchain-oxfmt` (oxfmt's `--threads`), `toolchain-fallow` (fallow's
+`--threads`) and `toolchain-typecheck` (tsrs, which reads no flag and no GOMAXPROCS), each with RAYON_NUM_THREADS too.
+So a check of six tasks at `"concurrency": "100%"` hands each tool a sixth of the machine, and one of more tasks than
+processors hands each one thread. A task of a turbo run started without it reads turbo's configured concurrency; a tool
+run alone takes the machine. Before you move `vendor/toolchain` past this section, in the same commit:
+
+1. **Every script that runs turbo runs `toolchain-turbo run`** (`check`, `check:full`, `types`, `test`, …), with the
+   same arguments; the workspace gate's root-tasks reads it as running turbo.
+2. **The root's tool scripts run the wrappers:** `format` is `toolchain-oxfmt --check .`, `format:write`
+   `toolchain-oxfmt .`, `dead-code` `toolchain-fallow dead-code`, `architecture` `toolchain-fallow architecture`.
+3. **Delete every per-script thread flag** (`--threads`, `GOMAXPROCS=`, `RAYON_NUM_THREADS=`): no script narrows a tool,
+   and the workspace gate's no-worker-flags still refuses one. turbo.json's `concurrency` stays as it is.
+
 ## Consumer migration: a cluster's lock table is sized (2026-11-20)
 
 A cluster's spec states the heavyweight locks its users hold at once, and each member's `max_locks_per_transaction`

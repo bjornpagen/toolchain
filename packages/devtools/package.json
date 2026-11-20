@@ -22,9 +22,12 @@
 	},
 	"bin": {
 		"toolchain-gate": "./bin/gate.sh",
-		"toolchain-oxlint": "./bin/oxlint.sh",
+		"toolchain-fallow": "./src/tool-fallow.ts",
+		"toolchain-oxfmt": "./src/tool-oxfmt.ts",
+		"toolchain-oxlint": "./src/tool-oxlint.ts",
 		"toolchain-oxlint-root": "./src/oxlint-root.ts",
-		"toolchain-typecheck": "./bin/typecheck.sh",
+		"toolchain-turbo": "./src/turbo.ts",
+		"toolchain-typecheck": "./src/tool-typecheck.ts",
 		"superstyle": "./src/style.ts",
 		"workspace-gate": "./src/workspace-gate.ts"
 	},

@@ -47,6 +47,12 @@
 				"name": "scope",
 				"patterns": ["packages/testing/src/scope.ts"]
 			},
+			// The machine's width (testWorkers, and each gate tool's share of it, threadsPerTask), one definition the
+			// testing library's runner and the dev tools' wrappers of the gate's tools read, so a zone of its own too.
+			{
+				"name": "width",
+				"patterns": ["packages/testing/src/workers.ts"]
+			},
 			{
 				"name": "devtools-suites",
 				"patterns": [
@@ -71,15 +77,15 @@
 		"rules": [
 			{
 				"from": "devtools-suites",
-				"allow": ["devtools", "testing"]
+				"allow": ["devtools", "testing", "width"]
 			},
 			{
 				"from": "testing",
-				"allow": ["scope"]
+				"allow": ["scope", "width"]
 			},
 			{
 				"from": "devtools",
-				"allow": ["scope"]
+				"allow": ["scope", "width"]
 			},
 			{
 				"from": "configs",

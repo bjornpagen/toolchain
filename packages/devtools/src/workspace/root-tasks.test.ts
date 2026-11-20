@@ -55,6 +55,12 @@ export const rootTaskFindingsOf = property.explore(repositories, {
 			original: "\t\t\t\t\t!runsTurbo(command)",
 			replacement: "\t\t\t\t\ttrue",
 			why: "A root script that runs turbo itself is reported as one turbo passes over; the property's root scripts that run turbo fail."
+		},
+		{
+			file: "packages/devtools/src/workspace/root-tasks.ts",
+			original: "Arr.some([TURBO, TOOLCHAIN_TURBO], (turbo) =>",
+			replacement: "Arr.some([TURBO], (turbo) =>",
+			why: "A root script that runs turbo through toolchain-turbo, as every repository's check does to size its tools, is reported as one turbo passes over; the property's root scripts that run toolchain-turbo fail."
 		}
 	]
 })
