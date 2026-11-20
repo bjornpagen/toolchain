@@ -14,6 +14,7 @@ import {
 } from "effect"
 import { Yaml } from "effect/encoding"
 import { DevtoolFailure } from "#shared/devtool.ts"
+import { ownPackagesUnder } from "#shared/git.ts"
 
 /**
  * The repository the dev tools run in, derived from the tree rather than named. The dev tools assume POSIX paths:
@@ -37,7 +38,11 @@ export class Repository extends Context.Service<
 	Readonly<{
 		/** The workspace root: the nearest directory above the dev tools holding pnpm-workspace.yaml. */
 		root: string
-		/** Every workspace package's root, in the order pnpm-workspace.yaml lists their globs. */
+		/**
+		 * The repository's own workspace packages' roots, in the order pnpm-workspace.yaml lists their globs: every package
+		 * it selects but those at or under a submodule (git.ts ownPackagesUnder), another repository's, which no check
+		 * judges.
+		 */
 		packages: ReadonlyArray<string>
 		/** Every Tailwind app: each workspace package holding components.json. */
 		apps: ReadonlyArray<TailwindApp>
@@ -276,8 +281,8 @@ const tailwindAppOf = (
 	})
 
 /** The repository, derived: its root from the working directory, never from where the dev tools sit, since a
- * repository vendors them (its vendor/toolchain is a workspace of its own); its packages from pnpm-workspace.yaml; its
- * Tailwind apps from the packages holding components.json. */
+ * repository vendors them (its vendor/toolchain is a workspace of its own); its own packages from pnpm-workspace.yaml,
+ * a submodule's left out; its Tailwind apps from the packages holding components.json. */
 const derive = Effect.gen(function* () {
 	const fs = yield* FileSystem.FileSystem
 	const workingDirectory = yield* Effect.sync(() => process.cwd())
@@ -286,7 +291,7 @@ const derive = Effect.gen(function* () {
 	const text = yield* fs.readFileString(manifest).pipe(Effect.mapError(inspectionFailure(manifest)))
 	const globs = yield* workspaceGlobsOf(manifest, text)
 	const packagesPerGlob = yield* Effect.forEach(globs, (glob) => packagesOf(root, glob))
-	const packages = Arr.flatten(packagesPerGlob)
+	const packages = yield* ownPackagesUnder(root, Arr.flatten(packagesPerGlob))
 	const packageApps = yield* Effect.forEach(packages, tailwindAppOf)
 	return { root, packages, apps: Arr.getSomes(packageApps) }
 })

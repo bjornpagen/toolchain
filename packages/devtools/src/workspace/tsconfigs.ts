@@ -11,7 +11,7 @@ import {
 } from "effect"
 import { DevtoolFailure } from "#shared/devtool.ts"
 import type { Finding } from "#shared/finding.ts"
-import { covers, relativeTo, Repository } from "#shared/repository.ts"
+import { relativeTo, Repository } from "#shared/repository.ts"
 import { EffectFree } from "#workspace/rules.ts"
 
 /**
@@ -95,21 +95,11 @@ const listedDiagnostics = Effect.gen(function* () {
 	return { base, listed: Arr.flatMap(severitiesIn(config), Record.keys) }
 })
 
-/** Whether a workspace package is another repository's, vendored under the root's vendor/ directory. */
-const isVendoredPackage =
-	(root: string) =>
-	(leaf: string): boolean =>
-		covers({ selected: `${root}/vendor`, file: leaf })
-
-/** The repository's own workspace packages: every one but those vendored from another repository. */
-const ownPackagesOf = (root: string, packages: ReadonlyArray<string>): ReadonlyArray<string> =>
-	Arr.filter(packages, (leaf) => !isVendoredPackage(root)(leaf))
-
 /** The root tsconfig and every own workspace package's tsconfig.json that exists. */
 const workspaceTsconfigs = Effect.gen(function* () {
 	const fs = yield* FileSystem.FileSystem
 	const { root, packages } = yield* Repository
-	const configs = Arr.map(ownPackagesOf(root, packages), (leaf) => `${leaf}/tsconfig.json`)
+	const configs = Arr.map(packages, (leaf) => `${leaf}/tsconfig.json`)
 	const present = yield* Effect.filter(configs, (config) =>
 		fs.exists(config).pipe(Effect.mapError(inspectionFailure(config)))
 	)
@@ -605,7 +595,7 @@ export const tsconfigFindings = (
 		const roster = yield* rosterFindings
 		const workspace = yield* workspaceFindings({
 			root,
-			packages: ownPackagesOf(root, packages),
+			packages,
 			effectFree: input.effectFree
 		})
 		return [...standard, ...roster, ...workspace]

@@ -14,6 +14,7 @@ export default defineRunner({
 		"src/oxlint/rules/no-case-list.test.ts",
 		"src/oxlint/rules/no-plant.test.ts",
 		"src/oxlint/rules/single-permit-owners.test.ts",
+		"src/shared/git.test.ts",
 		"src/workspace/dead-paths.test.ts",
 		"src/workspace/quarantine.test.ts",
 		"src/workspace/root-files.test.ts",

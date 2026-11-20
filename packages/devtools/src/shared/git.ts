@@ -25,6 +25,12 @@ const submodulePathsUnder = Effect.fn("submodulePathsUnder")(function* (director
 	})
 })
 
+/** Whether a file is a submodule's, one of `submodules` (absolute paths) or under one. */
+const inSubmodule =
+	(submodules: ReadonlyArray<string>) =>
+	(file: string): boolean =>
+		Arr.some(submodules, (path) => file === path || Str.startsWith(`${path}/`)(file))
+
 /**
  * The files git shows under a directory, tracked or untracked but not ignored, that still exist, in path order, leaving
  * out each submodule's files. A working tree lists a submodule as its one gitlink, but the gate's snapshot (a fresh git
@@ -58,9 +64,51 @@ export const gitFilesUnder = Effect.fn("gitFilesUnder")(function* (directory: st
 			Arr.filter(Str.split("\0")(output), Str.isNonEmpty),
 			(relative) => `${directory}/${relative}`
 		),
-		(file) => !Arr.some(submodules, (path) => file === path || Str.startsWith(`${path}/`)(file))
+		(file) => !inSubmodule(submodules)(file)
 	)
 	return yield* Effect.filter(Arr.sort(files, Order.String), (file) =>
 		fs.exists(file).pipe(Effect.mapError(inspectionFailure(file)))
 	)
+})
+
+/**
+ * The files the repository-relative paths `named` (style/paths.ts) name inside a submodule of `directory` that exist on
+ * disk, in path order: a check may read such a file as an input, an option naming a source of another repository the
+ * root holds as a submodule (edullm's qti-app style options name plate's vocabulary under packages/qti-pie), though it
+ * never lists, lints or reports a submodule's files (gitFilesUnder). The gate's snapshot fills every submodule, so the
+ * file is there in a snapshot as in the working tree. A path that names a directory (ending in `/`) names no input: an
+ * input is one file.
+ */
+export const submoduleInputsUnder = Effect.fn("submoduleInputsUnder")(function* (
+	directory: string,
+	named: ReadonlyArray<string>
+) {
+	const fs = yield* FileSystem.FileSystem
+	const submodules = yield* submodulePathsUnder(directory)
+	const candidates = Arr.dedupe(
+		Arr.filter(
+			Arr.map(
+				Arr.filter(named, (path) => !Str.endsWith("/")(path)),
+				(path) => `${directory}/${path}`
+			),
+			inSubmodule(submodules)
+		)
+	)
+	return yield* Effect.filter(Arr.sort(candidates, Order.String), (file) =>
+		fs.exists(file).pipe(Effect.mapError(inspectionFailure(file)))
+	)
+})
+
+/**
+ * The packages of `packages` (absolute roots) that are the repository at `directory`'s own: every one but those at or
+ * under a submodule .gitmodules lists, which hold another repository's packages (a vendored toolchain, edullm's
+ * qti-pie, and whatever that repository vendors in turn, which lies under it), so no check of this repository judges
+ * them. A vendored directory is one case of this: every repository vendors by submodule.
+ */
+export const ownPackagesUnder = Effect.fn("ownPackagesUnder")(function* (
+	directory: string,
+	packages: ReadonlyArray<string>
+) {
+	const submodules = yield* submodulePathsUnder(directory)
+	return Arr.filter(packages, (root) => !inSubmodule(submodules)(root))
 })

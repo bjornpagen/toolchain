@@ -3,7 +3,7 @@ import type { Invocation } from "#shared/arguments.ts"
 import { DevtoolFailure } from "#shared/devtool.ts"
 import type { Finding } from "#shared/finding.ts"
 import { fixtureMismatchesOf } from "#shared/fixtures.ts"
-import { gitFilesUnder } from "#shared/git.ts"
+import { gitFilesUnder, submoduleInputsUnder } from "#shared/git.ts"
 import { covers, isGeneratedPath, isVendoredPath, type TailwindApp } from "#shared/repository.ts"
 import { selectFiles } from "#shared/selection.ts"
 import {
@@ -272,7 +272,8 @@ const checkedOptions = (
 /**
  * One app's findings: its stylesheets and HTML files as git lists them, vendored and generated files aside, narrowed
  * to the paths the command line names, less the app's exceptions. The files outside the app that the own rules'
- * options name (a table another workspace package owns) are reported on too. `name` names the app in a failure: its
+ * options name (a table another workspace package owns) are reported on too; a file the options name inside a submodule
+ * of the root is read as an input and never reported on (submoduleInputsUnder). `name` names the app in a failure: its
  * package root relative to the repository's. The options' entry point must be the stylesheet components.json names,
  * which the class rules load the design system from, and their vendored directory the one its aliases.ui resolves
  * to.
@@ -300,8 +301,10 @@ export const appFindings = Effect.fn("appFindings")(function* (
 	}
 	const own = Arr.map(options.own, (rules) => rules.set)
 	const ownPaths = Arr.flatMap(own, (set) => set.paths)
+	const named = [...appPathsOf(options), ...ownPaths]
 	const isVendored = isVendoredPath([app])
 	const listed = yield* gitFilesUnder(input.root)
+	const inputs = yield* submoduleInputsUnder(input.root, named)
 	const tracked = Arr.filter(listed, (file) => !isVendored(file) && !isGeneratedPath(file))
 	const inApp = Arr.filter(tracked, (file) => covers({ selected: app.root, file }))
 	const outside = Arr.filter(
@@ -317,8 +320,8 @@ export const appFindings = Effect.fn("appFindings")(function* (
 		stylesheets: Arr.filter(inApp, (file) => isStylesheetPath(file) && isSelected(file)),
 		appStylesheets: [app.stylesheet],
 		html: Arr.filter(inApp, (file) => isHtmlPath(file) && isSelected(file)),
-		known: tracked,
-		named: [...appPathsOf(options), ...ownPaths],
+		known: [...tracked, ...inputs],
+		named,
 		options,
 		own,
 		isReported: isSelected
