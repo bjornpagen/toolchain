@@ -85,11 +85,21 @@ export type Template<T> = Readonly<{
 	open: Effect.Effect<Opened<T>, NeedFailed, NeedContext>
 }>
 
-/** Where a database template is built from: the cluster's own base database, or another template, whose identity is then part of this one's. */
-export type Origin = Readonly<{ kind: "cluster" }> | DatabaseTemplate
+/**
+ * Where a database template is built from: the cluster's own base database; a fresh database, template0 copied in a
+ * libc `locale` of the member's (the locale a code under test runs in, where it is not the cluster's), the locale part
+ * of the template's identity; or another template, whose identity is then part of this one's.
+ */
+export type Origin =
+	| Readonly<{ kind: "cluster" }>
+	| Readonly<{ kind: "fresh"; locale: string }>
+	| DatabaseTemplate
 
 /** A database template built from the cluster's base database (PgClusterSpec.base). */
 const clusterBase: Origin = { kind: "cluster" }
+
+/** A database template built from template0 in the libc locale `locale`, which the member must have. */
+const freshIn = (locale: string): Origin => ({ kind: "fresh", locale })
 
 /**
  * A template of databases: built once per cluster member, stored there as a database named by its identity's digest
@@ -138,7 +148,16 @@ export type DatabaseTemplateSpec = Readonly<{
 }>
 
 /** An origin's key, as a template's key reads it. */
-const originKey = (origin: Origin): string => (origin.kind === "cluster" ? "cluster" : origin.key)
+const originKey = (origin: Origin): string => {
+	switch (origin.kind) {
+		case "cluster":
+			return "cluster"
+		case "fresh":
+			return `fresh ${origin.locale}`
+		case "database-template":
+			return origin.key
+	}
+}
 
 /**
  * The clone strategies PostgreSQL offers (CREATE DATABASE ... STRATEGY), and the one a member clones with, by its
@@ -292,16 +311,19 @@ export const identify = (
 	template: DatabaseTemplate
 ): Effect.Effect<Identified, NeedFailed> =>
 	Effect.gen(function* () {
-		const origin = yield* template.from.kind === "cluster"
-			? Effect.succeed(Option.none<Identified>())
-			: Effect.asSome(identify(cluster, closures, session, template.from))
+		const origin = yield* template.from.kind === "database-template"
+			? Effect.asSome(identify(cluster, closures, session, template.from))
+			: Effect.succeed(Option.none<Identified>())
 		const closure = yield* closures.hashOf(template.declaredIn)
 		const digest = yield* identityOf(
 			session,
 			template,
 			closure,
 			Option.match(origin, {
-				onNone: () => `cluster ${cluster.base}`,
+				onNone: () =>
+					template.from.kind === "fresh"
+						? `fresh ${template.from.locale}`
+						: `cluster ${cluster.base}`,
 				onSome: (built) => built.name
 			})
 		)
@@ -319,6 +341,44 @@ const awaitAdvisory = (
 	statement: string,
 	params: Parameters<typeof run>[2]
 ): ReturnType<typeof run> => waitingOn(run(session, statement, params))
+
+/**
+ * A libc locale name as glibc matches one: case aside, and its separators (`-`, `_`, `.`) dropped, so `en_US.UTF-8`
+ * names the locale initdb imported as `en_US.utf8`.
+ */
+const localeKey = (placeholder: string): string =>
+	`pg_catalog.lower(pg_catalog.regexp_replace(${placeholder}, '[-_.]', '', 'g'))`
+
+/**
+ * Makes `name` from template0 in the libc locale `locale`, refused with a NeedFailed that names the locale, before any
+ * database is made, when the member has no such locale: none of the libc collations it imported from the system (initdb's
+ * import of `locale -a`, pg_import_system_collations after) names it.
+ */
+const createdFresh = (
+	gate: Parameters<typeof run>[0],
+	template: DatabaseTemplate,
+	name: DatabaseName,
+	locale: string,
+	strategy: Strategy
+): Effect.Effect<void, NeedFailed> =>
+	Effect.gen(function* () {
+		const known = yield* single(
+			gate,
+			`SELECT EXISTS (SELECT FROM pg_catalog.pg_collation WHERE collprovider = 'c' AND ${localeKey("collcollate")} = ${localeKey("$1")})::text`,
+			[locale]
+		)
+		if (known !== "true") {
+			return yield* NeedFailed.make({
+				need: template.key,
+				message: `template ${template.name} is built in the locale ${locale}, which the member has not: no libc collation of its names it (install the locale, then SELECT pg_catalog.pg_import_system_collations('pg_catalog'))`
+			})
+		}
+		yield* run(
+			gate,
+			`CREATE DATABASE ${quoteIdent(name)} TEMPLATE template0 LOCALE_PROVIDER libc LOCALE ${quoteLiteral(locale)} STRATEGY ${strategy}`,
+			[]
+		)
+	})
 
 /**
  * Makes sure the identified template is built on `member`. A built template (a template refusing connections) is
@@ -363,15 +423,22 @@ const ensureBuilt = (
 				if (state === "partial") {
 					yield* run(gate, `DROP DATABASE ${quoteIdent(name)} WITH (FORCE)`, [])
 				}
-				const source = Option.match(identified.origin, {
-					onNone: () => cluster.base,
-					onSome: (origin) => origin.name
+				yield* Option.match(identified.origin, {
+					onNone: () =>
+						template.from.kind === "fresh"
+							? createdFresh(gate, template, name, template.from.locale, strategy)
+							: run(
+									gate,
+									`CREATE DATABASE ${quoteIdent(name)} TEMPLATE ${quoteIdent(cluster.base)} STRATEGY ${strategy}`,
+									[]
+								),
+					onSome: (origin) =>
+						run(
+							gate,
+							`CREATE DATABASE ${quoteIdent(name)} TEMPLATE ${quoteIdent(origin.name)} STRATEGY ${strategy}`,
+							[]
+						)
 				})
-				yield* run(
-					gate,
-					`CREATE DATABASE ${quoteIdent(name)} TEMPLATE ${quoteIdent(source)} STRATEGY ${strategy}`,
-					[]
-				)
 				yield* run(
 					gate,
 					`COMMENT ON DATABASE ${quoteIdent(name)} IS ${quoteLiteral(canonicalText({ template: template.name, declaredIn: template.declaredIn, closure }))}`,
@@ -483,5 +550,8 @@ const openDatabaseTemplate = (
 /** A database template (DatabaseTemplate): `Template.database({ declaredIn: import.meta, name, content, from, build })`. */
 const database = (spec: DatabaseTemplateSpec): DatabaseTemplate => new DatabaseTemplate(spec)
 
-/** Templates: `Template.database(spec)`, and `Template.cluster`, the origin of a template built from the cluster's base. */
-export const Template = { database, cluster: clusterBase } as const
+/**
+ * Templates: `Template.database(spec)`; `Template.cluster`, the origin of a template built from the cluster's base; and
+ * `Template.fresh(locale)`, the origin of one built from template0 in a libc locale of the member's.
+ */
+export const Template = { database, cluster: clusterBase, fresh: freshIn } as const

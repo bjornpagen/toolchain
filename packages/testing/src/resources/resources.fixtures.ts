@@ -1,5 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices"
 import { Array as Arr, Brand, Context, Effect, Layer, Option, Ref, type Scope } from "effect"
+import { boolean, characterOf, type Gen, int, string } from "#gen.ts"
 import testingCluster from "#pg.config.ts"
 import { pgOwnerSession } from "#pg/session.ts"
 import type { Need } from "#property.ts"
@@ -189,6 +190,44 @@ export const unpopulatedViewTemplate = Template.database({
 		"CREATE MATERIALIZED VIEW public.tallies AS SELECT pg_catalog.count(*) AS n FROM public.items WITH NO DATA"
 	])
 })
+
+/**
+ * A case of the fresh-locale property: a locale the member has (the `pick`-th, modulo their count, of its libc
+ * collations of a UTF-8 codeset) or a name no system has (`zz` letters, a territory and a UTF-8 codeset), and two texts
+ * of letters in both cases, a hyphen, a space and an accented letter, which a locale may order unlike their code points.
+ */
+export type LocaleCase = Readonly<{
+	known: boolean
+	pick: number
+	unknown: string
+	left: string
+	right: string
+}>
+
+const localeText = string(characterOf(["a", "A", "b", "B", "-", " ", "é"]), { min: 0, max: 4 })
+
+/** The cases of the fresh-locale property (LocaleCase). */
+export const localeCases: Gen<LocaleCase> = (source) => ({
+	known: boolean(source),
+	pick: int(0, 999)(source),
+	unknown: `zz${string(characterOf(["q", "x", "z"]), { min: 1, max: 3 })(source)}_ZZ.UTF-8`,
+	left: localeText(source),
+	right: localeText(source)
+})
+
+/** The member's libc collations of a UTF-8 codeset, each its name and its locale, in locale order. */
+export const UTF8_COLLATIONS =
+	"SELECT c.collname::text, c.collcollate FROM pg_catalog.pg_collation AS c WHERE c.collprovider = 'c' AND c.collcollate ~* 'utf-?8$' ORDER BY c.collcollate, c.collname"
+
+/** A template of nothing built from template0 in `locale`, whose identity is `token`, unique to the case that declares it. */
+export const freshTemplate = (locale: string, token: string) =>
+	Template.database({
+		declaredIn: import.meta,
+		name: `fresh ${token}`,
+		content: { token },
+		from: Template.fresh(locale),
+		build: building([])
+	})
 
 /** The seat's reset: the items, and their identity, as the template has them. */
 export const seatReset = ["TRUNCATE public.items RESTART IDENTITY"] as const

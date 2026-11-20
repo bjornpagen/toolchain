@@ -20,10 +20,11 @@ import {
 	Scope
 } from "effect"
 import { assert } from "#assert.ts"
+import type { Reached } from "#features.ts"
 import { array, boolean, finite, int } from "#gen.ts"
 import { liveSleep } from "#live.ts"
-import { property } from "#property.ts"
-import { PgCluster, run as runIn, single } from "#resources/cluster.ts"
+import { type Case, property } from "#property.ts"
+import { PgCluster, quoteIdent, run as runIn, single } from "#resources/cluster.ts"
 import {
 	type CollectionPhase,
 	collect,
@@ -37,7 +38,9 @@ import {
 	derivedTemplate,
 	dropTemplate,
 	exists,
+	freshTemplate,
 	inDatabase,
+	localeCases,
 	marksTemplate,
 	ownCluster,
 	runsOf,
@@ -47,6 +50,7 @@ import {
 	fixturesModule,
 	templateNameOf,
 	tokenTemplate,
+	UTF8_COLLATIONS,
 	unpopulatedViewTemplate
 } from "#resources/resources.fixtures.ts"
 import type { DatabaseTemplate } from "#resources/template.ts"
@@ -875,3 +879,101 @@ export const transactionsRollBack = property.explore(
 		kills: []
 	}
 )
+
+type LocaleFeature = "orders unlike code points" | "refused"
+
+/**
+ * A template built fresh (Template.fresh) is template0 copied in its locale, which its clones keep: a clone's default
+ * collation is that locale, and orders two texts as the member's libc collation of that locale orders them, unlike their
+ * code points where the locale says so (`a` before `B` in en_US.UTF-8); the same declaration in two locales is two
+ * templates, since the locale is part of the identity; and a locale the member has not is refused, as the template's
+ * open failing with its own NeedFailed, before any database is made.
+ */
+export const freshInItsLocale = property.explore(localeCases, {
+	needs: { services },
+	situations: ["orders unlike code points", "refused"] satisfies ReadonlyArray<
+		Reached<LocaleFeature>
+	>,
+	check:
+		({ services: context }, c: Case<LocaleFeature>) =>
+		(asked) =>
+			Effect.gen(function* () {
+				const ctx = yield* context
+				yield* Effect.provideContext(
+					Effect.gen(function* () {
+						const cluster = yield* PgCluster
+						const member = yield* Effect.map(cluster.members, Arr.headNonEmpty)
+						const facts = yield* Effect.scoped(
+							Effect.flatMap(cluster.connect(member, cluster.maintenance), (session) =>
+								Effect.all({
+									token: single(session, "SELECT pg_catalog.gen_random_uuid()::text", []),
+									collations: runIn(session, UTF8_COLLATIONS, [])
+								})
+							)
+						)
+						const token = facts.token ?? ""
+						const collation = Arr.get(
+							facts.collations,
+							asked.pick % Math.max(1, facts.collations.length)
+						)
+						if (!asked.known || Option.isNone(collation)) {
+							c.note("refused")
+							const refused = yield* Effect.flip(
+								Effect.scoped(freshTemplate(asked.unknown, token).open)
+							)
+							assert.equal(
+								refused.need,
+								freshTemplate(asked.unknown, token).key,
+								`a template in ${asked.unknown}, which the member has not, is refused as its own need's failure`
+							)
+							return
+						}
+						const [name = "", given = ""] = collation.value
+						const locale = given ?? ""
+						const template = freshTemplate(locale, token)
+						assert.notEqual(
+							template.key,
+							freshTemplate(`${locale}-other`, token).key,
+							"the locale is part of a template's identity"
+						)
+						const read = yield* Effect.scoped(
+							Effect.gen(function* () {
+								const opened = yield* template.open
+								const clone = yield* opened.clone
+								const session = yield* cluster.connect(clone.member, clone.name)
+								const ordered = yield* runIn(
+									session,
+									"SELECT ($1 < $2)::text, d.datcollate, d.datlocprovider::text FROM pg_catalog.pg_database AS d WHERE d.datname = pg_catalog.current_database()",
+									[asked.left, asked.right]
+								)
+								return { ordered, template: clone.template }
+							})
+						)
+						const reference = yield* Effect.scoped(
+							Effect.flatMap(cluster.connect(member, cluster.maintenance), (session) =>
+								single(session, `SELECT ($1 COLLATE ${quoteIdent(name ?? "")} < $2)::text`, [
+									asked.left,
+									asked.right
+								])
+							)
+						)
+						yield* dropTemplate({ member, name: read.template })
+						if (reference !== `${asked.left < asked.right}`) {
+							c.note("orders unlike code points")
+						}
+						assert.deepEqual(
+							read.ordered,
+							[[reference, locale, "c"]],
+							`a clone of a template in ${locale} collates in it and orders text as its libc collation does`
+						)
+					}),
+					ctx
+				)
+			}),
+	oracle: {
+		kind: "postgresql",
+		name: "the member's own libc collation of the locale, against the clone's default collation"
+	},
+	kept: [],
+	kills: []
+})
