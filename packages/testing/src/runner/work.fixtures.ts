@@ -116,8 +116,14 @@ export const childSeen = (burnMillis: number): Effect.Effect<ChildSeen> =>
 		})
 	)
 
-/** The grain of a child's CPU as Linux states it, in milliseconds: one clock tick of USER_HZ (runner/work.ts). */
-export const TICK_GRAIN_MILLIS = 10
+/**
+ * How far below a child's own reading of its CPU the tree's can read, in milliseconds: Linux states a process's user and
+ * system CPU (/proc/<pid>/stat utime and stime) as two counts of clock ticks of USER_HZ (runner/work.ts), each rounded
+ * down, so their sum can fall short of the CPU the process spent, which it reads to the microsecond, by up to a tick
+ * each. One tick, as this was, failed childWorkCounts at 40 ms on toolchain c400d74's push gate (a child whose system
+ * time had a part tick of its own), while the same case passed alone four times in four.
+ */
+export const STATED_CPU_SHORTFALL_MILLIS = 2 * 10
 
 /** A runaway's deadline and how many deadlines of CPU it spends, yielding between short bursts, before it passes. */
 export type Runaway = Readonly<{ deadline: number; deadlines: number }>

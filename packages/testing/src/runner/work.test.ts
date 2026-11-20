@@ -38,7 +38,7 @@ import {
 	SLOW_DEADLINE,
 	slowCase,
 	slowShapes,
-	TICK_GRAIN_MILLIS,
+	STATED_CPU_SHORTFALL_MILLIS,
 	waitingCase
 } from "#runner/work.fixtures.ts"
 
@@ -76,11 +76,11 @@ export const childWorkCounts = property.exhaust(finite(childBurns), {
 	check: () => (burnMillis) =>
 		Effect.gen(function* () {
 			const seen = yield* childSeen(burnMillis)
-			assert.equal(seen.treeCpu >= seen.childCpu - TICK_GRAIN_MILLIS, true)
+			assert.equal(seen.treeCpu >= seen.childCpu - STATED_CPU_SHORTFALL_MILLIS, true)
 		}),
 	oracle: {
 		kind: "specification",
-		name: "a case's work counts its live children's CPU: the tree's CPU since the work began holds a live child's, to Linux's clock tick"
+		name: "a case's work counts its live children's CPU: the tree's CPU since the work began holds a live child's, to the tick Linux rounds each of its user and system CPU down to"
 	},
 	kept: [],
 	kills: [
