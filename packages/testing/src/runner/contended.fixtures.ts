@@ -1,7 +1,7 @@
 import { Effect, Option, Schema, Stream } from "effect"
 import { ChildProcess } from "effect/process"
 import { element, finite } from "#gen.ts"
-import { type Reservation, reservationFiles } from "#pg/lease.ts"
+import { type Reservation, reservationClaim } from "#pg/lease.ts"
 
 /**
  * What the contended-lease property (contended.test.ts) draws, and the run it sets beside the run it watches: a run of
@@ -59,21 +59,20 @@ const tick = () => {
 let said = ""
 holder.stdout.on("data", (chunk) => {
 	said += chunk.toString("utf8")
-	if (said !== "held\\n") { return }
+	if (!said.startsWith("held ") || !said.endsWith("\\n")) { return }
 	process.stdout.write("held\\n")
 	setTimeout(() => process.exit(0), ${String(HOLD_MILLIS)})
 	if (${String(works)}) { tick() }
 })`
 
 /**
- * `reservation`'s gate and every slot it reserves, held by a run of its own that `holder` says how it spends its hold,
- * for the enclosing scope, which ends it: once this returns, the run holds them.
+ * `reservation`'s lease, held by a run of its own that `holder` says how it spends its hold, for the enclosing scope,
+ * which ends it: once this returns, the run holds it.
  */
 export const heldApart = (reservation: Reservation, holder: Holder) =>
 	Effect.gen(function* () {
-		const [gate, ...slots] = reservationFiles(reservation)
 		const holderArguments = yield* Effect.orDie(
-			argumentsText([HOLDER, "gate", gate, "wait", "exclusive", String(slots.length), ...slots])
+			argumentsText([HOLDER, ...reservationClaim(reservation)])
 		)
 		const handle = yield* ChildProcess.make(
 			process.execPath,

@@ -16,6 +16,7 @@ import {
 } from "effect"
 import { HUNG_CLEANUP_GRACE, liveMillis, overrun, watchdogGraceMillis } from "#live.ts"
 import { type Served, servedArgv } from "#mutate/pool.ts"
+import { familyOf } from "#pg/lease.ts"
 import { withLateUses } from "#runner/case.ts"
 import { compileCacheDirectory, readsCoverage } from "#runner/compile-cache.ts"
 import { drawnLease } from "#runner/leases.ts"
@@ -148,9 +149,9 @@ const uncounted = "the pool gave back no answer for a count it was sent"
 /**
  * Where a pool's workers stand among the processes that run at once: the place of each worker the pool may fork, by its
  * index in the pool (one place a worker, so how many workers it may have), and how many places there are. A worker
- * reports its place as its WorkerIndex, which a repository's services read (grizzle's: worker i of a run takes its
- * lease on member i mod K of the cluster family), so workers that run at once take distinct places: a run's pool holds
- * every place, and each lease of the mutator's pool holds places no other lease holds.
+ * reports its place as its WorkerIndex, which a repository's services read (a cluster's: worker i of a run reaches the
+ * member of its run's i-th slot, pg/lease.ts Placement), so workers that run at once take distinct places: a run's pool
+ * holds every place, and each lease of the mutator's pool holds places no other lease holds.
  */
 export type Places = Readonly<{ at: Arr.NonEmptyReadonlyArray<number>; of: number }>
 
@@ -928,9 +929,9 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 										Effect.sync(() => {
 											send(worker, {
 												kind: "lease",
-												gate: reservation.gate,
+												family: familyOf(reservation),
 												answer: Result.match(held, {
-													onSuccess: () => ({ kind: "leased" }),
+													onSuccess: (members) => ({ kind: "leased", members }),
 													onFailure: (failure) => ({ kind: "refused", message: failure.message })
 												})
 											})

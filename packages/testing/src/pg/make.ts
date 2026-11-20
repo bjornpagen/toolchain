@@ -1041,10 +1041,10 @@ const resizeMember = (
  * untouched, sizes each to its share of this machine's family (resizeMember) and makes the members the family's size
  * asks beyond them (grow): how a family made on a narrower machine, or before a spec's sizing changed, becomes this
  * machine's. A family recorded with more members than its size keeps them all, each sized as a member of its size, and
- * every run is served by all of them, its workers spread over every member (worker i on member i mod the family's
- * size), so a run leases its workers' share of each member and runs beside it lease the rest, where a narrower run was
- * served by the first members alone and every run on the machine queued behind them (5491 and 5442, 2026-11-20: each
- * run took all 16 slots of the first two of four members, the other two idle).
+ * every run is served by all of them, its workers spread over every member (its lease takes each slot on the member
+ * where it holds fewest, pg/lease.ts), so a run leases its workers' share of the members and runs beside it lease the
+ * rest, where a narrower run was served by the first members alone and every run on the machine queued behind them
+ * (5491 and 5442, 2026-11-20: each run took all 16 slots of the first two of four members, the other two idle).
  */
 export const initCluster = (
 	cluster: LocalCluster,

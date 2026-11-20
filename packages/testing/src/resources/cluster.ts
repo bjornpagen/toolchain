@@ -59,8 +59,9 @@ export type DatabaseName = string & Brand.Brand<"DatabaseName">
  * What a repository states about its cluster, which `PgCluster.layer` turns into the runner service its databases come
  * from: the prefix of every name this library mints there; its local cluster (@bjornpagen/testing/pg's LocalCluster),
  * a leased one (LeasedSizing), since the run leases it for its workers and a cluster sized by its sessions states no
- * worker's demand to lease by, which the layer makes and starts the first time a need reaches it, whose members a run's workers spread over (the
- * first a worker of index i reaches is member i mod their count), whose template every template built from the cluster
+ * worker's demand to lease by, which the layer makes and starts the first time a need reaches it, whose members a
+ * run's workers spread over (each worker on the member its run's lease put it on), whose template every template built
+ * from the cluster
  * itself copies (IS_TEMPLATE, never connected to), and in whose owner's own database this library's sessions and
  * advisory locks live; and how to open a session as the owner on a member in a database, over the repository's own
  * client, from the member's facts (its port, CA and owner's password).
@@ -98,7 +99,11 @@ export type PgClusterShape = Readonly<{
 	connect: PgClusterSpec["connect"]
 	/** The cluster's members, made and started when they are not (pg/make.ts clusterUp) and read once, the first time a need asks. */
 	members: Effect.Effect<Arr.NonEmptyReadonlyArray<PgMember>, NeedFailed>
-	/** The member a worker reaches: worker i of a run on member i mod the members' count. */
+	/**
+	 * The member a worker reaches, once its run holds its lease: the member of its slot (pg/lease.ts Placement), the
+	 * lease's i-th for worker i (a nested run's worker i, drawing on the lease of the run it is started in, the lease's
+	 * i mod its width), so a worker reaches the member that had a slot free for it, never one fixed by its index.
+	 */
 	memberOf: (
 		worker: Context.Service.Shape<typeof WorkerIndex>
 	) => Effect.Effect<PgMember, NeedFailed>
@@ -192,7 +197,8 @@ export class PgCluster extends Context.Service<PgCluster, PgClusterShape>()(
 	 * members are made and started when they are not and read the first time a need asks (pg/make.ts clusterUp, under
 	 * the cluster's lock, whose wait is declared to the worker's guards), and an owner per member opened when the worker
 	 * first reaches it, held until the worker ends, once the run holds its lease on the cluster (pg/lease.ts reservationOf,
-	 * runner/leases.ts): a slot for each of its workers on every member, so no connection of the run is refused.
+	 * runner/leases.ts): a slot for each of its workers among the members, each worker reaching the member of its slot,
+	 * so no connection of the run is refused.
 	 */
 	static readonly layer = (
 		spec: PgClusterSpec
@@ -240,7 +246,9 @@ export class PgCluster extends Context.Service<PgCluster, PgClusterShape>()(
 					connect: spec.connect,
 					members,
 					memberOf: (worker) =>
-						Effect.map(members, (all) => Arr.getUnsafe(all, worker.index % all.length)),
+						Effect.zipWith(members, leased, (all, placement) =>
+							Arr.getUnsafe(all, Arr.getUnsafe(placement, worker.index % placement.length))
+						),
 					owner: (member) =>
 						Effect.suspend(() =>
 							Option.match(Option.fromUndefinedOr(owners.get(member.name)), {

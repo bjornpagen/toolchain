@@ -1,12 +1,18 @@
 import { Context, Deferred, Effect, type FileSystem, Scope } from "effect"
 import type { ChildProcessSpawner } from "effect/process"
 import { waitingFor } from "#live.ts"
-import { type Reservation, reservationFiles, reserved } from "#pg/lease.ts"
+import {
+	familyOf,
+	type Placement,
+	type Reservation,
+	reservationFiles,
+	reserved
+} from "#pg/lease.ts"
 import { NeedFailed, RunLease } from "#runner/services.ts"
 
 /**
- * A run's leases on the clusters its needs reach (pg/lease.ts): one reservation a cluster, by its gate, held for the
- * run's life however many of its workers ask, each asker its answer. A run of its own (a command, a program: runOfItsOwn)
+ * A run's leases on the clusters its needs reach (pg/lease.ts): one reservation a cluster, by its family, held for the
+ * run's life however many of its workers ask, each asker its answer, where the reservation put the run's workers. A run of its own (a command, a program: runOfItsOwn)
  * holds them, and its pool's parent answers its workers' asks with them (pool.ts), so the run, not a worker, holds what
  * its workers use. A run a case starts (a pool, an inline search) is no run of its own: it draws on the lease of the run
  * the case runs in, its worker's (askedLeasesOf), which asks that run's parent, so a nested run never reserves again
@@ -14,24 +20,24 @@ import { NeedFailed, RunLease } from "#runner/services.ts"
  * run that held every slot of 5441).
  */
 
-/** A lease's answer, as the parent sends it to a worker: held, or refused and why. */
+/** A lease's answer, as the parent sends it to a worker: held, with where it put the run's workers, or refused and why. */
 export type LeaseAnswer =
-	| Readonly<{ kind: "leased" }>
+	| Readonly<{ kind: "leased"; members: Placement }>
 	| Readonly<{ kind: "refused"; message: string }>
 
-/** The asks of one reservation, by its gate, each awaiting the one answer. */
+/** The asks of one reservation, by its family, each awaiting the one answer. */
 const askedOnce = (
-	asked: Map<string, Deferred.Deferred<void, NeedFailed>>,
+	asked: Map<string, Deferred.Deferred<Placement, NeedFailed>>,
 	reservation: Reservation,
 	first: Effect.Effect<void>
-): Effect.Effect<void, NeedFailed> =>
+): Effect.Effect<Placement, NeedFailed> =>
 	Effect.suspend(() => {
-		const held = asked.get(reservation.gate)
+		const held = asked.get(familyOf(reservation))
 		if (held !== undefined) {
 			return Deferred.await(held)
 		}
-		const made = Deferred.makeUnsafe<void, NeedFailed>()
-		asked.set(reservation.gate, made)
+		const made = Deferred.makeUnsafe<Placement, NeedFailed>()
+		asked.set(familyOf(reservation), made)
 		return Effect.andThen(first, Deferred.await(made))
 	})
 
@@ -47,7 +53,7 @@ export const runLeasesIn = (
 	scope: Scope.Scope,
 	platform: Context.Context<FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner>
 ): Context.Service.Shape<typeof RunLease> => {
-	const asked = new Map<string, Deferred.Deferred<void, NeedFailed>>()
+	const asked = new Map<string, Deferred.Deferred<Placement, NeedFailed>>()
 	return RunLease.of({
 		reserve: (reservation) =>
 			askedOnce(
@@ -59,12 +65,12 @@ export const runLeasesIn = (
 					),
 					(held) =>
 						Effect.suspend(() => {
-							const made = asked.get(reservation.gate)
+							const made = asked.get(familyOf(reservation))
 							return made === undefined
 								? Effect.void
 								: Effect.asVoid(
 										held._tag === "Success"
-											? Deferred.succeed(made, undefined)
+											? Deferred.succeed(made, held.success)
 											: Deferred.fail(made, refusedLease(held.failure.message))
 									)
 						})
@@ -103,7 +109,7 @@ export const runOfItsOwn = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
 /** A worker's RunLease, and where its message loop hands it the parent's answers. */
 export type AskedLeases = Readonly<{
 	service: Context.Service.Shape<typeof RunLease>
-	answered: (gate: string, answer: LeaseAnswer) => Effect.Effect<void>
+	answered: (family: string, answer: LeaseAnswer) => Effect.Effect<void>
 }>
 
 /**
@@ -116,21 +122,21 @@ export type AskedLeases = Readonly<{
 export const askedLeasesOf = (
 	ask: (reservation: Reservation) => Effect.Effect<void>
 ): AskedLeases => {
-	const asked = new Map<string, Deferred.Deferred<void, NeedFailed>>()
+	const asked = new Map<string, Deferred.Deferred<Placement, NeedFailed>>()
 	return {
 		service: RunLease.of({
 			reserve: (reservation) =>
 				waitingFor(reservationFiles(reservation))(askedOnce(asked, reservation, ask(reservation)))
 		}),
-		answered: (gate, answer) =>
+		answered: (family, answer) =>
 			Effect.suspend(() => {
-				const held = asked.get(gate)
+				const held = asked.get(family)
 				if (held === undefined) {
 					return Effect.void
 				}
 				switch (answer.kind) {
 					case "leased":
-						return Effect.asVoid(Deferred.succeed(held, undefined))
+						return Effect.asVoid(Deferred.succeed(held, answer.members))
 					case "refused":
 						return Effect.asVoid(Deferred.fail(held, refusedLease(answer.message)))
 				}

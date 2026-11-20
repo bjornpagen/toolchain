@@ -14,6 +14,22 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: a lease takes the slots that are free (2026-11-20)
+
+A run's lease on a cluster family no longer waits under the cluster's gate. A run that a waiting run ahead of it held
+up, though its own slots were free (PERFIO-push held 5491's gate and slot 0 for 17 minutes with 3 slots free, and every
+run of one worker queued behind it), now starts at once. A run still holds a slot for each of its workers or none, but
+it takes them wherever they are free: each slot on the member where the run holds fewest, then on the one with the most
+free slots. So runs of one worker land on members of their own. A worker reaches the member of its slot, not member
+i mod K. A run that cannot have its slots waits in the family's queue (`<first member>/lease/gate.lock`, the old gate's
+file, so a holder of an older toolchain queues on it too). The queue's holder is handed each slot it waits for when
+that slot is let go (`scripts/hold.pl`'s `lease`). A run wider than all the family's slots is refused, where a run
+wider than one member's share was. Before you move `vendor/toolchain` past this section:
+
+1. **Nothing in your code**, unless it calls the lease itself. `RunLease.reserve` and `reserved` now answer the
+   run's `Placement`, the member index of each worker's slot, where they answered nothing. `PgCluster.memberOf(worker)`
+   answers the member of that worker's slot.
+
 ## Consumer migration: each tool of the gate takes its task's share (2026-11-20)
 
 The gate's tools sized their thread pools to the whole machine under a turbo of many tasks (each oxlint task "using 64
@@ -251,11 +267,11 @@ A run takes its share of a local cluster's capacity before any of its workers op
 several checkouts on one cluster wait in line rather than refuse each other's connections ("too many clients") or
 wait on each other's idle holders in a cycle. The first worker whose need reaches the cluster asks the run's parent
 (`RunLease`, from `@bjornpagen/testing/property`, which every worker and inline run has), and the parent reserves
-once for the whole run: on every member at once, under the cluster's gate, a slot for each of the run's workers there,
-each slot one worker's stated connections, out of the capacity the maker read from the member's server and recorded
-beside it (`<member>/lease/capacity`). A run that cannot have its whole set waits, holding none, in the kernel: the
-slots and the gate are flock(2) locks, so a waiter holds no connection, transaction or snapshot. A run never narrows to
-the slots that are free. Before you move `vendor/toolchain` past this section:
+once for the whole run: a slot for each of the run's workers among the family's members (where they are free, since
+2026-11-20: the section above), each slot one worker's stated connections, out of the capacity the maker read from the
+member's server and recorded beside it (`<member>/lease/capacity`). A run that cannot have its whole set waits in the
+kernel: the slots and the family's queue are flock(2) locks, so a waiter holds no connection, transaction or snapshot.
+A run never narrows to the slots that are free. Before you move `vendor/toolchain` past this section:
 
 1. **pg.config.ts.** `sizing.connections` is `{ kind: "perWorker", perWorker, outside }`, always: a lease divides a
    member's capacity by what a worker holds, so `{ kind: "default" }` is gone for connections. State `perWorker` as what

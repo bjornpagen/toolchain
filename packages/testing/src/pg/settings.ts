@@ -234,8 +234,8 @@ export const membersOf = (sizing: Sizing, workers: number): number =>
 
 /**
  * The workers one member serves at most among `workers` workers on `members` members: the workers over the members,
- * rounded up, so the members together serve every worker of a run, worker i on member i mod the members' count
- * (resources/cluster.ts memberOf).
+ * rounded up, so the members together serve every worker of a run, which its lease spreads evenly over them
+ * (pg/lease.ts, resources/cluster.ts memberOf).
  */
 export const shareOf = (workers: number, members: number): number => Math.ceil(workers / members)
 

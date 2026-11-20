@@ -1,5 +1,5 @@
 import { Context, type Effect, Schema } from "effect"
-import type { Reservation } from "#pg/lease.ts"
+import type { Placement, Reservation } from "#pg/lease.ts"
 import type { ClosureHash } from "#runner/closure-hash.ts"
 
 /**
@@ -36,10 +36,11 @@ export class ModuleClosure extends Context.Service<
 
 /**
  * A run's lease on the local clusters its needs reach (pg/lease.ts): `reserve` holds the run's reservation on a cluster,
- * a slot for each of its workers on every member they reach, for the run's life, taken once however many workers ask
- * (runner/leases.ts); a worker's needs open no connection on a cluster before it holds.
+ * a slot for each of its workers among the family's members, for the run's life, taken once however many workers ask
+ * (runner/leases.ts), and answers where it put them, the member of each worker (Placement); a worker's needs open no
+ * connection on a cluster before it holds.
  */
 export class RunLease extends Context.Service<
 	RunLease,
-	Readonly<{ reserve: (reservation: Reservation) => Effect.Effect<void, NeedFailed> }>
+	Readonly<{ reserve: (reservation: Reservation) => Effect.Effect<Placement, NeedFailed> }>
 >()("@bjornpagen/testing/runner/services/RunLease") {}

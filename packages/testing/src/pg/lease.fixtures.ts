@@ -1,10 +1,11 @@
-import { Array as Arr, Effect, FileSystem, Option, String as Str } from "effect"
+import { Array as Arr, Deferred, Effect, FileSystem, Option, Result, String as Str } from "effect"
+import { type LeaseFailed, type Placement, type Reservation, reserved } from "#pg/lease.ts"
 
 /**
- * The lease property (lease.test.ts runsWaitInLine) holds each run's reservation until every run either holds or waits
- * in the kernel, so the runs overlap as far as the lease lets them: what it reads is how many processes wait, blocked,
- * on a lock file of a lease directory, as Linux lists its locks (/proc/locks, a waiter's line marked `->`, each lock
- * named by its file's device and inode).
+ * The lease properties (lease.test.ts) hold each run's reservation until every run either holds or waits in the kernel,
+ * so the runs overlap as far as the lease lets them, and read who holds a lease's files: what they read is how many
+ * processes wait, blocked, on a lock file of a lease directory, and which process holds a slot or a door, as Linux lists
+ * its locks (/proc/locks, a waiter's line marked `->`, each lock named by its file's device and inode).
  */
 
 /** A device number as /proc/locks spells it: its major and minor, each in hexadecimal, two digits at least. */
@@ -14,28 +15,89 @@ const deviceText = (device: bigint): string => {
 	return `${Str.padStart(2, "0")(major.toString(16))}:${Str.padStart(2, "0")(minor.toString(16))}`
 }
 
-/** How many processes wait, blocked, on a lock of a file in `directory`. */
-export const blockedOn = (directory: string): Effect.Effect<number, never, FileSystem.FileSystem> =>
+/** A lock Linux lists on a file of a directory: the file's name there, the process, and whether it waits, blocked. */
+type DirectoryLock = Readonly<{ name: string; pid: number; blocked: boolean }>
+
+/**
+ * The locks Linux lists now on the files of `directory` (/proc/locks: a line a lock, a waiter's marked `->` after the
+ * lock's number, then the lock's class, mode and kind, the process and the file as `major:minor:inode`).
+ */
+const locksIn = (
+	directory: string
+): Effect.Effect<ReadonlyArray<DirectoryLock>, never, FileSystem.FileSystem> =>
 	Effect.orDie(
 		Effect.gen(function* () {
 			const fs = yield* FileSystem.FileSystem
 			const names = yield* fs.readDirectory(directory)
-			const files = yield* Effect.forEach(names, (name) => fs.stat(`${directory}/${name}`))
-			const named = new Set(
-				Arr.flatMap(files, (info) =>
+			const files = yield* Effect.forEach(names, (name) =>
+				Effect.map(fs.stat(`${directory}/${name}`), (info) => ({ name, info }))
+			)
+			const named = new Map<string, string>(
+				Arr.flatMap(files, ({ name, info }) =>
 					Option.match(info.ino, {
 						onNone: () => [],
-						onSome: (inode) => [`${deviceText(info.dev)}:${inode}`]
+						onSome: (inode) => [[`${deviceText(info.dev)}:${inode}`, name] as const]
 					})
 				)
 			)
 			const locks = yield* fs.readFileString("/proc/locks")
-			return Arr.filter(Str.split("\n")(locks), (line) => {
+			return Arr.flatMap(Str.split("\n")(locks), (line): ReadonlyArray<DirectoryLock> => {
 				const fields = Arr.filter(Str.split(" ")(line), Str.isNonEmpty)
-				return (
-					Arr.contains(fields, "->") && Option.exists(Arr.get(fields, 6), (file) => named.has(file))
+				const blocked = Arr.contains(fields, "->")
+				const rest = Arr.drop(fields, blocked ? 2 : 1)
+				return Option.match(
+					Option.all([
+						Arr.get(rest, 3),
+						Option.flatMap(Arr.get(rest, 4), (file) => Option.fromUndefinedOr(named.get(file)))
+					]),
+					{ onNone: () => [], onSome: ([pid, name]) => [{ name, pid: Number(pid), blocked }] }
 				)
-			}).length
+			})
+		})
+	)
+
+/**
+ * How many processes wait, blocked, on a lock of a file in `directory` other than a family's choose lock, which a lease
+ * holds only while it looks at the slots (scripts/hold.pl): those waiting for the family's queue or a slot.
+ */
+export const blockedOn = (directory: string): Effect.Effect<number, never, FileSystem.FileSystem> =>
+	Effect.map(
+		locksIn(directory),
+		(locks) => Arr.filter(locks, (lock) => lock.blocked && lock.name !== "choose.lock").length
+	)
+
+/** The process that holds the lock of the file `name` in `directory`, if one does. */
+export const holderOf = (
+	directory: string,
+	name: string
+): Effect.Effect<Option.Option<number>, never, FileSystem.FileSystem> =>
+	Effect.map(locksIn(directory), (locks) =>
+		Option.map(
+			Arr.findFirst(locks, (lock) => !lock.blocked && lock.name === name),
+			(lock) => lock.pid
+		)
+	)
+
+/**
+ * The slot the family's queue's holder waits for in `directory`, a lease directory, once it waits for it there: the
+ * name of the slot's file, beside the door it holds (scripts/hold.pl's `<at>.door` for `<at>.lock`), and the queue's
+ * holder, blocked on the slot's lock.
+ */
+export const shieldIn = (
+	directory: string
+): Effect.Effect<
+	Option.Option<Readonly<{ slot: string; holder: number }>>,
+	never,
+	FileSystem.FileSystem
+> =>
+	Effect.map(locksIn(directory), (locks) =>
+		Arr.findFirst(locks, (door) => {
+			const slot = Str.replace(".door", ".lock")(door.name)
+			return !door.blocked &&
+				Str.endsWith(".door")(door.name) &&
+				Arr.some(locks, (lock) => lock.blocked && lock.pid === door.pid && lock.name === slot)
+				? Option.some({ slot, holder: door.pid })
+				: Option.none()
 		})
 	)
 
@@ -51,22 +113,65 @@ export const SPREAD_MEMBERS = 4
  */
 const SPREAD_SLOTS = 16
 
-/** A family of SPREAD_MEMBERS members under `directory`, each a lease directory admitting SPREAD_SLOTS workers of one connection. */
-export const spreadFamily = (directory: string) =>
+/**
+ * A family of `members` members under `directory`, each a lease directory admitting `slots` workers of one connection,
+ * its port its place from 1.
+ */
+export const familyIn = (directory: string, members: number, slots: number) =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem
-		const members = yield* Effect.forEach(
-			Array.from({ length: SPREAD_MEMBERS }, (_, at) => at + 1),
+		const made = yield* Effect.forEach(
+			Array.from({ length: members }, (_, at) => at + 1),
 			(port) =>
 				Effect.gen(function* () {
 					const lease = `${directory}/${port}`
 					yield* fs.makeDirectory(lease, { recursive: true })
-					yield* fs.writeFileString(`${lease}/capacity`, `${SPREAD_SLOTS}\n`)
+					yield* fs.writeFileString(`${lease}/capacity`, `${slots}\n`)
 					return { port, lease }
 				})
 		)
-		return yield* Option.match(Arr.head(members), {
-			onNone: () => Effect.die("the spread family has no member"),
-			onSome: (first) => Effect.succeed([first, ...Arr.drop(members, 1)] as const)
+		return yield* Option.match(Arr.head(made), {
+			onNone: () => Effect.die("a family of no member"),
+			onSome: (first) => Effect.succeed([first, ...Arr.drop(made, 1)] as const)
 		})
+	})
+
+/** A family of SPREAD_MEMBERS members under `directory`, each a lease directory admitting SPREAD_SLOTS workers of one connection. */
+export const spreadFamily = (directory: string) => familyIn(directory, SPREAD_MEMBERS, SPREAD_SLOTS)
+
+/**
+ * `reservation` held by a fiber of the enclosing scope until `release` completes, as a run holds its lease: what it
+ * answers once it holds (its Placement), or its failure.
+ */
+export const heldUntil = (reservation: Reservation, release: Deferred.Deferred<void>) =>
+	Effect.gen(function* () {
+		const held = yield* Deferred.make<Placement, LeaseFailed>()
+		yield* Effect.forkScoped(
+			Effect.scoped(
+				Effect.andThen(Deferred.into(reserved(reservation), held), Deferred.await(release))
+			)
+		)
+		return held
+	})
+
+/** Sends `signal` to process `pid`, which may have ended: a process gone takes none. */
+export const signalled = (pid: number, signal: "SIGSTOP" | "SIGCONT" | "SIGKILL") =>
+	Effect.sync(() => {
+		Result.try(() => process.kill(pid, signal))
+	})
+
+/**
+ * Whether process `pid` is stopped now, by a signal (its /proc/<pid>/stat state `T`, the field after its command's
+ * closing parenthesis): `some` once it is.
+ */
+export const stopped = (
+	pid: number
+): Effect.Effect<Option.Option<true>, never, FileSystem.FileSystem> =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		const stat = yield* Effect.orElseSucceed(fs.readFileString(`/proc/${pid}/stat`), () => "")
+		const state = Option.flatMap(Str.lastIndexOf(")")(stat), (end) =>
+			Arr.head(Arr.filter(Str.split(" ")(Str.slice(end + 1)(stat)), Str.isNonEmpty))
+		)
+		return Option.contains(state, "T") ? Option.some(true as const) : Option.none()
 	})

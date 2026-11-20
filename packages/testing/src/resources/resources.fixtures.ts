@@ -248,9 +248,12 @@ export const tokenTemplate = (
 /**
  * The run's lease as a case inside the run sees it: the run that runs the case already holds its reservation on the
  * fixture's cluster (runner/leases.ts), which covers the case's own connections, so a cluster a case builds for itself
- * reserves nothing more, and never waits on the slots its own run holds.
+ * reserves nothing more, and never waits on the slots its own run holds; its one worker is on the first member.
  */
-const leasedByTheRun = Layer.succeed(RunLease, RunLease.of({ reserve: () => Effect.void }))
+const leasedByTheRun = Layer.succeed(
+	RunLease,
+	RunLease.of({ reserve: () => Effect.succeed(Arr.of(0)) })
+)
 
 /** The cluster of the fixture's members under a prefix of a case's own, so a case's collection sees only its own. */
 export const ownCluster = (prefix: string): Layer.Layer<PgCluster> =>

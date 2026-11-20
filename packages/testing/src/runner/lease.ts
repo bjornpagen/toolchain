@@ -50,10 +50,10 @@ export const placesLeased = (width: number) => {
  * Every lease's workers take places among the pool's width that no other lease open at once holds (runner/pool.ts
  * Places), each taken as the lease opens and given back once its pool has closed, a lease waiting while too few are
  * free: so the workers of every lease open at once are never more than the width, and they report distinct places, as
- * one run's workers do. A repository's services spread workers by place (grizzle's: worker i takes its lease on member
- * i mod K of the cluster family); leases of one worker each all at place 0 sent every kill trial's worker to one member,
- * 64 workers for its 16 leases, the others idle (GZ-NETWORK: the kills of 32 network modules waited 300 s at
- * substrate_lease_gate).
+ * one run's workers do. Leases of one worker each all at place 0 sent every kill trial's worker to one member when a
+ * worker's member was fixed by its place, 64 workers for its 16 leases, the others idle (GZ-NETWORK: the kills of 32
+ * network modules waited 300 s at substrate_lease_gate); a cluster's lease now puts each worker on the member where its
+ * run holds fewest (pg/lease.ts).
  */
 export const mutantPoolOf = (checkout: string, packageRoot: string): MutantPool<PoolFailed> => {
 	const { placesFor } = placesLeased(testWorkers)

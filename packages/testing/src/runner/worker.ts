@@ -166,7 +166,7 @@ const main = Effect.gen(function* () {
 					yield* closures.answered(order.module, order.answer)
 					break
 				case "lease":
-					yield* leases.answered(order.gate, order.answer)
+					yield* leases.answered(order.family, order.answer)
 					break
 				case "retire":
 					pending.push({ kind: "retire", property: order.property })

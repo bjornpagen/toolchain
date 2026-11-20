@@ -1,6 +1,6 @@
 import { Array as Arr, type Effect, Option, Schema } from "effect"
 import type { Residual } from "#features.ts"
-import { Reservation } from "#pg/lease.ts"
+import { Placement, Reservation } from "#pg/lease.ts"
 import { wordsOf } from "#random.ts"
 import { ClosureAnswer } from "#runner/closure-hash.ts"
 import type { Limits } from "#runner/limits.ts"
@@ -624,9 +624,9 @@ export const ToWorker = Schema.Union([
 	Schema.Struct({ kind: Schema.Literal("retire"), property: Schema.String }),
 	Schema.Struct({
 		kind: Schema.Literal("lease"),
-		gate: Schema.String,
+		family: Schema.String,
 		answer: Schema.Union([
-			Schema.Struct({ kind: Schema.Literal("leased") }),
+			Schema.Struct({ kind: Schema.Literal("leased"), members: Placement }),
 			Schema.Struct({ kind: Schema.Literal("refused"), message: Schema.String })
 		])
 	})
