@@ -1,13 +1,16 @@
 import { isMainThread, Worker } from "node:worker_threads"
 import { Array as Arr, Clock, Duration, Effect, Fiber, Option, Record as Rec } from "effect"
 import {
+	enterLockWait,
 	enterWait,
 	heldWork,
 	judgeOf,
+	leaveLockWait,
 	leaveWait,
 	type Overrun,
 	ownCpu,
 	type Reading,
+	readingOf,
 	standingOf,
 	type TreeWork
 } from "#runner/work.ts"
@@ -466,9 +469,9 @@ export const liveNanos = Clock.currentTimeNanos.pipe(
 )
 
 /**
- * `effect` as a declared wait of this process (runner/work.ts Waits): a wait on a resource other processes hold or make,
- * whose wall time no guard's stall leg counts, from before it starts to after it ends, however it ends. A need's open and
- * every take of it are one (runner/case.ts NeedCache), the one place a case waits on resources it does not own.
+ * `effect` as a declared wait of this process on work other processes do (runner/work.ts Waits): a wait whose doers
+ * name no holder this process can read (a template's build lock, PostgreSQL's work), and whose wall time no guard's
+ * stall leg counts, from before it starts to after it ends, however it ends.
  */
 export const waitingOn = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
 	Effect.acquireUseRelease(
@@ -476,6 +479,22 @@ export const waitingOn = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effec
 		() => effect,
 		() => Effect.flatMap(liveMillis, (wall) => Effect.sync(() => leaveWait(wall)))
 	)
+
+/**
+ * `effect` as a declared wait of this process for kernel locks on `files` (runner/work.ts LockWaits), from before it
+ * starts to after it ends, however it ends: a guard judges it by the work of the processes that hold those locks
+ * (runner/work.ts Held), not by this process's CPU, so a wait behind a holder that works is no stall however long it
+ * lasts, and one behind a holder whose run encloses this one is a deadlock. A run's lease and a cluster's lifecycle lock
+ * (pg/hold.ts) and a worker's ask for its run's lease (runner/leases.ts) are such waits.
+ */
+export const waitingFor =
+	(files: Arr.NonEmptyReadonlyArray<string>) =>
+	<A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+		Effect.acquireUseRelease(
+			Effect.sync(() => enterLockWait(files)),
+			() => effect,
+			() => Effect.sync(() => leaveLockWait(files))
+		)
 
 /**
  * Ends once `work` has spent `deadline` milliseconds of CPU or its CPU has not moved over a whole `deadline` of wall time
@@ -489,7 +508,7 @@ export const overrun = (work: TreeWork, deadline: number): Effect.Effect<Overrun
 			const standing = standingOf({
 				began: work.began,
 				window,
-				now: { wall, cpu: work.cpu(), waited: work.waited(wall) },
+				now: readingOf(work, wall),
 				deadline
 			})
 			return standing.kind === "working"

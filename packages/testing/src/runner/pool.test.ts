@@ -231,9 +231,8 @@ export const slowWorkerKept = property.exhaust(finite(boolean), {
 	kills: [
 		{
 			file: "packages/testing/src/runner/pool.ts",
-			original:
-				"\t\t\t\t\t\t\tprocessWork(Option.fromUndefinedOr(worker.child.pid), began, (wall) =>",
-			replacement: "\t\t\t\t\t\t\tprocessWork(Option.none(), began, (wall) =>",
+			original: "\t\t\t\t\t\t\t\tOption.fromUndefinedOr(worker.child.pid),\n",
+			replacement: "\t\t\t\t\t\t\t\tOption.none(),\n",
 			why: "The parent reads no worker's CPU, so a worker silent past its bound and grace is killed whatever it is doing, as the live clock's watch killed it: the slow worker's unit is lost; the slow-worker property fails."
 		}
 	]
@@ -362,7 +361,7 @@ export const lostNamesItsLeg = property.exhaust(finite(silenceSpace), {
 			file: "packages/testing/src/runner/work.ts",
 			original: '\t\treturn { kind: "spent", spent, deadline }',
 			replacement:
-				'\t\treturn { kind: "stalled", moved: spent, over: now.wall - window.wall, waited: 0, progress: 0, deadline }',
+				'\t\treturn { kind: "stalled", moved: spent, held: 0, over: now.wall - window.wall, waited: 0, progress: 0, deadline }',
 			why: "A CPU runaway reported as a stall, so the report names the wrong leg; the spinning worker's case fails."
 		},
 		{

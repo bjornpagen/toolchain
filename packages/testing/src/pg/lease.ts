@@ -125,6 +125,12 @@ const slotFiles = (member: Reservation["members"][number]): Arr.NonEmptyReadonly
 	...Array.from({ length: member.slots - 1 }, (_, at) => `${member.lease}/${at + 1}.lock`)
 ]
 
+/** The files a reservation locks: its gate, then each member's slots. */
+export const reservationFiles = (reservation: Reservation): Arr.NonEmptyReadonlyArray<string> => [
+	reservation.gate,
+	...Arr.flatMap(reservation.members, slotFiles)
+]
+
 /**
  * `reservation` held for the enclosing scope, a run's (hold.ts reservationHeld): its gate, then on each member the run's
  * workers reach their need of its slots, those free now first and the rest waited for in order, the gate let go once

@@ -1,6 +1,6 @@
 import { Array as Arr, Effect, Option, Schema, type Scope, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
-import { waitingOn } from "#live.ts"
+import { waitingFor } from "#live.ts"
 
 /**
  * The kernel locks this library takes, a cluster's lifecycle lock (make.ts) and a run's lease on a cluster (lease.ts),
@@ -23,11 +23,14 @@ class HoldFailed extends Schema.TaggedError<HoldFailed, { readonly brand: unique
 export type Claim = Readonly<{ need: number; files: Arr.NonEmptyReadonlyArray<string> }>
 
 /**
- * The holder's claims (hold.pl's CLAIMs) held for the enclosing scope. The wait is declared to the runner's guards
- * (live.ts waitingOn): what it waits for is held by other processes' scopes, which end with them, so the wait ends.
+ * The holder's claims (hold.pl's CLAIMs) on `files` held for the enclosing scope. The wait is declared to the runner's
+ * guards as a wait for those files' locks (live.ts waitingFor), which they judge by the work of the processes that hold
+ * them: what it waits for is held by other processes' scopes, which end with them, so the wait ends unless a holder has
+ * stopped or encloses the waiter.
  */
 const holding = (
-	claims: Arr.NonEmptyReadonlyArray<string>
+	claims: Arr.NonEmptyReadonlyArray<string>,
+	files: Arr.NonEmptyReadonlyArray<string>
 ): Effect.Effect<void, HoldFailed, Scope.Scope | ChildProcessSpawner.ChildProcessSpawner> =>
 	Effect.gen(function* () {
 		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
@@ -37,7 +40,7 @@ const holding = (
 			spawner.spawn(ChildProcess.make("perl", [HOLDER, ...claims])),
 			failedWith
 		)
-		const said = yield* waitingOn(
+		const said = yield* waitingFor(files)(
 			Effect.mapError(
 				Stream.runHead(Stream.splitLines(Stream.decodeText(holder.stdout))),
 				failedWith
@@ -54,15 +57,18 @@ const holding = (
 	})
 
 /** The exclusive lock on `file`, waited for, for the enclosing scope. */
-export const lockHeld = (file: string) => holding(["wait", "exclusive", "1", file])
+export const lockHeld = (file: string) => holding(["wait", "exclusive", "1", file], [file])
 
 /**
  * Every claim of `claims`, taken in order under `gate`, which is held only while they are taken, for the enclosing
  * scope: so only the gate's holder ever waits for a lock while it holds others, and no wait closes a cycle.
  */
 export const reservationHeld = (gate: string, claims: Arr.NonEmptyReadonlyArray<Claim>) =>
-	holding([
-		"gate",
-		gate,
-		...Arr.flatMap(claims, (claim) => ["wait", "exclusive", `${claim.need}`, ...claim.files])
-	])
+	holding(
+		[
+			"gate",
+			gate,
+			...Arr.flatMap(claims, (claim) => ["wait", "exclusive", `${claim.need}`, ...claim.files])
+		],
+		[gate, ...Arr.flatMap(claims, (claim) => claim.files)]
+	)

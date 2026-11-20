@@ -655,9 +655,10 @@ export type ChildrenCpu = typeof ChildrenCpu.Type
  * after it ended, printed as it ran; it failed, and why (before it was ready, it cannot start; after, it ends, and the
  * unit it ran is lost with this as the last it wrote); it asks for a module's closure hash, which the parent
  * computes once for the whole pool; it asks for the run's lease on a cluster (`lease`, runner/leases.ts), which the
- * parent holds once for the whole run; or it began waiting on a resource other processes hold (`waiting`: its first
- * declared wait opened, runner/work.ts Waits) or stopped (`waited`: its last one closed), whose wall time the parent's
- * watch of it counts as no stall.
+ * parent holds once for the whole run; or it began waiting on work other processes do (`waiting`: its first declared
+ * wait on work opened, runner/work.ts Waits) or stopped (`waited`: its last one closed), whose wall time the parent's
+ * watch of it counts as no stall; or the files its waits for kernel locks wait to lock became `files` (`locks`,
+ * runner/work.ts LockWaits), whose holders' work the parent's watch of it reads as its own.
  */
 export const FromWorker = Schema.Union([
 	Schema.Struct({ kind: Schema.Literal("ready"), cpu: Schema.Finite, millis: Schema.Finite }),
@@ -689,7 +690,8 @@ export const FromWorker = Schema.Union([
 	Schema.Struct({ kind: Schema.Literal("closure"), module: Schema.String }),
 	Schema.Struct({ kind: Schema.Literal("lease"), reservation: Reservation }),
 	Schema.Struct({ kind: Schema.Literal("waiting") }),
-	Schema.Struct({ kind: Schema.Literal("waited") })
+	Schema.Struct({ kind: Schema.Literal("waited") }),
+	Schema.Struct({ kind: Schema.Literal("locks"), files: Schema.Array(Schema.String) })
 ])
 
 export type FromWorker = typeof FromWorker.Type

@@ -106,7 +106,8 @@ type Phase = "readying" | "evaluating"
  * A worker process and what the parent knows of it: the units it was sent and has not finished, the one it runs and in
  * what phase, the idle worker its unstarted tail is being revoked for, the busy worker whose tail it waits for, the
  * last of what it wrote, the last message it sent and when (`heard`), why the pool ended it, should it have (`ended`),
- * its declared waits as it reported them, on the parent's clock (`waits`), what its
+ * its declared waits on work as it reported them, on the parent's clock (`waits`), the files its lock waits wait to lock
+ * as it last reported them (`locks`), what its
  * process reported of its CPU, and since when (on the parent's clock) its next unit to finish has held it, with the
  * readying in that time to take out.
  */
@@ -132,6 +133,7 @@ type Worker = {
 	heard: Option.Option<Readonly<{ kind: string; at: number }>>
 	ended: Option.Option<Ending>
 	waits: Waits
+	locks: ReadonlyArray<string>
 	usage: { started: number; reported: number }
 	occupiedSince: number
 	readyingMillis: number
@@ -642,6 +644,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 				heard: Option.none(),
 				ended: Option.none(),
 				waits: noWaits,
+				locks: [],
 				usage: { started: 0, reported: 0 },
 				occupiedSince: now,
 				readyingMillis: 0
@@ -692,8 +695,11 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 				const silence = yield* Effect.forkIn(
 					Effect.flatMap(
 						overrun(
-							processWork(Option.fromUndefinedOr(worker.child.pid), began, (wall) =>
-								waitedBy(worker.waits, wall)
+							processWork(
+								Option.fromUndefinedOr(worker.child.pid),
+								began,
+								(wall) => waitedBy(worker.waits, wall),
+								() => worker.locks
 							),
 							boundOf(unit.value, phase) + SILENCE_GRACE_MILLIS
 						),
@@ -892,6 +898,9 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 								return
 							case "waited":
 								worker.waits = waitLeft(worker.waits, now)
+								return
+							case "locks":
+								worker.locks = received.files
 								return
 							case "closure": {
 								const module = received.module

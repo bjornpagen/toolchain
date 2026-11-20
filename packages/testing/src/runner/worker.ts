@@ -93,7 +93,7 @@ const main = Effect.gen(function* () {
 	const platform = yield* Effect.context<NodeServices.NodeServices>()
 	const closures = askedClosuresOf((module) => send({ kind: "closure", module }))
 	const leases = askedLeasesOf((reservation) => send({ kind: "lease", reservation }))
-	reportWaitsTo((waiting) => sendNow({ kind: waiting ? "waiting" : "waited" }))
+	reportWaitsTo(sendNow)
 	const runner = Context.add(
 		Context.add(
 			Context.add(

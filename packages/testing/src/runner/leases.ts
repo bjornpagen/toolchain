@@ -1,6 +1,7 @@
 import { Context, Deferred, Effect, type FileSystem, Scope } from "effect"
 import type { ChildProcessSpawner } from "effect/process"
-import { type Reservation, reserved } from "#pg/lease.ts"
+import { waitingFor } from "#live.ts"
+import { type Reservation, reservationFiles, reserved } from "#pg/lease.ts"
 import { NeedFailed, RunLease } from "#runner/services.ts"
 
 /**
@@ -105,14 +106,21 @@ export type AskedLeases = Readonly<{
 	answered: (gate: string, answer: LeaseAnswer) => Effect.Effect<void>
 }>
 
-/** The RunLease of a worker that asks the run's parent through `ask`: one ask a cluster, every caller its answer. */
+/**
+ * The RunLease of a worker that asks the run's parent through `ask`: one ask a cluster, every caller its answer. A
+ * caller waits for the answer as a wait for the reservation's locks (live.ts waitingFor), which the parent takes for it:
+ * the worker's guards and its pool's judge it by the work of the runs that hold them, so a worker whose run waits behind
+ * another run's slots is not stalled for it (5442's installs, 2026-11-20, ended at their open bound at no CPU while a
+ * full suite held the slots), and one whose lock is held by a run that encloses its own is deadlocked.
+ */
 export const askedLeasesOf = (
 	ask: (reservation: Reservation) => Effect.Effect<void>
 ): AskedLeases => {
 	const asked = new Map<string, Deferred.Deferred<void, NeedFailed>>()
 	return {
 		service: RunLease.of({
-			reserve: (reservation) => askedOnce(asked, reservation, ask(reservation))
+			reserve: (reservation) =>
+				waitingFor(reservationFiles(reservation))(askedOnce(asked, reservation, ask(reservation)))
 		}),
 		answered: (gate, answer) =>
 			Effect.suspend(() => {
