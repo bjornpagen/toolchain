@@ -153,9 +153,10 @@ reaches it, under the port's lock (whose wait is declared to the runner's guards
 (a local CA, the server's certificate it signed and an unrelated CA, each EC P-256, issued again at a start once any
 has expired), SCRAM, hostssl-only hba, an owner role with its password in the member's state, a template database
 with the repository's extensions, the owner's own database, and the settings every member holds
-(`client_connection_check_interval`, `max_pred_locks_per_transaction = 2048`, logical WAL, UTC, and fsync off for a
-throwaway cluster). Its state is `$HOME/.local/var/toolchain-pg/<port>/`, its manifest `cluster.json` there, its lock
-`<port>.lock` beside it; `TOOLCHAIN_PG_CLUSTER=<port>` names a private cluster of the same spec. Before you move
+(`client_connection_check_interval`, `max_pred_locks_per_transaction = 2048`, UTC, and fsync off for a throwaway
+cluster); `wal_level` is PostgreSQL's default, `replica`, at which PostgreSQL 19 turns logical decoding on by itself when
+a member's first logical slot is made. Its state is `$HOME/.local/var/toolchain-pg/<port>/`, its manifest `cluster.json`
+there, its lock `<port>.lock` beside it; `TOOLCHAIN_PG_CLUSTER=<port>` names a private cluster of the same spec. Before you move
 `vendor/toolchain` past this section:
 
 1. **The spec.** State the cluster once, as the default export of a `pg.config.ts` in the package that owns it:

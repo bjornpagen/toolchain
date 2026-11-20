@@ -4,7 +4,7 @@ import type { Durability, LocalCluster, PerWorker, Sized, Sizing } from "#pg/spe
 /**
  * How long a backend runs a statement between two polls of its client's socket, PostgreSQL's
  * client_connection_check_interval, which every member holds (fixedSettings). A backend polls only while it runs a
- * statement (the timer start_xact_command arms, REL_19_RC2 src/backend/tcop/postgres.c#L2818), so an idle session is
+ * statement (the timer start_xact_command arms, REL_19_0 src/backend/tcop/postgres.c#L2818), so an idle session is
  * never woken; a poll that finds the socket closed (pq_check_connection, src/backend/libpq/pqcomm.c#L2057) ends the
  * backend with FATAL "connection to client lost" (postgres.c#L3465), and with it the transaction id and the locks it
  * holds. Without it PostgreSQL notices a dead client only when it next reads from or writes to the socket, which a
@@ -65,13 +65,13 @@ const predicateLocksPerTransaction = 2048
  * The connections PostgreSQL keeps for superusers alone, at its default, which a member leaves as it is.
  *
  * @limitKind published
- * @owner PostgreSQL 19rc2 (18's postgresql.conf.sample states the same default)
+ * @owner PostgreSQL 19.0 (18's postgresql.conf.sample states the same default)
  * @unit connections
  * @scope a member's superuser_reserved_connections, out of its max_connections
  * @constraint configurable default
- * @source https://github.com/postgres/postgres/blob/REL_19_RC2/src/backend/utils/misc/guc_parameters.dat#L2941
+ * @source https://github.com/postgres/postgres/blob/REL_19_0/src/backend/utils/misc/guc_parameters.dat#L2941
  * @quote boot_val => '3',
- * @verified 2026-11-14
+ * @verified 2026-11-20
  */
 const superuserReservedConnections = 3
 
@@ -79,13 +79,13 @@ const superuserReservedConnections = 3
  * The connections PostgreSQL keeps for pg_use_reserved_connections, at its default, which a member leaves as it is.
  *
  * @limitKind published
- * @owner PostgreSQL 19rc2 (18's postgresql.conf.sample states the same default)
+ * @owner PostgreSQL 19.0 (18's postgresql.conf.sample states the same default)
  * @unit connections
  * @scope a member's reserved_connections, out of its max_connections
  * @constraint configurable default
- * @source https://github.com/postgres/postgres/blob/REL_19_RC2/src/backend/utils/misc/guc_parameters.dat#L2552
+ * @source https://github.com/postgres/postgres/blob/REL_19_0/src/backend/utils/misc/guc_parameters.dat#L2552
  * @quote boot_val => '0',
- * @verified 2026-11-14
+ * @verified 2026-11-20
  */
 const reservedConnections = 0
 
@@ -102,8 +102,6 @@ export type Setting = readonly [name: string, value: string]
  * - max_pred_locks_per_transaction: production's predicate locks, whose relation promotion PostgreSQL's default
  *   max_pred_locks_per_relation of -2 derives from it as production's does (2048 / 2 - 1, predicate.c
  *   MaxPredicateChildLocks).
- * - wal_level logical: every installation with live reads decodes the WAL, and grizzle's migrate refuses a cluster
- *   below it.
  * - track_io_timing: a plan's buffers come with their read times, as the benchmarks read them.
  * - timezone and log_timezone UTC: the machine's time zone never reaches a member, which initdb would take it from.
  * - password_encryption and ssl_min_protocol_version: SCRAM, and TLS 1.3, as every client signs in (make.ts's hba).
@@ -111,7 +109,6 @@ export type Setting = readonly [name: string, value: string]
 const everyMember: Arr.NonEmptyReadonlyArray<Setting> = [
 	["client_connection_check_interval", `${clientCheckInterval}`],
 	["max_pred_locks_per_transaction", `${predicateLocksPerTransaction}`],
-	["wal_level", "logical"],
 	["track_io_timing", "on"],
 	["TimeZone", "UTC"],
 	["log_timezone", "UTC"],
