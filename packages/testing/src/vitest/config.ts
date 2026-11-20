@@ -49,7 +49,7 @@ export type TestConfig = Readonly<{
 /**
  * A package's Vitest config. Tests run as Node runs the code: native ESM by type stripping, never through Vite's
  * module runner or loader, so no transform changes what a module means; one process per file, as many at once as
- * testWorkers holds (one a core, where Vitest's own default leaves one idle); the
+ * testWorkers holds (half the cores); the
  * hardened flags; Node's compile cache in every process whose coverage is never read (compile-cache.ts: not the guided
  * project's, and none of a run under NODE_V8_COVERAGE); the run seed chosen once by global setup; and the residual table
  * at the end, whose reporter fails

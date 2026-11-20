@@ -829,7 +829,7 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 
 /**
  * How many workers to fork now, for a pool sized to its work: the workers the queue wants (Scheduler.wanted) that no
- * worker idle or starting will take, never past `most` (one a core) in all; a pool already that wide asks the queue
+ * worker idle or starting will take, never past `most` (testWorkers) in all; a pool already that wide asks the queue
  * nothing, since reckoning what it wants reads every queued module and runs after every unit a worker answers.
  */
 export const forksOf = <U extends Scheduled>(

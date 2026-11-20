@@ -36,7 +36,7 @@ import { reportWaitsTo } from "#runner/work.ts"
 import { startProcessCoverage } from "#sense.ts"
 
 /**
- * A worker of the pool: a child process the parent forks, one a core, warm across properties. It loads the package's
+ * A worker of the pool: a child process the parent forks, one for every two cores (testWorkers), warm across properties. It loads the package's
  * runner config, then evaluates the units the parent sends, one at a time, in the order sent: it tells the parent when
  * it starts each, so the parent knows which are unstarted, and gives back the unstarted ones the parent revokes to
  * hand to an idle worker. The first unit of a property here readies it first, a phase of its own that it tells the
