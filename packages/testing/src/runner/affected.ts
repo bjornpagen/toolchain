@@ -105,17 +105,26 @@ class AffectedRefused extends Schema.TaggedError<
 	{ readonly brand: unique symbol }
 >()("AffectedRefused", { message: Schema.String }) {}
 
-/** git run in `cwd`: its standard output when it exits 0, none otherwise. */
+/**
+ * git run in `cwd`: its standard output when it exits 0, else how it failed, its exit status and what it said on its
+ * standard error, which names the cause (a ref it cannot read, a directory that is no repository).
+ */
 export const gitOf = (cwd: string, args: ReadonlyArray<string>) =>
 	Effect.scoped(
 		Effect.gen(function* () {
 			const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
 			const handle = yield* spawner.spawn(ChildProcess.make("git", args, { cwd, stdin: "ignore" }))
-			const [stdout, exitCode] = yield* Effect.all(
-				[Stream.mkString(Stream.decodeText(handle.stdout)), handle.exitCode],
+			const [stdout, stderr, exitCode] = yield* Effect.all(
+				[
+					Stream.mkString(Stream.decodeText(handle.stdout)),
+					Stream.mkString(Stream.decodeText(handle.stderr)),
+					handle.exitCode
+				],
 				{ concurrency: "unbounded" }
 			)
-			return exitCode === 0 ? Option.some(stdout) : Option.none()
+			return exitCode === 0
+				? Result.succeed(stdout)
+				: Result.fail(`git exited ${String(exitCode)}: ${Str.trim(stderr)}`)
 		})
 	)
 
@@ -126,12 +135,12 @@ export const trackedIn = (repository: string) =>
 		(text): ReadonlySet<string> => new Set(Arr.filter(Str.split("\0")(text), Str.isNonEmpty))
 	)
 
-/** A git answer that must exist, or the refusal `why` states. */
+/** A git answer that must exist, or the refusal `why` states, with how git failed. */
 const required = (cwd: string, args: ReadonlyArray<string>, why: string) =>
 	Effect.flatMap(gitOf(cwd, args), (answer) =>
-		Option.match(answer, {
-			onNone: () => Effect.fail(AffectedRefused.make({ message: why })),
-			onSome: (text) => Effect.succeed(Str.trim(text))
+		Result.match(answer, {
+			onFailure: (failed) => Effect.fail(AffectedRefused.make({ message: `${why}: ${failed}` })),
+			onSuccess: (text) => Effect.succeed(Str.trim(text))
 		})
 	)
 
@@ -254,7 +263,10 @@ const groundsOf = (root: string) =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem
 		const packageRoot = yield* fs.realPath(root)
-		const toplevel = yield* gitOf(packageRoot, ["rev-parse", "--show-toplevel"])
+		const toplevel = yield* Effect.map(
+			gitOf(packageRoot, ["rev-parse", "--show-toplevel"]),
+			Result.getSuccess
+		)
 		const repository = yield* Effect.transposeOption(
 			Option.map(Option.map(toplevel, Str.trim), (top) => fs.realPath(top))
 		)
@@ -296,7 +308,7 @@ const runnerRootsOf = (repository: string) =>
 /** The repository's identity, as toolchain-gate names it: its origin remote's URL, else its common git directory. */
 const identityOf = (repository: string) =>
 	Effect.flatMap(gitOf(repository, ["config", "--get", "remote.origin.url"]), (url) =>
-		Option.match(Option.filter(Option.map(url, Str.trim), Str.isNonEmpty), {
+		Option.match(Option.filter(Option.map(Result.getSuccess(url), Str.trim), Str.isNonEmpty), {
 			onSome: Effect.succeed,
 			onNone: () =>
 				required(

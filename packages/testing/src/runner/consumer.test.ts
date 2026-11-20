@@ -84,7 +84,8 @@ export const consumersRunInEveryLayout = property.exhaust(layouts, {
 		},
 		{
 			file: "packages/testing/src/runner/affected.ts",
-			original: 'const toplevel = yield* gitOf(packageRoot, ["rev-parse", "--show-toplevel"])',
+			original:
+				'const toplevel = yield* Effect.map(\n\t\t\tgitOf(packageRoot, ["rev-parse", "--show-toplevel"]),\n\t\t\tResult.getSuccess\n\t\t)',
 			replacement:
 				'const toplevel = Option.some(yield* required(packageRoot, ["rev-parse", "--show-toplevel"], "no git repository"))',
 			why: "a package in no git repository fails its run"
