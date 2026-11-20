@@ -31,7 +31,7 @@ const NAMES = ["typecheck", "typecheck:full", "oxlint", "check", "format"] as co
 
 /** Commands that run no turbo, each holding a word that only looks like it. */
 const OWN_COMMANDS = [
-	"toolchain-typecheck --incremental false",
+	"toolchain-typecheck -p tsconfig.json",
 	"next build --turbo",
 	"node scripts/turbo.ts",
 	"turbopack build",

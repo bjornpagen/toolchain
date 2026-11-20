@@ -16,7 +16,7 @@
 			"dependsOn": ["^source"]
 		},
 		"typecheck": {
-			"description": "The incremental typecheck, `pnpm types`: each package's build info (node_modules/.cache/typecheck.tsbuildinfo, gitignored) lets a re-check check only what changed. The build info is no output: a hit replays the diagnostics, and a miss reads whatever build info the directory holds, which tsrs proves against the files' hashes. `pnpm check` runs this same task from scratch, with --incremental false passed through, which turbo hashes, so it never replays an incremental pass. The dev tools' tsconfig bases, which the root tsconfig and every package extend, are inputs too.",
+			"description": "The typecheck, `pnpm types` and `pnpm check`'s: each package's and the root's project checked from scratch by toolchain-typecheck, which reads no build info (TypeScript 7.1.0-beta's incremental check passed an unused import over an earlier version's build info, METIS-BOOT 2026-11-20), so a hit replays the diagnostics of exactly these inputs and a miss checks them whole. It writes nothing, so it has no output. The dev tools' tsconfig bases, which the root tsconfig and every package extend, are inputs too.",
 			"dependsOn": ["^source"],
 			"inputs": [
 				"$TURBO_DEFAULT$",

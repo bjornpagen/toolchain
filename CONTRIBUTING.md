@@ -6,18 +6,17 @@ the toolchain; README.md says what a repository changes to take it.
 
 ## When each check runs
 
-| When                                | Command                   | What runs                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| ----------------------------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| After every edit                    | `pnpm types`              | `turbo run typecheck`: each package's and the root's incremental typecheck. A re-check reads the project's build info and checks only what changed, so it takes seconds when little did, and turbo replays a package whose inputs did not change at all.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| Each commit (lefthook's pre-commit) | `toolchain-gate commit`   | On a snapshot of what the index holds, side by side: `pnpm types`, `oxfmt --check` of the staged files, and the AST-only oxlint on the staged JavaScript and TypeScript files. No lint builds a TypeScript program. The target is 10 seconds or less.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| Each push (lefthook's pre-push)     | `toolchain-gate push`     | Every push, one sending a submodule's gitlink alone, deletions alone or an empty commit included (a lefthook script job, `.lefthook/pre-push/gate.sh`, below). `pnpm check` on a snapshot of the tip of each pushed ref: the typecheck from scratch (`turbo run typecheck -- --incremental false`), the type-aware oxlint, the format check, dead code, the lockfile's dedupe, the repository-wide checks and the fixtures; then, in each package with a `test.config.ts`, `toolchain-test affected`: every property with no cached pass, and its kills, at full width (below). A tree the gate passed before passes again at once (`push.passed/<tree>`), so push by sha (`git push --no-thin origin <sha>:main`) and never commit while a push is in its hook. |
-| On the consumer's schedule          | `toolchain-test fuzz`     | The scheduled fuzz budget, in each package root its own scheduler names: fresh seeds round after round until a case fails or the budget (`1h`, `100000x`) is spent. Never in a hook.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| By hand                             | `pnpm check`, `pnpm test` | The full gate over the working tree, and the tests, which no hook runs.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| When                                | Command                   | What runs                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ----------------------------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| After every edit                    | `pnpm types`              | `turbo run typecheck`: each package's and the root's typecheck, from scratch: it reads no build info, and turbo replays a package whose inputs did not change at all.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Each commit (lefthook's pre-commit) | `toolchain-gate commit`   | On a snapshot of what the index holds, side by side: `pnpm types`, `oxfmt --check` of the staged files, and the AST-only oxlint on the staged JavaScript and TypeScript files. No lint builds a TypeScript program. The target is 10 seconds or less.                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Each push (lefthook's pre-push)     | `toolchain-gate push`     | Every push, one sending a submodule's gitlink alone, deletions alone or an empty commit included (a lefthook script job, `.lefthook/pre-push/gate.sh`, below). `pnpm check` on a snapshot of the tip of each pushed ref: the typecheck, the type-aware oxlint, the format check, dead code, the lockfile's dedupe, the repository-wide checks and the fixtures; then, in each package with a `test.config.ts`, `toolchain-test affected`: every property with no cached pass, and its kills, at full width (below). A tree the gate passed before passes again at once (`push.passed/<tree>`), so push by sha (`git push --no-thin origin <sha>:main`) and never commit while a push is in its hook. |
+| On the consumer's schedule          | `toolchain-test fuzz`     | The scheduled fuzz budget, in each package root its own scheduler names: fresh seeds round after round until a case fails or the budget (`1h`, `100000x`) is spent. Never in a hook.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| By hand                             | `pnpm check`, `pnpm test` | The full gate over the working tree, and the tests, which no hook runs.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 
 Type-aware lint stays out of the commit: no tool caches its results (not `tsrs --lint`, not oxlint), so
 it would build every package's program on every commit, while a commit holds `.git/index.lock` for its whole hook. The
-push's full gate runs it, and its non-incremental typecheck is the safety net for the open incremental stale-result
-bugs of TypeScript (#64386, #64591).
+push's full gate runs it.
 
 Never commit or push with `--no-verify` in a shared checkout: the gates check exactly what you send, so a red gate is
 your commit's.
@@ -29,23 +28,19 @@ your commit's.
 package's. Run `pnpm types`. The root's script keeps the name `typecheck` because turbo runs it as `//#typecheck`, the
 root's part of `pnpm types`.
 
-## Incremental typecheck
+## A typecheck from scratch
 
-The shared base, `packages/devtools/tsconfig.base.json`, sets `incremental: true` and
-`tsBuildInfoFile: ${configDir}/node_modules/.cache/typecheck.tsbuildinfo`, and keeps `noEmit`. `${configDir}` is the
-directory of the tsconfig being checked, so each package, and the root, keeps its own build info, under a
-`node_modules/` every repository already ignores, which pnpm leaves alone on install.
-
-The build info is no turbo output. A turbo hit replays the diagnostics and needs no build info; a miss reads whatever
-build info the directory holds, and tsrs proves it against the files' hashes and the options, the Effect plugin's
-included, so any build info is safe to start from. Caching it would store a new copy, megabytes in a large package, for
-every content change. Nothing else writes it: oxlint's type-aware linter, `tsrs --lint`, reads the tsconfig but emits nothing.
-
-The typecheck from scratch is the same task with `--incremental false` passed through turbo (`turbo run typecheck --
---incremental false`, in a turbo run of its own, since the arguments go to every task a run names and to none of their
-dependencies). turbo hashes the arguments, so the push's typecheck never replays a hit of the incremental one, and a
-package states its typecheck once, so no package can be left out of the run from scratch (edullm's qti-pie had no
-second script, and its daily `check:full` never checked qti-pie).
+toolchain-typecheck reads no build info: TypeScript 7.1.0-beta's incremental check, tsgo's and tsrs's alike, passes
+code a check from scratch refuses. Once build info holds a file that uses an imported type, the file's next version,
+whose last use of the type moved into the inferred type of an export, passes with the import unused (TS6196), and the
+gate's snapshots, which every clone shares, held build info another tree wrote (METIS-BOOT, 2026-11-20: an unused
+`import type` passed metis's commit and push gates). The shared base, `packages/devtools/tsconfig.base.json`, sets no
+`incremental`, and toolchain-typecheck hands tsrs a build info file in a directory of the run's own, removed when it
+ends (`--tsBuildInfoFile`, after every argument it is given), so a composite project, which TypeScript keeps
+incremental whatever it is told, reads none either. Build mode (`-b`), which reads build info to skip the projects it
+judges up to date, is refused: a composite project is checked with `-p`, against the declarations its references'
+checks wrote. turbo still replays every package whose inputs did not change, so `pnpm types` costs a whole check of the
+packages that changed and nothing for the rest.
 
 Every package's scripts are:
 
@@ -54,7 +49,7 @@ Every package's scripts are:
 "oxlint": "toolchain-oxlint"
 ```
 
-and the root adds `"types": "turbo run typecheck"` and runs the typecheck from scratch in `check`. The
+and the root adds `"types": "turbo run typecheck"` and runs the same task in `check`. The
 root's own `"oxlint"` is `"toolchain-oxlint-root"`: oxlint over the paths the root tsconfig's `include` names, the same
 list its typecheck reads, so the root's files are named once. turbo.json registers `//#typecheck`
 and `//#oxlint`, since turbo runs a root script for no generic task; the workspace gate's `root-tasks` and `root-files`
@@ -142,8 +137,10 @@ working tree, so lanes that share one checkout never fail or pass each other's w
 - A snapshot is a directory under `${XDG_CACHE_HOME:-~/.cache}/toolchain-snapshots/<the repository's key>/` (the cache layout
   is below) that git keeps in
   step with an index of its own (`read-tree --reset -u`): a run rewrites only the files that changed, deletes the ones
-  that went, and keeps what `.gitignore` names (node_modules, the build info, the tools' caches), so the install and
-  the incremental typecheck stay warm. It installs with `pnpm install --frozen-lockfile --prefer-offline`, from
+  that went and every other file the commit does not hold, what `.gitignore` names among them (an output another
+  tree's check generated, which a check whose cache misses would read as this tree's), and keeps only the installed
+  dependencies (node_modules) and the caches of turbo (.turbo) and fallow (.fallow), so the install stays warm. It
+  installs with `pnpm install --frozen-lockfile --prefer-offline`, from
   pnpm's store and metadata cache, fetching only what they lack (the cache layout below).
 - git leaves a submodule's gitlink an empty directory; the gate fills each from the submodule's own repository at the
   commit the snapshot records, and leaves a submodule the working tree never checked out empty, as it is there.

@@ -10,6 +10,7 @@ export default defineRunner({
 		"src/gate.test.ts",
 		"src/land.test.ts",
 		"src/threads.test.ts",
+		"src/typecheck.test.ts",
 		"src/preset.test.ts",
 		"src/preset-types.test.ts",
 		"src/oxlint/environment.test.ts",

@@ -10,8 +10,8 @@
  * builds it from real git repositories in a scratch directory of its own,
  * and runs the gate over its clones with a cache of its own (XDG_CACHE_HOME), so nothing here touches the real cache.
  * Oracle: the specification, the gate's header: a command the gate runs on a commit sees exactly that commit's files, a
- * submodule's at the commit it records; a file a first run left under .gitignore (node_modules) is still there for a
- * second clone's first run, which is what a warm snapshot is; a run beside live runs takes the first snapshot none of
+ * submodule's at the commit it records, and no other file, ignored or not; what a first run installed (node_modules)
+ * is still there for a second clone's first run, which is what a warm snapshot is; a run beside live runs takes the first snapshot none of
  * them holds, or a new one, and fills it to exactly its commit whatever a killed run left there; and a run collects
  * every other key directory whose repository is gone and that no live run holds, and never one a run of its
  * repository holds in any phase of its life, from before it claims a snapshot to the last process it started.
@@ -76,7 +76,7 @@ export const sharedSnapshot = property.exhaust(finite(sharings), {
 	box: "every way three runs fall among up to three clones of one repository, each leaving a stamp, the later clones writing its URL each way",
 	needs: { dir: Scratch.dir, checkout: Checkout.dir, lockfile: workspaceLockfile },
 	situations: [
-		"a second clone's first run finds what a first run left under .gitignore",
+		"a second clone's first run finds what a first run installed",
 		"a clone runs again after another clone's run",
 		"three clones share one snapshot",
 		"a clone whose origin URL ends in .git shares the snapshot",
@@ -110,7 +110,7 @@ export const sharedSnapshot = property.exhaust(finite(sharings), {
 			}),
 	oracle: {
 		kind: "specification",
-		name: "the gate's cache layout: one key directory per repository, named by its origin's URL with no trailing .git or / and listing every clone that ran, whose snapshot keeps what .gitignore names between runs"
+		name: "the gate's cache layout: one key directory per repository, named by its origin's URL with no trailing .git or / and listing every clone that ran, whose snapshot keeps its installed dependencies between runs"
 	},
 	kept: [],
 	kills: [
@@ -125,6 +125,12 @@ export const sharedSnapshot = property.exhaust(finite(sharings), {
 			original: `identity=\${identity%.git}`,
 			replacement: ":",
 			why: "A clone whose origin URL ends in .git keys a cache of its own beside the one its repository's other clones share (grizzle's 5b2a7da5aaff and 3b452b0d8c62), so its first run is cold; the shared-snapshot property fails."
+		},
+		{
+			file: "packages/devtools/bin/gate.sh",
+			original: "clean -fdqx -e node_modules -e .turbo -e .fallow",
+			replacement: "clean -fdqx -e .turbo -e .fallow",
+			why: "fill removes the installed dependencies with every other ignored file, so no snapshot is warm and a second clone's first run installs from nothing; the shared-snapshot property fails."
 		},
 		{
 			file: "packages/devtools/bin/gate.sh",
@@ -211,7 +217,7 @@ export const checkedCommit = property.exhaust(finite(checkings), {
 		"a commit checked after another clone's different commit",
 		"a commit lacking a file the commit checked before held",
 		"a working tree with edits it has not committed",
-		"a stray file an earlier run left"
+		"strays an earlier run left, ignored and not"
 	],
 	check:
 		({ dir, checkout, lockfile }, c) =>
@@ -250,9 +256,15 @@ export const checkedCommit = property.exhaust(finite(checkings), {
 		},
 		{
 			file: "packages/devtools/bin/gate.sh",
-			original: 'GIT_DIR=$4 git --work-tree="$3" clean -fdq',
+			original: 'GIT_DIR=$4 git --work-tree="$3" clean -fdqx -e node_modules -e .turbo -e .fallow',
 			replacement: "true",
 			why: "A file no index knows, a stray an earlier run's check wrote, stays in the snapshot, so a later run sees a file its commit lacks; the checked-commit property fails."
+		},
+		{
+			file: "packages/devtools/bin/gate.sh",
+			original: 'GIT_DIR=$4 git --work-tree="$3" clean -fdqx -e node_modules -e .turbo -e .fallow',
+			replacement: 'GIT_DIR=$4 git --work-tree="$3" clean -fdq',
+			why: "An output .gitignore names, which an earlier run's check generated, stays in the snapshot, as clean without -x kept it (METIS-BOOT, 2026-11-20: another tree's generated outputs survived for a check whose cache missed), so a later run sees a file its commit lacks; the checked-commit property fails."
 		}
 	]
 })

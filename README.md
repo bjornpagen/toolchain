@@ -14,6 +14,31 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: a typecheck from scratch (2026-11-20)
+
+TypeScript 7.1.0-beta's incremental check, tsgo's and tsrs's alike, passes code a check from scratch refuses. Once
+build info holds a file that uses an imported type, the file's next version, whose last use of the type moved into the
+inferred type of an export, passes with the import unused (TS6196). The gate's snapshots, which every clone shares,
+held build info another tree wrote, so an unused `import type` passed metis's commit and push gates (METIS-BOOT). Now
+toolchain-typecheck reads no build info: the shared base sets no `incremental`, and each run hands tsrs a build info
+file of its own (`--tsBuildInfoFile` in a temporary directory, after your arguments), so a composite project, which
+TypeScript keeps incremental whatever it is told, reads none either. Build mode (`-b`) is refused, since a build reads
+build info to skip the projects it judges up to date. The gate's snapshot keeps no ignored file but node_modules,
+.turbo and .fallow, so a generated output another tree left (a package's declarations, a framework's route types) is
+gone before your check. turbo still replays every package whose inputs did not change. Before you move
+`vendor/toolchain` past this section:
+
+1. **Scripts.** A package's and the root's typecheck is `toolchain-typecheck`, or `toolchain-typecheck -p
+   tsconfig.json` for a composite project, where it was `toolchain-typecheck -b` (grizzle's packages and root). Delete
+   every `typecheck:full` and its turbo.json tasks: the typecheck is its from-scratch form. Drop `-- --incremental
+   false` from `check` (and `check:full`), and drop any `--incremental` or `--tsBuildInfoFile` a script passes: the
+   wrapper's build info file comes last and wins, and `--incremental false` is refused for a composite project
+   (TS6379).
+2. **tsconfig.** A repository base of its own drops `"incremental": true` and the `tsBuildInfoFile` the dced96d section
+   below told it to set. A composite project keeps its `composite`, `outDir` and `tsBuildInfoFile`.
+3. **turbo.json.** A task that generates files declares them as `outputs`, so a cache hit restores them: the gate's
+   snapshot no longer keeps what a check of another tree generated.
+
 ## Consumer migration: a lease takes the slots that are free (2026-11-20)
 
 A run's lease on a cluster family no longer waits under the cluster's gate. A run that a waiting run ahead of it held
@@ -377,8 +402,8 @@ checked qti-pie's four packages. Before you move `vendor/toolchain` past this se
    run names. A composite project that emits declarations cannot turn incremental off; its repository keeps a script
    of its own for that (grizzle's `rm -rf types && toolchain-typecheck -p tsconfig.json`).
 
-Nothing else changes: the shared base is incremental as before, and the push gate's daily `check:full` still runs
-where a repository has one.
+Nothing else changes: the shared base is incremental as before (until 2026-11-20: "a typecheck from scratch", above),
+and the push gate's daily `check:full` still runs where a repository has one.
 
 ## Consumer migration: type-aware lint on tsrs (2026-11-18)
 
@@ -590,6 +615,8 @@ whole section, and do every part: the parts are one migration, in the order a re
   package (`@effect/language-service` belongs in `ignoreDependencies`).
 
 ### 2. Incremental typecheck (dced96d)
+
+(Undone on 2026-11-20: "a typecheck from scratch", above.)
 
 - A tsconfig that extends `vendor/toolchain/packages/devtools/tsconfig.base.json` is incremental already. A repository
   base of its own sets `"incremental": true` and

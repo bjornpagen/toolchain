@@ -68,7 +68,7 @@ export const toolchainConfig = (trunk: string): string =>
  * every push the gate's cases send, main among them.
  */
 const WORKSPACE: ReadonlyArray<readonly [path: string, text: string]> = [
-	[".gitignore", "node_modules\n"],
+	[".gitignore", "node_modules\nout\n"],
 	["pnpm-workspace.yaml", "packages: []\n"],
 	["toolchain.config.ts", toolchainConfig("trunk")]
 ]
@@ -312,7 +312,8 @@ const seenOf = (stdout: string): Seen => {
 }
 
 /** What one run's command leaves in the snapshot after it has looked: a stamp under node_modules, which .gitignore
- * names, and a stray file .gitignore does not name, each named after the run. */
+ * names, and strays, each named after the run: a file .gitignore does not name, and an output under out/, which it
+ * does, as a check's generated output is (a package's declarations, a framework's route types). */
 export type Leaves = Readonly<{ stamp: boolean; stray: boolean }>
 
 /** The gate's run in a clone, the run numbered `index` of its case: its command looks at the snapshot, then leaves
@@ -328,7 +329,9 @@ export const looked = Effect.fn("looked")(function* (
 		[
 			...LOOK,
 			...(leaves.stamp ? [`mkdir -p node_modules && echo ${run} >node_modules/stamp-${run}`] : []),
-			...(leaves.stray ? [`echo ${run} >stray-${run}.txt`] : [])
+			...(leaves.stray
+				? [`echo ${run} >stray-${run}.txt`, `mkdir -p out && echo ${run} >out/stray-${run}.txt`]
+				: [])
 		],
 		"\n"
 	)
@@ -479,7 +482,7 @@ export const sharings: Gen<Sharing> = (source) => {
 
 /** The situations a Sharing puts the cache in. */
 export type SharingFeature =
-	| "a second clone's first run finds what a first run left under .gitignore"
+	| "a second clone's first run finds what a first run installed"
 	| "a clone runs again after another clone's run"
 	| "three clones share one snapshot"
 	| "a clone whose origin URL ends in .git shares the snapshot"
@@ -499,7 +502,7 @@ export const sharingFeatures = (sharing: Sharing): ReadonlyArray<SharingFeature>
 		const ranHere = Arr.some(earlier, (one) => one.clone === run.clone)
 		return [
 			...(!ranHere && Arr.some(earlier, (one) => one.stamps && one.clone !== run.clone)
-				? ["a second clone's first run finds what a first run left under .gitignore" as const]
+				? ["a second clone's first run finds what a first run installed" as const]
 				: []),
 			...(ranHere && Option.exists(previous(sharing.runs, index), (one) => one.clone !== run.clone)
 				? ["a clone runs again after another clone's run" as const]
@@ -554,7 +557,7 @@ export type CheckedClone = Readonly<{ ownFile: boolean; edited: boolean }>
 
 /**
  * Clones of one repository, each with commits and edits of its own, and the gate's runs in them, in order: each run
- * names its clone, and whether its command leaves a stray file .gitignore does not name.
+ * names its clone, and whether its command leaves strays: a file .gitignore does not name, and an output it names.
  */
 export type Checking = Readonly<{
 	clones: Arr.NonEmptyReadonlyArray<CheckedClone>
@@ -586,7 +589,7 @@ export type CheckingFeature =
 	| "a commit checked after another clone's different commit"
 	| "a commit lacking a file the commit checked before held"
 	| "a working tree with edits it has not committed"
-	| "a stray file an earlier run left"
+	| "strays an earlier run left, ignored and not"
 
 /** The situations each run of a Checking is in. */
 export const checkingFeatures = (checking: Checking): ReadonlyArray<CheckingFeature> =>
@@ -603,7 +606,7 @@ export const checkingFeatures = (checking: Checking): ReadonlyArray<CheckingFeat
 				: []),
 			...(shape.edited ? ["a working tree with edits it has not committed" as const] : []),
 			...(Arr.some(before(checking.runs, index), (one) => one.strays)
-				? ["a stray file an earlier run left" as const]
+				? ["strays an earlier run left, ignored and not" as const]
 				: [])
 		]
 	})

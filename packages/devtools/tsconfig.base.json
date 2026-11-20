@@ -25,8 +25,6 @@
 		"allowUnreachableCode": false,
 		"allowUnusedLabels": false,
 		"isolatedModules": true,
-		"incremental": true,
-		"tsBuildInfoFile": "${configDir}/node_modules/.cache/typecheck.tsbuildinfo",
 		"skipLibCheck": true,
 		"noEmit": true,
 		"types": ["node"],

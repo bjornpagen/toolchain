@@ -20,8 +20,9 @@
 # holds, on HEAD), with a git directory of its own that borrows the repository's objects (alternates), keeps its index
 # in step with the files (read-tree --reset -u) and holds HEAD at that commit, so a check that reads git facts (HEAD,
 # the file list, a submodule's pin) reads the commit's and needs no case for the snapshot. A run rewrites only the files
-# that changed since the last, deletes the ones that went, and leaves what .gitignore names (node_modules, the
-# typecheck's build info, the tools' caches) where it was, so installs and incremental checks stay warm. Each submodule
+# that changed since the last, deletes the ones that went, and every file the commit does not hold, what .gitignore
+# names among them, but the installed dependencies and the tools' caches (fill), so installs stay warm and no check reads
+# what another tree's run generated. Each submodule
 # is checked out the same way, with a git directory of its own borrowing the submodule's objects, at the commit the
 # snapshot records, so the snapshot lists it as its gitlink, as the working tree does. The commit gate and the push gate
 # keep separate snapshots, so a commit, which holds index.lock for its whole hook, never shares one with a push's gate.
@@ -119,10 +120,12 @@ cache="$cache_root/$key"
 # @owner the dev tools' gate (packages/devtools/bin/gate.sh, the push)
 # @unit days
 # @scope the age of the push snapshot's last passing check:full, in a repository that has one
-# @guards without a period a stale result of the incremental typecheck's build info (TypeScript #64386 and #64591)
-#   could pass every push for ever; with none at all every push runs the gate from scratch
-# @measure over a few weeks of pushes, record each check:full that failed where the incremental check before it
-#   passed, and how long the build info had then been kept; choose the period below the shortest such age
+# @guards turbo cache entries whose declared inputs miss a real input: such a task replays a stale cached verdict for
+#   every push whose change lies in the input it does not declare, until a forced run executes it; without a period it
+#   could pass every push for ever, and with none at all every push runs the gate with no cache (the typecheck itself
+#   reads no build info since 2026-11-20, so build info no longer is what it guards)
+# @measure over a few weeks of pushes, record each check:full that failed where the cached check before it passed, and
+#   how long the stale cache entry had then stood; choose the period below the shortest such age
 # @origin Bjorn's decision of 2026-11-15, "once a day", written with db83729, with no evidence
 # @recorded 2026-11-16
 readonly GATE_FULL_CHECK_DAYS=1
@@ -140,10 +143,13 @@ fill() (
 	GIT_DIR=$1 git rev-parse --git-path objects >"$4/objects/info/alternates"
 	GIT_DIR=$4 git --work-tree="$3" read-tree --reset -u "$2^{tree}"
 	# read-tree removes only the files its index held: a file no index knows (one an older gate's snapshot kept, or one a
-	# check wrote and .gitignore does not name) would stay, and a check listing untracked files would read it. clean
-	# without -x removes those and keeps what .gitignore names (node_modules, build info, the tools' caches); a submodule's
-	# own git directory keeps clean out of it, and its own fill cleans it.
-	GIT_DIR=$4 git --work-tree="$3" clean -fdq
+	# check wrote) would stay, and a check would read it. clean -x removes every one of them, what .gitignore names
+	# included: an output another tree's check generated there (a package's declarations, a framework's route types)
+	# would otherwise stand for this tree's in a check whose cache misses (METIS-BOOT, 2026-11-20). It keeps the
+	# installed dependencies (node_modules) and the caches of the tools the gate runs, each keyed by what it caches:
+	# turbo's (.turbo) and fallow's (.fallow). A submodule's own git directory keeps clean out of it, and its own fill
+	# cleans it.
+	GIT_DIR=$4 git --work-tree="$3" clean -fdqx -e node_modules -e .turbo -e .fallow
 	GIT_DIR=$4 git update-ref --no-deref HEAD "$2"
 	GIT_DIR=$4 git ls-tree -r "$2^{tree}" | while IFS='	' read -r entry path; do
 		case $entry in
@@ -339,9 +345,11 @@ EOF
 		for pair in $pushed; do
 			commit=${pair%%:*}
 			base=${pair#*:}
-			# A tree this gate passed before passes again: the gate's verdict is a function of the commit's tree, so a push
-			# that sends a tree already gated (a ref race that threw the push away, a re-push) claims no snapshot and runs
-			# nothing. The stamp is written only when every check of the tree passed.
+			# A tree this gate passed before passes again: the gate's verdict is a function of the commit's tree (the
+			# typecheck reads no build info, fill leaves no file of another tree's, and turbo replays a task only for the
+			# inputs it declares, which check:full forces past), so a push that sends a tree already gated (a ref race that
+			# threw the push away, a re-push) claims no snapshot and runs nothing. The stamp is written only when every
+			# check of the tree passed.
 			tree=$(git rev-parse "$commit^{tree}")
 			if [ -f "$cache/push.passed/$tree" ]; then
 				printf 'toolchain-gate: the tree of %s (%s) passed this gate before\n' "$commit" "$tree" >&2
@@ -349,10 +357,10 @@ EOF
 			fi
 			(
 				enter push "$commit"
-				# The push snapshot keeps the incremental typecheck's build info between runs, so `pnpm check` re-checks
-				# what changed. A repository whose check:full runs the same gate from scratch (no build info, every task
-				# forced) has it run once every GATE_FULL_CHECK_DAYS (a day, Bjorn, 2026-11-15), so a stale result from build
-				# info lives that long at most; the stamp is written only when it passes.
+				# The push snapshot keeps turbo's cache between runs, so `pnpm check` replays every task whose declared
+				# inputs did not change. A repository whose check:full runs the same gate with every task forced has it run
+				# once every GATE_FULL_CHECK_DAYS (a day, Bjorn, 2026-11-15), so a verdict a task replays from an input it
+				# does not declare stands that long at most; the stamp is written only when it passes.
 				check=check
 				if grep -q '"check:full"' package.json &&
 					[ -z "$(find "$cache/push.full" -mtime "-$GATE_FULL_CHECK_DAYS" 2>/dev/null)" ]; then
