@@ -74,7 +74,10 @@ export type SizedBuffers =
  * repository's needs: its family, the members its workers spread over; its connections (max_connections, the
  * superuser's and reserved slots added), always per worker, since its lease divides a member's capacity by what a
  * worker holds (lease.ts leaseSlots) and a demand never stated could not be divided; its replication
- * (max_replication_slots and max_wal_senders, each a live source's slot and walsender); and its shared buffers.
+ * (max_replication_slots and max_wal_senders, each a live source's slot and walsender); its shared buffers; and its
+ * locks, the heavyweight locks its workers' transactions and the outside's hold at once (max_locks_per_transaction, the
+ * shared lock table sized to hold them all: settings.ts locksPerTransaction), so concurrent installs on a shared family
+ * never exhaust its lock table (5447's 53200, 2026-11-20).
  */
 export type LeasedSizing = Readonly<{
 	kind: "leased"
@@ -82,16 +85,25 @@ export type LeasedSizing = Readonly<{
 	connections: PerWorker
 	replication: Sized
 	sharedBuffers: SizedBuffers
+	locks: Sized
 }>
+
+/**
+ * The heavyweight locks a cluster sized by its sessions holds at once: PostgreSQL's own default, for a repository that
+ * has no evidence of them; or `locks`, what its known users' transactions hold at most at once, all of them together
+ * (a migration's largest transaction beside the application's), the repository's number with its evidence beside its
+ * spec.
+ */
+export type SessionLocks = Readonly<{ kind: "default" }> | Readonly<{ kind: "held"; locks: number }>
 
 /**
  * A cluster nothing leases (a development cluster that `pnpm dev` and its tools reach, never a runner's layer): one
  * member, its max_connections the sessions its known users hold at most at once (an application's pool, a doctor, an
  * operator's psql), the superuser's and reserved slots added, each user's number stated in the repository's own code
- * beside the user it bounds; its replication and shared buffers at PostgreSQL's defaults. It has no workers, so
- * nothing of it is sized per worker.
+ * beside the user it bounds; its lock table sized for the locks they hold at once (SessionLocks); its replication and
+ * shared buffers at PostgreSQL's defaults. It has no workers, so nothing of it is sized per worker.
  */
-export type SessionsSizing = Readonly<{ kind: "sessions"; sessions: number }>
+export type SessionsSizing = Readonly<{ kind: "sessions"; sessions: number; locks: SessionLocks }>
 
 /** How a cluster is sized: for the run's workers that lease it (LeasedSizing), or for its known users' sessions. */
 export type Sizing = LeasedSizing | SessionsSizing

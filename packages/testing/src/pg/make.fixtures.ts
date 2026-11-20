@@ -54,6 +54,25 @@ const casePerWorker = { perWorker: 2, outside: 3 } as const
 const caseSessions = 5
 
 /**
+ * The heavyweight locks one worker of a case's leased cluster holds at most at once, and those held outside any worker:
+ * a case's own numbers, each past what PostgreSQL's default table holds for a member of a case's width (grizzle's
+ * drafted migrations take 400 to 5,200 at once), so the member's lock table is sized above its default.
+ */
+const caseLocks = { perWorker: 4096, outside: 1000 } as const
+
+/** The locks a case's cluster sized by its sessions is stated to hold at once: a case's own number, past the default's. */
+const caseSessionLocks = 20_000
+
+/**
+ * The heavyweight locks each member of a case's cluster must hold at once, as its sizing states them: a leased member's
+ * share of the machine's workers at caseLocks's each, and the outside's; a member sized by its sessions, caseSessionLocks.
+ */
+export const lockDemandOf = (life: Life): number =>
+	life.sizedBy.kind === "sessions"
+		? caseSessionLocks
+		: Math.ceil(testWorkers / life.sizedBy.members) * caseLocks.perWorker + caseLocks.outside
+
+/**
  * The connections each member of a case's cluster admits beside those its server reserves, as its sizing states them:
  * a leased member's share of the machine's workers (its family's members serving them all, the share rounded up) at
  * casePerWorker's each, and the outside's; a member sized by its sessions, caseSessions, whatever the machine's width.
@@ -96,9 +115,10 @@ export const stopEvery = (root: string) =>
 	}).pipe(Effect.ignore)
 
 /**
- * The spec of a case's cluster on `port`, owned by `owner`, at PostgreSQL's default sizes but its connections, sized as
- * the testing package's own cluster is (casePerWorker) when it is leased and for caseSessions when it is sized by its
- * sessions, its owner granted SET on two parameters only a superuser may set by default, as grizzle's is.
+ * The spec of a case's cluster on `port`, owned by `owner`, at PostgreSQL's default sizes but its connections and its
+ * locks, sized as the testing package's own cluster is (casePerWorker) and for caseLocks when it is leased and for
+ * caseSessions and caseSessionLocks when it is sized by its sessions, its owner granted SET on two parameters only a
+ * superuser may set by default, as grizzle's is.
  */
 export const specOf = (life: Life, port: number, owner: string): LocalCluster =>
 	localCluster({
@@ -112,7 +132,11 @@ export const specOf = (life: Life, port: number, owner: string): LocalCluster =>
 		durability: life.durability,
 		sizing:
 			life.sizedBy.kind === "sessions"
-				? { kind: "sessions", sessions: caseSessions }
+				? {
+						kind: "sessions",
+						sessions: caseSessions,
+						locks: { kind: "held", locks: caseSessionLocks }
+					}
 				: {
 						kind: "leased",
 						family:
@@ -121,7 +145,8 @@ export const specOf = (life: Life, port: number, owner: string): LocalCluster =>
 								: { kind: "spread", workersPerMember: Math.ceil(testWorkers / 2) },
 						connections: casePerWorker,
 						replication: { kind: "default" },
-						sharedBuffers: { kind: "default" }
+						sharedBuffers: { kind: "default" },
+						locks: { kind: "perWorker", ...caseLocks }
 					}
 	})
 

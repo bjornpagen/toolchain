@@ -2,7 +2,12 @@
  * A local cluster's life (pg/make.ts): however many processes bring a cluster up at once, one makes it, under its lock,
  * and the rest take what it made, every member of its family on a port of its own and the manifest recording them; each
  * member admits the connections its sizing states beside those its server reserves, a leased member its share of the
- * run's workers' and the outside's, a member sized by its sessions those sessions whatever the run's width; what it
+ * run's workers' and the outside's, a member sized by its sessions those sessions whatever the run's width; each
+ * member's lock table holds the heavyweight locks its sizing states at once, and is no larger than it must be to
+ * (PostgreSQL's table: max_locks_per_transaction entries for each of its backends and prepared transactions, REL_19_0
+ * src/backend/storage/lmgr/lock.c NLOCKENTS, its backends max_connections, autovacuum_worker_slots,
+ * max_worker_processes, max_wal_senders and its two special workers, src/backend/utils/init/postinit.c
+ * InitializeMaxBackends, src/include/storage/proc.h NUM_SPECIAL_WORKER_PROCS); what it
  * made passes the doctor's quick checks on every member, TLS, SCRAM and the settings every member holds among them;
  * a second bring-up takes the running cluster as it is, its postmasters the same processes; a spec of another owner on
  * the same port is refused, never taken; and a throwaway cluster is destroyed whole while a kept one's destroy is
@@ -28,6 +33,7 @@ import {
 	type Holding,
 	holdings,
 	lives,
+	lockDemandOf,
 	machineBin,
 	madeSynchronously,
 	membersOfLife,
@@ -160,6 +166,23 @@ export const lifeOfACluster = property.exhaust(lives, {
 				admitted,
 				Arr.map(ports, () => [`${admittedOf(life)}`]),
 				`every member admits the connections its sizing states (${life.sizedBy.kind})`
+			)
+			const demand = lockDemandOf(life)
+			const tables = yield* Effect.forEach(ports, (member) =>
+				adminSql(
+					bin,
+					state.member(member),
+					"postgres",
+					[
+						`SELECT (locks * processes >= ${demand})::text || ' ' || (locks = 128 OR (locks - 1) * processes < ${demand})::text FROM (SELECT pg_catalog.current_setting('max_locks_per_transaction')::int8 AS locks, pg_catalog.current_setting('max_connections')::int8 + pg_catalog.current_setting('autovacuum_worker_slots')::int8 + pg_catalog.current_setting('max_worker_processes')::int8 + pg_catalog.current_setting('max_wal_senders')::int8 + 2 + pg_catalog.current_setting('max_prepared_transactions')::int8 AS processes) AS member`
+					],
+					{ cluster: port, doing: "reading the lock table a member holds" }
+				)
+			)
+			assert.deepEqual(
+				tables,
+				Arr.map(ports, () => ["true true"]),
+				`every member's lock table holds the locks its sizing states at once, and no more than it must (${life.sizedBy.kind})`
 			)
 			const before = yield* postmasters(root, ports)
 			const spawned = yield* clusterUp(spec).pipe(inCase, spawnedBy)
@@ -301,15 +324,34 @@ export const lifeOfACluster = property.exhaust(lives, {
 		},
 		{
 			file: "packages/testing/src/pg/settings.ts",
-			original: "		return [maxConnections(sizing.sessions)]\n",
-			replacement: "		return [maxConnections(share * sizing.sessions)]\n",
+			original: "\t\t\tmaxConnections(sizing.sessions),\n",
+			replacement: "\t\t\tmaxConnections(share * sizing.sessions),\n",
 			why: "A cluster sized by its sessions is read as though each were a worker's, its sessions times the run's share, so a development cluster's max_connections grows with the machine's width; the property fails."
 		},
 		{
 			file: "packages/testing/src/pg/settings.ts",
-			original: "		maxConnections(perWorkerCount(connections, share)),\n",
-			replacement: "		maxConnections(perWorkerCount(connections, 1)),\n",
+			original: "\tconst admitted = perWorkerCount(connections, share)\n",
+			replacement: "\tconst admitted = perWorkerCount(connections, 1)\n",
 			why: "A leased member is sized for one worker whatever its share of the run's, so its lease admits one worker and the run's others wait; the property fails."
+		},
+		{
+			file: "packages/testing/src/pg/settings.ts",
+			original: "\t\t...Arr.map(sizedCount(locks, share), (demand) =>\n",
+			replacement: '\t\t...Arr.map(sizedCount({ kind: "default" }, share), (demand) =>\n',
+			why: "A leased member's lock table stays at PostgreSQL's default whatever its workers hold, so concurrent installs on a shared family exhaust it (5447's 53200, 2026-11-20); the property fails."
+		},
+		{
+			file: "packages/testing/src/pg/settings.ts",
+			original: "\t\t\t...Arr.map(heldCount(sizing.locks), (demand) =>\n",
+			replacement: '\t\t\t...Arr.map(heldCount({ kind: "default" }), (demand) =>\n',
+			why: "A cluster sized by its sessions keeps PostgreSQL's default lock table whatever its users hold, so a development migration's largest transaction runs out of locks; the property fails."
+		},
+		{
+			file: "packages/testing/src/pg/settings.ts",
+			original:
+				"\t\t\t\t(connections +\n\t\t\t\t\tautovacuumWorkerSlots +\n\t\t\t\t\tworkerProcesses +\n\t\t\t\t\twalSenders +\n",
+			replacement: "\t\t\t\t(connections +\n",
+			why: "The lock table is sized as though only the member's connections held its entries, so it is sized past what it must hold: autovacuum's slots, the background workers and the WAL senders each hold max_locks_per_transaction entries of it too (lock.c NLOCKENTS); the property fails."
 		},
 		{
 			file: "packages/testing/src/pg/make.ts",

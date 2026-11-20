@@ -1,5 +1,5 @@
 import { Array as Arr, String as Str } from "effect"
-import type { Durability, LocalCluster, PerWorker, Sized, Sizing } from "#pg/spec.ts"
+import type { Durability, LocalCluster, PerWorker, SessionLocks, Sized, Sizing } from "#pg/spec.ts"
 
 /**
  * How long a backend runs a statement between two polls of its client's socket, PostgreSQL's
@@ -89,6 +89,92 @@ const superuserReservedConnections = 3
  */
 const reservedConnections = 0
 
+/**
+ * The heavyweight locks PostgreSQL's lock table holds for each process it admits, max_locks_per_transaction, at its
+ * default: a member's table never holds fewer, whatever its demand.
+ *
+ * @limitKind published
+ * @owner PostgreSQL 19.0
+ * @unit locks per server process or prepared transaction
+ * @scope a member's max_locks_per_transaction, which sizes its shared lock table (locksPerTransaction)
+ * @constraint configurable default
+ * @source https://github.com/postgres/postgres/blob/REL_19_0/src/backend/utils/misc/guc_parameters.dat#L2026
+ * @quote boot_val => '128',
+ * @verified 2026-11-20
+ */
+const defaultLocksPerTransaction = 128
+
+/**
+ * The backend slots PostgreSQL keeps for autovacuum's workers, at its default, which a member leaves as it is.
+ *
+ * @limitKind published
+ * @owner PostgreSQL 19.0
+ * @unit server processes
+ * @scope a member's autovacuum_worker_slots, part of the processes its lock table is sized by (locksPerTransaction)
+ * @constraint configurable default
+ * @source https://github.com/postgres/postgres/blob/REL_19_0/src/backend/utils/misc/guc_parameters.dat#L306
+ * @quote boot_val => '16',
+ * @verified 2026-11-20
+ */
+const autovacuumWorkerSlots = 16
+
+/**
+ * The background worker processes PostgreSQL admits, at its default, which a member leaves as it is.
+ *
+ * @limitKind published
+ * @owner PostgreSQL 19.0
+ * @unit server processes
+ * @scope a member's max_worker_processes, part of the processes its lock table is sized by (locksPerTransaction)
+ * @constraint configurable default
+ * @source https://github.com/postgres/postgres/blob/REL_19_0/src/backend/utils/misc/guc_parameters.dat#L2207
+ * @quote boot_val => '8',
+ * @verified 2026-11-20
+ */
+const workerProcesses = 8
+
+/**
+ * The WAL senders PostgreSQL admits, at its default: a member whose replication is not sized holds it.
+ *
+ * @limitKind published
+ * @owner PostgreSQL 19.0
+ * @unit server processes
+ * @scope a member's max_wal_senders when its replication is PostgreSQL's default, part of the processes its lock table
+ *   is sized by (locksPerTransaction)
+ * @constraint configurable default
+ * @source https://github.com/postgres/postgres/blob/REL_19_0/src/backend/utils/misc/guc_parameters.dat#L2189
+ * @quote boot_val => '10',
+ * @verified 2026-11-20
+ */
+const defaultWalSenders = 10
+
+/**
+ * The prepared transactions PostgreSQL admits, at its default, which a member leaves as it is.
+ *
+ * @limitKind published
+ * @owner PostgreSQL 19.0
+ * @unit prepared transactions
+ * @scope a member's max_prepared_transactions, part of what its lock table is sized by (locksPerTransaction)
+ * @constraint configurable default
+ * @source https://github.com/postgres/postgres/blob/REL_19_0/src/backend/utils/misc/guc_parameters.dat#L2112
+ * @quote boot_val => '0',
+ * @verified 2026-11-20
+ */
+const preparedTransactions = 0
+
+/**
+ * The backends PostgreSQL adds beside those its settings count: the autovacuum launcher and the slot sync worker.
+ *
+ * @limitKind published
+ * @owner PostgreSQL 19.0
+ * @unit server processes
+ * @scope every member's MaxBackends, part of what its lock table is sized by (locksPerTransaction)
+ * @constraint protocol constant
+ * @source https://github.com/postgres/postgres/blob/REL_19_0/src/include/storage/proc.h#L520
+ * @quote #define NUM_SPECIAL_WORKER_PROCS	2
+ * @verified 2026-11-20
+ */
+const specialWorkerProcesses = 2
+
 /** A setting as postgresql.conf, ALTER SYSTEM and pg_settings spell it: its name and its value's text. */
 export type Setting = readonly [name: string, value: string]
 
@@ -161,10 +247,39 @@ const perWorkerCount = (counted: PerWorker, share: number): number =>
 const sizedCount = (sized: Sized, share: number): ReadonlyArray<number> =>
 	sized.kind === "default" ? [] : [perWorkerCount(sized, share)]
 
-/** max_connections for `count` connections of the member's users, with the slots PostgreSQL reserves at their defaults. */
-const maxConnections = (count: number): Setting => [
-	"max_connections",
-	`${count + superuserReservedConnections + reservedConnections}`
+/** The locks a member sized by its sessions holds at once (SessionLocks): none at PostgreSQL's default. */
+const heldCount = (locks: SessionLocks): ReadonlyArray<number> =>
+	locks.kind === "default" ? [] : [locks.locks]
+
+/** max_connections for `count` connections of the member's users: theirs, and the slots PostgreSQL reserves at their defaults. */
+const connectionsFor = (count: number): number =>
+	count + superuserReservedConnections + reservedConnections
+
+/** max_connections for `count` connections of the member's users (connectionsFor). */
+const maxConnections = (count: number): Setting => ["max_connections", `${connectionsFor(count)}`]
+
+/**
+ * max_locks_per_transaction for a lock table that holds `demand` locks at once, on a member of `connections`
+ * max_connections and `walSenders` max_wal_senders: PostgreSQL sizes its shared lock table at max_locks_per_transaction
+ * entries for each of its backends and prepared transactions (REL_19_0 src/backend/storage/lmgr/lock.c#L59 NLOCKENTS,
+ * MaxBackends + max_prepared_transactions; src/backend/utils/init/postinit.c#L571 InitializeMaxBackends, max_connections
+ * + autovacuum_worker_slots + max_worker_processes + max_wal_senders + its special workers), so the least count whose
+ * table holds the demand, and never fewer than its default.
+ */
+const locksPerTransaction = (demand: number, connections: number, walSenders: number): Setting => [
+	"max_locks_per_transaction",
+	`${Math.max(
+		defaultLocksPerTransaction,
+		Math.ceil(
+			demand /
+				(connections +
+					autovacuumWorkerSlots +
+					workerProcesses +
+					walSenders +
+					specialWorkerProcesses +
+					preparedTransactions)
+		)
+	)}`
 ]
 
 /**
@@ -172,9 +287,10 @@ const maxConnections = (count: number): Setting => [
  * bytes a page. A leased member is sized to its share of a full-width run, `share` workers: max_connections, every
  * worker's connections and the outside's; max_replication_slots and max_wal_senders, one bound for both, since a live
  * source's leader holds one slot and one walsender; shared_buffers in pages, every page each worker's largest database
- * holds; a count the repository states no evidence for stays PostgreSQL's default, and is none of these. A member sized
- * by its sessions holds max_connections for them alone, whatever the run's width, and the rest at PostgreSQL's
- * defaults.
+ * holds; max_locks_per_transaction, a lock table that holds every worker's locks and the outside's at once
+ * (locksPerTransaction); a count the repository states no evidence for stays PostgreSQL's default, and is none of
+ * these. A member sized by its sessions holds max_connections for them alone, whatever the run's width, a lock table
+ * for the locks they hold at once, and the rest at PostgreSQL's defaults.
  */
 export const sizedSettings = (
 	cluster: LocalCluster,
@@ -183,12 +299,19 @@ export const sizedSettings = (
 ): ReadonlyArray<Setting> => {
 	const { sizing } = cluster
 	if (sizing.kind === "sessions") {
-		return [maxConnections(sizing.sessions)]
+		return [
+			maxConnections(sizing.sessions),
+			...Arr.map(heldCount(sizing.locks), (demand) =>
+				locksPerTransaction(demand, connectionsFor(sizing.sessions), defaultWalSenders)
+			)
+		]
 	}
-	const { connections, replication, sharedBuffers } = sizing
+	const { connections, replication, sharedBuffers, locks } = sizing
+	const admitted = perWorkerCount(connections, share)
+	const senders = sizedCount(replication, share)
 	return [
-		maxConnections(perWorkerCount(connections, share)),
-		...Arr.flatMap(sizedCount(replication, share), (count): ReadonlyArray<Setting> => [
+		maxConnections(admitted),
+		...Arr.flatMap(senders, (count): ReadonlyArray<Setting> => [
 			["max_replication_slots", `${count}`],
 			["max_wal_senders", `${count}`]
 		]),
@@ -199,7 +322,14 @@ export const sizedSettings = (
 						"shared_buffers",
 						`${share * Math.ceil(sharedBuffers.bytes / blockSize)}`
 					] satisfies Setting
-				])
+				]),
+		...Arr.map(sizedCount(locks, share), (demand) =>
+			locksPerTransaction(
+				demand,
+				connectionsFor(admitted),
+				Arr.match(senders, { onEmpty: () => defaultWalSenders, onNonEmpty: Arr.headNonEmpty })
+			)
+		)
 	]
 }
 

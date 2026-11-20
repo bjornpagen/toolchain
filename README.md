@@ -14,6 +14,23 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: a cluster's lock table is sized (2026-11-20)
+
+A cluster's spec states the heavyweight locks its users hold at once, and each member's `max_locks_per_transaction`
+is the least that sizes PostgreSQL's shared lock table to hold them (max_locks_per_transaction entries for each of its
+backends and prepared transactions: REL_19_0 lock.c NLOCKENTS), never below PostgreSQL's 128, so concurrent installs on
+a shared family no longer exhaust it (5447's 53200: one migration's 1,000 locks beside the rest of the table held by
+other installs). Before you move `vendor/toolchain` past this section, in the same commit:
+
+1. **A leased cluster's `sizing` states `locks`**, a `Sized` like `replication`: `{ kind: "default" }` (PostgreSQL's
+   128, no setting written) for a repository with no evidence, or `{ kind: "perWorker", perWorker, outside }`, the
+   most one worker's transactions hold at once (a template install's largest migration file) and those held outside
+   any worker, each the repository's number with its evidence beside the spec.
+2. **A cluster sized by its sessions states `locks` too**: `{ kind: "default" }`, or `{ kind: "held", locks }`, what
+   its known users' transactions hold at most at once, all of them together.
+3. A running member sized for more locks than it holds is the doctor's finding (the setting below its size) until
+   `toolchain-pg init --adopt` resizes it; a spec of `{ kind: "default" }` changes nothing on a running cluster.
+
 ## Consumer migration: `pnpm land` (2026-11-20)
 
 Bjorn, 2026-11-20: "pnpm land is a GREAT idea, must go into all of our codebases immediately", after metis's

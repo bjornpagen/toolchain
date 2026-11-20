@@ -26,7 +26,10 @@ const fields = {
 } as const
 
 /** A cluster sized by its sessions: what a development cluster nothing leases states. */
-const sessionsCluster = localCluster({ ...fields, sizing: { kind: "sessions", sessions: 1 } })
+const sessionsCluster = localCluster({
+	...fields,
+	sizing: { kind: "sessions", sessions: 1, locks: { kind: "default" } }
+})
 
 export const accepted = Object.freeze([
 	PgCluster.layer({ prefix, cluster: testingCluster, connect }),
@@ -39,7 +42,8 @@ export const accepted = Object.freeze([
 				family: { kind: "spread", workersPerMember: 1 },
 				connections: { perWorker: 1, outside: 0 },
 				replication: { kind: "perWorker", perWorker: 1, outside: 0 },
-				sharedBuffers: { kind: "default" }
+				sharedBuffers: { kind: "default" },
+				locks: { kind: "default" }
 			}
 		}),
 		connect
