@@ -2,7 +2,9 @@
  * A cluster as units of the workbench's PostgreSQL (pg/settle.ts): `settled` starts each member's unit and gives it what
  * its spec states, and `membersRead`, what a run reads, then answers every member, over its socket or over TLS at its
  * port; a member a setting of which was changed behind the spec's back, or that ALTER SYSTEM gave a setting the spec
- * does not state, is refused, naming `toolchain-pg settle`, and settled again, the unstated setting reset; and a run that reads a cluster never settled is refused at once, starting no unit and writing no state.
+ * does not state, is refused, naming `toolchain-pg settle`, and settled again, the unstated setting reset; a settled
+ * member's predicate lock table stays one a read of pg_locks can copy (settings.ts lockStatusConnections); and a run
+ * that reads a cluster never settled is refused at once, starting no unit and writing no state.
  * Each case's cluster is a unit name of its own, its units stopped and its data removed when the case ends. Oracle: the
  * specification, stated in the checks.
  */
@@ -54,6 +56,15 @@ export const settledAsItsSpec = property.exhaust(finite(shapes), {
 					["ALTER SYSTEM SET work_mem = '7MB'", "SELECT pg_catalog.pg_reload_conf()"],
 					{ cluster: cluster.unit, doing: "writing a setting its spec does not state" }
 				)
+				const [lockStatus = ""] = yield* adminSql(
+					bin,
+					{ socket: first.socket, port: first.port },
+					"postgres",
+					[
+						"SELECT 2 * current_setting('max_pred_locks_per_transaction')::bigint * (current_setting('max_connections')::bigint + current_setting('autovacuum_worker_slots')::bigint + current_setting('max_worker_processes')::bigint + current_setting('max_wal_senders')::bigint + 2 + current_setting('max_prepared_transactions')::bigint) * 168 <= 1073741823"
+					],
+					{ cluster: cluster.unit, doing: "reading its predicate lock table's size" }
+				)
 				const refusedAfterUnstated = yield* failedOf(membersRead(cluster))
 				yield* settled(cluster)
 				const unstatedLeft = yield* adminSql(
@@ -73,7 +84,8 @@ export const settledAsItsSpec = property.exhaust(finite(shapes), {
 						refusedAfterChange,
 						readAgain: readAgain.length,
 						refusedAfterUnstated,
-						unstatedLeft
+						unstatedLeft,
+						lockStatusFits: lockStatus
 					},
 					{
 						settled: Arr.map(memberNames(cluster), (name, index) => [
@@ -90,14 +102,15 @@ export const settledAsItsSpec = property.exhaust(finite(shapes), {
 						refusedAfterChange: true,
 						readAgain: shape.spread ? 2 : 1,
 						refusedAfterUnstated: true,
-						unstatedLeft: []
+						unstatedLeft: [],
+						lockStatusFits: "t"
 					}
 				)
 			})
 		),
 	oracle: {
 		kind: "specification",
-		name: "a settled cluster's members are read as its spec states them, each its unit's, at its port; one changed behind the spec's back, or given a setting its spec does not state, is refused, and settled again, the unstated setting reset"
+		name: "a settled cluster's members are read as its spec states them, each its unit's, at its port; one changed behind the spec's back, or given a setting its spec does not state, is refused, and settled again, the unstated setting reset; and its predicate lock table, copied whole by a read of pg_locks, a SERIALIZABLEXACT of 168 bytes an entry, stays within PostgreSQL's 1 GB allocation"
 	},
 	kept: [],
 	kills: [
@@ -119,6 +132,12 @@ export const settledAsItsSpec = property.exhaust(finite(shapes), {
 			original: `\t\t: \`ALTER SYSTEM RESET \${settingName(drift.name)}\`\n`,
 			replacement: `\t\t: \`SELECT 1 -- \${settingName(drift.name)}\`\n`,
 			why: "Settling leaves a setting ALTER SYSTEM wrote that the spec no longer states, so a reused member keeps what a spec of before or a person gave it (GRIZZLEPG, 2026-11-21: a kill that dropped a setting from the spec survived on a long-lived cluster); the property fails, the settle's own read refused."
+		},
+		{
+			file: "packages/testing/src/pg/settings.ts",
+			original: "\t\tlockStatusConnections(sendersPerConnection),\n",
+			replacement: "\t\tNumber.POSITIVE_INFINITY,\n",
+			why: "A member admits as many connections as the machine's memory holds, as it did: the test cluster's member, at thousands of connections, holds a predicate lock table a read of pg_locks cannot copy in one allocation (the shared server at 10,000 refused pg_locks, 2026-11-21: 168 bytes times 9,097,351 predicate locks); the property fails."
 		}
 	]
 })

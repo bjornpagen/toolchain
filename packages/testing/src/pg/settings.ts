@@ -13,7 +13,7 @@ import type { Durability, LocalCluster, SessionLocks, Sizing } from "#pg/spec.ts
  * member (CREATE_REPLICATION_SLOT, a live source's) waits for every transaction id running when it starts.
  *
  * @limitKind measured
- * @owner the toolchain's local clusters (pg/make.ts), from grizzle's (packages/pg/src/settings.ts at a5dd3588d) and
+ * @owner the toolchain's local clusters (pg/settle.ts), from grizzle's (packages/pg/src/settings.ts at a5dd3588d) and
  *   superstarter's test cluster (packages/database/src/postgres/test-cluster.ts at 90f266e), whose evidence is this
  *   number's
  * @unit milliseconds
@@ -175,13 +175,69 @@ const preparedTransactions = 0
  */
 const specialWorkerProcesses = 2
 
+/**
+ * The predicate locks PostgreSQL's table holds for each predicate lock target it sizes: its PREDICATELOCK hash holds
+ * twice as many entries as its PREDICATELOCKTARGET hash, max_pred_locks_per_transaction for each backend and prepared
+ * transaction, a fixed size it never grows past (HASH_FIXED_SIZE).
+ *
+ * @limitKind published
+ * @owner PostgreSQL 19.0
+ * @unit predicate locks per predicate lock target
+ * @scope every member's predicate lock table, which a read of pg_locks copies whole (lockStatusConnections)
+ * @constraint protocol constant
+ * @source https://github.com/postgres/postgres/blob/REL_19_0/src/backend/storage/lmgr/predicate.c#L1146
+ * @quote max_predicate_locks = max_predicate_lock_targets * 2;
+ * @verified 2026-11-21
+ */
+const predicateLocksPerTarget = 2
+
+/**
+ * The bytes a read of pg_locks copies for each predicate lock the member holds: pg_lock_status calls
+ * GetPredicateLockStatusData, which pallocs one SERIALIZABLEXACT for every entry of the PREDICATELOCK hash at once
+ * (predicate.c#L1399 `data->xacts = palloc_array(SERIALIZABLEXACT, els)`), beside a 16-byte target tag each in an
+ * array of its own.
+ *
+ * @limitKind measured
+ * @owner PostgreSQL 19.0 (src/include/storage/predicate_internals.h, SERIALIZABLEXACT)
+ * @unit bytes
+ * @scope every member's read of pg_locks (lockStatusConnections)
+ * @evidence ~/.cache/grizzle-release/TOOLCHAIN6-work/probe/sizes.c, compiled with gcc against the server headers of
+ *   the PostgreSQL every member runs (pg_config --includedir-server): sizeof(SERIALIZABLEXACT) 168,
+ *   sizeof(PREDICATELOCKTARGETTAG) 16, sizeof(LockInstanceData) 56, MaxAllocSize 1073741823; and the workbench's shared
+ *   server at max_connections 10000 refusing `SELECT count(*) FROM pg_locks` with "invalid memory alloc request size
+ *   1528354968", which is 168 times 9,097,351, the predicate locks it held then
+ * @observed 2026-11-21 13:55 UTC
+ * @environment cassowary, Ubuntu 26.04 on arm64 (64-bit pointers), PostgreSQL 19.0 (~/.local/opt/postgresql/19.0)
+ * @workload sizeof of the struct; the shared server under every lane's SERIALIZABLE tests
+ * @result 168 bytes
+ * @decision the size as it is
+ * @revalidate a PostgreSQL repin or major version; another architecture; an upstream fix that allocates the arrays
+ *   huge (MCXT_ALLOC_HUGE), which lifts the bound
+ */
+const serializableXactBytes = 168
+
+/**
+ * The most a single allocation of PostgreSQL's may ask for, MaxAllocSize: a palloc past it fails ("invalid memory
+ * alloc request size"), as GetPredicateLockStatusData's array of SERIALIZABLEXACT does past it.
+ *
+ * @limitKind published
+ * @owner PostgreSQL 19.0
+ * @unit bytes
+ * @scope every member's read of pg_locks (lockStatusConnections)
+ * @constraint protocol constant
+ * @source https://github.com/postgres/postgres/blob/REL_19_0/src/include/utils/memutils.h#L40
+ * @quote #define MaxAllocSize	((Size) 0x3fffffff)
+ * @verified 2026-11-21
+ */
+const maxAllocBytes = 0x3fffffff
+
 /** A setting as postgresql.conf, ALTER SYSTEM and pg_settings spell it: its name and its value's text. */
 export type Setting = readonly [name: string, value: string]
 
 /**
  * The settings every member of every cluster holds exactly, whatever the machine and the repository, each as
- * pg_settings spells it, which make.ts writes into every member, `init --adopt` gives each it keeps, and the doctor
- * requires of each:
+ * pg_settings spells it, which `toolchain-pg settle` writes into every member and a run requires of each
+ * (pg/settle.ts):
  *
  * - client_connection_check_interval: a running statement polls its client's socket, so a backend whose client died
  *   mid-statement ends at its next poll and lets go of its transaction id (clientCheckInterval).
@@ -190,7 +246,7 @@ export type Setting = readonly [name: string, value: string]
  *   MaxPredicateChildLocks).
  * - track_io_timing: a plan's buffers come with their read times, as the benchmarks read them.
  * - timezone and log_timezone UTC: the machine's time zone never reaches a member, which initdb would take it from.
- * - password_encryption and ssl_min_protocol_version: SCRAM, and TLS 1.3, as every client signs in (make.ts's hba).
+ * - password_encryption and ssl_min_protocol_version: SCRAM, and TLS 1.3, as every client signs in over TLS (settle.ts's hba).
  */
 const everyMember: Arr.NonEmptyReadonlyArray<Setting> = [
 	["client_connection_check_interval", `${clientCheckInterval}`],
@@ -274,16 +330,53 @@ const locksForDemand = (demand: number, connections: number, walSenders: number)
 ]
 
 /**
- * The connections a member admits as a capacity of the machine (spec.ts Capacity): the machine's memory, `machineBytes`,
- * over a busy backend's, `backendBytes`, shared among the cluster's `members`, rounded down, one at least.
+ * The most connections a member can admit and still answer pg_locks in every state of its predicate lock table: the
+ * table holds predicateLocksPerTarget times max_pred_locks_per_transaction entries for each of its backends and prepared
+ * transactions (predicate.c NPREDICATELOCKTARGETENTS, MaxBackends + max_prepared_xacts; MaxBackends max_connections +
+ * autovacuum_worker_slots + max_worker_processes + max_wal_senders + its special workers), and a read of pg_locks copies
+ * a SERIALIZABLEXACT for each entry in one allocation (serializableXactBytes), which must stay within MaxAllocSize
+ * (maxAllocBytes). `sendersPerConnection` is 1 where every connection is also a WAL sender (replication sized as a
+ * capacity) and 0 where the member keeps PostgreSQL's default senders. At grizzle's 2048 predicate locks a member holds
+ * 1,560 backends at most: 765 connections with a sender each, 1,521 without. A cluster sized by its sessions states
+ * its own few (a developer's), which this bound leaves as they are.
  */
-const capacityOf = (machineBytes: number, backendBytes: number, members: number): number =>
-	Math.max(1, Math.floor(machineBytes / (backendBytes * members)))
+const lockStatusConnections = (sendersPerConnection: 0 | 1): number => {
+	const backends = Math.floor(
+		maxAllocBytes / (predicateLocksPerTarget * predicateLocksPerTransaction * serializableXactBytes)
+	)
+	const others =
+		superuserReservedConnections +
+		reservedConnections +
+		autovacuumWorkerSlots +
+		workerProcesses +
+		(sendersPerConnection === 1 ? 0 : defaultWalSenders) +
+		specialWorkerProcesses +
+		preparedTransactions
+	return Math.max(1, Math.floor((backends - others) / (1 + sendersPerConnection)))
+}
+
+/**
+ * The connections a member admits as a capacity of the machine (spec.ts Capacity): the machine's memory, `machineBytes`,
+ * over a busy backend's, `backendBytes`, shared among the cluster's `members`, rounded down, one at least, and never more
+ * than a read of pg_locks can hold (lockStatusConnections), `sendersPerConnection` saying whether each is a WAL sender
+ * too.
+ */
+const capacityOf = (
+	machineBytes: number,
+	backendBytes: number,
+	members: number,
+	sendersPerConnection: 0 | 1
+): number =>
+	Math.min(
+		lockStatusConnections(sendersPerConnection),
+		Math.max(1, Math.floor(machineBytes / (backendBytes * members)))
+	)
 
 /**
  * The settings that size a member of `cluster`, one of `members`, on a machine of `machineBytes` of memory and a server
  * of `blockSize` bytes a page. A member sized for workers admits connections up to its capacity (capacityOf), every
- * one of them also a replication slot and a WAL sender where its replication is a capacity; holds shared_buffers in
+ * one of them also a replication slot and a WAL sender where its replication is a capacity, and never more than a read
+ * of pg_locks holds (lockStatusConnections); holds shared_buffers in
  * pages for every page a run's workers on it read, `share` workers (shareOf); and holds max_locks_per_transaction at
  * the most one transaction takes, never fewer than PostgreSQL's default, since its table holds that many for every
  * backend at once. A count the repository states no evidence for stays PostgreSQL's default. A member sized by its
@@ -307,7 +400,12 @@ export const sizedSettings = (
 		]
 	}
 	const { connections, replication, sharedBuffers, locks } = sizing
-	const admitted = capacityOf(machineBytes, connections.backendBytes, members)
+	const admitted = capacityOf(
+		machineBytes,
+		connections.backendBytes,
+		members,
+		replication.kind === "capacity" ? 1 : 0
+	)
 	return [
 		maxConnections(admitted),
 		...(replication.kind === "capacity"
