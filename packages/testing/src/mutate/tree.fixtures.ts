@@ -31,6 +31,13 @@ export const SUBMODULES = ["no submodule", "a submodule", "an uninitialized subm
 export const WORKSPACE_LINKS = ["a relative workspace link", "an absolute workspace link"] as const
 
 /**
+ * How the checkout's node_modules/.bin reaches the workspace package's bin: by a link to it, or by pnpm's shim, a script
+ * of its own that finds the bin from its own real directory, as pnpm writes one for a bin whose command takes
+ * arguments.
+ */
+export const BINS = ["a linked bin", "a shim bin"] as const
+
+/**
  * Where the checkout's installed package lives: in its own node_modules, or beside the checkout, in another clone's
  * install, which a relative link leaving the checkout reaches (a clone whose node_modules another clone's install made).
  */
@@ -38,14 +45,15 @@ export const INSTALLS = ["installed in the checkout", "installed beside the chec
 
 /**
  * A case: the checkout's files and their states, whether it holds a tracked symbolic link, its submodule, how its
- * node_modules links its workspace package and where its installed package lives, and whether the file a mutant
- * replaces (the workspace package's index.ts) is executable.
+ * node_modules links its workspace package and reaches its bin and where its installed package lives, and whether the
+ * file a mutant replaces (the workspace package's index.ts) is executable.
  */
 export type Checkout = Readonly<{
 	files: ReadonlyArray<Readonly<{ path: string; state: State }>>
 	link: boolean
 	submodule: (typeof SUBMODULES)[number]
 	workspace: (typeof WORKSPACE_LINKS)[number]
+	bin: (typeof BINS)[number]
 	installed: (typeof INSTALLS)[number]
 	executable: boolean
 }>
@@ -58,6 +66,7 @@ export const checkoutGen: Gen<Checkout> = (source) => ({
 	link: source.draw(boolean),
 	submodule: source.draw(element(SUBMODULES)),
 	workspace: source.draw(element(WORKSPACE_LINKS)),
+	bin: source.draw(element(BINS)),
 	installed: source.draw(element(INSTALLS)),
 	executable: source.draw(boolean)
 })
@@ -133,7 +142,39 @@ export const filesIn = (
 		)
 	})
 
-/** A checkout as the case states it, with a workspace package, an installed package and its node_modules. */
+/** The workspace package's bin: it prints its package's index.ts, found from its own real directory. */
+const PKG_CLI = `#!/bin/sh
+here=$(dirname -- "$(realpath -- "$0")")
+cat "$here/index.ts"
+`
+
+/**
+ * pnpm's shim of the bin, as pnpm 12 writes one: it resolves its own path through links, so its directory is its real
+ * one, and runs the bin from there.
+ */
+const PKG_SHIM = `#!/bin/sh
+basedir=$(dirname -- "$(realpath -- "$0")")
+exec "$basedir/../../packages/pkg/cli.sh" "$@"
+`
+
+/** What the bin at `bin` prints, run as a tree's process runs it. */
+export const binPrints = (bin: string) =>
+	Effect.scoped(
+		Effect.gen(function* () {
+			const handle = yield* ChildProcess.make(bin, [], { stdin: "ignore" })
+			const [printed] = yield* Effect.all(
+				[
+					Stream.mkString(Stream.decodeText(handle.stdout)),
+					Stream.runDrain(handle.stderr),
+					handle.exitCode
+				],
+				{ concurrency: "unbounded" }
+			)
+			return printed
+		})
+	)
+
+/** A checkout as the case states it, with a workspace package, its bin, an installed package and its node_modules. */
 export const made = (directory: RealPath, checkout: Checkout) =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem
@@ -147,6 +188,8 @@ export const made = (directory: RealPath, checkout: Checkout) =>
 		yield* write(".gitignore", "node_modules\nignored-*\n")
 		yield* write("packages/pkg/package.json", `{"name":"@scope/pkg"}`)
 		yield* write("packages/pkg/index.ts", "export const pkg = 1\n")
+		yield* write("packages/pkg/cli.sh", PKG_CLI)
+		yield* fs.chmod(path.join(directory, "packages/pkg/cli.sh"), 0o755)
 		for (const file of checkout.files) {
 			const name = file.state === "ignored" ? `ignored-${path.basename(file.path)}` : file.path
 			yield* write(name, `the text of ${file.path}`)
@@ -190,6 +233,14 @@ export const made = (directory: RealPath, checkout: Checkout) =>
 				: path.join(directory, "packages/pkg"),
 			path.join(directory, "node_modules/@scope/pkg")
 		)
+		yield* fs.makeDirectory(path.join(directory, "node_modules/.bin"), { recursive: true })
+		const bin = path.join(directory, "node_modules/.bin/pkg-cli")
+		if (checkout.bin === "a linked bin") {
+			yield* fs.symlink("../../packages/pkg/cli.sh", bin)
+		} else {
+			yield* fs.writeFileString(bin, PKG_SHIM)
+			yield* fs.chmod(bin, 0o755)
+		}
 		yield* fs.makeDirectory(path.join(directory, "packages/pkg/node_modules"), { recursive: true })
 		yield* fs.symlink(
 			path.relative(path.join(directory, "packages/pkg/node_modules"), installed),

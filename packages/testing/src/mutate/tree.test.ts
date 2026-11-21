@@ -1,10 +1,12 @@
 /**
  * Worker trees (mutate/tree.ts): a tree holds exactly the files git shows in the checkout, tracked or untracked and not
  * ignored, a submodule's included (an uninitialized one holds none) and a file deleted from the working tree left out,
- * each with its text; it resolves every link as the checkout does, to the tree's own place of what the checkout links
- * to where the tree holds it (a tracked link, a workspace package however its link is spelled) and to what the checkout
- * reaches anywhere else (an installed package, in the checkout's node_modules or beside the checkout); and a mutant put
- * in a tree stands there, and only there, with its file's mode, until its scope closes and the file is back.
+ * each with its text, a shim of node_modules/.bin a file of its own too; it resolves every link as the checkout does,
+ * to the tree's own place of what the checkout links to where the tree holds it (a tracked link, a workspace package
+ * however its link is spelled) and to what the checkout reaches anywhere else (an installed package, in the checkout's
+ * node_modules or beside the checkout), so a workspace package's bin run from a tree, linked or shimmed, runs the tree's
+ * package; and a mutant put in a tree stands there, and only there, with its file's mode, until its scope closes and
+ * the file is back.
  *
  * The work a run's trees do is counted, by inode: their files are the run's base's, copied from the checkout once, so
  * the regular files under the trees' home are the checkout's shown files and the mutants in place, however many trees
@@ -15,6 +17,8 @@ import { Array as Arr, Effect, FileSystem, Path, String as Str } from "effect"
 import { assert } from "#assert.ts"
 import { realPathOf } from "#mutate/mutated.ts"
 import {
+	BINS,
+	binPrints,
 	checkoutGen,
 	filesHeld,
 	filesIn,
@@ -35,6 +39,7 @@ export const workerTree = property.explore(checkoutGen, {
 		"a symbolic link",
 		...SUBMODULES,
 		...WORKSPACE_LINKS,
+		...BINS,
 		...INSTALLS,
 		"an executable mutant"
 	],
@@ -46,6 +51,7 @@ export const workerTree = property.explore(checkoutGen, {
 			}
 			c.note(checkout.submodule)
 			c.note(checkout.workspace)
+			c.note(checkout.bin)
 			c.note(checkout.installed)
 			if (checkout.executable) {
 				c.note("an executable mutant")
@@ -80,7 +86,8 @@ export const workerTree = property.explore(checkoutGen, {
 					Effect.all({
 						texts: textsOf,
 						mode: modeOf(path.join(mutated.root, file)),
-						files: filesHeld(held)
+						files: filesHeld(held),
+						bin: binPrints(path.join(mutated.root, "node_modules/.bin/pkg-cli"))
 					})
 				)
 			)
@@ -110,20 +117,27 @@ export const workerTree = property.explore(checkoutGen, {
 					during: {
 						texts: ["export const pkg = 2\n", own, own, own],
 						mode: (checkout.executable ? 0o755 : 0o644) & 0o555,
-						files: shown.length + 1
+						files: shown.length + (checkout.bin === "a shim bin" ? 2 : 1),
+						bin: "export const pkg = 2\n"
 					},
 					written: "Failure",
 					after: [own, own, own, own],
-					afterFiles: shown.length
+					afterFiles: shown.length + (checkout.bin === "a shim bin" ? 1 : 0)
 				}
 			)
 		}),
 	oracle: {
 		kind: "specification",
-		name: "the tree's files are those git shows in the checkout, with their text; links resolve as the checkout's, in the tree where it holds their target; a mutant stands for its scope alone, with its file's mode; the trees' files are the base's, which none can write in place"
+		name: "the tree's files are those git shows in the checkout, with their text; links resolve as the checkout's, in the tree where it holds their target; a workspace package's bin run from a tree, linked or shimmed, runs the tree's package; a mutant stands for its scope alone, with its file's mode; the trees' files are the base's, which none can write in place"
 	},
 	kept: [],
 	kills: [
+		{
+			file: "packages/testing/src/mutate/tree.ts",
+			original: '\t\t\t\tif (inBin && entry.type === "File") {\n',
+			replacement: '\t\t\t\tif (inBin && entry.type === "File" && false) {\n',
+			why: "A shim of .bin is linked to the checkout's, as it was, so its real directory is the checkout's and a workspace package's bin run from a tree runs the checkout's package, without the mutant (metis's INSTALL-HANG: grizzle's CLI from a tree ran the checkout's grizzle); the property fails, the bin printing the checkout's text."
+		},
 		{
 			file: "packages/testing/src/mutate/tree.ts",
 			original: '(Str.startsWith("@")(entry.name) || entry.name === ".bin")',

@@ -145,7 +145,12 @@ const noModules: Modules = { directories: [], found: [] }
  * The node_modules directory `relative` of the checkout, as a tree holds it: its directories, and each entry found. A
  * scope (`@...`) and `.bin` are directories of the tree's, entry by entry alike, since what they link to is resolved
  * from where they stand (a workspace package's link, a bin's); every other entry (a package's link, an installed
- * package, pnpm's store) is a link, resolved as the checkout resolves it (linkOf).
+ * package, pnpm's store) is a link, resolved as the checkout resolves it (linkOf). A file of `.bin` (pnpm's shim of a
+ * bin whose command takes arguments or another interpreter, which finds its target from its own real directory) is a
+ * file of the tree's, as a shown file is: linked to the checkout's, it ran the checkout's code from every tree, its
+ * real directory the checkout's, so a mutant of a workspace package reached through its bin ran nowhere and its kills
+ * went unjudged (metis's INSTALL-HANG, 2026-11-21: grizzle's CLI from a tree imported the checkout's grizzle, and the
+ * tree's config "must be built by defineConfig").
  */
 const modulesUnder = (
 	checkout: RealPath,
@@ -158,11 +163,21 @@ const modulesUnder = (
 		const listed = yield* fs
 			.readDirectoryEntries(from)
 			.pipe(Effect.mapError(failed(`reading ${from}`)))
+		const inBin = path.basename(relative) === ".bin"
 		const under = yield* Effect.forEach(
 			listed,
 			(entry) => {
 				const at = path.join(relative, entry.name)
 				const linked: Modules = { directories: [], found: [{ kind: "link", path: at }] }
+				if (inBin && entry.type === "File") {
+					return Effect.mapBoth(fs.stat(path.join(checkout, at)), {
+						onFailure: failed(`reading ${at}`),
+						onSuccess: (info): Modules => ({
+							directories: [],
+							found: [{ kind: "file", file: { path: at, mode: info.mode } }]
+						})
+					})
+				}
 				return entry.type === "Directory" &&
 					(Str.startsWith("@")(entry.name) || entry.name === ".bin")
 					? modulesUnder(checkout, at)
