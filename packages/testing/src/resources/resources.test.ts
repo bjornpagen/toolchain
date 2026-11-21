@@ -55,6 +55,7 @@ import {
 	superuserSessionIn,
 	superuserSessions,
 	fixturesModule,
+	freshHex,
 	templateNameOf,
 	tokenTemplate,
 	UTF8_COLLATIONS,
@@ -66,13 +67,6 @@ import { collectedAround } from "#runner/run.ts"
 import { ModuleClosure, WorkerIndex } from "#runner/services.ts"
 import { deadlocks } from "#runner/work.fixtures.ts"
 import { overrunText, ownCpu, ownWork, waitedOnNow } from "#runner/work.ts"
-
-/**
- * Twelve hex digits the server draws, a random UUID's first twelve, every one of them random: a name no other run
- * takes.
- */
-const freshHex =
-	"SELECT pg_catalog.substr(pg_catalog.replace(pg_catalog.gen_random_uuid()::text, '-', ''), 1, 12)"
 
 export const freshIsolation = property.explore(array(int(-5, 5), { min: 0, max: 6 }), {
 	needs: { db: Database.fresh(marksTemplate), services },

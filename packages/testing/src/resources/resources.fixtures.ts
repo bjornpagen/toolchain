@@ -337,3 +337,10 @@ export const superuserSessions = (
 			return Number(found)
 		})
 	)
+
+/**
+ * Twelve hex digits the server draws, a random UUID's first twelve, every one of them random: a name no other run
+ * takes.
+ */
+export const freshHex =
+	"SELECT pg_catalog.substr(pg_catalog.replace(pg_catalog.gen_random_uuid()::text, '-', ''), 1, 12)"
