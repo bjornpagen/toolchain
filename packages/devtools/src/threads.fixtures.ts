@@ -121,6 +121,10 @@ const flagOf = (args: ReadonlyArray<string>, flag: Wrapped["flag"]): Option.Opti
  * Runs `toolchain-turbo run task` from the dev tools' directory in the checkout, `packageRoot` (Checkout.dir, so a
  * mutant of the dev tools in a worker tree is what the case runs), turbo a stub of the case's shape on the PATH in
  * `directory` that runs the case's wrapper as its task, its tool a stub too, and reads what the stub tool was handed.
+ * The run's environment is the case's alone (extendEnv false): a run started as a task of a turbo run inherits its
+ * TURBO_CONCURRENCY, which toolchain-turbo reads as turbo's concurrency, so the case would measure the host's run, not
+ * its shape (trunk@toolchain at 7c9d754: a tool handed 32 threads, the machine over the outer run's two tasks, where
+ * the case's six tasks at every processor hand it 10).
  */
 export const handedTo = (packageRoot: string, directory: string, threaded: Threaded) =>
 	Effect.gen(function* () {
@@ -142,8 +146,13 @@ export const handedTo = (packageRoot: string, directory: string, threaded: Threa
 		const seen = `${directory}/seen.txt`
 		const status = yield* spawner.exitCode(
 			ChildProcess.make(process.execPath, [`${packageRoot}/src/turbo.ts`, "run", "task"], {
-				env: { PATH: `${directory}:/usr/bin:/bin`, [SEEN]: seen },
-				extendEnv: true,
+				env: {
+					PATH: `${directory}:/usr/bin:/bin`,
+					HOME: directory,
+					XDG_CACHE_HOME: `${directory}/cache`,
+					[SEEN]: seen
+				},
+				extendEnv: false,
 				stdin: "ignore",
 				stdout: "ignore",
 				stderr: "inherit"

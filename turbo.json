@@ -41,9 +41,17 @@
 			"cache": false
 		},
 		"test": {
-			"description": "Every package's properties, through toolchain-test run. Each run draws a fresh rotating seed, so a run never replays from cache; the run's seed comes through the environment (and the old fuzz script's variables). The PostgreSQL cluster the testing library's database properties need is the package's own (packages/testing/pg.config.ts; CONTRIBUTING.md, \"Properties that need a database\"), so no libpq variable passes through.",
+			"description": "Every package's properties, through toolchain-test run. Each run draws a fresh rotating seed, so a run never replays from cache; the run's seed comes through the environment (and the old fuzz script's variables). The PostgreSQL cluster the testing library's database properties need is the package's own (packages/testing/pg.config.ts; CONTRIBUTING.md, \"Properties that need a database\"), whose members are units of the workbench's postgres@: the harness reads the CA their certificates chain to from PGSSLROOTCERT (pg/settle.ts caVariable) and a member's socket from XDG_RUNTIME_DIR, and a settle starts units over the account's bus (DBUS_SESSION_BUS_ADDRESS), so those pass through, where turbo's strict environment strips them (trunk@toolchain red at 7c9d754, PGSSLROOTCERT unset).",
 			"cache": false,
-			"passThroughEnv": ["TEST_SEED", "TEST_REPLAY", "TEST_FUZZ", "TEST_FUZZTIME"]
+			"passThroughEnv": [
+				"TEST_SEED",
+				"TEST_REPLAY",
+				"TEST_FUZZ",
+				"TEST_FUZZTIME",
+				"PGSSLROOTCERT",
+				"XDG_RUNTIME_DIR",
+				"DBUS_SESSION_BUS_ADDRESS"
+			]
 		},
 		"//#typecheck": {},
 		"//#workspace-gate": {
