@@ -15,17 +15,18 @@ import { int } from "#gen.ts"
 import { Checkout } from "#mutate/checkout.ts"
 import {
 	blockedOn,
-	blockedOnFile,
 	familyIn,
 	heldUntil,
 	holderOf,
+	queuedIn,
 	leasedKept,
 	SPREAD_MEMBERS,
 	shieldIn,
 	shieldsIn,
 	signalled,
 	spreadFamily,
-	stopped
+	stopped,
+	turnWaits
 } from "#pg/lease.fixtures.ts"
 import {
 	familyOf,
@@ -116,12 +117,6 @@ export const runsWaitInLine = property.explore(
 				original: "\treturn 1 if flock($file, LOCK_EX | LOCK_NB);\n",
 				replacement: "\treturn 1;\n",
 				why: "A lease takes slots without locking them, so runs together hold more than the member admits, as two gates at once exhausted 5441; the property fails."
-			},
-			{
-				file: "packages/testing/scripts/hold.pl",
-				original: '\t\tflock($lease->{queue}, LOCK_EX) or fail("flock: $!");\n',
-				replacement: "",
-				why: "Runs that cannot have their slots at once do not queue: two of them each hold slots while they wait, so they wait on each other's or shield one slot together, and not every run finishes; the property fails."
 			}
 		]
 	}
@@ -261,7 +256,7 @@ export const fitsBesideTheQueue = property.explore(
 						const of = (workers: number) =>
 							reservationOf(1, family, { perLessee: 1, outside: 0 }, workers)
 						const first = Arr.headNonEmpty(family).lease
-						const lineOf = Effect.map(blockedOnFile(first, "gate.lock"), (line) => line.length)
+						const lineOf = Effect.map(queuedIn(first), (line) => line.length)
 						const shielding = Effect.map(
 							Effect.forEach(family, (member) => shieldsIn(member.lease)),
 							Arr.some((shields) => shields.length > 0)
@@ -448,7 +443,7 @@ export const waitersInOrder = property.explore(
 								shields.length > 0 ? Option.some(true) : Option.none()
 							)
 						)
-						const queued = blockedOnFile(lease, "gate.lock")
+						const queued = queuedIn(lease)
 						const largeRun = yield* of(slots - 1)
 						const largeHeld = yield* heldUntil(largeRun, never)
 						yield* finishing("the large run", largeHeld)
@@ -501,7 +496,7 @@ export const waitersInOrder = property.explore(
 				),
 		oracle: {
 			kind: "specification",
-			name: "runs waiting for a family complete in the order they came, the older first (a medium run of one or two slots, then a large one), while later runs of one and two slots keep coming and one slot stays held: each slot let go while the queue's holder waits is its own until it holds its need, never a newer run's"
+			name: "runs waiting for a family complete in the order they came, the older first (a medium run of one or two slots, then a large one), while later runs of one and two slots keep coming and one slot stays held: each slot let go while the queue's holder waits is its own until it holds its need, never a newer run's, and the queue serves its waiters in the order they came, never a newer one first"
 		},
 		kept: [],
 		kills: [
@@ -627,19 +622,17 @@ export const nestedNeverQueues = property.explore(
 								shields.length > 0 ? Option.some(true) : Option.none()
 							)
 						)
-						const before = yield* blockedOnFile(lease, "gate.lock")
+						const before = yield* queuedIn(lease)
 						const nested = yield* of(more)
 						const asked = yield* Deferred.make<Placement, LeaseFailed>()
 						yield* Effect.forkScoped(Deferred.into(Effect.scoped(leasedRun(nested)), asked))
 						const answer = yield* awaitFact(
-							Effect.map(
-								Effect.all([Deferred.isDone(asked), blockedOnFile(lease, "gate.lock")]),
-								([done, queued]) =>
-									done
-										? Option.some("answered")
-										: Arr.some(queued, (pid) => !Arr.contains(before, pid))
-											? Option.some("queued behind the head")
-											: Option.none()
+							Effect.map(Effect.all([Deferred.isDone(asked), queuedIn(lease)]), ([done, queued]) =>
+								done
+									? Option.some("answered")
+									: Arr.some(queued, (pid) => !Arr.contains(before, pid))
+										? Option.some("queued behind the head")
+										: Option.none()
 							)
 						)
 						const drawn =
@@ -738,6 +731,88 @@ export const nestedSameUnderLoad = property.explore(
 				original: "\t\t\t\t\t\t\tmarkedLeased(family, answer.members),\n",
 				replacement: "\t\t\t\t\t\t\tEffect.void,\n",
 				why: "A worker whose run's lease is answered says nothing of it to the processes it starts, so a run one of its cases starts reserves the family's slots again: on an idle family it holds slots of its own, wherever they fall, and on a saturated one it waits for slots another run holds; the property fails, the two answers unlike."
+			}
+		]
+	}
+)
+
+export const queueServesInArrival = property.explore(
+	(source) => {
+		const slots = source.draw(int(1, 3))
+		return { slots, later: source.draw(int(1, slots)) }
+	},
+	{
+		needs: { dir: Scratch.dir, checkout: Checkout.dir },
+		situations: [],
+		check:
+			({ dir }) =>
+			({ slots, later }) =>
+				Effect.scoped(
+					Effect.gen(function* () {
+						const scratch = yield* dir
+						const family = yield* familyIn(scratch, 1, slots)
+						const lease = Arr.headNonEmpty(family).lease
+						const of = (workers: number) =>
+							reservationOf(1, family, { perLessee: 1, outside: 0 }, workers)
+						const never = yield* Deferred.make<void>()
+						const release = yield* Deferred.make<void>()
+						const one = yield* of(1)
+						const holders = yield* Effect.forEach(
+							Array.from({ length: slots }, (_, at) => at),
+							() => heldUntil(one, release)
+						)
+						yield* Effect.forEach(holders, Deferred.await, { discard: true })
+						const whole = yield* of(slots)
+						const head = yield* heldUntil(whole, never)
+						yield* awaitFact(
+							Effect.map(shieldsIn(lease), (shields) =>
+								shields.length > 0 ? Option.some(true) : Option.none()
+							)
+						)
+						const queuing = (workers: number) =>
+							Effect.gen(function* () {
+								const before = yield* queuedIn(lease)
+								const run = yield* of(workers)
+								yield* heldUntil(run, never)
+								return yield* awaitFact(
+									Effect.map(queuedIn(lease), (queued) =>
+										Arr.findFirst(queued, (pid) => !Arr.contains(before, pid))
+									)
+								)
+							})
+						const older = yield* queuing(later)
+						const newer = yield* queuing(later)
+						yield* Effect.acquireRelease(signalled(older, "SIGSTOP"), () =>
+							signalled(older, "SIGCONT")
+						)
+						yield* awaitFact(stopped(older))
+						yield* Deferred.succeed(release, undefined)
+						yield* Deferred.await(head)
+						const waits = yield* turnWaits(lease)
+						const queueHolder = yield* holderOf(lease, "gate.lock")
+						assert.deepEqual(
+							{
+								newerBehindOlder: Arr.some(
+									waits,
+									(wait) => wait.holder === older && wait.waiter === newer
+								),
+								queueHolder
+							},
+							{ newerBehindOlder: true, queueHolder: Option.none() }
+						)
+					})
+				),
+		oracle: {
+			kind: "specification",
+			name: "the family's queue serves its waiters in the order they came: once its holder holds its need, a newer waiter waits behind the older one, though that older one is stopped and the queue is free, never taking the queue first"
+		},
+		kept: [],
+		kills: [
+			{
+				file: "packages/testing/scripts/hold.pl",
+				original: "\tmy ($turn, $ahead) = $fit ? () : ticket();\n",
+				replacement: "\tmy ($turn, $ahead) = ();\n",
+				why: "Leases that wait all block on the queue, as they did, and flock(2) serves whichever wakes first, so a newer one takes the queue before an older one, and a stream of newer leases keeps an older one waiting for ever; the property fails, the newer waiter on the queue."
 			}
 		]
 	}

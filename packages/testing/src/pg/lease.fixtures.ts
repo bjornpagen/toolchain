@@ -1,3 +1,4 @@
+import { regex } from "arkregex"
 import { Array as Arr, Deferred, Effect, FileSystem, Option, Result, String as Str } from "effect"
 import {
 	LEASED,
@@ -27,7 +28,9 @@ type DirectoryLock = Readonly<{ name: string; pid: number; blocked: boolean }>
 
 /**
  * The locks Linux lists now on the files of `directory` (/proc/locks: a line a lock, a waiter's marked `->` after the
- * lock's number, then the lock's class, mode and kind, the process and the file as `major:minor:inode`).
+ * lock's number, then the lock's class, mode and kind, the process and the file as `major:minor:inode`). A file gone
+ * between the listing and its stat (a turn of the queue its successor removed, the counter's file renamed into place)
+ * holds no lock to read.
  */
 const locksIn = (
 	directory: string
@@ -36,9 +39,12 @@ const locksIn = (
 		Effect.gen(function* () {
 			const fs = yield* FileSystem.FileSystem
 			const names = yield* fs.readDirectory(directory)
-			const files = yield* Effect.forEach(names, (name) =>
-				Effect.map(fs.stat(`${directory}/${name}`), (info) => ({ name, info }))
+			const statted = yield* Effect.forEach(names, (name) =>
+				Effect.map(Effect.option(fs.stat(`${directory}/${name}`)), (info) =>
+					Option.map(info, (found) => ({ name, info: found }))
+				)
 			)
+			const files = Arr.getSomes(statted)
 			const named = new Map<string, string>(
 				Arr.flatMap(files, ({ name, info }) =>
 					Option.match(info.ino, {
@@ -73,15 +79,48 @@ export const blockedOn = (directory: string): Effect.Effect<number, never, FileS
 		(locks) => Arr.filter(locks, (lock) => lock.blocked && lock.name !== "choose.lock").length
 	)
 
-/** The processes that wait, blocked, on the lock of the file `name` in `directory`. */
-export const blockedOnFile = (
-	directory: string,
-	name: string
+/** Whether `name` is a file of a family's queue: its QUEUE (gate.lock), or a turn of it (gate.lock.<ticket>). */
+const inTheQueue = (name: string): boolean => name === "gate.lock" || turnOf(name)
+
+/** Whether `name` is a turn of a family's queue, a lease's place in it (scripts/hold.pl's ticket). */
+const turnOf = (name: string): boolean => turnName.test(name)
+
+/** A turn's file name: the QUEUE's, a dot and its ticket. */
+const turnName = regex("^gate\\.lock\\.[0-9]+$")
+
+/**
+ * The processes that wait in a family's queue in `directory`, blocked on its QUEUE or on a turn of it: the leases that
+ * wait behind the queue's holder (scripts/hold.pl), its holder and its children never among them.
+ */
+export const queuedIn = (
+	directory: string
 ): Effect.Effect<ReadonlyArray<number>, never, FileSystem.FileSystem> =>
 	Effect.map(locksIn(directory), (locks) =>
 		Arr.map(
-			Arr.filter(locks, (lock) => lock.blocked && lock.name === name),
+			Arr.filter(locks, (lock) => lock.blocked && inTheQueue(lock.name)),
 			(lock) => lock.pid
+		)
+	)
+
+/**
+ * The turns of a family's queue in `directory` that a lease waits on: for each, the process that holds it (the lease
+ * ticketed before) and the one blocked on it (the lease ticketed after).
+ */
+export const turnWaits = (
+	directory: string
+): Effect.Effect<
+	ReadonlyArray<Readonly<{ holder: number; waiter: number }>>,
+	never,
+	FileSystem.FileSystem
+> =>
+	Effect.map(locksIn(directory), (locks) =>
+		Arr.flatMap(
+			Arr.filter(locks, (lock) => lock.blocked && turnOf(lock.name)),
+			(waiting: DirectoryLock) =>
+				Arr.map(
+					Arr.filter(locks, (lock) => !lock.blocked && lock.name === waiting.name),
+					(held) => ({ holder: held.pid, waiter: waiting.pid })
+				)
 		)
 	)
 

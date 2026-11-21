@@ -31,8 +31,14 @@
 # free slots without waiting, never while it waits, so its holder waits for nothing. A lease that NEED free slots meet
 # takes them there at once, whatever waits: each from the member where it holds fewest, then the one with the most free
 # slots, the earlier member on a tie, so a lease spreads over the members and leases taken one after another fill them
-# evenly: N leases of one slot land on N members. A lease they do not meet lets go of what it looked at and takes the
-# QUEUE lock, holding nothing while it waits for it, so leases that wait are served in the kernel's order. The queue's
+# evenly: N leases of one slot land on N members. A lease they do not meet takes a ticket there, the family's next
+# (QUEUE.next, written under CHOOSE), and locks its turn (QUEUE.<ticket>) before it lets go of CHOOSE; then it waits,
+# holding nothing else, for the lease ticketed before it to let go of its turn, a blocking flock(2) on that turn's file,
+# which no other lease waits for, so leases that wait are served in the order they came, a newer one never before an
+# older: flock(2) wakes every waiter on a released lock in no set order, so a QUEUE every waiter blocked on would serve
+# whichever woke first, and a stream of newer leases could keep an older one waiting for ever. A lease whose turn it is
+# takes the QUEUE, the queue's holder's lock, and lets go of its turn once it holds its need, which serves the next; a
+# lease that ends lets go of its turn with its process, however it ends, and the next is served. The queue's
 # holder takes no free slot while it cannot finish, so a lease that fits the free slots goes on beside it; it shields
 # every slot another lease holds, its door held under CHOOSE, each waited for by a child of its own on this program's
 # open file of it, so each is the queue's holder's when its holder lets it go, whoever that was, and no lease takes a
@@ -111,6 +117,7 @@ while (@words) {
 	if ($verb eq "lease") {
 		my $need = need_of($verb);
 		my $choose = path_of("choose lock", shift @words);
+		my $queue_path = $words[0];
 		my $queue = path_of("queue", shift @words);
 		my @members;
 		while (@words && $words[0] eq "member") {
@@ -128,7 +135,15 @@ while (@words) {
 		my $slots = 0;
 		$slots += @$_ for @members;
 		$slots >= $need or fail("a lease of $need names $slots slots");
-		push @claims, { verb => $verb, need => $need, choose => $choose, queue => $queue, members => \@members };
+		push @claims,
+			{
+				verb => $verb,
+				need => $need,
+				choose => $choose,
+				queue => $queue,
+				queue_path => $queue_path,
+				members => \@members
+			};
 		next;
 	}
 	my $kind = shift(@words) // fail("a $verb claim names no kind of lock");
@@ -283,12 +298,47 @@ sub shield_held {
 	}
 }
 
+# ticket(): under CHOOSE, this lease's place in the family's queue: the next number of its counter (QUEUE.next, absent
+# before the first), which it writes one past, and its turn's file (QUEUE.<number>), locked at once, which the lease
+# ticketed after it waits for; and the path of the turn of the lease ticketed before it, none for the first.
+sub ticket {
+	my $counter = "$lease->{queue_path}.next";
+	my $number = 0;
+	if (open(my $in, "<", $counter)) {
+		my $text = <$in> // "";
+		close($in);
+		$number = $1 if $text =~ /\A([0-9]+)/;
+	}
+	open(my $out, ">", "$counter.$$") or fail("$counter.$$: $!");
+	print $out $number + 1, "\n";
+	close($out) or fail("$counter.$$: $!");
+	rename("$counter.$$", $counter) or fail("$counter: $!");
+	my $turn = file_of("$lease->{queue_path}.$number");
+	flock($turn, LOCK_EX | LOCK_NB) or fail("the queue's turn $number is held beside its ticket: $!");
+	push @taken, $turn;
+	return ($turn, $number > 0 ? "$lease->{queue_path}." . ($number - 1) : undef);
+}
+
+# served(ahead): waits until the lease ticketed before this one lets go of its turn `ahead` (it holds its need, or it
+# ended), a blocking flock(2) on its file, which only this lease waits for; then removes the file, which no lease opens
+# again.
+sub served {
+	my ($ahead) = @_;
+	return unless defined $ahead;
+	open(my $file, ">>", $ahead) or fail("$ahead: $!");
+	flock($file, LOCK_EX) or fail("flock: $!");
+	unlink($ahead);
+	close($file);
+}
+
 if ($claims[0]{verb} eq "lease") {
 	$lease = $claims[0];
 	flock($lease->{choose}, LOCK_EX) or fail("flock: $!");
 	my $fit = fits();
+	my ($turn, $ahead) = $fit ? () : ticket();
 	flock($lease->{choose}, LOCK_UN);
 	if (!$fit) {
+		served($ahead);
 		flock($lease->{queue}, LOCK_EX) or fail("flock: $!");
 		push @taken, $lease->{queue};
 		while (1) {
@@ -311,6 +361,7 @@ if ($claims[0]{verb} eq "lease") {
 			flock($left->{door}, LOCK_UN);
 		}
 		flock($lease->{queue}, LOCK_UN);
+		flock($turn, LOCK_UN);
 	}
 	$| = 1;
 	print join(" ", "held", map { $_->[0] } @mine), "\n";
