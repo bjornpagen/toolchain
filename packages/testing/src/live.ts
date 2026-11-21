@@ -1,5 +1,6 @@
 import { isMainThread, Worker } from "node:worker_threads"
 import { Array as Arr, Clock, Duration, Effect, Fiber, Option, Record as Rec } from "effect"
+import { stalledShareOfCpu } from "#runner/limits.ts"
 import {
 	enterLockWait,
 	enterWait,
@@ -12,6 +13,7 @@ import {
 	type Reading,
 	readingOf,
 	standingOf,
+	TICK_MILLIS,
 	type TreeWork
 } from "#runner/work.ts"
 
@@ -139,7 +141,9 @@ const LAYOUT = {
 	moments: 1,
 	momentsOffset: 32,
 	bytes: 40,
-	never: Number.MAX_SAFE_INTEGER
+	never: Number.MAX_SAFE_INTEGER,
+	stalledShare: stalledShareOfCpu,
+	tickMillis: TICK_MILLIS
 } as const
 
 type Layout = typeof LAYOUT
@@ -163,15 +167,20 @@ type Answer = Readonly<{ kind: "blocked"; report: string }> | Readonly<{ kind: "
  * holds: the thread asks it, through the inspector, which interrupts even a synchronous loop, for its Answer, judged on
  * the main thread itself, whose cases cannot change while it is interrupted. A blocked answer is written to the
  * process's stderr, and the process is ended with SIGKILL, the one signal a blocked thread cannot hold; a running one
- * sends the thread back to sleep. A main thread whose inspector does not answer either is ended after the grace once
- * more, with a report that says only that, if it still has made no progress and has a case in flight past its moment.
+ * sends the thread back to sleep. A main thread whose inspector does not answer either, which still has made no progress
+ * and has a case in flight past its moment, is judged by its own CPU over each grace more, as a guard judges a work
+ * (runner/work.ts progressOver), never by the grace alone: one that spent past progress in it runs without answering, a
+ * hang, and is ended with a report that says only that; one that spent nothing is waiting (a machine that pages it out
+ * or starves it, a call that blocks it in the kernel) and is never ended for its silence, the pool judging its
+ * process's tree by its work (pool.ts), so a live case under memory pressure is never killed for not answering (the
+ * REDFIX2 deaths, 2026-11-20 21:10 to 21:20 UTC, memory pressure 63 to 74%).
  * Its open port keeps it alive; the main thread unrefs it. Its layout is its argument, written into its source text,
  * since the thread shares no module with the main thread.
  */
 const watchdogThread = (layout: Layout): void => {
 	const threads = process.getBuiltinModule("node:worker_threads")
 	const { Session } = process.getBuiltinModule("node:inspector")
-	const { writeSync } = process.getBuiltinModule("node:fs")
+	const { existsSync, readFileSync, writeSync } = process.getBuiltinModule("node:fs")
 	const port = threads.parentPort
 	if (port === null || !(threads.workerData instanceof SharedArrayBuffer)) {
 		return
@@ -205,6 +214,32 @@ const watchdogThread = (layout: Layout): void => {
 	}
 	const stillBlocked = (looked: number): boolean =>
 		Atomics.load(counters, layout.progress) === looked && earliestMoment() <= nowMillis()
+	/**
+	 * The CPU the main thread has spent, in milliseconds, by its own /proc stat (its task's utime and stime, the 12th
+	 * and 13th fields after its command's closing parenthesis, in clock ticks); none without /proc.
+	 */
+	const mainCpu = (): number => {
+		const file = `/proc/self/task/${process.pid}/stat`
+		if (!existsSync(file)) {
+			return Number.NaN
+		}
+		const stat = readFileSync(file)
+		const fields: Array<number> = []
+		let field = 0
+		for (let at = stat.lastIndexOf(0x29) + 2; at <= stat.length; at += 1) {
+			const byte = stat[at] ?? 0x20
+			if (byte === 0x20) {
+				fields.push(field)
+				field = 0
+			} else {
+				field = field * 10 + (byte - 0x30)
+			}
+		}
+		return ((fields[11] ?? 0) + (fields[12] ?? 0)) * layout.tickMillis
+	}
+	/** Whether the main thread spent past progress over a window of `windowMillis` since it read `spent` (work.ts progressOver). */
+	const burned = (spent: number, windowMillis: number): boolean =>
+		mainCpu() - spent >= Math.max(windowMillis * layout.stalledShare, layout.tickMillis)
 	const unanswered =
 		"@bjornpagen/testing: a case held its process's main thread without yielding past the moment its guard would stop it, and the thread's inspector did not answer for its report; the watchdog ended the process: a hang"
 	const blocked = (looked: number, graceMillis: number): void => {
@@ -238,16 +273,25 @@ const watchdogThread = (layout: Layout): void => {
 				})
 			}
 		)
-		after(Atomics.waitAsync(counters, layout.timer, 0, graceMillis), () =>
-			settle(() => {
-				if (stillBlocked(looked)) {
-					end(unanswered)
+		const silent = (spent: number): void =>
+			after(Atomics.waitAsync(counters, layout.timer, 0, graceMillis), () => {
+				if (!pending) {
 					return
 				}
-				session.disconnect()
-				rest(graceMillis)
+				if (!stillBlocked(looked)) {
+					settle(() => {
+						session.disconnect()
+						rest(graceMillis)
+					})
+					return
+				}
+				if (burned(spent, graceMillis)) {
+					settle(() => end(unanswered))
+					return
+				}
+				silent(mainCpu())
 			})
-		)
+		silent(mainCpu())
 	}
 	const watch = (): void => {
 		const looked = Atomics.load(counters, layout.progress)

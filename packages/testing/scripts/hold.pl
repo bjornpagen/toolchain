@@ -40,11 +40,19 @@
 # slots it holds and the free ones meet NEED, taking those it lacks; then it lets go of every shield and of any slot a
 # child took past its need, so it never holds a slot it will not use. A stream of leases that fit cannot starve it:
 # every slot let go while it waits is its own until it holds its need. flock(2) waits for one lock and never for the
-# first of several, so each slot it waits for has a child of its own. No wait closes a cycle: only the queue's holder
-# holds slots while it waits, and every lease whose slot it waits for holds all its own and waits for nothing. The QUEUE
-# lock is the file an older toolchain's holder takes as its gate and holds while it waits for slots (`gate.lock`), so
-# such a holder and the queue's holder never both hold slots while they wait. A signal that ends this program ends its
-# children first.
+# first of several, so each slot it waits for has a child of its own, which closes its standard streams first, so a
+# child outliving this program holds none of its pipes. No wakeup is lost: the queue's holder never reads the slots
+# and then sleeps on what it read. Each child's wait is a blocking flock(2) request on the slot, granted by the kernel
+# at once when the slot was let go after the look that shielded it, and this program waits for its children's exits
+# (waitpid), reading of each that exits whether its own open file of the slot holds it (collected), an exited one
+# reaped at once; and the free slots cannot grow while it waits, every slot held at a look being shielded, so whether
+# it can finish changes only when a child returns, when it looks again. No wait closes a cycle: only the queue's
+# holder holds slots while it waits, and every lease whose slot it waits for holds all its own and waits for nothing,
+# which a lease's holder keeps true by never asking for more of its family: a run inside one that holds the family's
+# lease, in its process or in a child program, draws on that lease and takes none of its own (src/pg/lease.ts). The
+# QUEUE lock is the file an older toolchain's holder takes as its gate and holds while it waits for slots
+# (`gate.lock`), so such a holder and the queue's holder never both hold slots while they wait. A signal that ends this
+# program ends its children first.
 use strict;
 use warnings;
 use Errno qw(EWOULDBLOCK);
@@ -227,6 +235,9 @@ sub collector {
 	my $pid = fork() // fail("fork: $!");
 	if ($pid == 0) {
 		$SIG{$_} = "DEFAULT" for qw(TERM INT HUP);
+		open(STDIN, "<", "/dev/null");
+		open(STDOUT, ">", "/dev/null");
+		open(STDERR, ">", "/dev/null");
 		flock($file, LOCK_EX);
 		POSIX::_exit(0);
 	}
@@ -235,14 +246,20 @@ sub collector {
 	return $pid;
 }
 
-# collected(pid): the slot the child `pid` waited for, which this run now holds, its shield let go: kept while the run
-# lacks slots, and let go too once it holds its need, so it never holds a slot it will not use.
+# collected(pid): the slot the child `pid` waited for, its shield let go: this run's when its own open file of the slot
+# holds the lock, as it does once the child took it, or when the slot is free now, its door still held, which a child
+# ended before it took the slot leaves it (a signal, or a test that ends the slot's holder by its pid as /proc/locks
+# names it, the child's once it took the slot); kept while the run lacks slots, and let go too once it holds its need,
+# so it never holds a slot it will not use. A slot another holds still is shielded again at the next look, as any slot
+# held at a look.
 sub collected {
 	my ($pid) = @_;
 	my $slot = delete $children{$pid} // return;
 	delete $shielded{"$slot->[0] $slot->[1]"};
 	my $taken = $lease->{members}[ $slot->[0] ][ $slot->[1] ];
+	my $held = taken_now($taken->{slot});
 	flock($taken->{door}, LOCK_UN);
+	return unless $held;
 	if (@mine >= $lease->{need}) {
 		flock($taken->{slot}, LOCK_UN);
 		return;

@@ -28,9 +28,12 @@ import { runnerLimits } from "#runner/limits.ts"
 /**
  * What a planted property does on its cases from its threshold up, below which it returns at once: hold the main thread
  * forever, in a loop or in a regular expression that backtracks without end; return at once; hold the thread for a
- * pause, past its case deadline and short of the watchdog's grace; or sleep, yielding, past its case deadline.
+ * pause, past its case deadline and short of the watchdog's grace; sleep, yielding, past its case deadline; or, on its
+ * threshold's case alone, block the thread in the kernel past its moment and two of the watchdog's graces, silent and
+ * spending no CPU of its own while a child it waits for works (stores to disk), as a thread the machine pages out or
+ * starves is silent while its process's work moves.
  */
-const BODIES = ["loop", "backtrack", "returns", "pauses", "sleeps"] as const
+const BODIES = ["loop", "backtrack", "returns", "pauses", "sleeps", "blocks"] as const
 
 export type Body = (typeof BODIES)[number]
 
@@ -43,9 +46,16 @@ export const runsAway = (body: Body): boolean => {
 		case "returns":
 		case "pauses":
 		case "sleeps":
+		case "blocks":
 			return false
 	}
 }
+
+/**
+ * Whether a body runs in a program of its own: a runaway, which ends its process, and a body that blocks its thread past
+ * the watchdog's graces, which a watchdog that judged a silent thread by the grace alone would end.
+ */
+export const inProgram = (body: Body): boolean => runsAway(body) || body === "blocks"
 
 /**
  * A planted search, as its program takes it: the body, the least value it acts on, its cases' deadline, and how long a
@@ -66,12 +76,41 @@ export const idOf = (planted: Planted): string =>
 	`a planted ${planted.body} from ${planted.threshold}`
 
 /**
+ * The case deadline of a planted search whose thread blocks (BODIES' "blocks"): a second, past what its child spends of
+ * CPU while it stores to disk for the block, so the case's work stays within its deadline and is judged by its result.
+ * It is no limit: any deadline its child's CPU stays under separates the two.
+ */
+const BLOCKED_DEADLINE_MILLIS = 1000
+
+/**
+ * How long the child a blocked thread waits for rests between the pages it syncs, in milliseconds: so its CPU over a
+ * block stays a small share of BLOCKED_DEADLINE_MILLIS (200 ms over an 11 s block, measured on cassowary under load 60)
+ * and past what shows progress over the block (work.ts progressOver: 11 ms), and its storage work moves throughout.
+ */
+const PAGE_PAUSE_MILLIS = 10
+
+/**
+ * The child a blocked thread waits for: it writes and syncs a page to a file of its own under the temporary directory,
+ * resting PAGE_PAUSE_MILLIS after each, until `pauseMillis` have passed, then removes the file.
+ */
+const storingFor = (pauseMillis: number): string =>
+	`const fs = require("node:fs"); const file = require("node:path").join(require("node:os").tmpdir(), "watchdog-blocks-" + process.pid); const fd = fs.openSync(file, "w"); const page = Buffer.alloc(4096, 1); const rest = new Int32Array(new SharedArrayBuffer(4)); const until = Date.now() + ${String(pauseMillis)}; while (Date.now() < until) { fs.writeSync(fd, page); fs.fsyncSync(fd); Atomics.wait(rest, 0, 0, ${String(PAGE_PAUSE_MILLIS)}) } fs.closeSync(fd); fs.unlinkSync(file)`
+
+/**
  * A planted search of `body`: a threshold, a short case deadline, and a pause past it by far less than the watchdog's
  * grace. A pause holds the thread on every case from the threshold up, so it is kept short.
  */
 const plantedOf =
 	(body: Body): Gen<Planted> =>
 	(source) => {
+		if (body === "blocks") {
+			return {
+				body,
+				threshold: source.draw(int(0, 9)),
+				deadlineMillis: BLOCKED_DEADLINE_MILLIS,
+				pauseMillis: BLOCKED_DEADLINE_MILLIS + 2 * watchdogGraceMillis + source.draw(int(1, 100))
+			}
+		}
 		const deadlineMillis = source.draw(int(20, 100))
 		return {
 			body,
@@ -91,9 +130,14 @@ const BACKTRACKED = `${Str.repeat(40)("a")}!`
  * Holds the main thread as `body` says: a loop that never ends, a match that never ends, or a wait that blocks the
  * thread for `pauseMillis`.
  */
-const hold = (body: "loop" | "backtrack" | "pauses", pauseMillis: number): void => {
+const hold = (body: "loop" | "backtrack" | "pauses" | "blocks", pauseMillis: number): void => {
 	const cell = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT))
 	switch (body) {
+		case "blocks":
+			process
+				.getBuiltinModule("node:child_process")
+				.spawnSync(process.execPath, ["-e", storingFor(pauseMillis)], { stdio: "ignore" })
+			return
 		case "loop":
 			while (Atomics.load(cell, 0) === 0) {
 				Atomics.add(cell, 0, 0)
@@ -119,6 +163,10 @@ const bodyOf =
 				return Effect.void
 			case "sleeps":
 				return Effect.sleep(Duration.millis(planted.deadlineMillis * 4))
+			case "blocks":
+				return value === planted.threshold
+					? Effect.sync(() => hold("blocks", planted.pauseMillis))
+					: Effect.void
 			case "loop":
 			case "backtrack":
 			case "pauses": {
@@ -320,6 +368,7 @@ export const endingOf = (planted: Planted): Option.Option<string> => {
 	switch (planted.body) {
 		case "returns":
 		case "pauses":
+		case "blocks":
 			return Option.some("exhausted")
 		case "sleeps":
 			return Option.some("hung")
@@ -335,7 +384,7 @@ if (import.meta.main) {
 			Effect.runPromise(
 				Effect.andThen(
 					Console.error(
-						"usage: node blocking.fixtures.ts <loop|backtrack|returns|pauses|sleeps> <threshold> <deadline ms> <pause ms> <seed>"
+						"usage: node blocking.fixtures.ts <loop|backtrack|returns|pauses|sleeps|blocks> <threshold> <deadline ms> <pause ms> <seed>"
 					),
 					Effect.sync(() => {
 						process.exitCode = 2

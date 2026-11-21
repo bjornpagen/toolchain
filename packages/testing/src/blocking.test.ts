@@ -23,6 +23,7 @@ import {
 	programIn,
 	programRun,
 	reportAt,
+	inProgram,
 	runsAway,
 	settledHere,
 	settlingRuns,
@@ -44,12 +45,20 @@ export const watchdog = property.explore(aimed(settlingRuns, bodyAims), {
 		({ planted, seed }) =>
 			Effect.gen(function* () {
 				c.note(`a body that ${planted.body}`)
-				if (!runsAway(planted.body)) {
+				if (!inProgram(planted.body)) {
 					const ending = yield* settledHere(planted, seed)
 					assert.deepEqual<Option.Option<string>>(Option.some(ending), endingOf(planted))
 					return
 				}
 				const dir = yield* checkout
+				if (!runsAway(planted.body)) {
+					const blocked = yield* programRun(programIn(dir), planted, seed)
+					assert.deepEqual(
+						{ ending: blocked.ending, exitCode: blocked.exitCode },
+						{ ending: endingOf(planted), exitCode: Option.some(0) }
+					)
+					return
+				}
 				const ran = yield* programRun(programIn(dir), planted, seed)
 				const token = yield* Option.match(ran.replay, {
 					onNone: () => Effect.die("the watchdog's report names no case to replay"),
@@ -89,10 +98,16 @@ export const watchdog = property.explore(aimed(settlingRuns, bodyAims), {
 			}),
 	oracle: {
 		kind: "specification",
-		name: "a runaway ends its process past its deadline and the watchdog's grace, naming its case; any other body ends its search by the guard's verdict"
+		name: "a runaway ends its process past its deadline and the watchdog's grace, naming its case; any other body ends its search by the guard's verdict, one whose thread is silent past the graces while spending no CPU of its own among them"
 	},
 	kept: [],
 	kills: [
+		{
+			file: "packages/testing/src/live.ts",
+			original: "\t\t\t\tif (burned(spent, graceMillis)) {\n",
+			replacement: "\t\t\t\tif (true) {\n",
+			why: "A main thread that does not answer the inspector within the grace is ended, whatever its CPU, as it was: a live case whose thread the machine pages out or starves is killed for its silence (REDFIX2's two @small-stack deaths under 63 to 74% memory pressure, 2026-11-20); the property fails on the body that blocks."
+		},
 		{
 			file: "packages/testing/src/live.ts",
 			original: "\t\tif (moment < Number(Atomics.load(stamps, LAYOUT.wakes))) {",

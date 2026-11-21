@@ -49,7 +49,7 @@ const millisPerSecond = 1000
 const microsPerMilli = 1000
 
 /** The smallest change in a child's CPU Linux states, and the grain of a process's start: one clock tick, in ms. */
-const TICK_MILLIS = millisPerSecond / PROC.ticksPerSecond
+export const TICK_MILLIS = millisPerSecond / PROC.ticksPerSecond
 
 const { readFileSync, readdirSync, statSync } = process.getBuiltinModule("node:fs")
 
@@ -175,17 +175,17 @@ const effortOfProcess = (pid: string): Effort =>
 		}
 	})
 
+/** Two stirs summed. */
+const stirPlus = (one: Stir, other: Stir): Stir => ({
+	queued: one.queued + other.queued,
+	stored: one.stored + other.stored
+})
+
 /** The effort of processes, each one's summed. */
 const effortOfAll = (pids: ReadonlyArray<string>): Effort =>
 	Arr.reduce(pids, noEffort, (total, pid) => {
 		const one = effortOfProcess(pid)
-		return {
-			cpu: total.cpu + one.cpu,
-			stir: {
-				queued: total.stir.queued + one.stir.queued,
-				stored: total.stir.stored + one.stir.stored
-			}
-		}
+		return { cpu: total.cpu + one.cpu, stir: stirPlus(total.stir, one.stir) }
 	})
 
 /** This process's own CPU so far, every thread's, in milliseconds: process.cpuUsage, a system call and no file. */
@@ -416,7 +416,10 @@ const lineageOf = (pid: number): ReadonlyArray<number> => [
  * Whose work the wait of the work whose process is `work` waits on, for locks on `files` (Held): the processes holding
  * a lock on one of them that are blocked on none of them (a process blocked on one, its own run's holder among them,
  * waits in the same queue), each by its run, the process that started it; and the first process blocked on one whose
- * run is the work's process or encloses it, if any, blocked by a holder whose run encloses that run in turn.
+ * run is the work's process or encloses it, if any, blocked by a holder whose run encloses that run in turn. A lock of a
+ * process whose parent holds a lock on one of them is its parent's: the family queue's holder waits for each slot by a
+ * child of its own (scripts/hold.pl's collectors), so a child's wait is the holder's, the holder is queued, never a
+ * holder its waiters count the work of, and its run is the run whose wait it is, which deadlock detection reads.
  */
 const heldOf = (files: ReadonlyArray<string>, work: number): Held => {
 	const named = new Map(
@@ -430,12 +433,25 @@ const heldOf = (files: ReadonlyArray<string>, work: number): Held => {
 	if (named.size === 0) {
 		return unheld
 	}
-	const locks = Arr.flatMap(locksNow(), (lock) =>
+	const found = Arr.flatMap(locksNow(), (lock) =>
 		Option.match(Option.fromUndefinedOr(named.get(lock.file)), {
 			onNone: () => [],
 			onSome: (path) => [{ ...lock, path }]
 		})
 	)
+	const holding = new Set(
+		Arr.map(
+			Arr.filter(found, (lock) => !lock.blocked),
+			(lock) => lock.pid
+		)
+	)
+	const locks = Arr.map(found, (lock) => ({
+		...lock,
+		pid: Option.getOrElse(
+			Option.filter(parentOf(lock.pid), (parent) => holding.has(parent)),
+			() => lock.pid
+		)
+	}))
 	const queued = new Set(
 		Arr.map(
 			Arr.filter(locks, (lock) => lock.blocked),
@@ -505,21 +521,23 @@ const ownHeld = (): Held => heldOf(ownLocked(), process.pid)
 
 /**
  * This process's work, begun at `wall` on the live clock with `own` CPU (ownCpu, read before the work started): its own
- * CPU, its waited-for children's, and its live descendants'. Read when a guard first needs it, once the work has
- * yielded, so work that runs to its end synchronously reads no file; it reads /proc/self/stat once, and no descendant,
- * since none the work started is counted until its first reading, all of whose CPU is the work's. Without /proc its own
- * CPU counts alone.
+ * CPU, every thread's, its waited-for children's, and its live descendants'; its descendants' stir, and its own as
+ * `stirOwn` reads it. Read when a guard first needs it, once the work has yielded, so work that runs to its end
+ * synchronously reads no file; it reads /proc/self/stat once to begin, and no descendant, since none the work started is
+ * counted until its first reading, all of whose CPU is the work's. Without /proc its own CPU counts alone.
  */
-export const ownWork = (wall: number, own: number): TreeWork => {
+const selfWork = (wall: number, own: number, stirOwn: () => Stir): TreeWork => {
 	const self = statOf("self")
 	const since = sinceBootAt(self, wall)
+	const reaped = (stat: Option.Option<(field: number) => number>) =>
+		Option.match(stat, { onNone: () => 0, onSome: reapedOf })
 	return {
 		began: {
 			wall,
-			cpu: own + Option.match(self, { onNone: () => 0, onSome: reapedOf }),
+			cpu: own + reaped(self),
 			waited: ownWaited(wall),
 			held: ownHeld(),
-			stir: noStir
+			stir: stirOwn()
 		},
 		waited: ownWaited,
 		held: ownHeld,
@@ -528,15 +546,18 @@ export const ownWork = (wall: number, own: number): TreeWork => {
 				Option.match(since, { onNone: () => [], onSome: (at) => descendantsOf("self", at) })
 			)
 			return {
-				cpu:
-					ownCpu() +
-					Option.match(statOf("self"), { onNone: () => 0, onSome: reapedOf }) +
-					descendants.cpu,
-				stir: descendants.stir
+				cpu: ownCpu() + reaped(statOf("self")) + descendants.cpu,
+				stir: stirPlus(stirOwn(), descendants.stir)
 			}
 		}
 	}
 }
+
+/**
+ * This process's work as its own guards read it (selfWork), its stir its descendants' alone: a process whose guards
+ * judge it wakes on its own, so waiting to run or faulting its pages in only delays a guard that sees the rest.
+ */
+export const ownWork = (wall: number, own: number): TreeWork => selfWork(wall, own, () => noStir)
 
 /**
  * Another process's work, begun at `wall` on the live clock (the pool's watch of a worker): its own CPU, its waited-for
@@ -587,25 +608,15 @@ export const processWork = (
 }
 
 /**
- * This process's work as its watchdog reads it while a case holds the main thread (live.ts watchedCase): its own CPU,
- * every thread's, and its live descendants' started since `wall`. It reads nothing until the watchdog asks, so a case
- * pays one process.cpuUsage for it; it leaves out the children the process waits for meanwhile, which a held main
- * thread reaps only through a synchronous spawn, whose child it counts while the child lives.
+ * This process's work as its watchdog reads it while a case holds the main thread (live.ts watchedCase, selfWork): its
+ * CPU, the children a synchronous spawn reaped among it (the only reaping a held main thread does), and the stir of the
+ * process itself beside its descendants': a held main thread
+ * that waits to run or faults its pages in (a machine that starves it or pages it out) is waiting on the machine, not
+ * stalled, and no guard of its own wakes it while it is held, which is why a pool judges a worker by its CPU alone and
+ * the watchdog need not (the REDFIX2 deaths, 2026-11-20: two cases killed under 63 to 74% memory pressure).
  */
-export const heldWork = (wall: number, own: number): TreeWork => ({
-	began: { wall, cpu: own, waited: ownWaited(wall), held: ownHeld(), stir: noStir },
-	waited: ownWaited,
-	held: ownHeld,
-	effort: () => {
-		const descendants = effortOfAll(
-			Option.match(sinceBootAt(statOf("self"), wall), {
-				onNone: () => [],
-				onSome: (at) => descendantsOf("self", at)
-			})
-		)
-		return { cpu: ownCpu() + descendants.cpu, stir: descendants.stir }
-	}
-})
+export const heldWork = (wall: number, own: number): TreeWork =>
+	selfWork(wall, own, () => effortOfProcess("self").stir)
 
 /**
  * A judge of `work` under `deadline` milliseconds that keeps its window between readings: at each reading, at `wall` on
