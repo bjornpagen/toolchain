@@ -10,7 +10,8 @@ export {
 	PgCluster,
 	type PgClusterSpec,
 	type PgMember,
-	type PgSession
+	type PgSession,
+	type Statements
 } from "#resources/cluster.ts"
 export {
 	Database,

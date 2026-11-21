@@ -13,7 +13,7 @@ import {
 	PgCluster,
 	type PgClusterShape,
 	type PgMember,
-	type PgSession,
+	type Statements,
 	type DatabaseName,
 	lockKey,
 	quoteIdent,
@@ -279,7 +279,7 @@ const replayOf = (owner: Owner, template: DatabaseName): Effect.Effect<Replay, N
 const replayedOn = (
 	cluster: PgClusterShape,
 	member: PgMember,
-	session: PgSession,
+	session: Statements,
 	replayed: Replayed
 ): Effect.Effect<void, NeedFailed> =>
 	Effect.andThen(

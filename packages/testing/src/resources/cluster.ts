@@ -33,6 +33,14 @@ export interface PgSession {
 	) => Effect.Effect<ReadonlyArray<ReadonlyArray<unknown>>, NeedFailed>
 }
 
+/**
+ * What the library asks of a session: its statements' rows (PgSession's query). A repository's PgSession may carry
+ * more, which it declares on the interface (grizzle's connection, for its own code over the owner's session); a session
+ * of the bootstrap superuser is the library's alone (PgClusterSpec's superuser), asked for its statements and nothing
+ * more, so a repository gives it no more than that.
+ */
+export type Statements = Pick<PgSession, "query">
+
 /** A statement's rows as this library reads them: each column the server's text, or null. */
 export type TextRows = ReadonlyArray<ReadonlyArray<string | null>>
 
@@ -76,7 +84,7 @@ export type PgClusterSpec = Readonly<{
 	superuser: (
 		member: PgMember,
 		database: string
-	) => Effect.Effect<PgSession, NeedFailed, Scope.Scope>
+	) => Effect.Effect<Statements, NeedFailed, Scope.Scope>
 }>
 
 /**
@@ -149,7 +157,7 @@ const textRows = (
  * DROP DATABASE behind the member's ProcSignalBarrier while other clones' FILE_COPY checkpoints ran).
  */
 export const run = (
-	session: PgSession,
+	session: Statements,
 	sql: string,
 	params: ReadonlyArray<string>
 ): Effect.Effect<TextRows, NeedFailed> =>
@@ -157,7 +165,7 @@ export const run = (
 
 /** The first column of the first row of `sql`'s answer, or NeedFailed when it has none. */
 export const single = (
-	session: PgSession,
+	session: Statements,
 	sql: string,
 	params: ReadonlyArray<string>
 ): Effect.Effect<string | null, NeedFailed> =>

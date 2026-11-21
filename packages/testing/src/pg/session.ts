@@ -2,7 +2,7 @@ import { Effect, Redacted, type Scope } from "effect"
 import pg from "pg"
 import type { PgMember } from "#pg/make.ts"
 import { BOOTSTRAP_SUPERUSER } from "#pg/server.ts"
-import type { PgSession } from "#resources/cluster.ts"
+import type { PgSession, Statements } from "#resources/cluster.ts"
 import { NeedFailed } from "#runner/services.ts"
 
 /** A failure of a session on `member` as the need it failed: what it was doing, and what the driver said. */
@@ -83,5 +83,5 @@ export const pgOwnerSession =
  */
 export const pgSuperuserSession =
 	(applicationName: string) =>
-	(member: PgMember, database: string): Effect.Effect<PgSession, NeedFailed, Scope.Scope> =>
+	(member: PgMember, database: string): Effect.Effect<Statements, NeedFailed, Scope.Scope> =>
 		pgSession(applicationName, member, database, { host: member.socket, user: BOOTSTRAP_SUPERUSER })
