@@ -52,14 +52,14 @@ export const storeBounded = property.explore(rootsGen, {
 	kills: [
 		{
 			file: "packages/testing/src/runner/compile-cache.ts",
-			original: "return `${store}/${first}/${second}/${digest}`",
+			original: `return \`\${store}/\${first}/\${second}/\${digest}\``,
 			replacement: "return store",
 			why: "Every root's cache is the store itself, the flat layout every checkout shared before, so one directory holds every root's modules; the property fails on the bound once the roots' modules outnumber a shard level's fan-out."
 		},
 		{
 			file: "packages/testing/src/runner/compile-cache.ts",
-			original: "return `${store}/${first}/${second}/${digest}`",
-			replacement: "return `${store}/${digest}`",
+			original: `return \`\${store}/\${first}/\${second}/\${digest}\``,
+			replacement: `return \`\${store}/\${digest}\``,
 			why: "Each root has its own directory but all of them stand in the store's one directory, which then holds one entry per root; the property fails on the bound once the roots outnumber a shard level's fan-out."
 		}
 	]
@@ -85,7 +85,7 @@ export const startedAtOnceShareOneEntry = property.exhaust(finite(int(2, 8)), {
 						inItsDirectory: Arr.every(ran.files, Str.startsWith(`${own}/`))
 					},
 					{
-						statuses: Arr.makeBy(processes, () => 0),
+						statuses: Array.from({ length: processes }, () => 0),
 						entries: 1,
 						inItsDirectory: true
 					}
@@ -100,7 +100,7 @@ export const startedAtOnceShareOneEntry = property.exhaust(finite(int(2, 8)), {
 		{
 			file: "packages/testing/src/runner/compile-cache.ts",
 			original: ".update(root)",
-			replacement: ".update(`${root}:${process.pid}`)",
+			replacement: `.update(\`\${root}:\${process.pid}\`)`,
 			why: "A root's directory depends on the process that computes it, as a key with a per-run or per-process part does, so processes of one root never reuse each other's entries and each writes its own; the property fails with one entry for each process."
 		}
 	]

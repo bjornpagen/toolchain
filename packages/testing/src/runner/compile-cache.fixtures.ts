@@ -35,9 +35,9 @@ export const rootsGen: Gen<ReadonlyArray<Rooted>> = uniqueArray(
  */
 export const entriesOf = (store: string, roots: ReadonlyArray<Rooted>): ReadonlyArray<string> =>
 	Arr.flatMap(roots, ({ root, modules }) =>
-		Arr.makeBy(
-			modules,
-			(module) =>
+		Array.from(
+			{ length: modules },
+			(_, module) =>
 				`${compileCacheIn(store, root)}/${RUNTIME}/${encodeURIComponent(`${root}/m${module}.js`)}`
 		)
 	)
@@ -96,7 +96,7 @@ export const startedAtOnce = (
 		yield* fs.makeDirectory(root, { recursive: true })
 		yield* fs.writeFileString(`${root}/loaded.mjs`, LOADED)
 		const statuses = yield* Effect.all(
-			Arr.makeBy(processes, () =>
+			Array.from({ length: processes }, () =>
 				spawner.exitCode(
 					ChildProcess.make(process.execPath, ["--input-type=module", "-e", PROCESS], {
 						env: {
