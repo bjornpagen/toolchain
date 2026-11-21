@@ -15,7 +15,6 @@ import {
 } from "effect"
 import { HUNG_CLEANUP_GRACE, liveMillis, overrun, watchdogGraceMillis } from "#live.ts"
 import { type Served, servedArgv } from "#mutate/pool.ts"
-import { familyOf } from "#pg/lease.ts"
 import { withLateUses } from "#runner/case.ts"
 import {
 	compileCacheIn,
@@ -24,7 +23,6 @@ import {
 	readsCoverage,
 	storeDirectory
 } from "#runner/compile-cache.ts"
-import { drawnLease } from "#runner/leases.ts"
 import { moduleClosureAt } from "#runner/module-closure.ts"
 import {
 	type CountAnswer,
@@ -55,7 +53,6 @@ import {
 	schedulerOf,
 	type View
 } from "#runner/schedule.ts"
-import type { RunLease } from "#runner/services.ts"
 import type { ChildrenStated, PoolUsage, PropertyUsage } from "#runner/usage.ts"
 import {
 	noWaits,
@@ -112,9 +109,8 @@ type Phase = "readying" | "evaluating"
  * A worker process and what the parent knows of it: the units it was sent and has not finished, the one it runs and in
  * what phase, the idle worker its unstarted tail is being revoked for, the busy worker whose tail it waits for, the
  * last of what it wrote, the last message it sent and when (`heard`), why the pool ended it, should it have (`ended`),
- * its declared waits on work as it reported them, on the parent's clock (`waits`), the files its lock waits wait to lock
- * as it last reported them (`locks`), what its
- * process reported of its CPU, and since when (on the parent's clock) its next unit to finish has held it, with the
+ * its declared waits on work as it reported them, on the parent's clock (`waits`), what its process reported of its
+ * CPU, and since when (on the parent's clock) its next unit to finish has held it, with the
  * readying in that time to take out.
  */
 /**
@@ -139,7 +135,6 @@ type Worker = {
 	heard: Option.Option<Readonly<{ kind: string; at: number }>>
 	ended: Option.Option<Ending>
 	waits: Waits
-	locks: ReadonlyArray<string>
 	usage: { started: number; reported: number }
 	occupiedSince: number
 	readyingMillis: number
@@ -154,8 +149,8 @@ const uncounted = "the pool gave back no answer for a count it was sent"
 /**
  * Where a pool's workers stand among the processes that run at once: the place of each worker the pool may fork, by its
  * index in the pool (one place a worker, so how many workers it may have), and how many places there are. A worker
- * reports its place as its WorkerIndex, which a repository's services read (a cluster's: worker i of a run reaches the
- * member of its run's i-th slot, pg/lease.ts Placement), so workers that run at once take distinct places: a run's pool
+ * reports its place as its WorkerIndex, which a repository's services read (a cluster's: worker i reaches member i mod
+ * the members' count, resources/cluster.ts memberOf), so workers that run at once take distinct places: a run's pool
  * holds every place, and each lease of the mutator's pool holds places no other lease holds.
  */
 export type Places = Readonly<{ at: Arr.NonEmptyReadonlyArray<number>; of: number }>
@@ -164,8 +159,7 @@ export type Places = Readonly<{ at: Arr.NonEmptyReadonlyArray<number>; of: numbe
  * The places of a run whose pools are `weights.length` kinds of workers sharing one width (runner/run.ts: one pool for
  * each stack and guide): disjoint runs of places, each kind's at least one, the width's rest shared in proportion to
  * the kinds' weights (their properties) by largest remainder, the earlier kind first on a tie, so the run holds
- * `width` workers in all and no two of its workers take one place (a grizzle worker's place is its lease on the
- * cluster family). A machine narrower than its kinds gives each kind one place, the kinds sharing them in turn.
+ * `width` workers in all and no two of its workers take one place (a worker's place picks its cluster member). A machine narrower than its kinds gives each kind one place, the kinds sharing them in turn.
  */
 export const placesShared = (
 	width: number,
@@ -406,14 +400,11 @@ const compilingOf = (spec: PoolSpec) =>
  * nothing to run boots no worker): closing it disconnects each worker and waits for it to exit on its own (its
  * finalizers run, a coverage dump is written), then ends its process group (endGroup), which kills a worker still alive
  * past SILENCE_GRACE_MILLIS, a finalizer that hangs, and whatever it left running. A worker that ends while the pool is
- * open, however it ends, has its group ended too. Its workers' leases are the run's (RunLease): a run of its own holds
- * them (runner/leases.ts runLeasesIn, which its command provides), and a pool a case starts, a nested run, draws on the
- * lease of the run the case runs in, so it never reserves again what that run holds and waits on it forever.
+ * open, however it ends, has its group ended too.
  */
-export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Scope | RunLease> =>
+export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Scope> =>
 	Effect.gen(function* () {
 		const scope = yield* Scope.Scope
-		const leases = yield* drawnLease
 		const closures = yield* moduleClosureAt(
 			spec.root,
 			Option.map(spec.served, (served) => served.mutant)
@@ -648,7 +639,6 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 				heard: Option.none(),
 				ended: Option.none(),
 				waits: noWaits,
-				locks: [],
 				usage: { started: 0, reported: 0 },
 				occupiedSince: now,
 				readyingMillis: 0
@@ -699,11 +689,8 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 				const silence = yield* Effect.forkIn(
 					Effect.flatMap(
 						overrun(
-							processWork(
-								Option.fromUndefinedOr(worker.child.pid),
-								began,
-								(wall) => waitedBy(worker.waits, wall),
-								() => worker.locks
+							processWork(Option.fromUndefinedOr(worker.child.pid), began, (wall) =>
+								waitedBy(worker.waits, wall)
 							),
 							boundOf(unit.value, phase) + SILENCE_GRACE_MILLIS
 						),
@@ -903,9 +890,6 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 							case "waited":
 								worker.waits = waitLeft(worker.waits, now)
 								return
-							case "locks":
-								worker.locks = received.files
-								return
 							case "closure": {
 								const module = received.module
 								yield* Effect.forkIn(
@@ -917,25 +901,6 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 												answer: Result.match(hashed, {
 													onSuccess: (hash) => ({ kind: "hashed", hash }),
 													onFailure: (failure) => ({ kind: "unhashed", message: failure.message })
-												})
-											})
-										})
-									),
-									scope
-								)
-								return
-							}
-							case "lease": {
-								const reservation = received.reservation
-								yield* Effect.forkIn(
-									Effect.flatMap(Effect.result(leases.reserve(reservation)), (held) =>
-										Effect.sync(() => {
-											send(worker, {
-												kind: "lease",
-												family: familyOf(reservation),
-												answer: Result.match(held, {
-													onSuccess: (members) => ({ kind: "leased", members }),
-													onFailure: (failure) => ({ kind: "refused", message: failure.message })
 												})
 											})
 										})

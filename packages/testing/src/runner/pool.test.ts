@@ -235,8 +235,8 @@ export const slowWorkerKept = property.exhaust(finite(boolean), {
 	kills: [
 		{
 			file: "packages/testing/src/runner/pool.ts",
-			original: "\t\t\t\t\t\t\t\tOption.fromUndefinedOr(worker.child.pid),\n",
-			replacement: "\t\t\t\t\t\t\t\tOption.none(),\n",
+			original: "processWork(Option.fromUndefinedOr(worker.child.pid), began, (wall) =>",
+			replacement: "processWork(Option.none(), began, (wall) =>",
 			why: "The parent reads no worker's CPU, so a worker silent past its bound and grace is killed whatever it is doing, as the live clock's watch killed it: the slow worker's unit is lost; the slow-worker property fails."
 		}
 	]

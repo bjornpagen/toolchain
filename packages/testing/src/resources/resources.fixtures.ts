@@ -3,7 +3,7 @@ import { Array as Arr, Brand, Context, Effect, Layer, Option, Ref, type Scope } 
 import { ChildProcess } from "effect/process"
 import { boolean, characterOf, type Gen, int, string } from "#gen.ts"
 import testingCluster from "#pg.config.ts"
-import { machineBin } from "#pg/make.fixtures.ts"
+import { bootstrapSuperuser, serverBin } from "#pg/server.ts"
 import { pgOwnerSession, pgSuperuserSession } from "#pg/session.ts"
 import type { Need } from "#property.ts"
 import {
@@ -19,7 +19,7 @@ import {
 } from "#resources/cluster.ts"
 import type { TemplateDatabase } from "#resources/database.ts"
 import { type DatabaseTemplate, Template } from "#resources/template.ts"
-import { ModuleClosure, type NeedFailed, RunLease, WorkerIndex } from "#runner/services.ts"
+import { ModuleClosure, NeedFailed, WorkerIndex } from "#runner/services.ts"
 
 /** A database name the fixture read back from the cluster. */
 const databaseNameOf = Brand.nominal<DatabaseName>()
@@ -248,25 +248,11 @@ export const tokenTemplate = (
 		build
 	})
 
-/**
- * The run's lease as a case inside the run sees it: the run that runs the case already holds its reservation on the
- * fixture's cluster (runner/leases.ts), which covers the case's own connections, so a cluster a case builds for itself
- * reserves nothing more, and never waits on the slots its own run holds; its one worker is on the first member.
- */
-const leasedByTheRun = Layer.succeed(
-	RunLease,
-	RunLease.of({ reserve: () => Effect.succeed(Arr.of(0)) })
-)
-
 /** The cluster of the fixture's members under a prefix of a case's own, so a case's collection sees only its own. */
 export const ownCluster = (prefix: string): Layer.Layer<PgCluster> =>
 	Layer.provide(
 		PgCluster.layer({ ...fixtureCluster, prefix: DatabasePrefix(prefix) }),
-		Layer.mergeAll(
-			NodeServices.layer,
-			leasedByTheRun,
-			Layer.succeed(WorkerIndex, { index: 0, workers: 1 })
-		)
+		Layer.mergeAll(NodeServices.layer, Layer.succeed(WorkerIndex, { index: 0, workers: 1 }))
 	)
 
 /** The runs a list of takers forms: each taker alone, but consecutive takers marked together run at once. */
@@ -306,14 +292,17 @@ export const countedConnections = (
 })
 
 /**
- * A session of the member's bootstrap superuser in `database`, over the member's socket by peer authentication (psql,
- * its standard input held open), for the enclosing scope: a session the owner cannot end, which pg_signal_backend never
+ * A session of the member's bootstrap superuser (the account) in `database`, over the member's socket (psql, its
+ * standard input held open), for the enclosing scope: a session the owner cannot end, which pg_signal_backend never
  * lets it terminate, so the owner's DROP DATABASE of the database is refused while it lasts, the collection's WITH
  * (FORCE) too, as a drop is refused when a session it waits for has not left in time (an autovacuum worker under load).
  */
 export const superuserSessionIn = (database: TemplateDatabase) =>
 	Effect.gen(function* () {
-		const bin = yield* machineBin
+		const bin = yield* Effect.mapError(
+			serverBin({ cluster: database.member.name, doing: "a superuser's session" }),
+			(failure) => NeedFailed.make({ need: "pg", message: failure.message })
+		)
 		yield* ChildProcess.make(
 			`${bin}/psql`,
 			[
@@ -324,7 +313,7 @@ export const superuserSessionIn = (database: TemplateDatabase) =>
 				"-p",
 				`${database.member.port}`,
 				"-U",
-				"postgres",
+				bootstrapSuperuser(),
 				"-d",
 				database.name
 			],
@@ -342,8 +331,8 @@ export const superuserSessions = (
 			const session = yield* cluster.connect(database.member, cluster.maintenance)
 			const found = yield* single(
 				session,
-				"SELECT pg_catalog.count(*)::text FROM pg_catalog.pg_stat_activity WHERE datname = $1::name AND usename = 'postgres'",
-				[database.name]
+				"SELECT pg_catalog.count(*)::text FROM pg_catalog.pg_stat_activity WHERE datname = $1::name AND usename = $2::name",
+				[database.name, bootstrapSuperuser()]
 			)
 			return Number(found)
 		})

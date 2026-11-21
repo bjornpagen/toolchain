@@ -1,5 +1,5 @@
 import { Array as Arr, String as Str } from "effect"
-import type { Durability, LocalCluster, PerWorker, SessionLocks, Sized, Sizing } from "#pg/spec.ts"
+import type { Durability, LocalCluster, SessionLocks, Sizing } from "#pg/spec.ts"
 
 /**
  * How long a backend runs a statement between two polls of its client's socket, PostgreSQL's
@@ -224,8 +224,8 @@ export const fixedSettings = (cluster: LocalCluster): Arr.NonEmptyReadonlyArray<
 	Arr.appendAll(everyMember, ofDurability(cluster.durability))
 
 /**
- * The members a cluster sized by `sizing` has among `workers` workers: a leased cluster's family's, one or the workers
- * over a member's share, rounded up; a cluster sized by its sessions, one, since it serves no worker.
+ * The members a cluster sized by `sizing` has among `workers` workers: a family's, one or the workers over a member's
+ * share, rounded up; a cluster sized by its sessions, one, since it serves no worker.
  */
 export const membersOf = (sizing: Sizing, workers: number): number =>
 	sizing.kind === "sessions" || sizing.family.kind === "one"
@@ -233,19 +233,10 @@ export const membersOf = (sizing: Sizing, workers: number): number =>
 		: Math.ceil(workers / sizing.family.workersPerMember)
 
 /**
- * The workers one member serves at most among `workers` workers on `members` members: the workers over the members,
- * rounded up, so the members together serve every worker of a run, which its lease spreads evenly over them
- * (pg/lease.ts, resources/cluster.ts memberOf).
+ * The workers of one run a member serves among `workers` workers on `members` members: the workers over the members,
+ * rounded up, worker i on member i mod their count (resources/cluster.ts memberOf).
  */
 export const shareOf = (workers: number, members: number): number => Math.ceil(workers / members)
-
-/** What a member serving `share` workers holds of a count stated per worker (PerWorker): every worker's and the outside's. */
-const perWorkerCount = (counted: PerWorker, share: number): number =>
-	share * counted.perWorker + counted.outside
-
-/** A count a leased member is sized for, over the workers it serves (Sized): none at PostgreSQL's default. */
-const sizedCount = (sized: Sized, share: number): ReadonlyArray<number> =>
-	sized.kind === "default" ? [] : [perWorkerCount(sized, share)]
 
 /** The locks a member sized by its sessions holds at once (SessionLocks): none at PostgreSQL's default. */
 const heldCount = (locks: SessionLocks): ReadonlyArray<number> =>
@@ -266,7 +257,7 @@ const maxConnections = (count: number): Setting => ["max_connections", `${connec
  * + autovacuum_worker_slots + max_worker_processes + max_wal_senders + its special workers), so the least count whose
  * table holds the demand, and never fewer than its default.
  */
-const locksPerTransaction = (demand: number, connections: number, walSenders: number): Setting => [
+const locksForDemand = (demand: number, connections: number, walSenders: number): Setting => [
 	"max_locks_per_transaction",
 	`${Math.max(
 		defaultLocksPerTransaction,
@@ -283,18 +274,27 @@ const locksPerTransaction = (demand: number, connections: number, walSenders: nu
 ]
 
 /**
- * The settings that size a member of `cluster`, each at least what the doctor requires, on a server of `blockSize`
- * bytes a page. A leased member is sized to its share of a full-width run, `share` workers: max_connections, every
- * worker's connections and the outside's; max_replication_slots and max_wal_senders, one bound for both, since a live
- * source's leader holds one slot and one walsender; shared_buffers in pages, every page each worker's largest database
- * holds; max_locks_per_transaction, a lock table that holds every worker's locks and the outside's at once
- * (locksPerTransaction); a count the repository states no evidence for stays PostgreSQL's default, and is none of
- * these. A member sized by its sessions holds max_connections for them alone, whatever the run's width, a lock table
- * for the locks they hold at once, and the rest at PostgreSQL's defaults.
+ * The connections a member admits as a capacity of the machine (spec.ts Capacity): the machine's memory, `machineBytes`,
+ * over a busy backend's, `backendBytes`, shared among the cluster's `members`, rounded down, one at least.
+ */
+const capacityOf = (machineBytes: number, backendBytes: number, members: number): number =>
+	Math.max(1, Math.floor(machineBytes / (backendBytes * members)))
+
+/**
+ * The settings that size a member of `cluster`, one of `members`, on a machine of `machineBytes` of memory and a server
+ * of `blockSize` bytes a page. A member sized for workers admits connections up to its capacity (capacityOf), every
+ * one of them also a replication slot and a WAL sender where its replication is a capacity; holds shared_buffers in
+ * pages for every page a run's workers on it read, `share` workers (shareOf); and holds max_locks_per_transaction at
+ * the most one transaction takes, never fewer than PostgreSQL's default, since its table holds that many for every
+ * backend at once. A count the repository states no evidence for stays PostgreSQL's default. A member sized by its
+ * sessions holds max_connections for them alone, a lock table for the locks they hold at once, and the rest at
+ * PostgreSQL's defaults.
  */
 export const sizedSettings = (
 	cluster: LocalCluster,
+	members: number,
 	share: number,
+	machineBytes: number,
 	blockSize: number
 ): ReadonlyArray<Setting> => {
 	const { sizing } = cluster
@@ -302,19 +302,20 @@ export const sizedSettings = (
 		return [
 			maxConnections(sizing.sessions),
 			...Arr.map(heldCount(sizing.locks), (demand) =>
-				locksPerTransaction(demand, connectionsFor(sizing.sessions), defaultWalSenders)
+				locksForDemand(demand, connectionsFor(sizing.sessions), defaultWalSenders)
 			)
 		]
 	}
 	const { connections, replication, sharedBuffers, locks } = sizing
-	const admitted = perWorkerCount(connections, share)
-	const senders = sizedCount(replication, share)
+	const admitted = capacityOf(machineBytes, connections.backendBytes, members)
 	return [
 		maxConnections(admitted),
-		...Arr.flatMap(senders, (count): ReadonlyArray<Setting> => [
-			["max_replication_slots", `${count}`],
-			["max_wal_senders", `${count}`]
-		]),
+		...(replication.kind === "capacity"
+			? ([
+					["max_replication_slots", `${admitted}`],
+					["max_wal_senders", `${admitted}`]
+				] satisfies ReadonlyArray<Setting>)
+			: []),
 		...(sharedBuffers.kind === "default"
 			? []
 			: [
@@ -323,13 +324,14 @@ export const sizedSettings = (
 						`${share * Math.ceil(sharedBuffers.bytes / blockSize)}`
 					] satisfies Setting
 				]),
-		...Arr.map(sizedCount(locks, share), (demand) =>
-			locksPerTransaction(
-				demand,
-				connectionsFor(admitted),
-				Arr.match(senders, { onEmpty: () => defaultWalSenders, onNonEmpty: Arr.headNonEmpty })
-			)
-		)
+		...(locks.kind === "default"
+			? []
+			: [
+					[
+						"max_locks_per_transaction",
+						`${Math.max(defaultLocksPerTransaction, locks.locks)}`
+					] satisfies Setting
+				])
 	]
 }
 

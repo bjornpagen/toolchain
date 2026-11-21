@@ -23,7 +23,6 @@ import { collect, templatesOf } from "#resources/collect.ts"
 import type { DatabaseTemplate } from "#resources/template.ts"
 import { sharedStore } from "#runner/compile-cache.ts"
 import { type RunnerConfig, SMALL_STACK } from "#runner/config.ts"
-import { runLeasesIn } from "#runner/leases.ts"
 import { runnerLimits } from "#runner/limits.ts"
 import {
 	configOf,
@@ -37,7 +36,7 @@ import {
 import { moduleClosureAt } from "#runner/module-closure.ts"
 import { type Pool, PoolFailed, placesOf, placesShared, poolOf } from "#runner/pool.ts"
 import type { Reach, Verdict } from "#runner/protocol.ts"
-import { ModuleClosure, RunLease, WorkerIndex } from "#runner/services.ts"
+import { ModuleClosure, WorkerIndex } from "#runner/services.ts"
 import { labelOf, runOfLabel, type Stack } from "#runner/stack.ts"
 import type { RunUsage } from "#runner/usage.ts"
 import { runWorkers } from "#workers.ts"
@@ -302,13 +301,9 @@ const collected = (
 					const platform = yield* Effect.context<NodeServices>()
 					const runner = Context.add(
 						Context.add(
-							Context.add(
-								Context.merge(Context.make(WorkerIndex, { index: 0, workers: 1 }), platform),
-								ModuleClosure,
-								closures
-							),
-							RunLease,
-							runLeasesIn(scope, platform)
+							Context.merge(Context.make(WorkerIndex, { index: 0, workers: 1 }), platform),
+							ModuleClosure,
+							closures
 						),
 						Scope.Scope,
 						scope
@@ -382,17 +377,15 @@ export const runSeedLogged: Effect.Effect<RunSeed, Config.ConfigError | Schema.S
 /**
  * Runs a package's properties on the pool, every property's search at once, its cases spread over every worker:
  * loads the package's runner config and the test modules the request names, forks the pool (a worker for every two
- * cores, and never more workers than the run has properties, runWorkers, so a run leases no slot it has no work for, under
- * this process's flags, the hardened flags and the config's conditions among them), and gives each property's verdict.
- * The pool is closed before it returns, every worker ended and what its needs held released (a lease's permit, a
- * seat's clone), so what the caller runs next (the kills' trials of `run` and `affected`, on workers of their own)
- * finds them free: a pool left open past its properties held every lease its workers had drawn while the kills' trials
- * waited for one (GZ-NETWORK: a run of 32 network modules hung, 64 idle workers holding their leases and five trials
- * of one worker each waiting on the lease gate).
+ * cores, and never more workers than the run has properties, runWorkers, so a run opens no connection it has no work
+ * for, under this process's flags, the hardened flags and the config's conditions among them), and gives each
+ * property's verdict. The pool is closed before it returns, every worker ended and what its needs held released (a
+ * seat's clone, an owner's session), so what the caller runs next (the kills' trials of `run` and `affected`, on
+ * workers of their own) never runs beside idle workers that still hold them.
  */
 export const runPackage = (
 	request: RunRequest
-): Effect.Effect<RunOutcome, LoadFailed | PoolFailed, NodeServices | RunLease> =>
+): Effect.Effect<RunOutcome, LoadFailed | PoolFailed, NodeServices> =>
 	Effect.gen(function* () {
 		const began = yield* liveMillis
 		const { config, discovered, stackOf } = yield* loadPackage(request.root, request.selected)
@@ -516,7 +509,7 @@ export const replayToken = (
 ): Effect.Effect<
 	Readonly<{ id: string; oracle: Oracle; verdict: Verdict }>,
 	LoadFailed | PoolFailed,
-	Scope.Scope | FileSystem.FileSystem | Path.Path | RunLease
+	Scope.Scope | FileSystem.FileSystem | Path.Path
 > =>
 	Effect.gen(function* () {
 		yield* configOf(root)

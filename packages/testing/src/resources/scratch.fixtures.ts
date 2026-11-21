@@ -1,10 +1,18 @@
 import * as NodeServices from "@effect/platform-node/NodeServices"
-import { Array as Arr, Effect, FileSystem, Option, Stream, String as Str } from "effect"
+import {
+	Array as Arr,
+	Effect,
+	FileSystem,
+	Option,
+	Predicate,
+	Result,
+	Stream,
+	String as Str
+} from "effect"
 import { ChildProcess } from "effect/process"
 import { awaitFact } from "#fact.ts"
 import { element, type Gen, int } from "#gen.ts"
 import type { CheckoutDir } from "#mutate/checkout.ts"
-import { processRuns } from "#pg/server.ts"
 import { cachedScratch, processScratch } from "#resources/scratch.ts"
 import { HARDENED_FLAGS } from "#runner/config.ts"
 
@@ -14,6 +22,16 @@ import { HARDENED_FLAGS } from "#runner/config.ts"
  * scratch directory (processScratch, or cachedScratch in toolchain-test's cache), writes `files` files in it, prints the directory's path and its remover's process
  * id (its one child), and ends as it is told.
  */
+
+/**
+ * Whether a process of `pid` runs on this machine: signal 0 reaches it, or reaches a process of another user, which
+ * refuses it (EPERM). Only an answer that no such process exists (ESRCH) says it has ended.
+ */
+const processRuns = (pid: number): boolean =>
+	Result.match(Result.try({ try: () => process.kill(pid, 0), catch: (error) => error }), {
+		onSuccess: () => true,
+		onFailure: (error) => !(Predicate.hasProperty(error, "code") && error.code === "ESRCH")
+	})
 
 /** How the process that made a scratch directory ends: its scope closed, exited with its scope open, or SIGKILLed. */
 export const ENDINGS = ["its scope closed", "it exited", "it was killed"] as const

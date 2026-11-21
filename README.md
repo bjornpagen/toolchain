@@ -14,6 +14,34 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: a cluster is units of the workbench's PostgreSQL (2026-11-21)
+
+The toolchain no longer makes, starts, stops or leases a server. A cluster's members are the workbench's
+`postgres@<unit>-<i>` units (systemd makes each on its first start), `toolchain-pg settle` is the one writer (it starts
+each member's unit and gives it the spec by ALTER SYSTEM, its hba file, owner role, template and extensions, restarting
+the unit only when a setting waits for one; it runs as the unit `<unit>-settle`, so a second settle is refused, never
+queued), and a run only reads the members (`membersRead`), refusing one not as its spec states and naming the command.
+Leases, `scripts/hold.pl`, the family queue and its tickets, `RunLease`, the cluster lock, `@bjornpagen/testing/lock`,
+`TOOLCHAIN_PG_CLUSTER` and the private families under `~/.local/var/toolchain-pg` are gone. Before you move
+`vendor/toolchain` past this section, in the same commit:
+
+1. **pg.config.ts.** `localCluster({ unit, network, owner, template, extensions, ownerParameters, durability, sizing })`:
+   `unit` names the members' units (`"grizzle-test"` gives `postgres@grizzle-test-0..`); `network` is
+   `{ kind: "socket" }` or `{ kind: "tls", port }` (member i listens at localhost:port+i over the workbench's TLS, the CA
+   in `$PGSSLROOTCERT`); `bin`, `port` and `peerLogins` go. A run's cluster sizes `{ kind: "workers", family,
+   connections: { kind: "capacity", backendBytes }, replication: { kind: "default" } | { kind: "capacity" },
+   sharedBuffers, locks: { kind: "default" } | { kind: "perTransaction", locks } }`: `backendBytes` is one busy backend's
+   Pss at your suite's real work (`/proc/self/smaps_rollup`), measured, and a member admits the machine's memory over it
+   among the members; `locks` is the most heavyweight locks one transaction takes. There is no count of runs: nothing
+   admits or queues a connection.
+2. **The runner layer** needs no `RunLease`: `PgCluster.layer({ prefix, cluster, connect, superuser })` requires
+   `Platform | WorkerIndex`, worker i on member i mod the members' count. `PgMember` is `{ name, socket, port, owner,
+   password, passwordFile, tls }`, `tls` being `{ kind: "socket" }` or `{ kind: "tls", ca, caFile, wrongCa }`. The
+   bootstrap superuser is the account (`bootstrapSuperuser()`), over `member.socket`, never `postgres`.
+3. **Settle once a spec changes**: `pnpm exec toolchain-pg settle` from the package with pg.config.ts. A script that
+   called `clusterUp`, `stopCluster` or `doctor` calls `settled(spec)` or runs `toolchain-pg settle | check | psql |
+   admin | env`; one that stops a server runs `systemctl --user stop postgres@<unit>-<i>`.
+
 ## Consumer migration: a typecheck from scratch (2026-11-20)
 
 TypeScript 7.1.0-beta's incremental check, tsgo's and tsrs's alike, passes code a check from scratch refuses. Once

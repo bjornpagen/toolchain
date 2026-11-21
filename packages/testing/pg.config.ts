@@ -1,58 +1,45 @@
 import { localCluster } from "#pg/pg.ts"
 
 /**
- * The connections one worker of a full run of the package's properties holds at once: its owner session on the member,
- * held for its life, and what its case holds beside it (a template's gate and build, a clone's own session).
+ * One busy backend's proportional share of memory at the package's real work, the denominator of a member's
+ * connection capacity (spec.ts Capacity): as many backends as the machine's memory holds of it.
  *
  * @limitKind measured
  * @owner the testing package's own cluster (pg.config.ts)
- * @unit connections
- * @scope the client backends one runner worker of `toolchain-test run` in packages/testing holds on the member at once
- * @evidence the member's pg_stat_activity, its client backends counted every 0.2 s as the bootstrap superuser
- *   (~/.cache/grizzle-release/CLUSTERPORT-measure/sample.sh) through a whole `toolchain-test run` at max_connections
- *   1000, so no connection was refused; its samples, output and machine readings in tc-full.samples, tc-full.out and
- *   tc-full.machine there
- * @observed 2026-11-19 04:21:16 to 04:29:08 UTC, one run
- * @environment cassowary, Ubuntu 26.04 on arm64 in AWS, 64 cores and 247 GB, 1-minute load 108 to 140 from other
- *   lanes; Ubuntu's PostgreSQL 18.6 as this cluster made it (pg/make.ts); toolchain fd9ef83 with this cluster's change,
- *   Node 26.13.1
- * @workload every property of the package, 186, on 64 workers, its 12 resource properties' cases spread over them
- * @result 1,940 samples; at most 125 client backends at once (the sampler's own among them), 9 samples at 100 or more,
- *   all in the run's second minute, when the resource properties ran; no connection refused
- * @decision 2: the most at once, 124 without the sampler, over the run's 64 workers is 1.94 a worker, rounded up to a
- *   whole connection, 128 at this width with the outside's beside them. No headroom past the rounding; an instant
- *   between two samples is unmeasured
- * @revalidate a "too many clients" refusal in a run; a resource property that opens more sessions at once; another
- *   machine or width
+ * @unit bytes
+ * @scope one client backend of the package's resource properties, at its peak
+ * @evidence the backend's own /proc/self/smaps_rollup, read by it (pg_read_file, as the bootstrap superuser) right after
+ *   its work: Rss 153,708 kB, Pss 36,427 kB (Pss_Anon 9,628 kB, Pss_Shmem 26,565 kB)
+ * @observed 2026-11-21 11:29:55 UTC, one backend
+ * @environment cassowary, Ubuntu 26.04 on arm64 in AWS, 64 cores and 247 GiB; the workbench's shared PostgreSQL 19.0
+ *   (postgres.service), the machine under load from other lanes
+ * @workload a fresh database: a 200,000-row table built, indexed and joined with itself, heavier than any one case of
+ *   the package's resource properties (a clone, its fingerprint, a few rows)
+ * @result Pss 36,427 kB, 37,301,248 bytes
+ * @decision the Pss as it is: a backend that touches more shared buffers has a larger Pss_Shmem, so a busier run's
+ *   capacity is met as a refusal ("too many clients") and measured again, never padded here
+ * @revalidate a 53300 refusal in a run; a resource property that works a much larger database; another machine
  */
-const connectionsPerWorker = 2
+const busyBackendBytes = 37_301_248
 
 /**
- * The sessions on the member outside any worker, one each: the run's collection in the runner's parent, a doctor's,
- * and an operator's psql.
- */
-const outsideSessions = ["the run's collection", "the doctor", "an operator's psql"] as const
-
-/**
- * The testing package's own local cluster, which its resource properties clone from (resources.fixtures.ts) and the
- * runner's layer makes and starts the first time a need reaches it: on port 5441, run by whichever PostgreSQL the
- * machine installed (its pg_config on PATH), owned by toolchain_dev, its template carrying no extension, throwaway, one
- * member, its connections sized for a full run and the rest at PostgreSQL's defaults. `toolchain-pg <command>` from
- * this directory reaches it.
+ * The testing package's own local cluster, which its resource properties clone from (resources.fixtures.ts): the unit
+ * postgres@toolchain-test-0, reached over verify-full TLS at localhost:5441, owned by toolchain_dev, its template
+ * carrying no extension, throwaway, one member, its connections a capacity of the machine and the rest at PostgreSQL's
+ * defaults. `toolchain-pg settle` from this directory gives it this spec; a run only reads it.
  */
 export default localCluster({
-	port: 5441,
-	bin: { kind: "pg_config" },
+	unit: "toolchain-test",
+	network: { kind: "tls", port: 5441 },
 	owner: "toolchain_dev",
 	template: "toolchain_template",
 	extensions: [],
 	ownerParameters: [],
-	peerLogins: [],
 	durability: "throwaway",
 	sizing: {
-		kind: "leased",
+		kind: "workers",
 		family: { kind: "one" },
-		connections: { perWorker: connectionsPerWorker, outside: outsideSessions.length },
+		connections: { kind: "capacity", backendBytes: busyBackendBytes },
 		replication: { kind: "default" },
 		sharedBuffers: { kind: "default" },
 		locks: { kind: "default" }

@@ -45,7 +45,7 @@ import {
 	type Work
 } from "#runner/protocol.ts"
 import { seriesRun } from "#runner/series.ts"
-import { NeedFailed, type RunLease } from "#runner/services.ts"
+import { NeedFailed } from "#runner/services.ts"
 import { type Overrun, overrunText, ownCpu, ownWork, waitedOnNow } from "#runner/work.ts"
 import { type Observed, type Recording, recording, simplestChooser } from "#source.ts"
 
@@ -221,10 +221,9 @@ export const needKeysOf = (needs: Needs): ReadonlyArray<string> =>
 
 /**
  * What an evaluating process provides every case of a property it readied: its opened needs, its perception, the
- * platform and the lease of the run it serves (RunLease, which a run a case starts draws on), and where it reports a late
- * use and holds a stopped case.
+ * platform, and where it reports a late use and holds a stopped case.
  */
-export type CaseEnv = NeedCache | Perception | LateUses | Stopped | NodeServices | RunLease
+export type CaseEnv = NeedCache | Perception | LateUses | Stopped | NodeServices
 
 /**
  * A property's needs opened on this process, all at once, each within `bound` milliseconds (NeedCache.opened), before

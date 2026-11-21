@@ -24,7 +24,6 @@ import {
 import type { TreeFailed } from "#mutate/tree.ts"
 import type { Kill, PropertyId } from "#property.ts"
 import { findingLines, headlineOf } from "#runner/report.ts"
-import type { RunLease } from "#runner/services.ts"
 
 /**
  * What a kill's trial decided. Killed: the property's witnesses went red with the kill applied, and the gate passes it.
@@ -110,7 +109,7 @@ export const killsOf = <E>(
 ): Effect.Effect<
 	ReadonlyArray<Judged>,
 	E | TreeFailed | PlatformError.PlatformError,
-	FileSystem.FileSystem | Path.Path | Scope.Scope | RunLease
+	FileSystem.FileSystem | Path.Path | Scope.Scope
 > =>
 	Effect.gen(function* () {
 		const kills = Arr.flatMap(subjects, (subject) =>

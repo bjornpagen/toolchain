@@ -32,10 +32,10 @@ import {
 	replay,
 	type Searched
 } from "#runner/search.ts"
-import type { ModuleClosure, NeedFailed, RunLease, WorkerIndex } from "#runner/services.ts"
+import type { ModuleClosure, NeedFailed, WorkerIndex } from "#runner/services.ts"
 
 export type { Aimed, Case, FiniteSpace, Oracle, Space, Steered }
-export { ModuleClosure, NeedFailed, RunLease, WorkerIndex } from "#runner/services.ts"
+export { ModuleClosure, NeedFailed, WorkerIndex } from "#runner/services.ts"
 export type { Dictionary } from "#dictionary.ts"
 export type { CaseList } from "#gen.ts"
 
@@ -73,11 +73,6 @@ export interface RunnerServices {
 	readonly platform: NodeServices
 	readonly worker: WorkerIndex
 	readonly closures: ModuleClosure
-	/**
-	 * The lease of the run the process serves (RunLease): a need that opens connections on a cluster outside PgCluster's
-	 * takes it first, and a run a case starts draws on it.
-	 */
-	readonly lease: RunLease
 }
 
 /** What a need may require: the worker's scope and the runner's services. */
@@ -112,12 +107,8 @@ export type Resources<N extends Needs> = {
 /** The resource a need gives. */
 export type NeedValue<X> = X extends Need<infer A> ? A : never
 
-/**
- * What a check may require beyond its resources: the case's scope, the platform, and the lease of the run the case runs
- * in (RunLease), which a run the check starts itself, a pool or an inline search, draws on, so a nested run never
- * reserves again what its enclosing run holds.
- */
-export type CheckContext = Scope.Scope | NodeServices | RunLease
+/** What a check may require beyond its resources: the case's scope and the platform. */
+export type CheckContext = Scope.Scope | NodeServices
 
 /**
  * One case's check: given the case's resources and its handle (notes, mid-case draws, observations), it checks the

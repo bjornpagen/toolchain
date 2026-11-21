@@ -2,11 +2,9 @@ import { isMainThread, Worker } from "node:worker_threads"
 import { Array as Arr, Clock, Duration, Effect, Fiber, Option, Record as Rec } from "effect"
 import { stalledShareOfCpu } from "#runner/limits.ts"
 import {
-	enterLockWait,
 	enterWait,
 	heldWork,
 	judgeOf,
-	leaveLockWait,
 	leaveWait,
 	type Overrun,
 	ownCpu,
@@ -525,22 +523,6 @@ export const waitingOn =
 			Effect.flatMap(liveMillis, (wall) => Effect.sync(() => enterWait(wall, on))),
 			() => effect,
 			() => Effect.flatMap(liveMillis, (wall) => Effect.sync(() => leaveWait(wall, on)))
-		)
-
-/**
- * `effect` as a declared wait of this process for kernel locks on `files` (runner/work.ts LockWaits), from before it
- * starts to after it ends, however it ends: a guard judges it by the work of the processes that hold those locks
- * (runner/work.ts Held), not by this process's CPU, so a wait behind a holder that works is no stall however long it
- * lasts, and one behind a holder whose run encloses this one is a deadlock. A run's lease and a cluster's lifecycle lock
- * (pg/hold.ts) and a worker's ask for its run's lease (runner/leases.ts) are such waits.
- */
-export const waitingFor =
-	(files: Arr.NonEmptyReadonlyArray<string>) =>
-	<A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
-		Effect.acquireUseRelease(
-			Effect.sync(() => enterLockWait(files)),
-			() => effect,
-			() => Effect.sync(() => leaveLockWait(files))
 		)
 
 /**

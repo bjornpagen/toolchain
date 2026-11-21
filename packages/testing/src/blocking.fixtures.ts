@@ -17,7 +17,6 @@ import type { CheckoutDir } from "#mutate/checkout.ts"
 import { type Property, property } from "#property.ts"
 import { HARDENED_FLAGS } from "#runner/config.ts"
 import { searchInline } from "#runner/inline.ts"
-import { runOfItsOwn } from "#runner/leases.ts"
 import { runnerLimits } from "#runner/limits.ts"
 
 /**
@@ -253,7 +252,7 @@ const watchdogAsleep: Property = property.exhaust(finite(values), {
  */
 const searchedAsProgram = (planted: Planted, seed: number) =>
 	Effect.runPromise(
-		runOfItsOwn(
+		Effect.scoped(
 			Effect.gen(function* () {
 				yield* searchInline(watchdogAsleep, {
 					id: `${idOf(planted)} after the watchdog sleeps`,

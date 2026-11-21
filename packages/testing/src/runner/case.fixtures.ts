@@ -14,11 +14,10 @@ import {
 import { Database } from "#resources/database.ts"
 import { type DatabaseTemplate, Template } from "#resources/template.ts"
 import { needCacheOf } from "#runner/case.ts"
-import { runLeasesIn } from "#runner/leases.ts"
 import { runnerLimits } from "#runner/limits.ts"
 import { moduleClosureAt } from "#runner/module-closure.ts"
 import { widths } from "#runner/search.fixtures.ts"
-import { ModuleClosure, RunLease, WorkerIndex } from "#runner/services.ts"
+import { ModuleClosure, WorkerIndex } from "#runner/services.ts"
 
 /**
  * What the meta-tests of a case's evaluation (runner/case.ts) share: inner properties that hang, that use their case
@@ -559,13 +558,9 @@ const processNeedCache = Effect.gen(function* () {
 	const closures = yield* moduleClosureAt(process.cwd(), Option.none())
 	const context = Context.add(
 		Context.add(
-			Context.add(
-				Context.add(platform, WorkerIndex, { index: 0, workers: 1 }),
-				ModuleClosure,
-				closures
-			),
-			RunLease,
-			runLeasesIn(scope, platform)
+			Context.add(platform, WorkerIndex, { index: 0, workers: 1 }),
+			ModuleClosure,
+			closures
 		),
 		Scope.Scope,
 		scope

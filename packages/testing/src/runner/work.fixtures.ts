@@ -1,10 +1,10 @@
-import { Duration, Effect, Option, String as Str } from "effect"
+import { Duration, Effect, String as Str } from "effect"
 import { element, type Gen, int, map } from "#gen.ts"
 import { liveMillis, liveSleep, waitingOn } from "#live.ts"
 import { type Property, property } from "#property.ts"
 import { type Limits, runnerLimits } from "#runner/limits.ts"
 import { fullRun, type InnerRun } from "#runner/search.fixtures.ts"
-import { type Held, ownCpu, ownWork, type Reading, type Stir } from "#runner/work.ts"
+import { ownCpu, ownWork, type Reading, type Stir } from "#runner/work.ts"
 
 /**
  * What the meta-tests of a case's deadline as a budget of its work (runner/work.ts, case.ts guarded) share: inner
@@ -206,32 +206,14 @@ export const innerRun = (id: string, seed: number, deadline: number): InnerRun =
 
 /**
  * Which of the processes a guard counts beside its own moved in a window (runner/work.ts othersMoved): none, so the
- * window is stalled; or one of them, the window then working: a holder of a lock the work waits for let go
- * (`holders changed`), or the holders' runs ran, waited to run or did storage work, or a child of the work's process
- * waited to run or did storage work.
+ * window is stalled; or one of them, the window then working: a child of the work's process waited to run or did
+ * storage work.
  */
-export type OtherMove =
-	| "none"
-	| "holders changed"
-	| "holders ran"
-	| "holders waited to run"
-	| "holders stored"
-	| "a child waited to run"
-	| "a child stored"
+export type OtherMove = "none" | "a child waited to run" | "a child stored"
 
 /** Every move, one case each. */
 export const otherMoves: Gen<OtherMove> = (source) =>
-	source.draw(
-		element([
-			"none",
-			"holders changed",
-			"holders ran",
-			"holders waited to run",
-			"holders stored",
-			"a child waited to run",
-			"a child stored"
-		] as const)
-	)
+	source.draw(element(["none", "a child waited to run", "a child stored"] as const))
 
 /** The deadline of the drawn windows, in milliseconds, and the amount each move moves by: one, the least a counter moves. */
 const WINDOW_DEADLINE = 1000
@@ -244,34 +226,13 @@ export const windowOf = (
 	move: OtherMove
 ): Readonly<{ window: Reading; now: Reading; deadline: number }> => {
 	const quiet: Stir = { queued: 10, stored: 10 }
-	const held: Held = { runs: [7], cpu: 10, stir: quiet, enclosing: Option.none() }
-	const window: Reading = { wall: 0, cpu: 5, waited: 0, held, stir: quiet }
+	const window: Reading = { wall: 0, cpu: 5, waited: 0, stir: quiet }
 	const moved = (stir: Stir, by: "queued" | "stored"): Stir =>
 		by === "queued" ? { ...stir, queued: stir.queued + 1 } : { ...stir, stored: stir.stored + 1 }
 	const later: Reading = { ...window, wall: WINDOW_DEADLINE }
 	switch (move) {
 		case "none":
 			return { window, now: later, deadline: WINDOW_DEADLINE }
-		case "holders changed":
-			return { window, now: { ...later, held: { ...held, runs: [8] } }, deadline: WINDOW_DEADLINE }
-		case "holders ran":
-			return {
-				window,
-				now: { ...later, held: { ...held, cpu: held.cpu + 1 } },
-				deadline: WINDOW_DEADLINE
-			}
-		case "holders waited to run":
-			return {
-				window,
-				now: { ...later, held: { ...held, stir: moved(quiet, "queued") } },
-				deadline: WINDOW_DEADLINE
-			}
-		case "holders stored":
-			return {
-				window,
-				now: { ...later, held: { ...held, stir: moved(quiet, "stored") } },
-				deadline: WINDOW_DEADLINE
-			}
 		case "a child waited to run":
 			return { window, now: { ...later, stir: moved(quiet, "queued") }, deadline: WINDOW_DEADLINE }
 		case "a child stored":

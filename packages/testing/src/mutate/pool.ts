@@ -2,7 +2,6 @@ import { type Effect, Option, Schema, type Scope, String as Str } from "effect"
 import type { MutatedFile, RealPath } from "#mutate/mutated.ts"
 import type { CompileStore } from "#runner/compile-cache.ts"
 import type { Evaluator } from "#runner/protocol.ts"
-import type { RunLease } from "#runner/services.ts"
 
 /**
  * What the mutator needs of the runner's pool (lane CORE's runner/pool.ts), and nothing more: an evaluator over workers
@@ -96,5 +95,5 @@ export type MutantPool<E> = Readonly<{
 		image: WorkerImage,
 		workers: number,
 		guide: "notes" | "blocks"
-	) => Effect.Effect<Evaluator, E | Unstarted, Scope.Scope | RunLease>
+	) => Effect.Effect<Evaluator, E | Unstarted, Scope.Scope>
 }>

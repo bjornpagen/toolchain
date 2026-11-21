@@ -13,12 +13,11 @@ import {
 	String as Str
 } from "effect"
 import { waitingOn } from "#live.ts"
-import { reservationOf } from "#pg/lease.ts"
-import { clusterUp, type PgMember, type Platform } from "#pg/make.ts"
-import type { LeasedSizing, LocalCluster } from "#pg/spec.ts"
-import { NeedFailed, RunLease, WorkerIndex } from "#runner/services.ts"
+import { membersRead, type PgMember, type Platform } from "#pg/settle.ts"
+import type { LocalCluster, WorkerSizing } from "#pg/spec.ts"
+import { NeedFailed, WorkerIndex } from "#runner/services.ts"
 
-export type { PgMember } from "#pg/make.ts"
+export type { PgMember } from "#pg/settle.ts"
 
 /**
  * A session on one member as the cluster's owner role (the role that may CREATE DATABASE and owns what it creates),
@@ -67,19 +66,17 @@ export type DatabaseName = string & Brand.Brand<"DatabaseName">
 /**
  * What a repository states about its cluster, which `PgCluster.layer` turns into the runner service its databases come
  * from: the prefix of every name this library mints there; its local cluster (@bjornpagen/testing/pg's LocalCluster),
- * a leased one (LeasedSizing), since the run leases it for its workers and a cluster sized by its sessions states no
- * worker's demand to lease by, which the layer makes and starts the first time a need reaches it, whose members a
- * run's workers spread over (each worker on the member its run's lease put it on), whose template every template built
- * from the cluster
- * itself copies (IS_TEMPLATE, never connected to), and in whose owner's own database this library's sessions and
- * advisory locks live; and how to open a session on a member in a database, over the repository's own client, from the
- * member's facts: as the owner (`connect`, its port, CA and password), and as the member's bootstrap superuser
- * (`superuser`, over its socket by peer authentication), which remakes in a clone what only a superuser may be sure to
- * make, a role's setting in the database (template.ts replayOf).
+ * one sized for workers (WorkerSizing), which `toolchain-pg settle` gives its spec and the layer reads the first time a
+ * need reaches it, whose members a run's workers spread over (worker i on member i mod their count), whose template
+ * every template built from the cluster itself copies (IS_TEMPLATE, never connected to), and in whose owner's own
+ * database this library's sessions and advisory locks live; and how to open a session on a member in a database, over
+ * the repository's own client, from the member's facts: as the owner (`connect`, its port, CA and password), and as the
+ * member's bootstrap superuser (`superuser`, over its socket), which remakes in a clone what only a superuser may be
+ * sure to make, a role's setting in the database (template.ts replayOf).
  */
 export type PgClusterSpec = Readonly<{
 	prefix: DatabasePrefix
-	cluster: LocalCluster<LeasedSizing>
+	cluster: LocalCluster<WorkerSizing>
 	connect: (member: PgMember, database: string) => Effect.Effect<PgSession, NeedFailed, Scope.Scope>
 	superuser: (
 		member: PgMember,
@@ -113,13 +110,9 @@ export type PgClusterShape = Readonly<{
 	maintenance: string
 	connect: PgClusterSpec["connect"]
 	superuser: PgClusterSpec["superuser"]
-	/** The cluster's members, made and started when they are not (pg/make.ts clusterUp) and read once, the first time a need asks. */
+	/** The cluster's members, read once the first time a need asks (pg/settle.ts membersRead), never changed by a run. */
 	members: Effect.Effect<Arr.NonEmptyReadonlyArray<PgMember>, NeedFailed>
-	/**
-	 * The member a worker reaches, once its run holds its lease: the member of its slot (pg/lease.ts Placement), the
-	 * lease's i-th for worker i (a nested run's worker i, drawing on the lease of the run it is started in, the lease's
-	 * i mod its width), so a worker reaches the member that had a slot free for it, never one fixed by its index.
-	 */
+	/** The member a worker reaches: worker i on member i mod the members' count, so a run's workers spread over them. */
 	memberOf: (
 		worker: Context.Service.Shape<typeof WorkerIndex>
 	) => Effect.Effect<PgMember, NeedFailed>
@@ -218,48 +211,21 @@ export class PgCluster extends Context.Service<PgCluster, PgClusterShape>()(
 	/**
 	 * The service a repository's runner config provides (its `layer`), built once per worker the first time a case
 	 * there opens a need: it reads nothing then, so a worker whose needs use no database never reaches the cluster; its
-	 * members are made and started when they are not and read the first time a need asks (pg/make.ts clusterUp, under
-	 * the cluster's lock, whose wait is declared to the worker's guards), and an owner per member opened when the worker
-	 * first reaches it, held until the worker ends, once the run holds its lease on the cluster (pg/lease.ts reservationOf,
-	 * runner/leases.ts): a slot for each of its workers among the members, each worker reaching the member of its slot,
-	 * so no connection of the run is refused.
+	 * members are read the first time a need asks (pg/settle.ts membersRead, which refuses a member not as its spec
+	 * states, naming `toolchain-pg settle`), and an owner per member opened when the worker first reaches it, held until
+	 * the worker ends. Nothing admits a worker or makes it wait: a member past its capacity refuses a connection.
 	 */
 	static readonly layer = (
 		spec: PgClusterSpec
-	): Layer.Layer<PgCluster, never, Platform | RunLease | WorkerIndex> =>
+	): Layer.Layer<PgCluster, never, Platform | WorkerIndex> =>
 		Layer.effect(
 			PgCluster,
 			Effect.gen(function* () {
 				const scope = yield* Effect.scope
 				const platform = yield* Effect.context<Platform>()
-				const lease = yield* RunLease
-				const ofTheRun = yield* WorkerIndex
 				const members = yield* Effect.cached(
-					Effect.mapError(Effect.provideContext(clusterUp(spec.cluster), platform), (failure) =>
+					Effect.mapError(Effect.provideContext(membersRead(spec.cluster), platform), (failure) =>
 						NeedFailed.make({ need: "the local cluster", message: failure.message })
-					)
-				)
-				const leased = yield* Effect.cached(
-					Effect.flatMap(members, (all) =>
-						Effect.flatMap(
-							Effect.mapError(
-								Effect.provideContext(
-									reservationOf(
-										Arr.headNonEmpty(all).port,
-										all,
-										{
-											perLessee: spec.cluster.sizing.connections.perWorker,
-											outside: spec.cluster.sizing.connections.outside
-										},
-										ofTheRun.workers
-									),
-									platform
-								),
-								(failure) =>
-									NeedFailed.make({ need: "the local cluster's lease", message: failure.message })
-							),
-							lease.reserve
-						)
 					)
 				)
 				const owners = new Map<string, Deferred.Deferred<Owner, NeedFailed>>()
@@ -271,9 +237,7 @@ export class PgCluster extends Context.Service<PgCluster, PgClusterShape>()(
 					superuser: spec.superuser,
 					members,
 					memberOf: (worker) =>
-						Effect.zipWith(members, leased, (all, placement) =>
-							Arr.getUnsafe(all, Arr.getUnsafe(placement, worker.index % placement.length))
-						),
+						Effect.map(members, (all) => Arr.getUnsafe(all, worker.index % all.length)),
 					owner: (member) =>
 						Effect.suspend(() =>
 							Option.match(Option.fromUndefinedOr(owners.get(member.name)), {
@@ -282,7 +246,7 @@ export class PgCluster extends Context.Service<PgCluster, PgClusterShape>()(
 									const opened = Deferred.makeUnsafe<Owner, NeedFailed>()
 									owners.set(member.name, opened)
 									return Effect.andThen(
-										Deferred.into(Effect.andThen(leased, openOwner(spec, member, scope)), opened),
+										Deferred.into(openOwner(spec, member, scope), opened),
 										Deferred.await(opened)
 									)
 								}

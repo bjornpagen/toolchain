@@ -5,7 +5,6 @@ import { liveSleep } from "#live.ts"
 import type { CheckoutDir } from "#mutate/checkout.ts"
 import { sharedStore } from "#runner/compile-cache.ts"
 import { HARDENED_FLAGS } from "#runner/config.ts"
-import { runOfItsOwn } from "#runner/leases.ts"
 import { CHILD_FILE } from "#runner/pool.fixtures.ts"
 import { placesOf, poolOf } from "#runner/pool.ts"
 import { WORKER_ENTRY } from "#runner/run.ts"
@@ -137,9 +136,7 @@ if (import.meta.main) {
 		childFile !== undefined
 	) {
 		await Effect.runPromise(
-			runOfItsOwn(heldAsProgram(root, held, pidFile, childFile)).pipe(
-				Effect.provide(NodeServices.layer)
-			)
+			heldAsProgram(root, held, pidFile, childFile).pipe(Effect.provide(NodeServices.layer))
 		)
 	}
 }

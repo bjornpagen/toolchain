@@ -1,7 +1,7 @@
 import { Effect, Redacted, type Scope } from "effect"
 import pg from "pg"
-import type { PgMember } from "#pg/make.ts"
-import { BOOTSTRAP_SUPERUSER } from "#pg/server.ts"
+import { bootstrapSuperuser } from "#pg/server.ts"
+import type { PgMember } from "#pg/settle.ts"
 import type { PgSession, Statements } from "#resources/cluster.ts"
 import { NeedFailed } from "#runner/services.ts"
 
@@ -62,26 +62,30 @@ const pgSession = (
 	)
 
 /**
- * The runner's session as the owner in `database` on `member` (pgSession): verify-full TLS against the member's CA for
- * localhost, signed in with the owner's password. What a repository whose own code reaches its cluster over pg passes
- * as its PgCluster spec's `connect`.
+ * The runner's session as the owner in `database` on `member` (pgSession), signed in with the owner's password: over
+ * verify-full TLS against the member's CA at localhost where the member is reached over TLS, else over its socket.
+ * What a repository whose own code reaches its cluster over pg passes as its PgCluster spec's `connect`.
  */
 export const pgOwnerSession =
 	(applicationName: string) =>
 	(member: PgMember, database: string): Effect.Effect<PgSession, NeedFailed, Scope.Scope> =>
 		pgSession(applicationName, member, database, {
-			host: "localhost",
 			user: member.owner,
 			password: Redacted.value(member.password),
-			ssl: { ca: member.ca, servername: "localhost" }
+			...(member.tls.kind === "tls"
+				? { host: "localhost", ssl: { ca: member.tls.ca, servername: "localhost" } }
+				: { host: member.socket })
 		})
 
 /**
- * The runner's session as the member's bootstrap superuser in `database` on `member` (pgSession): over the member's
- * socket, by peer authentication mapped from this user (pg/make.ts's hba), with no secret. What a repository whose own
- * code reaches its cluster over pg passes as its PgCluster spec's `superuser`.
+ * The runner's session as the member's bootstrap superuser, the account (server.ts bootstrapSuperuser), in `database`
+ * on `member` (pgSession): over the member's socket, which its hba admits the account over with no secret. What a
+ * repository whose own code reaches its cluster over pg passes as its PgCluster spec's `superuser`.
  */
 export const pgSuperuserSession =
 	(applicationName: string) =>
 	(member: PgMember, database: string): Effect.Effect<Statements, NeedFailed, Scope.Scope> =>
-		pgSession(applicationName, member, database, { host: member.socket, user: BOOTSTRAP_SUPERUSER })
+		pgSession(applicationName, member, database, {
+			host: member.socket,
+			user: bootstrapSuperuser()
+		})

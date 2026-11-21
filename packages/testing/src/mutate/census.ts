@@ -32,7 +32,6 @@ import type { Kill, PropertyId } from "#property.ts"
 import { fnv1a32, mix } from "#random.ts"
 import { type EditVerdicts, type KillVerdicts, withKills } from "#runner/affected.ts"
 import { editOf, type VerdictCacheUnusable } from "#runner/cache.ts"
-import type { RunLease } from "#runner/services.ts"
 import type { Product } from "#scope.ts"
 
 /**
@@ -194,7 +193,7 @@ export const censusOf = <E, O extends string>(
 	| MutationSourceRefused
 	| VerdictCacheUnusable
 	| PlatformError.PlatformError,
-	FileSystem.FileSystem | Path.Path | Scope.Scope | RunLease | Digest.Digest
+	FileSystem.FileSystem | Path.Path | Scope.Scope | Digest.Digest
 > =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem
@@ -409,16 +408,13 @@ export const censusOf = <E, O extends string>(
 					})
 				)
 			)
-		const hunter: Effect.Effect<
-			void,
-			E | TreeFailed | VerdictCacheUnusable,
-			RunLease | Digest.Digest
-		> = Effect.suspend(() =>
-			Option.match(nextOf(pursuits), {
-				onNone: () => Effect.void,
-				onSome: ([pursuit, faced]) => Effect.andThen(tryOne(pursuit, faced), hunter)
-			})
-		)
+		const hunter: Effect.Effect<void, E | TreeFailed | VerdictCacheUnusable, Digest.Digest> =
+			Effect.suspend(() =>
+				Option.match(nextOf(pursuits), {
+					onNone: () => Effect.void,
+					onSome: ([pursuit, faced]) => Effect.andThen(tryOne(pursuit, faced), hunter)
+				})
+			)
 		yield* Effect.all(
 			Array.from({ length: pool.width }, () => hunter),
 			{ concurrency: "unbounded", discard: true }

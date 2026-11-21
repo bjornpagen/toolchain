@@ -35,7 +35,6 @@ import { type TypecheckRefused, typecheckerOf } from "#mutate/typecheck.ts"
 import type { PropertyId } from "#property.ts"
 import { fnv1a32, mix } from "#random.ts"
 import { processScratch } from "#resources/scratch.ts"
-import type { RunLease } from "#runner/services.ts"
 
 /**
  * A mutation run refused to measure: an equivalent judgment names a mutant its file no longer has, a property is red
@@ -140,7 +139,7 @@ export const coveragePass = <E>(
 ): Effect.Effect<
 	ReadonlyArray<Covered>,
 	E | DumpUnread | PlatformError.PlatformError,
-	FileSystem.FileSystem | Path.Path | Scope.Scope | RunLease
+	FileSystem.FileSystem | Path.Path | Scope.Scope
 > =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem
@@ -199,7 +198,7 @@ const coverageOf = <E>(
 ): Effect.Effect<
 	CoverageMap<Subject>,
 	E | MutationRefused | DumpUnread | PlatformError.PlatformError,
-	FileSystem.FileSystem | Path.Path | Scope.Scope | RunLease
+	FileSystem.FileSystem | Path.Path | Scope.Scope
 > =>
 	Effect.gen(function* () {
 		const covered = yield* coveragePass(pool, run, images, subjects, targets)
@@ -238,7 +237,7 @@ const probed = <E>(
 	images: Images,
 	map: CoverageMap<Subject>,
 	sources: ReadonlyArray<Source>
-): Effect.Effect<void, E | TreeFailed | MutationRefused, RunLease> =>
+): Effect.Effect<void, E | TreeFailed | MutationRefused> =>
 	Effect.gen(function* () {
 		const pairs = Arr.flatMap(sources, (source) =>
 			Arr.map(map.touching(source.target), (subject): Probe => ({ source, subject }))
@@ -347,7 +346,7 @@ export const mutationOf = <E, O extends string>(
 	| TypecheckRefused
 	| MutationSourceRefused
 	| PlatformError.PlatformError,
-	FileSystem.FileSystem | Path.Path | Scope.Scope | RunLease
+	FileSystem.FileSystem | Path.Path | Scope.Scope
 > =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem

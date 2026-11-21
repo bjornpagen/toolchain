@@ -17,7 +17,6 @@ import {
 import { replayOf, replayTokenOf } from "#replay.ts"
 import { toolchainTestCache } from "#runner/cache-home.ts"
 import { fuzz } from "#runner/fuzz.ts"
-import { runOfItsOwn } from "#runner/leases.ts"
 import { keptValuesAt, requiredFlagsAt } from "#runner/load.ts"
 import { type LoadKeying, loadCommand } from "#runner/loads.ts"
 import { failureLines, lineOf } from "#runner/report.ts"
@@ -148,11 +147,9 @@ export class CommandFailed extends Schema.TaggedError<
 >()("CommandFailed", { message: Schema.String }) {}
 
 /**
- * A command's own failures, of any kind, as CommandFailed with their report. Each command is a run of its own
- * (leases.ts runOfItsOwn): the leases its runs take on the local clusters are held for it, and let go as it ends.
- */
+/** A command's own failures, of any kind, as CommandFailed with their report. */
 const failing = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-	Effect.catchCause(runOfItsOwn(effect), (cause) =>
+	Effect.catchCause(effect, (cause) =>
 		Effect.fail(
 			CommandFailed.make({
 				message: Option.match(Cause.findErrorOption(cause), {

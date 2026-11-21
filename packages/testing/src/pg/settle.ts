@@ -1,0 +1,551 @@
+import { totalmem } from "node:os"
+import { regex } from "arkregex"
+import { Array as Arr, Config, Effect, FileSystem, Option, Redacted, String as Str } from "effect"
+import { ChildProcess, type ChildProcessSpawner } from "effect/process"
+import {
+	adminSql,
+	ClusterFailed,
+	failed,
+	freshPassword,
+	serverBin,
+	type SocketAt,
+	type Step,
+	succeeded,
+	unrelatedCa
+} from "#pg/server.ts"
+import {
+	fixedSettings,
+	membersOf,
+	type Setting,
+	settingLine,
+	shareOf,
+	sizedSettings
+} from "#pg/settings.ts"
+import type { LocalCluster } from "#pg/spec.ts"
+import { testWorkers } from "#workers.ts"
+
+/**
+ * A repository's cluster as units of the workbench's PostgreSQL (~/Documents/beefy-workspace/workbench/parts/postgres):
+ * member i of a spec is the unit `postgres@<unit>-<i>`, which systemd makes on its first start (initdb, trust for the
+ * account) and runs, its data and its socket the unit's. Nothing here makes, starts or stops a server by its own
+ * programs: `toolchain-pg settle` (settled) starts each member's unit and gives it what the spec states, by ALTER SYSTEM
+ * and the bootstrap superuser's statements, restarting the unit only when a setting it changed waits for one; a run
+ * only reads the members (membersRead), and refuses a member that is not as its spec states, naming the command.
+ */
+
+/** The platform a cluster's settling and reading run on: its processes and its files. */
+export type Platform = ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem
+
+/**
+ * How a client verifies a member's server: over its socket alone (`socket`), or over verify-full TLS at localhost,
+ * `ca` being the PEM text of the CA that signed the server's certificate and `caFile` its path, as the workbench's
+ * PostgreSQL part installs it, and `wrongCa` the PEM text of a CA that signed nothing the server presents, for the
+ * checks that must refuse a server they cannot verify.
+ */
+export type MemberTls =
+	| Readonly<{ kind: "socket" }>
+	| Readonly<{ kind: "tls"; ca: string; caFile: string; wrongCa: string }>
+
+/**
+ * A member as its clients reach it: its name (its unit's instance, `<unit>-<i>`), its socket directory (the unit's
+ * runtime directory) and the port its socket file and, over TLS, its TCP listener at localhost are named by, the owner
+ * role and its password (and the file that holds it, for a script's PGPASSFILE), and how a client verifies it.
+ */
+export type PgMember = Readonly<{
+	name: string
+	socket: string
+	port: number
+	owner: string
+	password: Redacted.Redacted
+	passwordFile: string
+	tls: MemberTls
+}>
+
+/**
+ * The variable that names the file of the CA the workbench's PostgreSQL part signs its servers' certificates with,
+ * which every verify-full client of a member reads.
+ */
+export const caVariable = "PGSSLROOTCERT"
+
+/** A member's unit, as systemctl names it. */
+export const unitOf = (name: string): string => `postgres@${name}.service`
+
+/**
+ * The names of `cluster`'s members, `<unit>-<i>` for each of the members its sizing gives a full-width run
+ * (settings.ts membersOf).
+ */
+export const memberNames = (cluster: LocalCluster): Arr.NonEmptyReadonlyArray<string> => {
+	const count = membersOf(cluster.sizing, testWorkers)
+	return Arr.prepend(
+		Array.from({ length: count - 1 }, (_, at) => `${cluster.unit}-${at + 1}`),
+		`${cluster.unit}-0`
+	)
+}
+
+/** A member's socket directory, its unit's runtime directory: `$XDG_RUNTIME_DIR/postgresql-<name>`. */
+const socketOf = (name: string): Effect.Effect<string, ClusterFailed> =>
+	Effect.mapBoth(Config.String("XDG_RUNTIME_DIR"), {
+		onFailure: () =>
+			ClusterFailed.make({
+				cluster: name,
+				message: "XDG_RUNTIME_DIR is unset: a member's socket is in its unit's runtime directory"
+			}),
+		onSuccess: (runtime) => `${runtime}/postgresql-${name}`
+	})
+
+/**
+ * A cluster's state, beside no server's data: `${XDG_STATE_HOME:-~/.local/state}/toolchain-pg/<unit>`, holding its
+ * owner's password, its hba file (each member's hba_file) and its unrelated CA.
+ */
+const stateOf = (cluster: LocalCluster): Effect.Effect<string, ClusterFailed> =>
+	Effect.mapError(
+		Effect.gen(function* () {
+			const home = yield* Config.String("HOME")
+			const base = yield* Config.withDefault(
+				Config.String("XDG_STATE_HOME"),
+				`${home}/.local/state`
+			)
+			return `${base}/toolchain-pg/${cluster.unit}`
+		}),
+		(error) => ClusterFailed.make({ cluster: cluster.unit, message: error.message })
+	)
+
+/** The files a cluster's state holds. */
+const stateFiles = (state: string) => ({
+	password: `${state}/owner.password`,
+	hba: `${state}/pg_hba.conf`,
+	wrongCa: `${state}/wrong-ca.crt`
+})
+
+/** A socket file's name: PostgreSQL's `.s.PGSQL.<port>`. */
+const socketFile = regex("^\\.s\\.PGSQL\\.([0-9]{1,5})$")
+
+/**
+ * The member at `name` as its socket directory holds it now: the port its socket file is named by, which the unit's
+ * server listens on (5432, PostgreSQL's default, until settle gives it its spec's).
+ */
+const socketNow = (
+	name: string,
+	step: Step
+): Effect.Effect<SocketAt, ClusterFailed, FileSystem.FileSystem> =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		const socket = yield* socketOf(name)
+		const listed = yield* Effect.mapError(fs.readDirectory(socket), (error) =>
+			failed(
+				step,
+				`${socket}: ${error.message}: is ${unitOf(name)} running? \`toolchain-pg settle\` starts it`
+			)
+		)
+		const ports = Arr.getSomes(
+			Arr.map(listed, (entry) =>
+				Option.map(Option.fromNullishOr(socketFile.exec(entry)), ([, port]) => Number(port))
+			)
+		)
+		const port = yield* Effect.mapError(Effect.fromOption(Arr.head(ports)), () =>
+			failed(step, `${socket} holds no socket: is ${unitOf(name)} running?`)
+		)
+		const at: SocketAt = { socket, port }
+		return at
+	})
+
+/** An identifier quoted for SQL. */
+const ident = (name: string): string => `"${Str.replaceAll('"', '""')(name)}"`
+
+/** A text quoted as an SQL literal. */
+const literal = (text: string): string => `'${Str.replaceAll("'", "''")(text)}'`
+
+/** What the hba file every member of `cluster` reads holds: the account over the socket, every role over TLS by SCRAM. */
+const hbaOf = (cluster: LocalCluster): string =>
+	Arr.join(
+		[
+			"# A local cluster of the toolchain's (@bjornpagen/testing/pg, settle.ts), written by `toolchain-pg settle`.",
+			"local   all   all                    trust",
+			...(cluster.network.kind === "tls"
+				? [
+						"hostssl all   all        127.0.0.1/32  scram-sha-256",
+						"hostssl all   all        ::1/128       scram-sha-256"
+					]
+				: []),
+			""
+		],
+		"\n"
+	)
+
+/** The port a member listens on: its spec's TLS port plus its index, or PostgreSQL's default over its socket alone. */
+const portOf = (cluster: LocalCluster, index: number): number =>
+	cluster.network.kind === "tls" ? cluster.network.port + index : defaultPort
+
+/**
+ * PostgreSQL's port, which a member reached over its socket alone keeps: its socket file's name, in a directory of its
+ * own.
+ *
+ * @limitKind published
+ * @owner PostgreSQL 19.0
+ * @unit port
+ * @scope the port of a member whose network is its socket alone
+ * @constraint configurable default
+ * @source https://github.com/postgres/postgres/blob/REL_19_0/src/backend/utils/misc/guc_parameters.dat
+ * @quote boot_val => 'DEF_PGPORT',
+ * @verified 2026-11-21
+ */
+const defaultPort = 5432
+
+/** The CA file the workbench's PostgreSQL part names (caVariable), for `step`. */
+const caFileOf = (step: Step): Effect.Effect<string, ClusterFailed> =>
+	Effect.mapError(Config.String(caVariable), () =>
+		failed(
+			step,
+			`${caVariable} is unset: the workbench's PostgreSQL part names the CA its servers' certificates chain to`
+		)
+	)
+
+/**
+ * The settings member `index` of `cluster` holds exactly, on a server of `blockSize` bytes a page: every member's
+ * (fixedSettings), its sizing's over the machine's memory (sizedSettings), its hba file, and over TLS its port and
+ * localhost's listener, which its unit opts into by them (the workbench's postgres@ part listens on no network until
+ * a cluster's own postgresql.auto.conf says so) and TLS on, which the part's included tls.conf gives every member,
+ * with the server certificate its CA (caVariable) signed.
+ */
+const expectedSettings = (
+	cluster: LocalCluster,
+	index: number,
+	hba: string,
+	blockSize: number
+): ReadonlyArray<Setting> => {
+	const members = membersOf(cluster.sizing, testWorkers)
+	return [
+		...fixedSettings(cluster),
+		...sizedSettings(cluster, members, shareOf(testWorkers, members), totalmem(), blockSize),
+		["hba_file", hba],
+		...(cluster.network.kind === "tls"
+			? ([
+					["port", `${portOf(cluster, index)}`],
+					["listen_addresses", "localhost"],
+					["ssl", "on"]
+				] satisfies ReadonlyArray<Setting>)
+			: [])
+	]
+}
+
+/** A setting a member holds other than its spec states: its name, what the spec states and what it holds. */
+type Differs = Readonly<{ name: string; expected: string; actual: string }>
+
+/** What pg_settings prints of a setting: its name and its value, between a bar. */
+const settingRow = regex("^([^|]+)\\|(.*)$")
+
+/** The settings among `expected` that the member at `at` holds otherwise, each as pg_settings states its value. */
+const differing = (
+	bin: string,
+	at: SocketAt,
+	expected: ReadonlyArray<Setting>,
+	step: Step
+): Effect.Effect<ReadonlyArray<Differs>, ClusterFailed, ChildProcessSpawner.ChildProcessSpawner> =>
+	Effect.map(
+		adminSql(
+			bin,
+			at,
+			"postgres",
+			[
+				`SELECT name, setting FROM pg_catalog.pg_settings WHERE name IN (${Arr.join(
+					Arr.map(expected, ([name]) => literal(name)),
+					", "
+				)})`
+			],
+			{ ...step, doing: `${step.doing}: reading its settings` }
+		),
+		(lines) => {
+			const held = new Map(
+				Arr.getSomes(
+					Arr.map(lines, (line) =>
+						Option.map(
+							Option.fromNullishOr(settingRow.exec(line)),
+							([, name = "", value = ""]) => [name, value] as const
+						)
+					)
+				)
+			)
+			return Arr.flatMap(expected, ([name, value]): ReadonlyArray<Differs> => {
+				const actual = held.get(name) ?? "(absent)"
+				return actual === value ? [] : [{ name, expected: value, actual }]
+			})
+		}
+	)
+
+/** A member's server's page size, as it states it. */
+const blockSizeOf = (bin: string, at: SocketAt, step: Step) =>
+	Effect.flatMap(
+		adminSql(bin, at, "postgres", ["SHOW block_size"], {
+			...step,
+			doing: `${step.doing}: reading its block size`
+		}),
+		(lines) =>
+			Effect.mapError(
+				Effect.fromOption(Option.filter(Option.map(Arr.head(lines), Number), Number.isInteger)),
+				() => failed(step, `SHOW block_size printed [${Arr.join(lines, "\n")}]`)
+			)
+	)
+
+/** `systemctl --user <verb> <unit>` for `step`, to its end: systemd starts a member's unit once it is ready (Type=notify). */
+const systemctl = (verb: "start" | "restart", name: string, step: Step) =>
+	Effect.asVoid(
+		succeeded(
+			{ ...step, doing: `${step.doing}: systemctl --user ${verb} ${unitOf(name)}` },
+			ChildProcess.make("systemctl", ["--user", verb, unitOf(name)])
+		)
+	)
+
+/** A file of a cluster's state written, this account's alone. */
+const written = (step: Step, file: string, text: string) =>
+	Effect.flatMap(FileSystem.FileSystem, (fs) =>
+		Effect.mapError(
+			Effect.andThen(fs.writeFileString(file, text), fs.chmod(file, 0o600)),
+			(error) => failed(step, `${file}: ${error.message}`)
+		)
+	)
+
+/** A file of a cluster's state, if it holds one. */
+const readIfThere = (file: string) =>
+	Effect.flatMap(FileSystem.FileSystem, (fs) =>
+		Effect.orElseSucceed(
+			Effect.map(fs.readFileString(file), (text) => Option.some(Str.trim(text))),
+			() => Option.none<string>()
+		)
+	)
+
+/**
+ * The owner role with `password`, its grants, the template and its extensions, and the owner's own database, in the
+ * member at `at`, as the bootstrap superuser makes them: each made where absent and given what every member's holds
+ * where present (the role its attributes, password and grants, the template its owner and IS_TEMPLATE).
+ */
+const owned = (cluster: LocalCluster, bin: string, at: SocketAt, password: string, step: Step) =>
+	Effect.gen(function* () {
+		const owner = ident(cluster.owner)
+		const template = ident(cluster.template)
+		const doing = (what: string): Step => ({ ...step, doing: `${step.doing}: ${what}` })
+		const [held = ""] = yield* adminSql(
+			bin,
+			at,
+			"postgres",
+			[
+				`SELECT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = ${literal(cluster.owner)}), EXISTS (SELECT FROM pg_catalog.pg_database WHERE datname = ${literal(cluster.template)}), EXISTS (SELECT FROM pg_catalog.pg_database WHERE datname = ${literal(cluster.owner)})`
+			],
+			doing("what it holds of its owner and template")
+		)
+		const [role, hasTemplate, database] = Arr.map(Str.split(held, "|"), (flag) => flag === "t")
+		const attributes = `LOGIN CREATEDB CREATEROLE REPLICATION PASSWORD ${literal(password)}`
+		yield* adminSql(
+			bin,
+			at,
+			"postgres",
+			[
+				role ? `ALTER ROLE ${owner} ${attributes}` : `CREATE ROLE ${owner} ${attributes}`,
+				...Arr.map(
+					cluster.ownerParameters,
+					(name) => `GRANT SET ON PARAMETER ${ident(name)} TO ${owner}`
+				),
+				`GRANT pg_read_all_stats TO ${owner} WITH ADMIN TRUE, INHERIT FALSE, SET TRUE`,
+				`GRANT pg_signal_backend TO ${owner}`,
+				...(hasTemplate === true
+					? [
+							`ALTER DATABASE ${template} OWNER TO ${owner}`,
+							`ALTER DATABASE ${template} WITH IS_TEMPLATE true ALLOW_CONNECTIONS true`
+						]
+					: [
+							`CREATE DATABASE ${template} OWNER ${owner} TEMPLATE template0 ENCODING 'UTF8' LOCALE_PROVIDER builtin BUILTIN_LOCALE 'C.UTF-8' LOCALE 'C.UTF-8' IS_TEMPLATE true`
+						])
+			],
+			doing("its owner and template")
+		)
+		yield* Arr.match(
+			Arr.flatMap(cluster.extensions, ({ name, schema }) => [
+				`CREATE SCHEMA IF NOT EXISTS ${ident(schema)} AUTHORIZATION ${owner}`,
+				`CREATE EXTENSION IF NOT EXISTS ${ident(name)} SCHEMA ${ident(schema)}`
+			]),
+			{
+				onEmpty: () => Effect.void,
+				onNonEmpty: (statements) =>
+					Effect.asVoid(
+						adminSql(bin, at, cluster.template, statements, doing("its template's extensions"))
+					)
+			}
+		)
+		yield* adminSql(
+			bin,
+			at,
+			"postgres",
+			Arr.append(
+				database === true ? [] : [`CREATE DATABASE ${owner} OWNER ${owner} TEMPLATE ${template}`],
+				`ALTER DATABASE ${template} ALLOW_CONNECTIONS false`
+			),
+			doing("its owner's database")
+		)
+	})
+
+/**
+ * Settles `cluster`: its state (the owner's password, kept once made; its hba file; its unrelated CA), then each member
+ * at once: its unit started (systemd makes it on its first start), every setting its spec states written by ALTER
+ * SYSTEM and read again (pg_reload_conf), what the bootstrap superuser makes in it (owned), and its unit restarted when
+ * a setting it changed waits for a restart (pg_settings' pending_restart), which only a change of the spec or of the
+ * machine's memory makes; then the members read as a run reads them (membersRead), which fails if any is still not as
+ * its spec states. A run never settles: `toolchain-pg settle` does, as a unit of its own (pg/cli.ts).
+ */
+export const settled = (
+	cluster: LocalCluster
+): Effect.Effect<Arr.NonEmptyReadonlyArray<PgMember>, ClusterFailed, Platform> =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		const step: Step = { cluster: cluster.unit, doing: "settling it" }
+		const state = yield* stateOf(cluster)
+		const files = stateFiles(state)
+		yield* Effect.mapError(fs.makeDirectory(state, { recursive: true }), (error) =>
+			failed(step, `${state}: ${error.message}`)
+		)
+		const kept = yield* readIfThere(files.password)
+		const password = yield* Option.match(kept, {
+			onSome: Effect.succeed,
+			onNone: () =>
+				Effect.tap(freshPassword(step), (fresh) => written(step, files.password, `${fresh}\n`))
+		})
+		yield* written(step, files.hba, hbaOf(cluster))
+		const unrelated = yield* readIfThere(files.wrongCa)
+		if (cluster.network.kind === "tls" && Option.isNone(unrelated)) {
+			const pem = yield* unrelatedCa(step, "/CN=toolchain unrelated CA")
+			yield* written(step, files.wrongCa, pem)
+		}
+		const bin = yield* serverBin(step)
+		yield* Effect.forEach(
+			memberNames(cluster),
+			(name, index) =>
+				Effect.gen(function* () {
+					const at: Step = { cluster: cluster.unit, doing: `settling its member ${name}` }
+					yield* systemctl("start", name, at)
+					const socket = yield* socketNow(name, at)
+					const blockSize = yield* blockSizeOf(bin, socket, at)
+					const expected = expectedSettings(cluster, index, files.hba, blockSize)
+					const changed = yield* differing(bin, socket, expected, at)
+					yield* Arr.match(changed, {
+						onEmpty: () => Effect.void,
+						onNonEmpty: (settings) =>
+							Effect.asVoid(
+								adminSql(
+									bin,
+									socket,
+									"postgres",
+									Arr.append(
+										Arr.map(
+											settings,
+											({ name: setting }) =>
+												`ALTER SYSTEM SET ${settingLine(
+													Option.getOrElse(
+														Arr.findFirst(expected, ([named]) => named === setting),
+														(): Setting => [setting, ""]
+													)
+												)}`
+										),
+										"SELECT pg_catalog.pg_reload_conf()"
+									),
+									{ ...at, doing: `${at.doing}: ALTER SYSTEM` }
+								)
+							)
+					})
+					yield* owned(cluster, bin, socket, password, at)
+					const [pending = "0"] = yield* adminSql(
+						bin,
+						socket,
+						"postgres",
+						["SELECT pg_catalog.count(*) FROM pg_catalog.pg_settings WHERE pending_restart"],
+						{ ...at, doing: `${at.doing}: reading what waits for a restart` }
+					)
+					if (pending !== "0") {
+						yield* systemctl("restart", name, at)
+					}
+				}),
+			{ concurrency: "unbounded", discard: true }
+		)
+		return yield* membersRead(cluster)
+	})
+
+/**
+ * `cluster`'s members as a run reads them, writing nothing: each member's socket, its settings against its spec's,
+ * the owner's password and, over TLS, the CA the workbench's part names (caVariable) and the cluster's unrelated CA.
+ * A member whose unit runs no server, or that holds a setting other than its spec states, fails, naming `toolchain-pg
+ * settle`, which gives it them: a run never changes a server, so a server many runs share at once changes only when a
+ * person or a gate settles it.
+ */
+export const membersRead = (
+	cluster: LocalCluster
+): Effect.Effect<Arr.NonEmptyReadonlyArray<PgMember>, ClusterFailed, Platform> =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		const step: Step = { cluster: cluster.unit, doing: "reading it" }
+		const unsettled = (why: string) =>
+			failed(
+				step,
+				`${why}: run \`pnpm exec toolchain-pg settle\` (as a unit) to give the cluster its spec`
+			)
+		const state = yield* stateOf(cluster)
+		const files = stateFiles(state)
+		const keptPassword = yield* readIfThere(files.password)
+		const password = yield* Effect.mapError(Effect.fromOption(keptPassword), () =>
+			unsettled(`${files.password} holds no owner password`)
+		)
+		const tlsOf = Effect.gen(function* () {
+			const caFile = yield* caFileOf(step)
+			const ca = yield* Effect.mapError(fs.readFileString(caFile), (error) =>
+				failed(step, `${caFile}: ${error.message}`)
+			)
+			const keptWrongCa = yield* readIfThere(files.wrongCa)
+			const wrongCa = yield* Effect.mapError(Effect.fromOption(keptWrongCa), () =>
+				unsettled(`${files.wrongCa} holds no unrelated CA`)
+			)
+			const verified: MemberTls = { kind: "tls", ca, caFile, wrongCa }
+			return verified
+		})
+		const socketOnly: MemberTls = { kind: "socket" }
+		const tls = cluster.network.kind === "tls" ? yield* tlsOf : socketOnly
+		const bin = yield* serverBin(step)
+		const members = yield* Effect.forEach(
+			memberNames(cluster),
+			(name, index) =>
+				Effect.gen(function* () {
+					const at: Step = { cluster: cluster.unit, doing: `reading its member ${name}` }
+					const socket = yield* Effect.mapError(socketNow(name, at), (error) =>
+						unsettled(error.message)
+					)
+					const blockSize = yield* blockSizeOf(bin, socket, at)
+					const differs = yield* differing(
+						bin,
+						socket,
+						expectedSettings(cluster, index, files.hba, blockSize),
+						at
+					)
+					if (Arr.isReadonlyArrayNonEmpty(differs)) {
+						return yield* unsettled(
+							`${name} holds ${Arr.join(
+								Arr.map(
+									differs,
+									(d) => `${d.name} ${d.actual} where its spec states ${d.expected}`
+								),
+								", "
+							)}`
+						)
+					}
+					const member: PgMember = {
+						name,
+						socket: socket.socket,
+						port: portOf(cluster, index),
+						owner: cluster.owner,
+						password: Redacted.make(password),
+						passwordFile: files.password,
+						tls
+					}
+					return member
+				}),
+			{ concurrency: "unbounded" }
+		)
+		const first = yield* Effect.mapError(Effect.fromOption(Arr.head(members)), () =>
+			failed(step, "the cluster has no member")
+		)
+		return Arr.prepend(Arr.drop(members, 1), first)
+	})

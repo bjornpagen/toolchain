@@ -1,0 +1,136 @@
+/**
+ * A cluster as units of the workbench's PostgreSQL (pg/settle.ts): `settled` starts each member's unit and gives it what
+ * its spec states, and `membersRead`, what a run reads, then answers every member, over its socket or over TLS at its
+ * port; a member a setting of which was changed behind the spec's back is refused, naming `toolchain-pg settle`, and
+ * settled again; and a run that reads a cluster never settled is refused at once, starting no unit and writing no state.
+ * Each case's cluster is a unit name of its own, its units stopped and its data removed when the case ends. Oracle: the
+ * specification, stated in the checks.
+ */
+import { Array as Arr, Effect, FileSystem } from "effect"
+import { assert } from "#assert.ts"
+import { finite } from "#gen.ts"
+import { adminSql, serverBin } from "#pg/server.ts"
+import {
+	clusterOf,
+	dataOf,
+	failedOf,
+	removedAtEnd,
+	shapes,
+	unitActive
+} from "#pg/settle.fixtures.ts"
+import { memberNames, membersRead, settled } from "#pg/settle.ts"
+import { property } from "#property.ts"
+
+export const settledAsItsSpec = property.exhaust(finite(shapes), {
+	box: "a cluster over its socket or over TLS, of one member or two",
+	needs: {},
+	situations: [],
+	check: () => (shape) =>
+		Effect.scoped(
+			Effect.gen(function* () {
+				const cluster = yield* clusterOf(shape)
+				yield* removedAtEnd(cluster)
+				const members = yield* settled(cluster)
+				const read = yield* membersRead(cluster)
+				const first = Arr.headNonEmpty(read)
+				const bin = yield* serverBin({ cluster: cluster.unit, doing: "the property" })
+				yield* adminSql(
+					bin,
+					{ socket: first.socket, port: first.port },
+					"postgres",
+					[
+						"ALTER SYSTEM SET client_connection_check_interval = '2000'",
+						"SELECT pg_catalog.pg_reload_conf()"
+					],
+					{ cluster: cluster.unit, doing: "changing a setting behind the spec's back" }
+				)
+				const refusedAfterChange = yield* failedOf(membersRead(cluster))
+				yield* settled(cluster)
+				const readAgain = yield* membersRead(cluster)
+				assert.deepEqual(
+					{
+						settled: Arr.map(members, (member) => [member.name, member.port, member.tls.kind]),
+						read: Arr.map(read, (member) => [member.name, member.port, member.tls.kind]),
+						names: memberNames(cluster).length,
+						refusedAfterChange,
+						readAgain: readAgain.length
+					},
+					{
+						settled: Arr.map(memberNames(cluster), (name, index) => [
+							name,
+							cluster.network.kind === "tls" ? cluster.network.port + index : 5432,
+							cluster.network.kind
+						]),
+						read: Arr.map(memberNames(cluster), (name, index) => [
+							name,
+							cluster.network.kind === "tls" ? cluster.network.port + index : 5432,
+							cluster.network.kind
+						]),
+						names: shape.spread ? 2 : 1,
+						refusedAfterChange: true,
+						readAgain: shape.spread ? 2 : 1
+					}
+				)
+			})
+		),
+	oracle: {
+		kind: "specification",
+		name: "a settled cluster's members are read as its spec states them, each its unit's, at its port; one changed behind the spec's back is refused, and settled again"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/pg/settle.ts",
+			original: "\t\t\t\treturn actual === value ? [] : [{ name, expected: value, actual }]\n",
+			replacement: "\t\t\t\treturn []\n",
+			why: "A run reads a member whatever its settings, so one a person changed behind the spec's back serves the run as if it held its spec; the property fails, the changed member read."
+		},
+		{
+			file: "packages/testing/src/pg/settle.ts",
+			original: "\t\t\t\t\t\t\t\t\t\t\t\t`ALTER SYSTEM SET ${settingLine(\n",
+			replacement: "\t\t\t\t\t\t\t\t\t\t\t\t`SELECT 1 -- ${settingLine(\n",
+			why: "Settling writes none of the spec's settings, so its members keep the unit's defaults and a run refuses them; the property fails, the settle's own read refused."
+		}
+	]
+})
+
+export const unsettledStartsNothing = property.exhaust(finite(shapes), {
+	box: "a cluster never settled, over its socket or over TLS, of one member or two",
+	needs: {},
+	situations: [],
+	check: () => (shape) =>
+		Effect.scoped(
+			Effect.gen(function* () {
+				const fs = yield* FileSystem.FileSystem
+				const cluster = yield* clusterOf(shape)
+				yield* removedAtEnd(cluster)
+				const refused = yield* failedOf(membersRead(cluster))
+				const active = yield* Effect.forEach(memberNames(cluster), unitActive)
+				const data = yield* Effect.forEach(memberNames(cluster), (name) =>
+					Effect.flatMap(dataOf(name), (directory) => fs.exists(directory))
+				)
+				assert.deepEqual(
+					{ refused, active, data },
+					{
+						refused: true,
+						active: Arr.map(memberNames(cluster), () => false),
+						data: Arr.map(memberNames(cluster), () => false)
+					}
+				)
+			})
+		),
+	oracle: {
+		kind: "specification",
+		name: "a run that reads a cluster never settled is refused, and no member's unit is started or made"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/pg/settle.ts",
+			original: "\t\tconst keptPassword = yield* readIfThere(files.password)\n",
+			replacement:
+				'\t\tyield* Effect.forEach(memberNames(cluster), (name) => systemctl("start", name, step), { discard: true })\n\t\tconst keptPassword = yield* readIfThere(files.password)\n',
+			why: "A run's read starts each member's unit, as the old harness's need made and started its cluster, so a run changes a server every run shares; the property fails, the units started."
+		}
+	]
+})
