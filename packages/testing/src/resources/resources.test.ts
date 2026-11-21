@@ -26,8 +26,9 @@ import { assert } from "#assert.ts"
 import { awaitFact } from "#fact.ts"
 import type { Reached } from "#features.ts"
 import { array, boolean, finite, int } from "#gen.ts"
-import { liveMillis, liveSleep, overrun } from "#live.ts"
+import { liveMillis, liveSleep, overrun, waitingOnWork } from "#live.ts"
 import { Checkout } from "#mutate/checkout.ts"
+import { backendWorking } from "#pg/session.ts"
 import { type Case, property } from "#property.ts"
 import { PgCluster, quoteIdent, run as runIn, single } from "#resources/cluster.ts"
 import {
@@ -1222,7 +1223,10 @@ export const cloneDropWaitIsDeclared = property.exhaust(finite(deadlocks), {
 							assert.deepEqual(
 								{
 									verdict,
-									named: Arr.contains(after.open, `DROP DATABASE IF EXISTS ${quoteIdent(clone)}`),
+									named: Arr.some(
+										after.open,
+										Str.startsWith(`DROP DATABASE IF EXISTS ${quoteIdent(clone)} (`)
+									),
 									survived: after.survived
 								},
 								{ verdict: "passed", named: true, survived: true }
@@ -1239,16 +1243,16 @@ export const cloneDropWaitIsDeclared = property.exhaust(finite(deadlocks), {
 	kept: [],
 	kills: [
 		{
-			file: "packages/testing/src/resources/cluster.ts",
-			original:
-				"\twaitingOn(sql)(Effect.flatMap(session.query(sql, params), (rows) => textRows(sql, rows)))\n",
-			replacement: "\tEffect.flatMap(session.query(sql, params), (rows) => textRows(sql, rows))\n",
+			file: "packages/testing/src/pg/session.ts",
+			original: "\t\t\t\twaitingOnWork(\n",
+			replacement:
+				"\t\t\t\t((_on: string, _working: unknown) => (effect: Effect.Effect<Array<Array<unknown>>, NeedFailed>) => effect)(\n",
 			why: "The library's statements are no declared waits, as its clone DDL was: a clone's drop behind the member's work is the case's silence, and its guard judges it hung (metis's 5451, 2026-11-20: hung at 22 ms of CPU over 60 s inside a clone's DROP DATABASE); the property fails, the drop judged."
 		},
 		{
 			file: "packages/testing/src/runner/work.ts",
-			original: "\tledger.on = [...ledger.on, on]\n",
-			replacement: "\tledger.on = ledger.on\n",
+			original: "\tledger.open = [...ledger.open, { id, on, claim }]\n",
+			replacement: '\tledger.open = [...ledger.open, { id, on: "", claim }]\n',
 			why: "A declared wait names nothing, so a verdict on a case inside one says only that it waited, not on what; the property fails, the drop's wait unnamed."
 		},
 		{
@@ -1301,9 +1305,130 @@ export const sessionStatementIsDeclared = property.exhaust(finite(deadlocks), {
 	kills: [
 		{
 			file: "packages/testing/src/pg/session.ts",
-			original: `\t\t\t\twaitingOn(\`\${sql} (in \${database} on member \${member.name})\`)(\n`,
-			replacement: "\t\t\t\t((effect) => effect)(\n",
-			why: "A session's statements are no declared waits, as they were: a statement the member holds up server-side (under SERIALIZABLE contention, a large install's about 2 s on the SSI locks) is the case's silence, and its guard judges a live case hung (RECORDS-ATTACH, 2026-11-21: 25 ms of CPU over 60 s); the property fails, the sleep judged."
+			original: "\t\t\t\t\tbackendWorking(member, pid)\n",
+			replacement: "\t\t\t\t\tEffect.succeed(false)\n",
+			why: "A statement's claim is read as false whatever its backend does, so a statement the member holds up server-side (under SERIALIZABLE contention, a large install's about 2 s on the SSI locks) lapses at the guard's first reading and is the case's silence, and its guard judges a live case hung (RECORDS-ATTACH, 2026-11-21: 25 ms of CPU over 60 s); the property fails, the sleep judged."
+		}
+	]
+})
+
+export const unansweredStatementIsHung = property.exhaust(finite(deadlocks), {
+	box: "a statement's declared wait whose answer never comes while its backend sits idle, under a deadline of 150 or 300 ms",
+	needs: { services },
+	situations: [],
+	check:
+		({ services: context }) =>
+		(shape) =>
+			Effect.flatMap(context, (ctx) =>
+				Effect.provideContext(
+					Effect.scoped(
+						Effect.gen(function* () {
+							const cluster = yield* PgCluster
+							const opened = yield* marksTemplate.open
+							const clone = yield* opened.clone
+							const session = yield* cluster.connect(clone.member, clone.name)
+							const pid = yield* single(session, "SELECT pg_catalog.pg_backend_pid()::text", [])
+							const wall = yield* liveMillis
+							const verdict = yield* Effect.raceAll([
+								Effect.as(
+									waitingOnWork(
+										"a planted statement whose answer never comes",
+										backendWorking(clone.member, Number(pid))
+									)(Effect.never),
+									"answered"
+								),
+								Effect.map(
+									overrun(ownWork(wall, ownCpu()), deadlineBound(shape.deadline)),
+									(judged) => judged.kind
+								),
+								Effect.as(liveSleep(Duration.millis(shape.deadline * 10)), "never judged")
+							])
+							assert.equal(verdict, "stalled")
+						})
+					),
+					ctx
+				)
+			),
+	oracle: {
+		kind: "specification",
+		name: "a declared wait on a statement whose backend sits idle, its answer never coming, is checked against the member and judged: the stall leg counts it from the reading that found its backend idle"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/runner/work.ts",
+			original: "\t\t\t\t\t\t\tleaveWait(since, open.id)\n",
+			replacement: "\t\t\t\t\t\t\tledger.idle.set(open.id, since)\n",
+			why: "A declared wait's claim is never held against its server, as every wait was a claim alone: a statement whose answer never comes, its backend idle (a promise node-postgres never settles, a backend gone), keeps its case's guard blind for good, and the run waits with nothing reported (JUDGEWRITE's 19 rule-* modules, 2026-11-21: 30 minutes flat, its backends idle in ClientRead); the property fails, never judged."
+		}
+	]
+})
+
+export const lockedStatementIsDeclared = property.exhaust(finite(deadlocks), {
+	box: "a statement of a case's session behind a lock another session holds for six deadlines, under a deadline of 150 or 300 ms",
+	needs: { services },
+	situations: [],
+	check:
+		({ services: context }) =>
+		(shape) =>
+			Effect.flatMap(context, (ctx) =>
+				Effect.provideContext(
+					Effect.scoped(
+						Effect.gen(function* () {
+							const cluster = yield* PgCluster
+							const opened = yield* marksTemplate.open
+							const clone = yield* opened.clone
+							const holder = yield* cluster.connect(clone.member, clone.name)
+							const waiter = yield* cluster.connect(clone.member, clone.name)
+							yield* runIn(holder, "CREATE TABLE held (x int)", [])
+							yield* runIn(holder, "BEGIN", [])
+							yield* runIn(holder, "LOCK TABLE held IN ACCESS EXCLUSIVE MODE", [])
+							const released = yield* Deferred.make<void>()
+							const committed = Effect.andThen(
+								runIn(holder, "COMMIT", []),
+								Deferred.succeed(released, undefined)
+							)
+							yield* Effect.forkScoped(
+								Effect.orDie(
+									Effect.andThen(
+										liveSleep(Duration.millis(shape.deadline * shape.deadlines)),
+										committed
+									)
+								)
+							)
+							const wall = yield* liveMillis
+							const verdict = yield* Effect.raceFirst(
+								Effect.as(waiter.query("SELECT count(*)::text FROM held", []), "passed"),
+								Effect.map(
+									overrun(ownWork(wall, ownCpu()), deadlineBound(shape.deadline)),
+									overrunText
+								)
+							).pipe(
+								Effect.ensuring(
+									Effect.orDie(
+										Effect.flatMap(Deferred.isDone(released), (done) =>
+											done ? Effect.void : committed
+										)
+									)
+								)
+							)
+							assert.equal(verdict, "passed")
+						})
+					),
+					ctx
+				)
+			),
+	oracle: {
+		kind: "specification",
+		name: "a statement the member holds behind another session's lock is its backend's work, checked as working, and the case's guard judges none of it"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/pg/session.ts",
+			original: '\t\t\t\t\t(result) => result.rows[0]?.[0] === "active"\n',
+			replacement: '\t\t\t\t\t(result) => result.rows[0]?.[0] === "idle"\n',
+			why: "A backend that waits behind a lock reads as idle, so a statement the member holds up (a lock, the SSI locks under SERIALIZABLE contention) lapses at the guard's first reading and its live case is judged hung; the property fails, the locked read judged."
 		}
 	]
 })

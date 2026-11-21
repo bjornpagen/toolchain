@@ -12,7 +12,6 @@ import {
 	Scope,
 	String as Str
 } from "effect"
-import { waitingOn } from "#live.ts"
 import { membersRead, type PgMember, type Platform } from "#pg/settle.ts"
 import type { LocalCluster, WorkerSizing } from "#pg/spec.ts"
 import { NeedFailed, WorkerIndex } from "#runner/services.ts"
@@ -23,7 +22,10 @@ export type { PgMember } from "#pg/settle.ts"
  * A session on one member as the cluster's owner role (the role that may CREATE DATABASE and owns what it creates),
  * which the repository opens over its own client: one statement at a time, concurrent callers taking turns, each with
  * text parameters. Every statement this library sends casts each column it reads to text, so a row's columns arrive as
- * strings, or null, from any client.
+ * strings, or null, from any client. Its `query` is a declared wait of its process while the member works on the
+ * statement (live.ts waitingOnWork, its claim checked against the session's backend, as pg/session.ts pgSession's is; or
+ * live.ts waitingOn): the session declares its statements, the library's (run) and its caller's alike, so a statement
+ * the member keeps busy is no stall of its case.
  */
 export interface PgSession {
 	readonly query: (
@@ -141,20 +143,21 @@ const textRows = (
 			)
 
 /**
- * One statement on `session`, its rows decoded as text, as a declared wait of this process named by the statement
- * (live.ts waitingOn): every statement this library sends waits on the member's work, which no guard of the sender's
- * counts as its stall however long the member takes, and which PostgreSQL guards in turn. A clone's CREATE DATABASE
- * waits on the checkpoints its strategy forces and on the template's other users, a DROP DATABASE on every backend of
- * the member taking in its barrier and on the clone's last sessions leaving, an advisory lock on the builder or the
- * collector that holds it (metis's 5451, 2026-11-20: a case hung at 22 ms of CPU over 60 s, its worker in a clone's
- * DROP DATABASE behind the member's ProcSignalBarrier while other clones' FILE_COPY checkpoints ran).
+ * One statement on `session`, its rows decoded as text. The session's query declares it (PgSession): every statement
+ * this library sends waits on the member's work, which no guard of the sender's counts as its stall however long the
+ * member takes, and which PostgreSQL guards in turn. A clone's CREATE DATABASE waits on the checkpoints its strategy
+ * forces and on the template's other users, a DROP DATABASE on every backend of the member taking in its barrier and on
+ * the clone's last sessions leaving, an advisory lock on the builder or the collector that holds it (metis's 5451,
+ * 2026-11-20: a case hung at 22 ms of CPU over 60 s, its worker in a clone's DROP DATABASE behind the member's
+ * ProcSignalBarrier while other clones' FILE_COPY checkpoints ran). A second declaration here, a claim no guard checks,
+ * would hide a statement whose answer never comes behind the session's checked one.
  */
 export const run = (
 	session: Statements,
 	sql: string,
 	params: ReadonlyArray<string>
 ): Effect.Effect<TextRows, NeedFailed> =>
-	waitingOn(sql)(Effect.flatMap(session.query(sql, params), (rows) => textRows(sql, rows)))
+	Effect.flatMap(session.query(sql, params), (rows) => textRows(sql, rows))
 
 /** The first column of the first row of `sql`'s answer, or NeedFailed when it has none. */
 export const single = (

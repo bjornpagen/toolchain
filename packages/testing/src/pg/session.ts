@@ -1,6 +1,6 @@
 import { Effect, Redacted, type Scope } from "effect"
 import pg from "pg"
-import { waitingOn } from "#live.ts"
+import { waitingOn, waitingOnWork } from "#live.ts"
 import { bootstrapSuperuser } from "#pg/server.ts"
 import type { PgMember } from "#pg/settle.ts"
 import type { PgSession, Statements } from "#resources/cluster.ts"
@@ -14,17 +14,66 @@ const sessionFailed = (member: PgMember, doing: string) => (cause: unknown) =>
 	})
 
 /**
+ * Whether the backend `pid` of `member` works on what its client awaits, as the member says on a connection of its own,
+ * the bootstrap superuser's over the member's socket (no secret, no TLS: a check costs its process a few milliseconds
+ * of CPU, which a case's guard counts as the case's, where a TLS sign-in cost tens): it runs a statement
+ * (pg_stat_activity's `active`, behind a lock, an LWLock, I/O or a checkpoint as much as on a CPU), where `idle`,
+ * `idle in transaction` or a backend gone means the member has answered, or never will, so its client awaits nothing
+ * the member does. A member that cannot be asked (the connection fails) answers yes: the claim holds when it cannot be
+ * checked.
+ */
+export const backendWorking = (member: PgMember, pid: number): Effect.Effect<boolean> => {
+	const unasked = () => "unasked" as const
+	return Effect.orElseSucceed(
+		Effect.acquireUseRelease(
+			Effect.tap(
+				Effect.sync(
+					() =>
+						new pg.Client({
+							host: member.socket,
+							port: member.port,
+							user: bootstrapSuperuser(),
+							database: "postgres",
+							application_name: "toolchain backend check"
+						})
+				),
+				(client) => Effect.tryPromise({ try: () => client.connect(), catch: unasked })
+			),
+			(client) =>
+				Effect.map(
+					Effect.tryPromise({
+						try: () =>
+							client.query<[string]>({
+								text: "SELECT state FROM pg_catalog.pg_stat_activity WHERE pid = $1",
+								values: [pid],
+								rowMode: "array"
+							}),
+						catch: unasked
+					}),
+					(result) => result.rows[0]?.[0] === "active"
+				),
+			(client) => Effect.ignore(Effect.tryPromise({ try: () => client.end(), catch: unasked }))
+		),
+		() => true
+	)
+}
+
+/**
  * A session over node-postgres (pg, a peer of this module) on `member` with `config` (where and as whom it signs in),
  * in `database`, for the scope, as `applicationName`, in pg's pipeline mode, so a statement sent while another runs
- * follows it on the wire, each its own exchange ending in a Sync, and concurrent callers take turns in the server;
- * every statement goes out on the extended protocol with its rows positional, each column the server's text. Its
- * connect, each of its statements and its end are declared waits of this process (live.ts waitingOn), each named by
- * what it waits on: each waits on the member's work (a backend forked and signed in, a statement's execution, a backend
- * leaving), which no guard of this process counts as its stall, however long the member takes. A statement held up
- * server-side spends no CPU of this process: under SERIALIZABLE contention a statement of a large install waited about
- * 2 s on the member's SSI locks (LWLock SerializableFinishedList, SerializablePredicateList) while its client sat idle,
- * and the guard judged live cases hung (RECORDS-ATTACH, 2026-11-21: 25 ms of CPU over 60 s). A statement that never
- * ends is PostgreSQL's to end (its deadlock detection, statement_timeout) or the run's budget's.
+ * follows it on the wire, each its own exchange ending in a Sync, and concurrent callers take turns in the server (a
+ * worker's owner session serves its needs at once): 2,000 statements sent at once took 190 to 380 ms pipelined and 413
+ * to 1,152 ms queued in the client, which pg 8 deprecates and the hardened flags make fatal, where one after another
+ * took the same either way (the shared server at load 350, 2026-11-21); every statement goes out on the extended
+ * protocol with its rows positional, each column the server's text. Its connect and its end are
+ * declared waits of this process (live.ts waitingOn), and each statement one whose claim the guard checks against its
+ * backend (live.ts waitingOnWork, backendWorking): each waits on the member's work (a backend forked and signed in, a
+ * statement's execution, a backend leaving), which no guard of this process counts as its stall, however long the member
+ * takes. A statement held up server-side spends no CPU of this process: under SERIALIZABLE contention a large install's
+ * statements waited about 2 s each on the member's SSI locks while its client sat idle, and the guard judged live cases
+ * hung (RECORDS-ATTACH, 2026-11-21: 25 ms of CPU over 60 s). A statement whose backend is idle while its client still
+ * awaits it is no work of the member's, and the guard judges it so; one that never ends is PostgreSQL's to end (its
+ * deadlock detection, statement_timeout) or the run's budget's.
  */
 const pgSession = (
 	applicationName: string,
@@ -34,7 +83,7 @@ const pgSession = (
 ): Effect.Effect<PgSession, NeedFailed, Scope.Scope> =>
 	Effect.map(
 		Effect.acquireRelease(
-			Effect.tap(
+			Effect.flatMap(
 				Effect.sync(
 					() =>
 						new pg.Client({
@@ -47,22 +96,38 @@ const pgSession = (
 				),
 				(client) =>
 					waitingOn(`a session's connect in ${database} on member ${member.name}`)(
-						Effect.tryPromise({
-							try: () => client.connect(),
-							catch: sessionFailed(member, `a session in ${database}`)
-						})
+						Effect.andThen(
+							Effect.tryPromise({
+								try: () => client.connect(),
+								catch: sessionFailed(member, `a session in ${database}`)
+							}),
+							Effect.map(
+								Effect.tryPromise({
+									try: () =>
+										client.query<[number]>({
+											text: "SELECT pg_catalog.pg_backend_pid()",
+											rowMode: "array"
+										}),
+									catch: sessionFailed(member, `a session's backend in ${database}`)
+								}),
+								(own) => ({ client, pid: own.rows[0]?.[0] ?? 0 })
+							)
+						)
 					)
 			),
-			(client) =>
+			({ client }) =>
 				Effect.ignore(
 					waitingOn(`a session's end in ${database} on member ${member.name}`)(
 						Effect.tryPromise({ try: () => client.end(), catch: sessionFailed(member, "an end") })
 					)
 				)
 		),
-		(client): PgSession => ({
+		({ client, pid }): PgSession => ({
 			query: (sql, params) =>
-				waitingOn(`${sql} (in ${database} on member ${member.name})`)(
+				waitingOnWork(
+					`${sql} (in ${database} on member ${member.name})`,
+					backendWorking(member, pid)
+				)(
 					Effect.map(
 						Effect.tryPromise({
 							try: () =>
@@ -83,13 +148,19 @@ const pgSession = (
 export const pgOwnerSession =
 	(applicationName: string) =>
 	(member: PgMember, database: string): Effect.Effect<PgSession, NeedFailed, Scope.Scope> =>
-		pgSession(applicationName, member, database, {
-			user: member.owner,
-			password: Redacted.value(member.password),
-			...(member.tls.kind === "tls"
-				? { host: "localhost", ssl: { ca: member.tls.ca, servername: "localhost" } }
-				: { host: member.socket })
-		})
+		pgSession(applicationName, member, database, ownerSignIn(member))
+
+/**
+ * How the owner signs in to `member`, with its password: over verify-full TLS against the member's CA at localhost
+ * where the member is reached over TLS, else over its socket.
+ */
+const ownerSignIn = (member: PgMember): pg.ClientConfig => ({
+	user: member.owner,
+	password: Redacted.value(member.password),
+	...(member.tls.kind === "tls"
+		? { host: "localhost", ssl: { ca: member.tls.ca, servername: "localhost" } }
+		: { host: member.socket })
+})
 
 /**
  * The runner's session as the member's bootstrap superuser, the account (server.ts bootstrapSuperuser), in `database`

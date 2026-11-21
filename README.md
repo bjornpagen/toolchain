@@ -14,6 +14,22 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: a statement's wait is checked against its backend (2026-11-21)
+
+A statement the member holds up server-side (behind a lock, the SSI locks under SERIALIZABLE contention, a checkpoint)
+spends no CPU of its client, so a case's guard judged live cases hung. A statement is now a declared wait, and its claim
+is checked: each guard reading asks the member whether the session's backend is still `active`, and a wait whose backend
+is idle at two readings in a row closes, so an answer that never comes is judged hung, naming the statement.
+
+- The toolchain's sessions (`pgOwnerSession`, `pgSuperuserSession`) declare every statement so. `resources/cluster.ts`
+  `run` declares none itself: a repository's own `PgSession` (its `connect` or `superuser` built over its own client)
+  wraps its `query` in `waitingOnWork(name, backendWorking(member, pid))` (`waitingOnWork` from
+  `@bjornpagen/testing/live`, `backendWorking` from `@bjornpagen/testing/pg-session`, which asks the member over its
+  socket as the bootstrap superuser), `pid` its backend's, read once at connect (`SELECT pg_catalog.pg_backend_pid()`,
+  or node-postgres's BackendKeyData), or in `waitingOn(name)`, a claim no guard checks.
+- The repository's own clients that reach PostgreSQL outside a PgSession (an adapter, raw sessions, psql children)
+  declare their statements the same way.
+
 ## Consumer migration: kept tokens migrate to options (2026-11-21)
 
 Since toolchain 71eb30f a weighted decision (gen.ts `weighted`, `option`, `production`, `oneOf`, `proportional`;

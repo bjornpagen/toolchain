@@ -1,4 +1,4 @@
-import { Array as Arr, Option, Result, String as Str } from "effect"
+import { Array as Arr, Effect, Option, Result, String as Str } from "effect"
 import { stalledShareOfCpu } from "#runner/limits.ts"
 
 /**
@@ -238,13 +238,27 @@ export const waitedBy = (waits: Waits, wall: number): number =>
 export type WaitChange = Readonly<{ kind: "waiting" }> | Readonly<{ kind: "waited" }>
 
 /**
- * A process's declared waits, what each open wait on work waits on (`on`, its name: the statement a member runs for
- * it, a template's build), and where it reports each change of them: to its pool, in a worker (runner/worker.ts), since
- * the pool watches the worker from outside it; nowhere in a process no pool watches.
+ * What a declared wait claims of the work it waits on: nothing a guard can check (`trusted`: a template's build, a lock
+ * another process holds), or that a server works on it, which `working` asks the server (`checked`: a statement, whose
+ * backend the member says is working or not, pg/session.ts backendWorking).
+ */
+export type Claim =
+	| Readonly<{ kind: "trusted" }>
+	| Readonly<{ kind: "checked"; working: Effect.Effect<boolean> }>
+
+/** An open declared wait: its own id, what it waits on (`on`, its name), and what it claims (Claim). */
+type OpenWait = Readonly<{ id: number; on: string; claim: Claim }>
+
+/**
+ * A process's declared waits, each open one (its name: the statement a member runs for it, a template's build; and its
+ * claim), the next wait's id, and where it reports each change of them: to its pool, in a worker (runner/worker.ts),
+ * since the pool watches the worker from outside it; nowhere in a process no pool watches.
  */
 type ProcessWaits = {
 	waits: Waits
-	on: ReadonlyArray<string>
+	open: ReadonlyArray<OpenWait>
+	idle: Map<number, number>
+	next: number
 	report: Option.Option<(change: WaitChange) => void>
 }
 
@@ -256,7 +270,9 @@ declare global {
 const processWaits = (): ProcessWaits => {
 	globalThis.bjornpagenTestingWaits ??= {
 		waits: noWaits,
-		on: [],
+		open: [],
+		idle: new Map(),
+		next: 0,
 		report: Option.none()
 	}
 	return globalThis.bjornpagenTestingWaits
@@ -268,36 +284,71 @@ export const reportWaitsTo = (report: (change: WaitChange) => void): void => {
 }
 
 /**
- * One of this process's declared waits opens at `wall`, waiting on `on` (live.ts waitingOn), reported when it is the
- * first open.
+ * One of this process's declared waits opens at `wall`, waiting on `on` and claiming `claim` (live.ts waitingOn,
+ * waitingOnWork), reported when it is the first open: its id, which closes it.
  */
-export const enterWait = (wall: number, on: string): void => {
+export const enterWait = (wall: number, on: string, claim: Claim): number => {
 	const ledger = processWaits()
+	const id = ledger.next
+	ledger.next = id + 1
 	ledger.waits = waitEntered(ledger.waits, wall)
-	ledger.on = [...ledger.on, on]
+	ledger.open = [...ledger.open, { id, on, claim }]
 	if (ledger.waits.open === 1) {
 		Option.map(ledger.report, (report) => report({ kind: "waiting" }))
 	}
+	return id
 }
 
-/** The declared wait on `on` closes at `wall`, reported when it was the last open. */
-export const leaveWait = (wall: number, on: string): void => {
+/**
+ * The declared wait `id` closes at `wall`, reported when it was the last open; a wait already closed (its claim found
+ * false, lapsedWait) closes nothing again.
+ */
+export const leaveWait = (wall: number, id: number): void => {
 	const ledger = processWaits()
-	ledger.waits = waitLeft(ledger.waits, wall)
-	ledger.on = Option.match(
-		Arr.findFirstIndex(ledger.on, (open) => open === on),
-		{
-			onNone: () => ledger.on,
-			onSome: (at) => Arr.remove(ledger.on, at)
+	Option.map(
+		Arr.findFirstIndex(ledger.open, (open) => open.id === id),
+		(at) => {
+			ledger.open = Arr.remove(ledger.open, at)
+			ledger.idle.delete(id)
+			ledger.waits = waitLeft(ledger.waits, wall)
+			if (ledger.waits.open === 0) {
+				Option.map(ledger.report, (report) => report({ kind: "waited" }))
+			}
 		}
 	)
-	if (ledger.waits.open === 0) {
-		Option.map(ledger.report, (report) => report({ kind: "waited" }))
-	}
+}
+
+/**
+ * Each open checked wait's claim asked again at `wall` (a guard's reading, live.ts overrun): a wait whose server has
+ * answered that it is not working on it at two readings in a row, a whole window apart, closes at the first of them, as
+ * if its work had ended then, so the guard counts the wall time after it as the stall it is: the client awaits an answer
+ * no server is working on (a promise that never settles, a backend gone). One answer alone closes nothing: a backend
+ * between two pipelined statements of its session is idle for an instant. A claim that cannot be asked holds.
+ */
+export const checkedClaims = (wall: number): Effect.Effect<void> => {
+	const ledger = processWaits()
+	return Effect.forEach(
+		Arr.filter(ledger.open, (open) => open.claim.kind === "checked"),
+		(open) =>
+			open.claim.kind === "checked"
+				? Effect.map(open.claim.working, (working) => {
+						const since = ledger.idle.get(open.id)
+						if (working) {
+							ledger.idle.delete(open.id)
+						} else if (since === undefined) {
+							ledger.idle.set(open.id, wall)
+						} else {
+							leaveWait(since, open.id)
+						}
+					})
+				: Effect.void,
+		{ discard: true }
+	)
 }
 
 /** What this process's open declared waits on work wait on, in the order they opened: what a verdict's report names. */
-export const waitedOnNow = (): ReadonlyArray<string> => processWaits().on
+export const waitedOnNow = (): ReadonlyArray<string> =>
+	Arr.map(processWaits().open, (open) => open.on)
 
 /** The wall milliseconds this process has spent in declared waits by `wall`. */
 const ownWaited = (wall: number): number => waitedBy(processWaits().waits, wall)

@@ -3,6 +3,8 @@ import { Array as Arr, Clock, Duration, Effect, Fiber, Option, Record as Rec } f
 import { stalledShareOfCpu } from "#runner/limits.ts"
 import {
 	type Bound,
+	type Claim,
+	checkedClaims,
 	deadlineBound,
 	enterWait,
 	heldWork,
@@ -518,13 +520,27 @@ export const liveNanos = Clock.currentTimeNanos.pipe(
  * statement), and whose wall time no guard's stall leg counts, from before it starts to after it ends, however it ends;
  * a verdict on the case while it is open names it (runner/work.ts waitedOnNow).
  */
-export const waitingOn =
-	(on: string) =>
+export const waitingOn = (on: string) => declared(on, { kind: "trusted" })
+
+/**
+ * `effect` as a declared wait on a server's work, whose claim a guard checks (runner/work.ts Claim, checkedClaims): at
+ * each reading of a guard's while it is open, `working` asks the server whether it works on it, and a wait it answers
+ * no for closes then, so the wall time after it counts toward the stall as the silence it is. A statement waits so
+ * (pg/session.ts): its backend working (active, behind a lock or an LWLock, in I/O, behind a checkpoint) is the member's
+ * work, and a backend idle while its client still awaits the answer (a promise that never settles, a backend gone) is
+ * not, which a claim alone would hide from every guard of the process for good.
+ */
+export const waitingOnWork = (on: string, working: Effect.Effect<boolean>) =>
+	declared(on, { kind: "checked", working })
+
+/** `effect` as a declared wait on `on`, claiming `claim`, open from before it starts to after it ends, however it ends. */
+const declared =
+	(on: string, claim: Claim) =>
 	<A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
 		Effect.acquireUseRelease(
-			Effect.flatMap(liveMillis, (wall) => Effect.sync(() => enterWait(wall, on))),
+			Effect.flatMap(liveMillis, (wall) => Effect.sync(() => enterWait(wall, on, claim))),
 			() => effect,
-			() => Effect.flatMap(liveMillis, (wall) => Effect.sync(() => leaveWait(wall, on)))
+			(id) => Effect.flatMap(liveMillis, (wall) => Effect.sync(() => leaveWait(wall, id)))
 		)
 
 /**
@@ -535,16 +551,19 @@ export const waitingOn =
  */
 export const overrun = (work: TreeWork, bound: Bound): Effect.Effect<Overrun> => {
 	const watch = (window: Reading, readAt: number): Effect.Effect<Overrun> =>
-		Effect.flatMap(Effect.andThen(liveSleepUntil(readAt), liveMillis), (wall) => {
-			const standing = standingOf({
-				began: work.began,
-				window,
-				now: readingOf(work, wall),
-				bound
-			})
-			return standing.kind === "working"
-				? watch(standing.window, standing.readAgainAt)
-				: Effect.succeed(standing)
-		})
+		Effect.flatMap(
+			Effect.andThen(liveSleepUntil(readAt), Effect.tap(liveMillis, checkedClaims)),
+			(wall) => {
+				const standing = standingOf({
+					began: work.began,
+					window,
+					now: readingOf(work, wall),
+					bound
+				})
+				return standing.kind === "working"
+					? watch(standing.window, standing.readAgainAt)
+					: Effect.succeed(standing)
+			}
+		)
 	return watch(work.began, work.began.wall + Math.min(bound.cpu, bound.stall))
 }
