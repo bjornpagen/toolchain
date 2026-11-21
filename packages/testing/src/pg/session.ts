@@ -18,9 +18,13 @@ const sessionFailed = (member: PgMember, doing: string) => (cause: unknown) =>
  * in `database`, for the scope, as `applicationName`, in pg's pipeline mode, so a statement sent while another runs
  * follows it on the wire, each its own exchange ending in a Sync, and concurrent callers take turns in the server;
  * every statement goes out on the extended protocol with its rows positional, each column the server's text. Its
- * connect and its end are declared waits of this process (live.ts waitingOn), as its statements are (resources/cluster.ts
- * run): each waits on the member's work (a backend forked and signed in, a backend leaving), which no guard of this
- * process counts as its stall.
+ * connect, each of its statements and its end are declared waits of this process (live.ts waitingOn), each named by
+ * what it waits on: each waits on the member's work (a backend forked and signed in, a statement's execution, a backend
+ * leaving), which no guard of this process counts as its stall, however long the member takes. A statement held up
+ * server-side spends no CPU of this process: under SERIALIZABLE contention a statement of a large install waited about
+ * 2 s on the member's SSI locks (LWLock SerializableFinishedList, SerializablePredicateList) while its client sat idle,
+ * and the guard judged live cases hung (RECORDS-ATTACH, 2026-11-21: 25 ms of CPU over 60 s). A statement that never
+ * ends is PostgreSQL's to end (its deadlock detection, statement_timeout) or the run's budget's.
  */
 const pgSession = (
 	applicationName: string,
@@ -58,13 +62,15 @@ const pgSession = (
 		),
 		(client): PgSession => ({
 			query: (sql, params) =>
-				Effect.map(
-					Effect.tryPromise({
-						try: () =>
-							client.query<Array<unknown>>({ text: sql, values: [...params], rowMode: "array" }),
-						catch: sessionFailed(member, `${sql} in ${database}`)
-					}),
-					(result) => result.rows
+				waitingOn(`${sql} (in ${database} on member ${member.name})`)(
+					Effect.map(
+						Effect.tryPromise({
+							try: () =>
+								client.query<Array<unknown>>({ text: sql, values: [...params], rowMode: "array" }),
+							catch: sessionFailed(member, `${sql} in ${database}`)
+						}),
+						(result) => result.rows
+					)
 				)
 		})
 	)

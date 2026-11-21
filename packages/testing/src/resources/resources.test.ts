@@ -1260,6 +1260,54 @@ export const cloneDropWaitIsDeclared = property.exhaust(finite(deadlocks), {
 	]
 })
 
+export const sessionStatementIsDeclared = property.exhaust(finite(deadlocks), {
+	box: "a statement of a case's own session that sleeps six deadlines server-side, under a deadline of 150 or 300 ms",
+	needs: { services },
+	situations: [],
+	check:
+		({ services: context }) =>
+		(shape) =>
+			Effect.flatMap(context, (ctx) =>
+				Effect.provideContext(
+					Effect.scoped(
+						Effect.gen(function* () {
+							const cluster = yield* PgCluster
+							const opened = yield* marksTemplate.open
+							const clone = yield* opened.clone
+							const session = yield* cluster.connect(clone.member, clone.name)
+							const seconds = (shape.deadline * shape.deadlines) / 1000
+							const wall = yield* liveMillis
+							const verdict = yield* Effect.raceFirst(
+								Effect.as(
+									session.query("SELECT pg_catalog.pg_sleep($1::float8)", [String(seconds)]),
+									"passed"
+								),
+								Effect.map(
+									overrun(ownWork(wall, ownCpu()), deadlineBound(shape.deadline)),
+									overrunText
+								)
+							)
+							assert.equal(verdict, "passed")
+						})
+					),
+					ctx
+				)
+			),
+	oracle: {
+		kind: "specification",
+		name: "a statement of a session the library opens that the member keeps busy past its case's deadline, spending no CPU of the case's process, is a declared wait: the case's guard judges none of it"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/pg/session.ts",
+			original: `\t\t\t\twaitingOn(\`\${sql} (in \${database} on member \${member.name})\`)(\n`,
+			replacement: "\t\t\t\t((effect) => effect)(\n",
+			why: "A session's statements are no declared waits, as they were: a statement the member holds up server-side (under SERIALIZABLE contention, a large install's about 2 s on the SSI locks) is the case's silence, and its guard judges a live case hung (RECORDS-ATTACH, 2026-11-21: 25 ms of CPU over 60 s); the property fails, the sleep judged."
+		}
+	]
+})
+
 export const roleSettingCloned = property.explore(int(0, 3), {
 	needs: { services },
 	situations: [],
