@@ -14,6 +14,7 @@ import { assert } from "#assert.ts"
 import { Checkout } from "#mutate/checkout.ts"
 import { property } from "#property.ts"
 import { Scratch } from "#resources/scratch.ts"
+import { sharedStore } from "#runner/compile-cache.ts"
 import { heldApart, holders, OPEN_MILLIS, outcomeBehind } from "#runner/contended.fixtures.ts"
 import { runOfItsOwn } from "#runner/leases.ts"
 import { runnerLimits } from "#runner/limits.ts"
@@ -48,6 +49,7 @@ export const contendedLeaseWaits = property.exhaust(holders, {
 								root,
 								cwd: root,
 								env: { [NESTED_RESERVATION]: text },
+								compile: sharedStore,
 								places: placesOf(1),
 								execArgv: process.execArgv,
 								served: Option.none(),

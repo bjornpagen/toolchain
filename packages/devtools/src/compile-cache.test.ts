@@ -30,7 +30,7 @@ export const compileCacheOnDisk = property.exhaust(finite(boolean), {
 				assert.deepEqual(
 					{
 						status: run.status,
-						inTheCache: Str.startsWith(`${run.cache}/toolchain-test/compile`)(run.took),
+						inTheCache: Str.startsWith(`${run.cache}/toolchain-test/compile-v2/`)(run.took),
 						underTmp: Str.startsWith(run.tmp)(run.took)
 					},
 					{ status: 0, inTheCache: true, underTmp: false }

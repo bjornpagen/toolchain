@@ -9,12 +9,10 @@ set -eu
 here=$(dirname -- "$(realpath -- "$0")")
 strip='import { readFileSync } from "node:fs"; import { registerHooks, stripTypeScriptTypes } from "node:module"; registerHooks({ load: (url, context, nextLoad) => url.includes("/node_modules/") && url.endsWith(".ts") ? { format: "module", source: stripTypeScriptTypes(readFileSync(new URL(url), "utf8")), shortCircuit: true } : nextLoad(url, context) });'
 # The runner's hardened flags (src/runner/config.ts HARDENED_FLAGS, which launcher.test.ts holds this list to), given
-# here so cli.ts never starts a second node to add them; and Node's compile cache (src/runner/compile-cache.ts), set
-# before cli.ts loads so the runner's own modules are compiled once, unless this run reads V8's coverage.
+# here so cli.ts never starts a second node to add them. A compile cache the caller names (the account's, one
+# directory every process of the machine shares) never reaches the runner or what it starts: cli-entry.ts enables
+# the package root's own (src/runner/compile-cache.ts), and each worker gets its root's from the pool.
 hardened="--disable-proto=delete --disable-sigusr1 --throw-deprecation --pending-deprecation --force-context-aware --no-global-search-paths --unhandled-rejections=strict"
-if [ -z "${NODE_V8_COVERAGE:-}" ]; then
-	NODE_COMPILE_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/toolchain-test/compile"
-	export NODE_COMPILE_CACHE
-fi
+unset NODE_COMPILE_CACHE
 # shellcheck disable=SC2086
 exec node --disable-warning=ExperimentalWarning $hardened --import "data:text/javascript,$strip" "$here/../src/runner/cli-entry.ts" "$@"

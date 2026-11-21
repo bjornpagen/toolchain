@@ -16,7 +16,6 @@ import {
 } from "effect"
 import { replayOf, replayTokenOf } from "#replay.ts"
 import { toolchainTestCache } from "#runner/cache-home.ts"
-import { compileCached } from "#runner/compile-cache.ts"
 import { fuzz } from "#runner/fuzz.ts"
 import { runOfItsOwn } from "#runner/leases.ts"
 import { keptValuesAt, requiredFlagsAt } from "#runner/load.ts"
@@ -286,7 +285,6 @@ const main = Effect.gen(function* () {
 			)
 		return child.status ?? 1
 	}
-	yield* compileCached
 	const command = Option.flatMap(Option.fromUndefinedOr(name), (named) =>
 		Option.fromUndefinedOr(commands[named])
 	)

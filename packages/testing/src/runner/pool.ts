@@ -8,7 +8,6 @@ import {
 	Option,
 	Order,
 	Queue,
-	Record as Rec,
 	Result,
 	Schema,
 	Scope,
@@ -18,7 +17,13 @@ import { HUNG_CLEANUP_GRACE, liveMillis, overrun, watchdogGraceMillis } from "#l
 import { type Served, servedArgv } from "#mutate/pool.ts"
 import { familyOf } from "#pg/lease.ts"
 import { withLateUses } from "#runner/case.ts"
-import { compileCacheDirectory, readsCoverage } from "#runner/compile-cache.ts"
+import {
+	compileCacheIn,
+	compileEnvOf,
+	type CompileStore,
+	readsCoverage,
+	storeDirectory
+} from "#runner/compile-cache.ts"
 import { drawnLease } from "#runner/leases.ts"
 import { moduleClosureAt } from "#runner/module-closure.ts"
 import {
@@ -215,7 +220,8 @@ export const placesOf = (workers: number): Places => ({
  * What the pool's workers start from: the worker's entry module, the package root its test modules load from, the
  * directory it runs in, its Node flags, the mutant its module hook serves, if any (mutate/pool.ts Served: the pool adds
  * the hook to the flags, and hashes the closures it answers its workers with over the files as they load them), and
- * what its environment adds to this process's; the places its workers take (one a core for a run); and whether any
+ * what its environment adds to this process's; the store its workers keep Node's compile cache in, in their root's
+ * directory (runner/compile-cache.ts); the places its workers take (one a core for a run); and whether any
  * search guides by blocks (each worker then starts V8's coverage before it loads a module). A worker the parent kills is forked again from the same spec, in the same place. `open` is the run's
  * open bound: within it and the silence grace a worker must be ready (its runner config loaded, its services
  * declared), or it is ended as one that cannot start.
@@ -225,6 +231,7 @@ export type PoolSpec = Readonly<{
 	root: string
 	cwd: string
 	env: Readonly<Record<string, string>>
+	compile: CompileStore
 	places: Places
 	execArgv: ReadonlyArray<string>
 	served: Option.Option<Served>
@@ -380,22 +387,18 @@ const lostIn = (unit: Unit, phase: Phase): string => {
 }
 
 /**
- * What a worker's environment adds for Node's compile cache (runner/compile-cache.ts): its directory, for workers that
- * read no coverage (their guide is notes and neither their image nor this process names NODE_V8_COVERAGE), and nothing
- * for the others, whose environment drops the cache this process may have been started with (the launcher sets it).
+ * What a worker's environment adds for Node's compile cache (runner/compile-cache.ts): its root's directory in the
+ * pool's store, for workers that read no coverage (their guide is notes and neither their image nor this process names
+ * NODE_V8_COVERAGE), and the cache turned off for the others, whatever compile cache this process was started with.
  */
-/** This process's environment without the compile cache it may have been started with, which a worker gets anew. */
-const inherited = Rec.fromEntries(
-	Arr.filter(Rec.toEntries(process.env), ([key]) => key !== "NODE_COMPILE_CACHE")
-)
-
 const compilingOf = (spec: PoolSpec) =>
 	Effect.gen(function* () {
 		const coverage = (yield* readsCoverage) || "NODE_V8_COVERAGE" in spec.env
 		if (spec.guide === "blocks" || coverage) {
-			return {}
+			return compileEnvOf({ kind: "off" })
 		}
-		return { NODE_COMPILE_CACHE: yield* compileCacheDirectory }
+		const store = yield* storeDirectory(spec.compile)
+		return compileEnvOf({ kind: "at", directory: compileCacheIn(store, spec.root) })
 	})
 
 /**
@@ -626,7 +629,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 			])
 			const child = childProcesses.spawn(launch.command, launch.args, {
 				cwd: spec.cwd,
-				env: { ...inherited, ...spec.env, ...compiling },
+				env: { ...process.env, ...spec.env, ...compiling },
 				serialization: "advanced",
 				stdio: ["pipe", "pipe", "pipe", "ipc", "pipe"],
 				detached: true

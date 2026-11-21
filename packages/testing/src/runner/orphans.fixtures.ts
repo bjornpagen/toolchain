@@ -3,6 +3,7 @@ import { Array as Arr, Effect, FileSystem, Option, String as Str } from "effect"
 import { ChildProcess } from "effect/process"
 import { liveSleep } from "#live.ts"
 import type { CheckoutDir } from "#mutate/checkout.ts"
+import { sharedStore } from "#runner/compile-cache.ts"
 import { HARDENED_FLAGS } from "#runner/config.ts"
 import { runOfItsOwn } from "#runner/leases.ts"
 import { CHILD_FILE } from "#runner/pool.fixtures.ts"
@@ -42,6 +43,7 @@ const heldAsProgram = (root: string, held: string, pidFile: string, childFile: s
 				root,
 				cwd: root,
 				env: { [CHILD_FILE]: childFile },
+				compile: sharedStore,
 				places: placesOf(1),
 				execArgv: process.execArgv,
 				served: Option.none(),

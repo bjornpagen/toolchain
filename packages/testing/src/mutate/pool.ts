@@ -1,5 +1,6 @@
 import { type Effect, Option, Schema, type Scope, String as Str } from "effect"
 import type { MutatedFile, RealPath } from "#mutate/mutated.ts"
+import type { CompileStore } from "#runner/compile-cache.ts"
 import type { Evaluator } from "#runner/protocol.ts"
 import type { RunLease } from "#runner/services.ts"
 
@@ -44,11 +45,14 @@ export const servedArgv = (served: Option.Option<Served>): ReadonlyArray<string>
  * child process runs the tree's. `served` is the mutant its module hook serves (Served), or none: a worker tree holds
  * its mutant on disk. `env` is what the worker's environment adds to the runner's: NODE_V8_COVERAGE for a coverage
  * pass, whose dump the worker writes as it exits, so a lease ends its workers by letting them exit, never by a signal.
+ * `compile` is the store its workers keep Node's compile cache in (runner/compile-cache.ts): toolchain-test's for the
+ * checkout, whose later runs reuse it, and the run's own for a worker tree, whose path no later run has.
  */
 export type WorkerImage = Readonly<{
 	root: RealPath
 	served: Option.Option<Served>
 	env: Readonly<Record<string, string>>
+	compile: CompileStore
 }>
 
 /**

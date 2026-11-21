@@ -1,6 +1,7 @@
 import { Array as Arr, Console, Duration, Effect, Option, Random, Schema } from "effect"
 import { budgetOf, type FuzzBudget, FuzzTime } from "#fuzz.ts"
 import { liveMillis } from "#live.ts"
+import { sharedStore } from "#runner/compile-cache.ts"
 import { runnerLimits } from "#runner/limits.ts"
 import { placesOf, poolOf } from "#runner/pool.ts"
 import type { Verdict } from "#runner/protocol.ts"
@@ -77,6 +78,7 @@ export const fuzz = (root: string, args: ReadonlyArray<string>) =>
 				root,
 				cwd: root,
 				env: {},
+				compile: sharedStore,
 				places: placesOf(testWorkers),
 				execArgv: process.execArgv,
 				served: Option.none(),

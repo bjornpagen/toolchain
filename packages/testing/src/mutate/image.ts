@@ -4,6 +4,7 @@ import type { MutatedFile, RealPath } from "#mutate/mutated.ts"
 import type { WorkerImage } from "#mutate/pool.ts"
 import { mutantIn, type TreeFailed, type Trees } from "#mutate/tree.ts"
 import { processScratch } from "#resources/scratch.ts"
+import { sharedStore } from "#runner/compile-cache.ts"
 
 /** A string as a JavaScript string literal that decodes to it: its URI encoding holds no quote and no backslash. */
 const literal = (text: string) => `decodeURIComponent("${encodeURIComponent(text)}")`
@@ -63,7 +64,12 @@ export const imagesOf = Effect.fn("testing.mutate.imagesOf")(function* (
 			)
 			return file
 		}).pipe(Effect.orDie)
-	const plain: WorkerImage = { root: checkout, served: Option.none(), env: {} }
+	const plain: WorkerImage = {
+		root: checkout,
+		served: Option.none(),
+		env: {},
+		compile: sharedStore
+	}
 	const open = (
 		loading: Loading,
 		mutant: Option.Option<MutatedFile>
@@ -84,7 +90,12 @@ export const imagesOf = Effect.fn("testing.mutate.imagesOf")(function* (
 					if (Option.isSome(mutant)) {
 						yield* Effect.provideContext(mutantIn(tree, mutant.value), services)
 					}
-					const image: WorkerImage = { root: tree.root, served: Option.none(), env: {} }
+					const image: WorkerImage = {
+						root: tree.root,
+						served: Option.none(),
+						env: {},
+						compile: { kind: "run", directory: tree.compile }
+					}
 					return image
 				})
 		}

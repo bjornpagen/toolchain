@@ -20,6 +20,7 @@ import {
 } from "#mutate/schedule.fixtures.ts"
 import { shareOf, type Stage, type Subject, trialsOn } from "#mutate/schedule.ts"
 import { property, PropertyId } from "#property.ts"
+import { sharedStore } from "#runner/compile-cache.ts"
 import { runnerLimits } from "#runner/limits.ts"
 
 export const scheduledTrials = property.explore(scheduleGen, {
@@ -66,7 +67,8 @@ export const scheduledTrials = property.explore(scheduleGen, {
 							{
 								root,
 								served: Option.none(),
-								env: { STAGE: keyOf(t, s) }
+								env: { STAGE: keyOf(t, s) },
+								compile: sharedStore
 							}
 						),
 						() => Ref.update(seen, (x) => ({ ...x, open: x.open - 1 }))

@@ -18,6 +18,7 @@ import { heldUntil, shieldsIn } from "#pg/lease.fixtures.ts"
 import { familyOf } from "#pg/lease.ts"
 import { property } from "#property.ts"
 import { Scratch } from "#resources/scratch.ts"
+import { sharedStore } from "#runner/compile-cache.ts"
 import { inlineRun, searchInline } from "#runner/inline.ts"
 import { runnerLimits } from "#runner/limits.ts"
 import {
@@ -92,6 +93,7 @@ export const nestedRunsDrawOnTheirRun = property.exhaust(nestedRuns, {
 							root,
 							cwd: root,
 							env: { [NESTED_RESERVATION]: text },
+							compile: sharedStore,
 							places: placesOf(1),
 							execArgv: process.execArgv,
 							served: Option.none(),

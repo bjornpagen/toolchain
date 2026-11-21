@@ -69,6 +69,7 @@ export const mutantPoolOf = (checkout: string, packageRoot: string): MutantPool<
 					root,
 					cwd: root,
 					env: image.env,
+					compile: image.compile,
 					places: { at: taken, of: testWorkers },
 					execArgv: process.execArgv,
 					served: image.served,

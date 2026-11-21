@@ -28,8 +28,12 @@ import { toolchainTestCache } from "#runner/cache-home.ts"
  * and TypeScript name a module by its real path: under a directory linked to another's, an importer of the mutant's
  * file is that other directory's, and imports the file there, not the mutant. A hard link leaves the real path the
  * tree's.
+ *
+ * `compile` is the store of Node's compile cache its workers keep their entries in (runner/compile-cache.ts): the
+ * run's own, in the trees' directory, removed with them, since a tree's path is new each run and no later run could
+ * reuse what its processes compiled.
  */
-export type Tree = Readonly<{ checkout: RealPath; base: RealPath; root: RealPath }>
+export type Tree = Readonly<{ checkout: RealPath; base: RealPath; root: RealPath; compile: string }>
 
 /** A worker tree could not be made or written. */
 export class TreeFailed extends Schema.TaggedError<TreeFailed, { readonly brand: unique symbol }>()(
@@ -291,8 +295,11 @@ const baseOf = Effect.fnUntraced(function* (layout: Layout, root: RealPath) {
 	return base
 })
 
-/** A new worker tree of `base` at `root`, an empty directory on the base's filesystem. */
-const treeOf = Effect.fnUntraced(function* (base: Base, root: RealPath) {
+/**
+ * A new worker tree of `base` at `root`, an empty directory on the base's filesystem, whose workers keep their compile
+ * cache in the run's store `compile`.
+ */
+const treeOf = Effect.fnUntraced(function* (base: Base, root: RealPath, compile: string) {
 	const fs = yield* FileSystem.FileSystem
 	const path = yield* Path.Path
 	yield* Effect.forEach(
@@ -319,7 +326,7 @@ const treeOf = Effect.fnUntraced(function* (base: Base, root: RealPath) {
 				.pipe(Effect.mapError(failed(`linking ${link.path}`))),
 		{ concurrency: "unbounded", discard: true }
 	)
-	const tree: Tree = { checkout: base.layout.checkout, base: base.root, root }
+	const tree: Tree = { checkout: base.layout.checkout, base: base.root, root, compile }
 	return tree
 })
 
@@ -406,7 +413,10 @@ export const treesOf = Effect.fn("testing.mutate.treesOf")(function* (checkout: 
 			Arr.drop(trees, 1)
 		]),
 		Option.match({
-			onNone: () => Effect.flatMap(Effect.all([base, fresh]), ([of, root]) => treeOf(of, root)),
+			onNone: () =>
+				Effect.flatMap(Effect.all([base, fresh]), ([of, root]) =>
+					treeOf(of, root, path.join(home, "compile"))
+				),
 			onSome: Effect.succeed
 		})
 	)

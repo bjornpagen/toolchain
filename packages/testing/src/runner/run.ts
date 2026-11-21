@@ -21,6 +21,7 @@ import type { Kill, PropertyId, PropertyKind } from "#property.ts"
 import { PgCluster } from "#resources/cluster.ts"
 import { collect, templatesOf } from "#resources/collect.ts"
 import type { DatabaseTemplate } from "#resources/template.ts"
+import { sharedStore } from "#runner/compile-cache.ts"
 import { type RunnerConfig, SMALL_STACK } from "#runner/config.ts"
 import { runLeasesIn } from "#runner/leases.ts"
 import { runnerLimits } from "#runner/limits.ts"
@@ -432,6 +433,7 @@ export const runPackage = (
 							root: request.root,
 							cwd: request.root,
 							env: {},
+							compile: sharedStore,
 							places,
 							execArgv: flagsOf(stack),
 							served: Option.none(),
@@ -527,6 +529,7 @@ export const replayToken = (
 			root,
 			cwd: root,
 			env: {},
+			compile: sharedStore,
 			places: placesOf(1),
 			execArgv: flagsOf(named.stack),
 			served: Option.none(),
