@@ -228,49 +228,106 @@ const expectedSettings = (
 	]
 }
 
-/** A setting a member holds other than its spec states: its name, what the spec states and what it holds. */
-type Differs = Readonly<{ name: string; expected: string; actual: string }>
+/**
+ * How a member departs from its spec, a setting at a time: one the spec states that the member holds otherwise
+ * (`held`: what the spec states and what the member holds), or one ALTER SYSTEM wrote to the member's
+ * postgresql.auto.conf that the spec does not state (`unstated`: what was written), left by a spec of before or by a
+ * person. The spec is the whole of what ALTER SYSTEM holds for a member, so a settle resets an unstated one, and a run
+ * refuses a member that holds either.
+ */
+type Drift =
+	| Readonly<{ kind: "held"; name: string; expected: string; actual: string }>
+	| Readonly<{ kind: "unstated"; name: string; written: string }>
 
-/** What pg_settings prints of a setting: its name and its value, between a bar. */
-const settingRow = regex("^([^|]+)\\|(.*)$")
+/**
+ * What the drift query prints of a setting, between bars: whether the row is pg_settings' value of a setting the spec
+ * states (`held`) or postgresql.auto.conf's line of one it does not (`written`), the setting's name, and its value.
+ */
+const settingRow = regex("^(held|written)\\|([^|]+)\\|(.*)$")
 
-/** The settings among `expected` that the member at `at` holds otherwise, each as pg_settings states its value. */
+/** A drift as a report states it. */
+const driftText = (drift: Drift): string =>
+	drift.kind === "held"
+		? `${drift.name} ${drift.actual} where its spec states ${drift.expected}`
+		: `${drift.name} ${drift.written} written by ALTER SYSTEM, which its spec does not state`
+
+/**
+ * How the member at `at` departs from `expected` (Drift): each setting of `expected` it holds otherwise, as pg_settings
+ * states its value, and each setting its postgresql.auto.conf holds that `expected` does not name (pg_file_settings,
+ * the lines of the configuration files as the server reads them, of the one in its data directory that ALTER SYSTEM
+ * writes). A setting's name is matched without its case, as PostgreSQL matches it: ALTER SYSTEM writes TimeZone as
+ * `timezone`.
+ */
 const differing = (
 	bin: string,
 	at: SocketAt,
 	expected: ReadonlyArray<Setting>,
 	step: Step
-): Effect.Effect<ReadonlyArray<Differs>, ClusterFailed, ChildProcessSpawner.ChildProcessSpawner> =>
-	Effect.map(
+): Effect.Effect<ReadonlyArray<Drift>, ClusterFailed, ChildProcessSpawner.ChildProcessSpawner> => {
+	const names = Arr.join(
+		Arr.map(expected, ([name]) => literal(name)),
+		", "
+	)
+	const lowered = Arr.join(
+		Arr.map(expected, ([name]) => literal(Str.toLowerCase(name))),
+		", "
+	)
+	return Effect.map(
 		adminSql(
 			bin,
 			at,
 			"postgres",
 			[
-				`SELECT name, setting FROM pg_catalog.pg_settings WHERE name IN (${Arr.join(
-					Arr.map(expected, ([name]) => literal(name)),
-					", "
-				)})`
+				`SELECT 'held', name, setting FROM pg_catalog.pg_settings WHERE name IN (${names}) UNION ALL SELECT 'written', name, setting FROM pg_catalog.pg_file_settings WHERE sourcefile = pg_catalog.current_setting('data_directory') || '/postgresql.auto.conf' AND pg_catalog.lower(name) NOT IN (${lowered})`
 			],
 			{ ...step, doing: `${step.doing}: reading its settings` }
 		),
 		(lines) => {
-			const held = new Map(
-				Arr.getSomes(
-					Arr.map(lines, (line) =>
-						Option.map(
-							Option.fromNullishOr(settingRow.exec(line)),
-							([, name = "", value = ""]) => [name, value] as const
-						)
+			const rows = Arr.getSomes(
+				Arr.map(lines, (line) =>
+					Option.map(
+						Option.fromNullishOr(settingRow.exec(line)),
+						([, source = "", name = "", value = ""]) => ({ source, name, value })
 					)
 				)
 			)
-			return Arr.flatMap(expected, ([name, value]): ReadonlyArray<Differs> => {
-				const actual = held.get(name) ?? "(absent)"
-				return actual === value ? [] : [{ name, expected: value, actual }]
-			})
+			const held = new Map(
+				Arr.map(
+					Arr.filter(rows, (row) => row.source === "held"),
+					(row) => [row.name, row.value] as const
+				)
+			)
+			return [
+				...Arr.flatMap(expected, ([name, value]): ReadonlyArray<Drift> => {
+					const actual = held.get(name) ?? "(absent)"
+					return actual === value ? [] : [{ kind: "held", name, expected: value, actual }]
+				}),
+				...Arr.map(
+					Arr.filter(rows, (row) => row.source === "written"),
+					(row): Drift => ({ kind: "unstated", name: row.name, written: row.value })
+				)
+			]
 		}
 	)
+}
+
+/** A setting's name as ALTER SYSTEM reads it: each part of a dotted name an identifier, quoted. */
+const settingName = (name: string): string =>
+	Arr.join(
+		Arr.map(Str.split(".")(name), (part) => `"${Str.replaceAll('"', '""')(part)}"`),
+		"."
+	)
+
+/** The statement that undoes `drift` (Drift): the spec's value set again, or an unstated setting reset. */
+const undone = (drift: Drift, expected: ReadonlyArray<Setting>): string =>
+	drift.kind === "held"
+		? `ALTER SYSTEM SET ${settingLine(
+				Option.getOrElse(
+					Arr.findFirst(expected, ([named]) => named === drift.name),
+					(): Setting => [drift.name, ""]
+				)
+			)}`
+		: `ALTER SYSTEM RESET ${settingName(drift.name)}`
 
 /** A member's server's page size, as it states it. */
 const blockSizeOf = (bin: string, at: SocketAt, step: Step) =>
@@ -433,16 +490,7 @@ export const settled = (
 									socket,
 									"postgres",
 									Arr.append(
-										Arr.map(
-											settings,
-											({ name: setting }) =>
-												`ALTER SYSTEM SET ${settingLine(
-													Option.getOrElse(
-														Arr.findFirst(expected, ([named]) => named === setting),
-														(): Setting => [setting, ""]
-													)
-												)}`
-										),
+										Arr.map(settings, (drift) => undone(drift, expected)),
 										"SELECT pg_catalog.pg_reload_conf()"
 									),
 									{ ...at, doing: `${at.doing}: ALTER SYSTEM` }
@@ -521,15 +569,7 @@ export const membersRead = (
 						at
 					)
 					if (Arr.isReadonlyArrayNonEmpty(differs)) {
-						return yield* unsettled(
-							`${name} holds ${Arr.join(
-								Arr.map(
-									differs,
-									(d) => `${d.name} ${d.actual} where its spec states ${d.expected}`
-								),
-								", "
-							)}`
-						)
+						return yield* unsettled(`${name} holds ${Arr.join(Arr.map(differs, driftText), ", ")}`)
 					}
 					const member: PgMember = {
 						name,
