@@ -11,6 +11,7 @@ import {
 	judgeOf,
 	leaveWait,
 	type Overrun,
+	overrunText,
 	ownCpu,
 	type Reading,
 	readingOf,
@@ -334,20 +335,32 @@ type Watched = Readonly<{
 	hangsAt: number
 	graceMillis: number
 	report: () => string
-	over: (now: number) => boolean
+	judged: (now: number) => Option.Option<string>
 }>
 
 /**
  * What the main thread answers the watchdog at `now`, with `inFlight` its cases in flight: blocked, with the report of
  * every case in flight, when one of them has passed the moment its guard would first judge it and its work is over its
- * deadline; running when none is, so a thread that was merely slow to answer (a machine that pages it out or starves
+ * deadline, each such case's report naming the leg its guard read and what it measured (its CPU spent, or its CPU and
+ * its stir over a whole window: runner/work.ts overrunText), so a hang under load says whether the case spent its
+ * deadline or stood still (UNITREDS, 2026-11-21: bound-identity ended under trunk's load with neither said); running
+ * when none is, so a thread that was merely slow to answer (a machine that pages it out or starves
  * it), between cases, or in a case whose work still moves within its deadline, is never ended.
  */
 export const answerOf = (inFlight: ReadonlyArray<Watched>, now: number): Answer => {
-	if (!Arr.some(inFlight, (watched) => watched.hangsAt <= now && watched.over(now))) {
+	const judged = Arr.map(inFlight, (watched) => ({
+		watched,
+		over: watched.hangsAt <= now ? watched.judged(now) : Option.none<string>()
+	}))
+	if (!Arr.some(judged, (one) => Option.isSome(one.over))) {
 		return { kind: "running" }
 	}
-	const reports = Arr.map(inFlight, (watched) => watched.report())
+	const reports = Arr.map(judged, ({ watched, over }) =>
+		Option.match(over, {
+			onNone: () => watched.report(),
+			onSome: (leg) => `${watched.report()}\nits guard read: ${leg}`
+		})
+	)
 	return {
 		kind: "blocked",
 		report:
@@ -493,6 +506,8 @@ export const watchedCase = <A, E, R>(
 		Effect.flatMap(liveMillis, (now) =>
 			Effect.sync(() => {
 				const judge = judgeOf(heldWork(now, ownCpu()), deadlineBound(hangMillis))
+				const cutText = (cut: number) =>
+					`its search's cut, the moment its deadline leaves for reporting, came ${Math.round(Math.max(0, cut - now))} ms after it began`
 				return watchdogOfProcess().watch({
 					hangsAt: Option.match(limits.cut, {
 						onNone: () => now + hangMillis,
@@ -500,7 +515,14 @@ export const watchedCase = <A, E, R>(
 					}),
 					graceMillis: watchdogGraceMillis,
 					report,
-					over: (at) => Option.exists(limits.cut, (cut) => at >= cut) || judge(at)
+					judged: (at) =>
+						Option.match(
+							Option.filter(limits.cut, (cut) => at >= cut),
+							{
+								onSome: (cut) => Option.some(cutText(cut)),
+								onNone: () => Option.map(judge(at), overrunText)
+							}
+						)
 				})
 			})
 		),

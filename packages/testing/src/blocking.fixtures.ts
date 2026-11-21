@@ -26,13 +26,14 @@ import { needStallMillis, runnerLimits } from "#runner/limits.ts"
 
 /**
  * What a planted property does on its cases from its threshold up, below which it returns at once: hold the main thread
- * forever, in a loop or in a regular expression that backtracks without end; return at once; hold the thread for a
+ * forever, in a loop or in a regular expression that backtracks without end, spending a CPU, or waiting a second at a
+ * time in Atomics.wait, spending none (`waits`), so its guard reads it stalled where the others spent; return at once; hold the thread for a
  * pause, past its case deadline and short of the watchdog's grace; sleep, yielding, past its case deadline; or, on its
  * threshold's case alone, block the thread in the kernel past its moment and two of the watchdog's graces, silent and
  * spending no CPU of its own while a child it waits for works (stores to disk), as a thread the machine pages out or
  * starves is silent while its process's work moves.
  */
-const BODIES = ["loop", "backtrack", "returns", "pauses", "sleeps", "blocks"] as const
+const BODIES = ["loop", "backtrack", "waits", "returns", "pauses", "sleeps", "blocks"] as const
 
 export type Body = (typeof BODIES)[number]
 
@@ -41,6 +42,7 @@ export const runsAway = (body: Body): boolean => {
 	switch (body) {
 		case "loop":
 		case "backtrack":
+		case "waits":
 			return true
 		case "returns":
 		case "pauses":
@@ -126,10 +128,20 @@ const BACKTRACKS = regex("^(a+)+$")
 const BACKTRACKED = `${Str.repeat(40)("a")}!`
 
 /**
- * Holds the main thread as `body` says: a loop that never ends, a match that never ends, or a wait that blocks the
- * thread for `pauseMillis`.
+ * How long one wait of a body that waits holds the main thread: the longest the watchdog's thread waits for the main
+ * thread's answer, which an interrupt asks between two waits, against the watchdog's grace of 5 s; long enough that the
+ * thread's wake-ups cost under a clock tick of CPU over a whole window of the grace, so its guard reads it stalled.
  */
-const hold = (body: "loop" | "backtrack" | "pauses" | "blocks", pauseMillis: number): void => {
+const WAIT_MILLIS = 1000
+
+/**
+ * Holds the main thread as `body` says: a loop that never ends, a match that never ends, waits that never end, or a wait
+ * that blocks the thread for `pauseMillis`.
+ */
+const hold = (
+	body: "loop" | "backtrack" | "waits" | "pauses" | "blocks",
+	pauseMillis: number
+): void => {
 	const cell = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT))
 	switch (body) {
 		case "blocks":
@@ -144,6 +156,11 @@ const hold = (body: "loop" | "backtrack" | "pauses" | "blocks", pauseMillis: num
 			return
 		case "backtrack":
 			Atomics.store(cell, 0, BACKTRACKS.test(BACKTRACKED) ? 1 : 0)
+			return
+		case "waits":
+			while (Atomics.load(cell, 0) === 0) {
+				Atomics.wait(cell, 0, 0, WAIT_MILLIS)
+			}
 			return
 		case "pauses":
 			Atomics.wait(cell, 0, 0, pauseMillis)
@@ -168,6 +185,7 @@ const bodyOf =
 					: Effect.void
 			case "loop":
 			case "backtrack":
+			case "waits":
 			case "pauses": {
 				const body = planted.body
 				return Effect.sync(() => hold(body, planted.pauseMillis))
@@ -314,6 +332,15 @@ const REPLAY_LINE = regex(
 	"held its worker's event loop past its deadline(?:.*\n)*?replay: toolchain-test replay '(?<token>[^']*)'"
 )
 
+/**
+ * The leg the watchdog's report says its guard read (live.ts answerOf, runner/work.ts overrunText): its process tree
+ * spent its deadline's CPU, or its CPU did not move over a whole window.
+ */
+const LEG_LINE = regex("^its guard read: its process tree(?<leg> spent|'s CPU moved)", "m")
+
+/** The leg of the report's line, as an Overrun names it. */
+const legOf = (line: string): "spent" | "stalled" => (line === " spent" ? "spent" : "stalled")
+
 /** The line the program prints when its search ends: how it ended. */
 const ENDED_LINE = regex("^ended: (?<ending>\\S+)$", "m")
 
@@ -360,6 +387,7 @@ export const programRun = (program: string, planted: Planted, seed: number) =>
 				ended,
 				ending: Option.fromNullishOr(ENDED_LINE.exec(stdout)?.groups.ending),
 				replay: Option.fromNullishOr(REPLAY_LINE.exec(stderr)?.groups.token),
+				leg: Option.map(Option.fromNullishOr(LEG_LINE.exec(stderr)?.groups.leg), legOf),
 				exitCode: Exit.isSuccess(exit) ? Option.some(Number(exit.value)) : Option.none()
 			}
 		})
@@ -376,6 +404,7 @@ export const endingOf = (planted: Planted): Option.Option<string> => {
 			return Option.some("hung")
 		case "loop":
 		case "backtrack":
+		case "waits":
 			return Option.none()
 	}
 }
@@ -448,15 +477,22 @@ export const inFlights: Gen<ReadonlyArray<InFlight>> = array(
 /** The report of the case in flight at `index`, as its watch carries it. */
 export const reportAt = (index: number): string => `<the report of case ${index}>`
 
+/** The leg the guard of the case in flight at `index` read, as its watch gives it. */
+export const legAt = (index: number): string => `<the leg of case ${index}>`
+
+/** The leg a runaway's guard reads: its CPU spent, a body that spends one; its CPU unmoving, one that waits. */
+export const legOfBody = (body: Body): "spent" | "stalled" =>
+	body === "waits" ? "stalled" : "spent"
+
 /**
  * The cases in flight as the watchdog watches them at `now`: one past its moment passed it `by` milliseconds before
  * (at `now` itself when `by` is 0), one not yet past it reaches it `by` and one more milliseconds after; each reports
- * its index, and its work is over its deadline as drawn.
+ * its index, and its work is over its deadline as drawn, its guard reading its leg then.
  */
 export const watchedAt = (inFlight: ReadonlyArray<InFlight>, now: number) =>
 	Arr.map(inFlight, (one, index) => ({
 		hangsAt: one.past ? now - one.by : now + one.by + 1,
 		graceMillis: watchdogGraceMillis,
 		report: () => reportAt(index),
-		over: () => one.over
+		judged: () => (one.over ? Option.some(legAt(index)) : Option.none<string>())
 	}))

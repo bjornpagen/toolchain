@@ -473,10 +473,13 @@ export const deadlineBound = (deadline: number): Bound => ({ cpu: deadline, stal
 
 /**
  * A judge of `work` under `bound` that keeps its window between readings: at each reading, at `wall` on the live clock,
- * it says whether the work is over its bound (spent, or stalled over a whole window) and carries a working window
- * forward.
+ * it gives the leg the work is over its bound by, with what it measured (Overrun: spent, or stalled over a whole
+ * window), or none, carrying a working window forward.
  */
-export const judgeOf = (work: TreeWork, bound: Bound): ((wall: number) => boolean) => {
+export const judgeOf = (
+	work: TreeWork,
+	bound: Bound
+): ((wall: number) => Option.Option<Overrun>) => {
 	let window = work.began
 	return (wall) => {
 		const standing = standingOf({
@@ -486,10 +489,10 @@ export const judgeOf = (work: TreeWork, bound: Bound): ((wall: number) => boolea
 			bound
 		})
 		if (standing.kind !== "working") {
-			return true
+			return Option.some(standing)
 		}
 		window = standing.window
-		return false
+		return Option.none()
 	}
 }
 

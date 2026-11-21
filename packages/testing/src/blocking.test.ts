@@ -20,6 +20,8 @@ import {
 	endingOf,
 	idOf,
 	inFlights,
+	legAt,
+	legOfBody,
 	programIn,
 	programRun,
 	reportAt,
@@ -69,6 +71,7 @@ export const watchdog = property.explore(aimed(settlingRuns, bodyAims), {
 					{
 						ending: ran.ending,
 						exitCode: ran.exitCode,
+						leg: ran.leg,
 						id: token.suite,
 						replayed: generate(
 							recorder(),
@@ -88,6 +91,7 @@ export const watchdog = property.explore(aimed(settlingRuns, bodyAims), {
 					{
 						ending: Option.none<string>(),
 						exitCode: Option.none<number>(),
+						leg: Option.some(legOfBody(planted.body)),
 						id: idOf(planted),
 						replayed: planted.threshold,
 						dueBeforeTheThreadWakes: Option.some(true),
@@ -98,7 +102,7 @@ export const watchdog = property.explore(aimed(settlingRuns, bodyAims), {
 			}),
 	oracle: {
 		kind: "specification",
-		name: "a runaway ends its process past its deadline and the watchdog's grace, naming its case; any other body ends its search by the guard's verdict, one whose thread is silent past the graces while spending no CPU of its own among them"
+		name: "a runaway ends its process past its deadline and the watchdog's grace, naming its case and the leg its guard read (spent for one that spends a CPU, stalled for one that waits); any other body ends its search by the guard's verdict, one whose thread is silent past the graces while spending no CPU of its own among them"
 	},
 	kept: [],
 	kills: [
@@ -119,6 +123,19 @@ export const watchdog = property.explore(aimed(settlingRuns, bodyAims), {
 			original: "\t\t\t\t\tgraceMillis: watchdogGraceMillis,",
 			replacement: "\t\t\t\t\tgraceMillis: watchdogGraceMillis * 2,",
 			why: "The watchdog waits a grace twice the one it states before it ends a runaway's process; the property fails."
+		},
+		{
+			file: "packages/testing/src/live.ts",
+			original: `\t\t\tonSome: (leg) => \`\${watched.report()}\\nits guard read: \${leg}\`\n`,
+			replacement: "\t\t\tonSome: () => watched.report()\n",
+			why: "A runaway's report names no leg, as it did: a hang under load says neither whether its case spent its deadline nor whether it stood still (UNITREDS' bound-identity, 2026-11-21); the property fails on every runaway."
+		},
+		{
+			file: "packages/testing/src/runner/work.ts",
+			original:
+				'\t\treturn { kind: "stalled", moved, queued, over, waited, progress, window: bound.stall }\n',
+			replacement: '\t\treturn { kind: "spent", spent: moved, budget: bound.cpu } as const\n',
+			why: "A case that stood still is reported as one that spent its deadline, so a wait the stir misses reads as a CPU blow-up; the property fails on the body that waits."
 		}
 	]
 })
@@ -167,6 +184,10 @@ export const answersBlockedPastAMoment = property.explore(inFlights, {
 						answer.kind === "blocked"
 							? Arr.filter(indices, (index) => Str.includes(reportAt(index))(answer.report))
 							: Arr.empty<number>(),
+					legs:
+						answer.kind === "blocked"
+							? Arr.filter(indices, (index) => Str.includes(legAt(index))(answer.report))
+							: Arr.empty<number>(),
 					alone:
 						answer.kind === "blocked" && inFlight.length === 1
 							? Option.some(answer.report)
@@ -175,29 +196,39 @@ export const answersBlockedPastAMoment = property.explore(inFlights, {
 				{
 					kind: past ? "blocked" : "running",
 					named: past ? indices : [],
-					alone: past && inFlight.length === 1 ? Option.some(reportAt(0)) : Option.none<string>()
+					legs: past
+						? Arr.flatMap(inFlight, (one, index) => (one.past && one.over ? [index] : []))
+						: [],
+					alone:
+						past && inFlight.length === 1
+							? Option.some(`${reportAt(0)}\nits guard read: ${legAt(0)}`)
+							: Option.none<string>()
 				}
 			)
 		}),
 	oracle: {
 		kind: "specification",
-		name: "the main thread answers blocked exactly when a case in flight is past its moment with its work over its deadline, naming every case in flight"
+		name: "the main thread answers blocked exactly when a case in flight is past its moment with its work over its deadline, naming every case in flight and the leg the guard of each such case read"
 	},
 	kept: [],
 	kills: [
 		{
 			file: "packages/testing/src/live.ts",
-			original:
-				"\tif (!Arr.some(inFlight, (watched) => watched.hangsAt <= now && watched.over(now))) {",
+			original: "\tif (!Arr.some(judged, (one) => Option.isSome(one.over))) {",
 			replacement: "\tif (false) {",
 			why: "The main thread answers blocked whatever it holds in flight, as the watchdog ended a process before: a worker asked while idle between cases, or with none past its moment, is ended with a report of no case; the property fails."
 		},
 		{
 			file: "packages/testing/src/live.ts",
-			original:
-				"\tif (!Arr.some(inFlight, (watched) => watched.hangsAt <= now && watched.over(now))) {",
-			replacement: "\tif (!Arr.some(inFlight, (watched) => watched.hangsAt <= now)) {",
+			original: "\t\tover: watched.hangsAt <= now ? watched.judged(now) : Option.none<string>()\n",
+			replacement: '\t\tover: watched.hangsAt <= now ? Option.some("") : Option.none<string>()\n',
 			why: "The main thread answers blocked once a case in flight passes its moment on the live clock, whatever its work, as the watchdog judged before: a case the machine slows while its work moves within its deadline is ended as a hang; the property fails."
+		},
+		{
+			file: "packages/testing/src/live.ts",
+			original: `\t\t\tonSome: (leg) => \`\${watched.report()}\\nits guard read: \${leg}\`\n`,
+			replacement: "\t\t\tonSome: () => watched.report()\n",
+			why: "A blocked answer names no leg, as it did: a hang under load says neither whether its case spent its deadline nor whether it stood still (UNITREDS' bound-identity, 2026-11-21); the property fails, the legs unnamed."
 		}
 	]
 })
