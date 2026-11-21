@@ -1,7 +1,7 @@
 {
 	"name": "@bjornpagen/devtools",
 	"private": true,
-	"description": "The dev tools every repository shares: the oxlint preset and plugin (every lint rule, each reading syntax alone, with each Tailwind app's class rules through eslint-plugin-better-tailwindcss and oxlint's React Compiler rules), the Tailwind stylesheet linter (superstyle, which reads files as text), the workspace gate (the repository-wide tsconfig, manifest and file-name checks), the tsconfig bases and the hook, typecheck and oxlint commands, each proven against fixtures; no check opens a TypeScript program but the typecheck. A repository takes it from GitHub by commit and keeps its own decisions in toolchain.config.ts.",
+	"description": "The dev tools every repository shares: the oxlint preset and plugin (every lint rule, each reading syntax alone, with each Tailwind app's class rules through eslint-plugin-better-tailwindcss and oxlint's React Compiler rules), the Tailwind stylesheet linter (superstyle, which reads files as text), the workspace gate (the repository-wide tsconfig, manifest and file-name checks), the tsconfig bases and the landing, typecheck and oxlint commands, each proven against fixtures; no check opens a TypeScript program but the typecheck. A repository takes it from GitHub by commit and keeps its own decisions in toolchain.config.ts.",
 	"type": "module",
 	"imports": {
 		"#*": "./src/*"
@@ -21,7 +21,6 @@
 		"./tsconfig.effect-free.json": "./tsconfig.effect-free.json"
 	},
 	"bin": {
-		"toolchain-gate": "./bin/gate.sh",
 		"toolchain-fallow": "./src/tool-fallow.ts",
 		"toolchain-oxfmt": "./src/tool-oxfmt.ts",
 		"toolchain-oxlint": "./src/tool-oxlint.ts",

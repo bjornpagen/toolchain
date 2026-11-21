@@ -1,5 +1,5 @@
 import { Effect, FileSystem, Path, Schema } from "effect"
-import { Land, Packs, type Toolchain } from "#config.ts"
+import { Packs, type Toolchain } from "#config.ts"
 import { DevtoolFailure, failureFrom } from "#shared/devtool.ts"
 import { Repository } from "#shared/repository.ts"
 import { BannedPackages, EffectFree, Exceptions } from "#workspace/rules.ts"
@@ -20,8 +20,7 @@ const ToolchainSchema = Schema.Struct({
 	exceptions: Exceptions,
 	effectFree: EffectFree,
 	packs: Packs,
-	bannedPackages: BannedPackages,
-	land: Land
+	bannedPackages: BannedPackages
 })
 
 /** The module a toolchain.config.ts is, as far as the loader reads it: its default export. */

@@ -100,10 +100,10 @@ export const verdictsAreWhatWasLastRecorded = property.explore(aimedPrograms, {
 })
 
 /**
- * A repository's cache key is toolchain-gate's: the first twelve hex digits of git's blob hash of its identity, so one
- * repository's verdicts and snapshots are named alike. Oracle: `git hash-object --stdin`, which the gate's key_of runs.
+ * A repository's cache key is the first twelve hex digits of git's blob hash of its identity, so every clone of one
+ * repository names its verdicts alike. Oracle: `git hash-object --stdin`, git's own blob hash.
  */
-export const repositoryKeyIsTheGatesKey = property.explore(identities, {
+export const repositoryKeyIsGitsBlobHash = property.explore(identities, {
 	needs: { digest: digests },
 	situations: ["an empty identity", "an identity beyond ASCII", "an identity of several lines"],
 	check:
@@ -124,7 +124,7 @@ export const repositoryKeyIsTheGatesKey = property.explore(identities, {
 			}),
 	oracle: {
 		kind: "second-implementation",
-		name: "git hash-object --stdin, which toolchain-gate's key_of runs"
+		name: "git hash-object --stdin, git's own blob hash of a text"
 	},
 	kept: [],
 	kills: [
@@ -132,7 +132,7 @@ export const repositoryKeyIsTheGatesKey = property.explore(identities, {
 			file: "packages/testing/src/runner/cache.ts",
 			original: "const bytes = content.length",
 			replacement: "const bytes = identity.length",
-			why: "a blob header that counts UTF-16 units, not bytes: a repository named beyond ASCII gets another key than the gate's"
+			why: "a blob header that counts UTF-16 units, not bytes: a repository named beyond ASCII gets another key than git's blob hash"
 		}
 	]
 })

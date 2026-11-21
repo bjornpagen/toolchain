@@ -28,6 +28,7 @@
 		"dedupe": "pnpm dedupe --check",
 		"fuzz": "node packages/testing/scripts/fuzz.ts",
 		"land": "sh packages/devtools/bin/land.sh",
+		"trunk": "pnpm check && pnpm --dir packages/testing exec toolchain-pg settle && pnpm test",
 		"test": "toolchain-turbo run test"
 	},
 	"devDependencies": {
@@ -40,7 +41,6 @@
 		"@types/react": "catalog:",
 		"drizzle-orm": "catalog:",
 		"fallow": "catalog:",
-		"lefthook": "catalog:",
 		"oxfmt": "catalog:",
 		"oxlint": "catalog:",
 		"pg": "catalog:",

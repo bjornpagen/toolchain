@@ -77,8 +77,8 @@ import {
  * `<ref>` (any tree-ish: the commit the remote held, or the empty tree for a new branch) names what the report counts
  * against: a property run is "changed since <ref>" when a file of its closure or a file one of its kills mutates
  * differs from `<ref>`, else "not verified at this content" (its key never passed here). Verdicts live in
- * `${XDG_CACHE_HOME:-~/.cache}/toolchain-test/<repository key>/verdicts`, the key toolchain-gate's (cache.ts), so every
- * clone of a repository and its gate snapshots share them.
+ * `${XDG_CACHE_HOME:-~/.cache}/toolchain-test/<repository key>/verdicts`, the repository's key (cache.ts), so every
+ * clone and workspace of a repository shares them.
  */
 
 /**
@@ -305,7 +305,7 @@ const runnerRootsOf = (repository: string) =>
 		return own ? yield* Effect.forEach(entries, (real) => underRepository(repository, real)) : []
 	})
 
-/** The repository's identity, as toolchain-gate names it: its origin remote's URL, else its common git directory. */
+/** The repository's identity: its origin remote's URL, else its common git directory. */
 const identityOf = (repository: string) =>
 	Effect.flatMap(gitOf(repository, ["config", "--get", "remote.origin.url"]), (url) =>
 		Option.match(Option.filter(Option.map(Result.getSuccess(url), Str.trim), Str.isNonEmpty), {

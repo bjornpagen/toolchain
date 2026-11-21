@@ -30,8 +30,8 @@ const PARENT = "HEAD^"
 
 /**
  * The parent commit of the commit the gate checks, as the quarantine reads it: its files, and the text of each
- * quarantine it held. The gate checks a snapshot whose HEAD is the commit it lets through (toolchain-gate), so the parent
- * is HEAD's first parent; none for a root commit.
+ * quarantine it held. The gate checks a checkout whose HEAD is the commit it lets through (trunk@<repo>'s worktree of
+ * the hub's trunk), so the parent is HEAD's first parent; none for a root commit.
  */
 export const parentSnapshot = (root: string) =>
 	Effect.gen(function* () {

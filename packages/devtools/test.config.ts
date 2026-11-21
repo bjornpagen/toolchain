@@ -7,7 +7,6 @@ import { Layer } from "effect"
  */
 export default defineRunner({
 	include: [
-		"src/gate.test.ts",
 		"src/land.test.ts",
 		"src/threads.test.ts",
 		"src/compile-cache.test.ts",

@@ -242,7 +242,7 @@ export const identities: Gen<string> = oneOf([
 	(source) => (source.draw(boolean) ? "" : "\n")
 ])
 
-/** git's own blob hash of a text, as toolchain-gate's key_of takes it: `printf '%s' | git hash-object --stdin`. */
+/** git's own blob hash of a text: `printf '%s' | git hash-object --stdin`. */
 export const gitBlobHashOf = Effect.fn("gitBlobHashOf")(function* (text: string) {
 	const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
 	const [stdout, exitCode] = yield* Effect.scoped(

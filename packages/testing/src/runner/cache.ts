@@ -237,8 +237,8 @@ export const loadCacheAt = (
 
 /**
  * The first twelve hex digits of the git blob hash of a repository's identity (its origin remote's URL, else its
- * common git directory): the key toolchain-gate names the repository's snapshots by, so the gate's cache and this one
- * name a repository alike, and every clone of it shares one verdict cache, at
+ * common git directory), so every clone and workspace of the repository, whatever spelling of its URL it keeps (a
+ * trailing / or .git), shares one verdict cache, at
  * `${XDG_CACHE_HOME:-~/.cache}/toolchain-test/<key>/verdicts`.
  */
 export const repositoryKeyOf = Effect.fn("repositoryKeyOf")(function* (identity: string) {

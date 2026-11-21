@@ -111,6 +111,5 @@ export default toolchain({
 	exceptions: [],
 	effectFree: [],
 	packs: { grizzle: true, properties: true },
-	bannedPackages: [],
-	land: { lock: "~/.cache/toolchain-land/toolchain.lock", branch: "main" }
+	bannedPackages: []
 })

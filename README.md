@@ -3,8 +3,8 @@
 The dev tools and the testing library that Bjorn's TypeScript repositories share, as one pnpm workspace:
 
 - `@bjornpagen/devtools` (`packages/devtools`): the oxlint preset and plugin (every lint rule, each reading syntax
-  alone), the tsconfig bases, the fixtures that prove every rule, and the commands `toolchain-gate`,
-  `toolchain-typecheck`, `toolchain-oxlint`, `toolchain-oxlint-root` (the root's lint, over the root tsconfig's
+  alone), the tsconfig bases, the fixtures that prove every rule, and the commands `toolchain-land`
+  (`pnpm land`), `toolchain-typecheck`, `toolchain-oxlint`, `toolchain-oxlint-root` (the root's lint, over the root tsconfig's
   include), `workspace-gate` (the repository-wide tsconfig, manifest and file-name
   checks) and `superstyle` (a Tailwind app's stylesheet contract). No check builds a TypeScript program but the
   typecheck.
@@ -13,6 +13,59 @@ The dev tools and the testing library that Bjorn's TypeScript repositories share
 A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at a commit; its pnpm workspace lists
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
+
+## Consumer migration: no gate, no lock: lanes land on the hub, trunk gates (2026-11-21)
+
+Bjorn, 2026-11-21, after a lane killed a `nohup`'d gate run, its children and its parent, the account's systemd: every
+background job on cassowary is a systemd user unit, nothing locks, queues or waits its turn, lanes land on the
+repository's hub behind a thin gate, and `trunk@<repo>` alone runs the whole gate and pushes upstream. The toolchain's
+gate (`toolchain-gate`, packages/devtools/bin/gate.sh: the commit and push hooks' snapshots, held under flock(2) locks
+through `packages/testing/scripts/hold.pl`) has no caller left, since no repository runs git hooks, and is deleted with
+its properties; `pnpm land` waited for a machine-wide push lock, and a pre-push check and a hub's pre-receive hook
+refused any push to the trunk that held no lock. All of that is gone:
+
+- **`pnpm land` lands on the repository's hub behind the thin gate** (the jj-lanes skill: lanes land on the bare
+  repository `~/.local/var/hub/<repo>.git`, the remote `hub`, and `trunk@<repo>` alone gates a batch whole and pushes
+  upstream). From a jj workspace whose working copy is empty (`jj commit` first): `jj git fetch --remote hub`, `jj
+  rebase -b @ -o <trunk>@hub`, `jj fix` (the account's fixer, the workspace's oxfmt), the thin gate (`pnpm install --frozen-lockfile`,
+  the repository's `land:generated` script where it has one, `pnpm types`, and the test files the landing adds or
+  changes, by path, in the package whose test.config.ts holds each), `jj bookmark set <trunk> -r @-`, `jj git push
+  --remote hub -b <trunk>`, where `<trunk>` is the hub's own `trunk.branch`, with no default. A push refused because the trunk moved meanwhile is landed again from the fetch; nobody
+  waits. A commit that conflicts with the trunk is refused before its gate, the conflict left in the workspace. The
+  whole gate is never a landing's: `TOOLCHAIN_LAND_AFTER_REBASE` and the landing's push gate are gone.
+- **The whole gate is the repository's `trunk` script**, which `trunk@<repo>` runs in a worktree of the hub on a batch
+  of landings before it pushes upstream: `pnpm check`, then every test tier in full (each property and its kills,
+  reading no cached pass), with `toolchain-pg settle` first where a tier needs the repository's cluster. Running only
+  what a batch affects is a lane's measure, never trunk's.
+
+Before you move `vendor/toolchain` past this section, in the same commit:
+
+1. **toolchain.config.ts states no `land`**: delete it, which is now a type error. A landing reads its trunk from the
+   hub (`git config trunk.branch` there, which the workbench's trunk part writes from its repos.list: main, and staging
+   for edullm, whose main is production), the branch trunk@<repo> gates, and refuses a hub that states none.
+2. **Delete every call of `land.sh pre-push`** (a `.lefthook/pre-push` script that ran it before its own gate, as the
+   `pnpm land` section below told a hook that is not `toolchain-gate push` to): the mode is gone, and so is the hub's
+   `pre-receive` mode. A hub's `hooks/pre-receive` that a landing installed is a copy of the old land.sh: delete it
+   there by hand.
+3. **Delete the push lock's file** (`~/.cache/toolchain-land/<repository>.lock`, or wherever `lock` named it) and any
+   flock(1) taker of it (grizzle's `~/.cache/grizzle-release/pushlock/push.sh`).
+4. **The root package.json states `trunk`**, the whole gate: `pnpm check`, then `pnpm exec toolchain-pg settle` in the
+   directory that holds pg.config.ts where the repository has one, then its test scripts, every tier in full (grizzle's:
+   `pnpm check && pnpm exec toolchain-pg settle && pnpm test && pnpm test:network`). A repository whose generated files
+   a lane must keep consistent states `land:generated`, the command that fails when they are not.
+5. Every lane's `node_modules/.bin/oxfmt` is the repository's formatter, which `jj fix` (the account's fixer, the
+   workbench's jj part) runs from the workspace's root on each file a landing changes (`--stdin-filepath`), keeping what
+   `.oxfmtrc.json` ignores as it is.
+6. **Retire lefthook and every call of the gate**: no repository runs git hooks any more (jj runs none), and
+   lefthook's install writes them into whatever repository installs it, the hub's bare repository among them when
+   trunk@<repo> installs in its worktree, where a pre-push hook dies with "this operation must be run in a work tree"
+   and fails trunk's push upstream (trunk@den, 2026-11-21). Delete `lefthook install` from the root's `prepare`,
+   lefthook from `allowBuilds` and the catalog in pnpm-workspace.yaml and from the root's devDependencies (then `pnpm
+   install`), and lefthook.yml and `.lefthook/`, whose jobs ran `vendor/toolchain/packages/devtools/bin/gate.sh`, which
+   is gone: what they ran is the landing's thin gate and trunk's `trunk` script now. A script that ran `gate.sh run
+   index …` by hand runs its command in the lane, or leaves it to trunk. Remove the hooks lefthook wrote into a hub
+   (`~/.local/var/hub/<repo>.git/hooks/pre-commit`, `pre-push`) by hand, and delete `~/.cache/toolchain-gate-units/`,
+   `~/.cache/toolchain-snapshots/` and `~/.cache/toolchain-gate/` once no repository pins a toolchain with the gate.
 
 ## Consumer migration: a cluster is units of the workbench's PostgreSQL (2026-11-21)
 

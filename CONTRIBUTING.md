@@ -6,20 +6,16 @@ the toolchain; README.md says what a repository changes to take it.
 
 ## When each check runs
 
-| When                                | Command                   | What runs                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| ----------------------------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| After every edit                    | `pnpm types`              | `turbo run typecheck`: each package's and the root's typecheck, from scratch: it reads no build info, and turbo replays a package whose inputs did not change at all.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| Each commit (lefthook's pre-commit) | `toolchain-gate commit`   | On a snapshot of what the index holds, side by side: `pnpm types`, `oxfmt --check` of the staged files, and the AST-only oxlint on the staged JavaScript and TypeScript files. No lint builds a TypeScript program. The target is 10 seconds or less.                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| Each push (lefthook's pre-push)     | `toolchain-gate push`     | Every push, one sending a submodule's gitlink alone, deletions alone or an empty commit included (a lefthook script job, `.lefthook/pre-push/gate.sh`, below). `pnpm check` on a snapshot of the tip of each pushed ref: the typecheck, the type-aware oxlint, the format check, dead code, the lockfile's dedupe, the repository-wide checks and the fixtures; then, in each package with a `test.config.ts`, `toolchain-test affected`: every property with no cached pass, and its kills, at full width (below). A tree the gate passed before passes again at once (`push.passed/<tree>`), so push by sha (`git push --no-thin origin <sha>:main`) and never commit while a push is in its hook. |
-| On the consumer's schedule          | `toolchain-test fuzz`     | The scheduled fuzz budget, in each package root its own scheduler names: fresh seeds round after round until a case fails or the budget (`1h`, `100000x`) is spent. Never in a hook.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| By hand                             | `pnpm check`, `pnpm test` | The full gate over the working tree, and the tests, which no hook runs.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| When                       | Command                   | What runs                                                                                                                                                                                                                                                                                                                                                                                                              |
+| -------------------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| After every edit           | `pnpm types`              | `turbo run typecheck`: each package's and the root's typecheck, from scratch: it reads no build info, and turbo replays a package whose inputs did not change at all.                                                                                                                                                                                                                                                  |
+| Each landing (`pnpm land`) | `toolchain-land`          | From a jj workspace onto the repository's hub (the remote `hub`), behind the thin gate: `jj fix` with the repository's oxfmt on the files the landing changes, the lockfile against the manifests, the repository's `land:generated` where it has one, `pnpm types`, and the test files the landing adds or changes, by path. A landing whose push the hub refuses because its trunk moved lands again from the fetch. |
+| Each batch on the hub      | `pnpm trunk`              | `trunk@<repo>` runs the root's `trunk` script in a worktree of the hub's trunk, then pushes upstream only what passed: `pnpm check`, then, in each package with a `test.config.ts`, `toolchain-test affected origin/main` (upstream's main): every property with no cached pass, and its kills, at full width (below).                                                                                                 |
+| On the consumer's schedule | `toolchain-test fuzz`     | The scheduled fuzz budget, in each package root its own scheduler names: fresh seeds round after round until a case fails or the budget (`1h`, `100000x`) is spent. Never in a hook.                                                                                                                                                                                                                                   |
+| By hand, never in a lane   | `pnpm check`, `pnpm test` | The full gate over the working tree, and the tests: trunk's, not a lane's.                                                                                                                                                                                                                                                                                                                                             |
 
-Type-aware lint stays out of the commit: no tool caches its results (not `tsrs --lint`, not oxlint), so
-it would build every package's program on every commit, while a commit holds `.git/index.lock` for its whole hook. The
-push's full gate runs it.
-
-Never commit or push with `--no-verify` in a shared checkout: the gates check exactly what you send, so a red gate is
-your commit's.
+Type-aware lint stays out of a landing: no tool caches its results (not `tsrs --lint`, not oxlint), so it would build
+every package's program on every landing. Trunk's whole gate runs it, once a batch.
 
 ## The root typecheck trap
 
@@ -125,106 +121,24 @@ repository is the owner's decision, as a repository's rejection is.
 and `Effect.all`, so code stated `{ concurrency: 1 }`, the default, to please it. Write no concurrency where the run is
 sequential; a wider one is a limit, and it answers to the limits below.
 
-## The gate: snapshots
+## No hooks: the landing and trunk
 
-`toolchain-gate` (`packages/devtools/bin/gate.sh`) runs a check on exactly one snapshot of the repository, never on the
-working tree, so lanes that share one checkout never fail or pass each other's work in progress:
+No repository runs git hooks: jj runs none, and lefthook, which installed them, is gone (its install wrote hooks into a
+hub's bare repository, where its pre-push dies with "this operation must be run in a work tree" and failed trunk@den's
+push upstream, 2026-11-21). The toolchain's gate (`toolchain-gate`, the hooks' snapshots of what each commit and push
+let through) went with them. A lane lands with `pnpm land` (`packages/devtools/bin/land.sh`) on the repository's hub
+behind the thin gate (the formatter, the lockfile, the typecheck and the test files it changes), and `trunk@<repo>` runs
+the root's `trunk` script, the whole gate, in its own worktree of exactly the commit it gates, on a batch of landings,
+before it pushes upstream.
 
-- `toolchain-gate commit` is the commit gate; `toolchain-gate push`, with lefthook's `use_stdin`, is the push gate,
-  which reads the commits a push sends from git's pre-push lines; `toolchain-gate run <index|commit> <command>` runs
-  any command on what the index holds or on a commit (`toolchain-gate run index pnpm check` is the old
-  `scripts/check-staged.sh`).
-- A snapshot is a directory under `${XDG_CACHE_HOME:-~/.cache}/toolchain-snapshots/<the repository's key>/` (the cache layout
-  is below) that git keeps in
-  step with an index of its own (`read-tree --reset -u`): a run rewrites only the files that changed, deletes the ones
-  that went and every other file the commit does not hold, what `.gitignore` names among them (an output another
-  tree's check generated, which a check whose cache misses would read as this tree's), and keeps only the installed
-  dependencies (node_modules) and the caches of turbo (.turbo) and fallow (.fallow), so the install stays warm. It
-  installs with `pnpm install --frozen-lockfile --prefer-offline`, from
-  pnpm's store and metadata cache, fetching only what they lack (the cache layout below).
-- git leaves a submodule's gitlink an empty directory; the gate fills each from the submodule's own repository at the
-  commit the snapshot records, and leaves a submodule the working tree never checked out empty, as it is there.
-- The commit gate and the push gate keep separate snapshots, so a commit, which holds `.git/index.lock` for its whole
-  hook, never shares one with a push's gate.
-- No run waits for another. A mode has as many snapshots as runs of it were ever at once: a run claims the first one
-  no live run holds and, when every one is held, makes the next at once, filled and installed from pnpm's store. A
-  long command in one snapshot (a property suite run by hand, the push's affected properties) holds no other lane's
-  commit or push: JUDGEGUARD's push waited 1,720 s behind another run's lock, then checked in 35.5 s.
-- Turbo's cache is the working tree's (`.turbo/cache`) unless `TURBO_CACHE_DIR` names one, so a task the working tree
-  already ran on the same content is a hit in the snapshot, and the other way round: `pnpm types` after the last edit
-  makes the commit gate's `pnpm types` a replay.
-
-The hooks call lefthook and the gate by path (`node_modules/.bin/lefthook`, `sh packages/devtools/bin/gate.sh`), not
-through `pnpm exec`, whose dependency check refuses to run anything while another lane's manifest change waits for its
-install. The push gate is lefthook's script job `.lefthook/pre-push/gate.sh`, not a run job: lefthook skips a pre-push
-run job whenever `git diff HEAD @{push}` names no file, so a push of a submodule's gitlink alone, of deletions alone or
-of an empty commit went out ungated (`gate (skip) no matching push files`), and it runs a script job whatever the push
-changes.
-
-### The cache layout
-
-The cache is per repository, not per checkout: `${XDG_CACHE_HOME:-~/.cache}/toolchain-snapshots/<key>/`, where the key is the
-first 12 hex digits of the git hash of the repository's identity, its origin remote URL when it has one, written with
-no trailing `/` or `.git` (`https://github.com/o/r.git` and `https://github.com/o/r` are one repository, which keyed
-two caches for grizzle until the gate wrote them alike), else its absolute common git directory. Every clone of one
-repository (grizzle's lanes clone it under `~/.cache/grizzle-release/<LANE>/`) shares its snapshots, so a clone's first
-run is warm: the install is already there.
-
-A snapshot's install reads pnpm's own caches, the store and the package metadata, which every clone and snapshot on the
-machine shares, and fetches only what they lack (`--prefer-offline`), never `--offline`: under pnpm 12's supply-chain
-policy (`minimumReleaseAge`, the trust policy) any lockfile change has pnpm check the metadata of its packages again, so
-an offline install failed with `ERR_PNPM_NO_OFFLINE_META` whenever the metadata cache lacked one of them, until someone
-installed in the snapshot online by hand.
-
-| Path under `<key>/`      | What it is                                                                                                                  |
-| ------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
-| `clones`                 | The common git directories of the clones that ran here, one a line.                                                         |
-| `commit.<n>`, `push.<n>` | The snapshots' checkouts, numbered from 0; `<mode>.<n>.git` is each one's git directory.                                    |
-| `<mode>.<n>.lock`        | Locked (flock(2), exclusive) by the run that uses that snapshot, and by every process it starts.                            |
-| `push.full`              | Stamped when the daily `check:full` passed.                                                                                 |
-| `push.passed/<tree>`     | Stamped when every check of the push gate passed on that tree: a push sending it again claims no snapshot and runs nothing. |
-
-Beside each key directory, `.<key>.lock` is locked (flock(2), shared) by every run of the repository, from before its
-first look at the cache (the push's stamps, a claim) until it and everything it started have exited, so whatever holds
-a snapshot holds its key. Every hold is the kernel's lock on an open file, which the run's shell and everything it
-starts keep open and which the kernel lets go of when the last of them exits, however it exits, taken on the shell's
-descriptor by the toolchain's one holder of kernel locks (`packages/testing/scripts/hold.pl`, which takes the cluster
-maker's lifecycle lock and a run's lease too; the gates since 434ec12 take the same locks with flock(1), so the two
-keep each other's while repositories repin): no pid names a holder,
-so a live run is never taken for a dead one, and no run reads a snapshot another is filling. A snapshot a killed run left half-filled is reset whole by the next run that claims it
-(`read-tree --reset -u` rewrites every tracked file whose stat differs, and `clean` removes the strays).
-
-A snapshot's git directory borrows objects (alternates) from one repository. Each run rewrites the alternates to the
-objects of the clone whose commit it checks, while it holds the snapshot and before `read-tree`: that clone is the only
-one certain to hold the commit (the commit gate's commit of the index exists nowhere else), and the run holds the
-snapshot until it exits, so no other clone's rewrite takes the objects away mid-run. The semantics are unchanged: `read-tree --reset -u`,
-`git clean -fd` without `-x`, submodules filled from the checking clone's submodule repositories.
-
-A run collects garbage once it holds its key: it deletes every other key directory none of whose listed clones still
-exists with that key as its identity, unless a run holds it. The `clones` registry only says whether a repository is
-gone; whether a run is in its directory is the lock's to say: the collect takes the directory's lock alone, without
-waiting, and renames the directory away under it, then removes it, so a run holds the key before the rename and the
-directory stays, or makes a new one after it. That rename is the one way anything under the cache is deleted, but a
-snapshot's own reset, which its claim's lock guards. A clone moved or deleted therefore costs its repository one cold
-snapshot at most, when the last clone is gone.
-
-The cache is this gate's alone. Every gate before it kept its snapshots in `${XDG_CACHE_HOME:-~/.cache}/toolchain-gate/`,
-and its collect sees no flock(1) hold: it judged a directory by a pid file inside each lock and by a key that kept a
-URL's `.git`, so the directory of a repository cloned with `.git` read as gone and was deleted under its live run
-(effect-openapi-cli-generator's 930250a4b854, four pushes in a row on 2026-11-19, with `spawn /bin/sh ENOENT` and "No
-package.json"). No older gate looks in `toolchain-snapshots/`. `toolchain-gate/` is dead weight once no repository on the
-machine pins a toolchain older than this gate; delete it then.
-
-A snapshot directory is safe to delete when no gate is running; the next run builds it again.
-
-## The push gate's properties: affected and the verdict cache
+## A lane's properties: affected and the verdict cache
 
 `toolchain-test affected <ref>` (`packages/testing/src/runner/affected.ts`) runs, in a package root, every property
 whose verdict key holds no cached pass, at full width, then the kills of each that passed; a property passes when its
 search passes and every kill of it turns its witnesses red, and only then is its pass cached. A cached pass is a known
-answer: it never runs again. A failure removes the pass its key held. The push gate runs it after `pnpm check`, in each
-package of the snapshot with a `test.config.ts`, against the commit the remote held (the empty tree for a new ref); the
-ref only sorts the report's count of what ran into "changed since <ref>" and "not verified at this content".
+answer: it never runs again. A failure removes the pass its key held. A lane runs it against the trunk it lands on, in
+each package with a `test.config.ts`; the ref only sorts the report's count of what ran into "changed since <ref>" and
+"not verified at this content". Trunk runs every property in full, `toolchain-test run`, reading no cached pass.
 
 A property's key is its identity, the closure hash of its module joined with those of the package's `test.config.ts`
 and the runner's own entry modules (`runner/cli.ts`, `runner/worker.ts`), the seed policy of a gate run, and each kill
@@ -240,12 +154,11 @@ its closure: the full run per production version, `toolchain-test run`, covers i
 property named runs, then the kills of each whose search passed (save those whose verdict the cache holds), and every
 verdict is recorded, so a property whose kills did not all turn red fails the run and is never a cached pass.
 
-Verdicts live per repository, shared by every clone and the gate's snapshots (the push snapshot carries the
-repository's origin URL so it names the repository as the clones do):
+Verdicts live per repository, shared by every clone and workspace of it, which name the repository by its origin URL:
 
-| Path                                                                                   | What it is                                                                                                                                                                                                                 |
-| -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `${XDG_CACHE_HOME:-~/.cache}/toolchain-test/<key>/verdicts/<property>/<key hash>.json` | One pass: `<property>` is the SHA-256 of the property id, `<key hash>` that of the key, and the file holds the key itself. A record whose text is not its key is refused and its property runs. `<key>` is the gate's key. |
+| Path                                                                                   | What it is                                                                                                                                                                                                                                                                                                                                                    |
+| -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `${XDG_CACHE_HOME:-~/.cache}/toolchain-test/<key>/verdicts/<property>/<key hash>.json` | One pass: `<property>` is the SHA-256 of the property id, `<key hash>` that of the key, and the file holds the key itself. A record whose text is not its key is refused and its property runs. `<key>` is the repository's key: the first 12 hex digits of the git hash of its origin URL, with no trailing `/` or `.git`, else of its common git directory. |
 
 Records are content-addressed and immutable: every pass stays under its own key, so lanes that push different trees one
 after another find each other's passes, and a failure removes only the pass under its own key. Nothing is collected by
@@ -288,8 +201,7 @@ question is whether a cap should exist at all: one that guards nothing named is 
 in the module that uses it, its evidence in its JSDoc: `@limitKind` `published`, `measured`, `derived` or
 `provisional`, with `@owner`, `@unit`, `@scope` and the kind's tags. Review holds the policy; no rule does.
 
-A shell script keeps its number as a `readonly` at its top with the same tags above it: `bin/gate.sh`'s daily check:full
-period.
+A shell script keeps its number as a `readonly` at its top with the same tags above it.
 
 A number the machine reports is read where it is used, never minted, and widths computed from it are no limit:
 
@@ -298,7 +210,6 @@ A number the machine reports is read where it is used, never minted, and widths 
 | Test processes at once, `testWorkers`              | `packages/testing/src/workers.ts`         | what the machine reports, `availableParallelism()`: one forked test process a logical CPU                                                                                                                                                                         |
 | Workers one mutant's trial leases                  | `packages/testing/src/mutate/schedule.ts` | `shareOf`, a plain function of the pool's width (`testWorkers`) and the trials of a run: the width split evenly among them, at least one each, so the trials at once never lease more workers than one test run holds                                             |
 | turbo's tasks at once, `"concurrency": "100%"`     | `turbo.json`                              | one task a logical processor; turbo documents `100%` as "all available logical processors" and 10 tasks as its default (https://turborepo.dev/docs/reference/configuration, verified 2026-11-15). JSON carries no comment, so this row is its documentation       |
-| One gate run per snapshot                          | `bin/gate.sh`                             | an identity: a snapshot is one directory that a run rewrites; the snapshots of a mode are as many as its runs were ever at once                                                                                                                                   |
 | A search's cases at once, a search's `concurrency` | each test's `explore` or `exhaust`        | left out, one at a time (`oneAtATime`), an identity; stated above one, the test's own input, no resource's bound: the engine finds the same cases at any concurrency, and a sense that reads process-wide counters (guided coverage) runs its cases one at a time |
 
 ## Steering belongs to the generator
