@@ -524,6 +524,7 @@ const PLACES = {
 	"no-unoptimized-next-image": { part: "web", scope: "every file" },
 	"no-useless-continue": { part: "core", scope: "every file" },
 	"prefer-early-return": { part: "core", scope: "every file" },
+	"sha256-digests": { part: "core", scope: "every file" },
 	"side-effect-free": { part: "grizzle", scope: "every file" },
 	"single-permit-owners": { part: "core", scope: "test scope" },
 	"sql-aliased-table-reference": { part: "drizzle", scope: "every file" },

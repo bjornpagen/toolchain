@@ -67,6 +67,13 @@ import { ModuleClosure, WorkerIndex } from "#runner/services.ts"
 import { deadlocks } from "#runner/work.fixtures.ts"
 import { overrunText, ownCpu, ownWork, waitedOnNow } from "#runner/work.ts"
 
+/**
+ * Twelve hex digits the server draws, a random UUID's first twelve, every one of them random: a name no other run
+ * takes.
+ */
+const freshHex =
+	"SELECT pg_catalog.substr(pg_catalog.replace(pg_catalog.gen_random_uuid()::text, '-', ''), 1, 12)"
+
 export const freshIsolation = property.explore(array(int(-5, 5), { min: 0, max: 6 }), {
 	needs: { db: Database.fresh(marksTemplate), services },
 	situations: ["a case writing no row", "a case writing several rows"],
@@ -377,11 +384,7 @@ export const refusedDropCollected = property.exhaust(finite(int(1, 3)), {
 						const member = yield* Effect.map(cluster.members, Arr.headNonEmpty)
 						return yield* Effect.scoped(
 							Effect.flatMap(cluster.connect(member, cluster.maintenance), (session) =>
-								single(
-									session,
-									"SELECT pg_catalog.substr(pg_catalog.md5(pg_catalog.gen_random_uuid()::text), 1, 12)",
-									[]
-								)
+								single(session, freshHex, [])
 							)
 						)
 					}),
@@ -607,11 +610,7 @@ export const staleCollected = property.explore(int(1, 3), {
 								const member = yield* Effect.map(cluster.members, Arr.headNonEmpty)
 								return yield* Effect.scoped(
 									Effect.flatMap(cluster.connect(member, cluster.maintenance), (session) =>
-										single(
-											session,
-											"SELECT pg_catalog.substr(pg_catalog.md5(pg_catalog.gen_random_uuid()::text), 1, 12)",
-											[]
-										)
+										single(session, freshHex, [])
 									)
 								)
 							}),
@@ -703,13 +702,8 @@ export const inUseKept = property.exhaust(
 							const member = yield* Effect.map(cluster.members, Arr.headNonEmpty)
 							const prefixToken = yield* Effect.scoped(
 								Effect.flatMap(cluster.connect(member, cluster.maintenance), (session) =>
-									Effect.flatMap(
-										single(
-											session,
-											"SELECT pg_catalog.substr(pg_catalog.md5(pg_catalog.gen_random_uuid()::text), 1, 12)",
-											[]
-										),
-										(drawn) => Effect.fromOption(Option.fromNullishOr(drawn))
+									Effect.flatMap(single(session, freshHex, []), (drawn) =>
+										Effect.fromOption(Option.fromNullishOr(drawn))
 									)
 								)
 							)
@@ -810,13 +804,8 @@ export const cloneOutlivesNoTemplate = property.exhaust(
 							const member = yield* Effect.map(cluster.members, Arr.headNonEmpty)
 							const prefixToken = yield* Effect.scoped(
 								Effect.flatMap(cluster.connect(member, cluster.maintenance), (session) =>
-									Effect.flatMap(
-										single(
-											session,
-											"SELECT pg_catalog.substr(pg_catalog.md5(pg_catalog.gen_random_uuid()::text), 1, 12)",
-											[]
-										),
-										(drawn) => Effect.fromOption(Option.fromNullishOr(drawn))
+									Effect.flatMap(single(session, freshHex, []), (drawn) =>
+										Effect.fromOption(Option.fromNullishOr(drawn))
 									)
 								)
 							)
@@ -1281,11 +1270,7 @@ export const roleSettingCloned = property.explore(int(0, 3), {
 						const member = yield* Effect.map(cluster.members, Arr.headNonEmpty)
 						const token = yield* Effect.scoped(
 							Effect.flatMap(cluster.connect(member, cluster.maintenance), (session) =>
-								single(
-									session,
-									"SELECT pg_catalog.substr(pg_catalog.md5(pg_catalog.gen_random_uuid()::text), 1, 12)",
-									[]
-								)
+								single(session, freshHex, [])
 							)
 						)
 						const login = `tcl_${token ?? ""}`

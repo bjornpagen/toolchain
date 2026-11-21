@@ -86,6 +86,13 @@ export default defineConfig(
 				})
 			},
 			{
+				files: ["packages/devtools/src/oxlint/rules/sha256-digests.ts"],
+				rules: active({
+					/** The rule spells the digest it refuses, to find it. */
+					"devtools/sha256-digests": "off"
+				})
+			},
+			{
 				files: ["packages/devtools/src/shared/config.ts"],
 				rules: active({
 					/** The one load of a repository's toolchain.config.ts, whose path is known only at run time (owner, D1,

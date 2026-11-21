@@ -142,11 +142,13 @@ const takeReady = (ready: Queue.Queue<Ready>): Effect.Effect<Database, NeedFaile
 	})
 
 /**
- * The catalog half of a database's fingerprint: one digest over every schema, relation and column outside PostgreSQL's
- * own, with owners and privileges; routines, constraints, indexes, triggers, rules, policies, types and enum labels,
- * extensions, publications, event triggers, default privileges, statistics objects, comments and large objects; and
- * the database's own privileges and settings. Roles are the cluster's, not the database's, and are not in it. The rows
- * are the other half (contentsQuery).
+ * The catalog half of a database's fingerprint: one SHA-256, in hex, over every schema, relation and column outside
+ * PostgreSQL's own, with owners and privileges; routines with their source, constraints, indexes, triggers, rules with
+ * their definitions, policies, types and enum labels, extensions, publications, event triggers, default privileges,
+ * statistics objects, comments with their text and large objects; and the database's own privileges and settings, a
+ * line each, digested as the text of their sorted array, which quotes a line that holds a line break, so no two
+ * catalogs' lines read as one text. Roles are the cluster's, not the database's, and are not in it. The rows are the
+ * other half (contentsQuery).
  */
 const fingerprintQuery = `WITH user_namespace AS (
 	SELECT oid FROM pg_catalog.pg_namespace WHERE nspname !~ '^pg_' AND nspname <> 'information_schema'
@@ -165,7 +167,7 @@ const fingerprintQuery = `WITH user_namespace AS (
 	WHERE a.attnum > 0 AND c.relnamespace IN (SELECT oid FROM user_namespace)
 	UNION ALL SELECT 'routine ' || p.oid::regprocedure::text || ' ' || p.proowner::regrole::text || ' ' || p.prokind::text || ' '
 		|| p.provolatile::text || ' ' || p.prosecdef::text || ' ' || COALESCE(p.proacl::text, '') || ' '
-		|| COALESCE(pg_catalog.array_to_string(p.proconfig, ','), '') || ' ' || pg_catalog.md5(COALESCE(p.prosrc, ''))
+		|| COALESCE(pg_catalog.array_to_string(p.proconfig, ','), '') || ' ' || COALESCE(p.prosrc, '')
 	FROM pg_catalog.pg_proc AS p WHERE p.pronamespace IN (SELECT oid FROM user_namespace)
 	UNION ALL SELECT 'constraint ' || con.conrelid::text || ' ' || con.contypid::text || ' ' || con.conname || ' '
 		|| pg_catalog.pg_get_constraintdef(con.oid) || ' ' || con.convalidated::text
@@ -175,7 +177,7 @@ const fingerprintQuery = `WITH user_namespace AS (
 	WHERE c.relnamespace IN (SELECT oid FROM user_namespace)
 	UNION ALL SELECT 'trigger ' || pg_catalog.pg_get_triggerdef(t.oid) || ' ' || t.tgenabled::text
 	FROM pg_catalog.pg_trigger AS t WHERE NOT t.tgisinternal
-	UNION ALL SELECT 'rule ' || r.ev_class::regclass::text || ' ' || r.rulename || ' ' || pg_catalog.md5(pg_catalog.pg_get_ruledef(r.oid))
+	UNION ALL SELECT 'rule ' || r.ev_class::regclass::text || ' ' || r.rulename || ' ' || pg_catalog.pg_get_ruledef(r.oid)
 	FROM pg_catalog.pg_rewrite AS r JOIN pg_catalog.pg_class AS c ON c.oid = r.ev_class
 	WHERE c.relnamespace IN (SELECT oid FROM user_namespace)
 	UNION ALL SELECT 'policy ' || p.polrelid::regclass::text || ' ' || p.polname || ' ' || p.polcmd::text || ' ' || p.polpermissive::text || ' '
@@ -200,7 +202,7 @@ const fingerprintQuery = `WITH user_namespace AS (
 	FROM pg_catalog.pg_default_acl AS d
 	UNION ALL SELECT 'statistics ' || s.stxrelid::regclass::text || ' ' || s.stxname
 	FROM pg_catalog.pg_statistic_ext AS s
-	UNION ALL SELECT 'comment ' || c.classoid::text || ' ' || c.objoid::text || ' ' || c.objsubid::text || ' ' || pg_catalog.md5(c.description)
+	UNION ALL SELECT 'comment ' || c.classoid::text || ' ' || c.objoid::text || ' ' || c.objsubid::text || ' ' || c.description
 	FROM pg_catalog.pg_description AS c WHERE c.objoid >= 16384
 	UNION ALL SELECT 'large objects ' || pg_catalog.count(*)::text FROM pg_catalog.pg_largeobject_metadata
 	UNION ALL SELECT 'database ' || COALESCE(d.datacl::text, '')
@@ -209,7 +211,7 @@ const fingerprintQuery = `WITH user_namespace AS (
 	FROM pg_catalog.pg_db_role_setting AS s JOIN pg_catalog.pg_database AS d ON d.oid = s.setdatabase
 	WHERE d.datname = pg_catalog.current_database()
 )
-SELECT pg_catalog.md5(COALESCE(pg_catalog.string_agg(text, E'\\n' ORDER BY text), '')) FROM line`
+SELECT pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(pg_catalog.array_agg(text ORDER BY text)::text, 'UTF8')), 'hex') FROM line`
 
 /**
  * The statement that puts every sequence of a database back as it stands now: a setval for each, to its last value
@@ -222,19 +224,19 @@ FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_sequence AS s ON s.seqrelid = c
 WHERE c.relkind = 'S' AND c.relnamespace IN (SELECT oid FROM pg_catalog.pg_namespace WHERE nspname !~ '^pg_' AND nspname <> 'information_schema')`
 
 /**
- * The statement that digests a database's rows as they stand: every table's and materialized view's rows, and every
- * sequence's state, each a line of the relation's name and the digest of its rows' text, read in one statement the
+ * The statement that digests a database's rows as they stand, by SHA-256: every table's and materialized view's rows,
+ * and every sequence's state, each a line of the relation's name and the hex of its rows' text's SHA-256, read in one statement the
  * database's catalog writes (none when it has no relation to read). A materialized view created WITH NO DATA refuses
  * to be read (55000), so its line is whether it is populated, which a case's REFRESH changes (GZ-PG-WRITE, GZ-LAWS:
  * a seat over grizzle's docs world and rule-seeding's viewed shape failed to open). Written once, from the clone as
  * cloned: a relation a case adds is in the catalog half, and one it drops fails the statement.
  */
-const contentsQuery = `SELECT 'SELECT pg_catalog.md5(pg_catalog.string_agg(line, E''\\n'' ORDER BY line)) FROM (' || pg_catalog.string_agg(
+const contentsQuery = `SELECT 'SELECT pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(pg_catalog.array_agg(line ORDER BY line)::text, ''UTF8'')), ''hex'') FROM (' || pg_catalog.string_agg(
 	CASE WHEN c.relkind = 'S'
 		THEN pg_catalog.format('SELECT %L || '' '' || last_value::text || '' '' || is_called::text FROM %s', c.oid::regclass::text, c.oid::regclass)
 		WHEN c.relkind = 'm' AND NOT c.relispopulated
 		THEN pg_catalog.format('SELECT %L || '' '' || (SELECT CASE WHEN relispopulated THEN ''populated'' ELSE ''unpopulated'' END FROM pg_catalog.pg_class WHERE oid = %s)', c.oid::regclass::text, c.oid)
-		ELSE pg_catalog.format('SELECT %L || '' '' || (SELECT pg_catalog.md5(COALESCE(pg_catalog.string_agg(t::text, E''\\n'' ORDER BY t::text), '''')) FROM %s AS t)', c.oid::regclass::text, c.oid::regclass)
+		ELSE pg_catalog.format('SELECT %L || '' '' || (SELECT pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(COALESCE(pg_catalog.string_agg(t::text, E''\\n'' ORDER BY t::text), ''''), ''UTF8'')), ''hex'') FROM %s AS t)', c.oid::regclass::text, c.oid::regclass)
 	END, ' UNION ALL ') || ') AS lines(line)'
 FROM pg_catalog.pg_class AS c
 WHERE c.relkind IN ('r', 'p', 'm', 'S')

@@ -119,6 +119,7 @@ export const FIXTURE_RULES: FixtureRules<
 	"no-unoptimized-next-image": null,
 	"no-useless-continue": null,
 	"prefer-early-return": null,
+	"sha256-digests": null,
 	"side-effect-free": {
 		modules: [
 			{

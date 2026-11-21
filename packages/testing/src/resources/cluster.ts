@@ -181,8 +181,8 @@ export const useKey = (placeholder: string): string =>
 
 /**
  * Opens the worker's owner on `member` in `scope`: a session in the owner's database holding the lock of a fresh owner
- * key, 64 bits the server draws (the MD5 of a random UUID's text) and locks in one statement, and the counter of the
- * clones it names.
+ * key, 64 bits the server draws (pg_catalog.random over int8's whole range, as 16 hex digits) and locks in one
+ * statement, and the counter of the clones it names.
  */
 const openOwner = (
 	spec: PgClusterSpec,
@@ -193,7 +193,7 @@ const openOwner = (
 		const session = yield* Scope.provide(spec.connect(member, spec.cluster.owner), scope)
 		const drawn = yield* single(
 			session,
-			`SELECT k FROM (SELECT pg_catalog.substr(pg_catalog.md5(pg_catalog.gen_random_uuid()::text), 1, 16) AS k) AS fresh, LATERAL (SELECT pg_catalog.pg_advisory_lock(${lockKey("fresh.k")})) AS locked`,
+			`SELECT k FROM (SELECT pg_catalog.lpad(pg_catalog.to_hex(pg_catalog.random((-9223372036854775808)::int8, 9223372036854775807::int8)), 16, '0') AS k) AS fresh, LATERAL (SELECT pg_catalog.pg_advisory_lock(${lockKey("fresh.k")})) AS locked`,
 			[]
 		)
 		const text = yield* Effect.mapError(Effect.fromNullishOr(drawn), () =>

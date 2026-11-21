@@ -32,6 +32,7 @@ import { noTry } from "#oxlint/rules/no-try.ts"
 import { noUnoptimizedNextImage } from "#oxlint/rules/no-unoptimized-next-image.ts"
 import { noUselessContinue } from "#oxlint/rules/no-useless-continue.ts"
 import { preferEarlyReturn } from "#oxlint/rules/prefer-early-return.ts"
+import { sha256Digests } from "#oxlint/rules/sha256-digests.ts"
 import { sideEffectFree } from "#oxlint/rules/side-effect-free.ts"
 import { singlePermitOwners } from "#oxlint/rules/single-permit-owners.ts"
 import { sqlAliasedTableReference } from "#oxlint/rules/sql-aliased-table-reference.ts"
@@ -82,6 +83,7 @@ const PLUGIN_RULES = {
 	"no-unoptimized-next-image": noUnoptimizedNextImage,
 	"no-useless-continue": noUselessContinue,
 	"prefer-early-return": preferEarlyReturn,
+	"sha256-digests": sha256Digests,
 	"side-effect-free": sideEffectFree,
 	"single-permit-owners": singlePermitOwners,
 	"sql-aliased-table-reference": sqlAliasedTableReference,
