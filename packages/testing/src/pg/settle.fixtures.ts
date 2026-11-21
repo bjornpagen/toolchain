@@ -1,14 +1,27 @@
-import { Array as Arr, Config, Effect, FileSystem, Option, Result, String as Str } from "effect"
+import { regex } from "arkregex"
+import {
+	Array as Arr,
+	Config,
+	Effect,
+	Exit,
+	FileSystem,
+	Option,
+	Result,
+	Scope,
+	String as Str
+} from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { boolean, type Gen } from "#gen.ts"
-import { memberNames, unitOf } from "#pg/settle.ts"
+import { memberNames, settled, statesHome, unitOf } from "#pg/settle.ts"
 import { type LocalCluster, localCluster, type WorkerSizing } from "#pg/spec.ts"
 import { testWorkers } from "#workers.ts"
 
 /**
  * What the settle properties (settle.test.ts) draw and run: a cluster of a unit name of its own (a case's, so no case
- * reaches another's members), reached over its socket or over TLS at a port the machine has free, of one member or
- * two; and the members' units, stopped by name and their data and state removed as the case's scope closes.
+ * reaches another's members), held by the case's process while it lives, reached over its socket or over TLS at a port
+ * the machine has free, of one member or two; the members' units, stopped by name and their data and state removed as
+ * the case's scope closes; and every case cluster a process ended with its scope open left, removed as the next case
+ * draws its own.
  */
 
 /** A drawn cluster's shape: TLS or its socket alone, and one member or two. */
@@ -29,12 +42,12 @@ type Listener = ReturnType<typeof net.createServer>
 /** The addresses a member's TLS listener binds where it listens at localhost: IPv4's and IPv6's loopback. */
 const LOOPBACKS = ["127.0.0.1", "::1"] as const
 
-/** A listener on `port` of `host` now (0 for any the kernel hands out), or none where another process holds it. */
-const listenerAt = (port: number, host: string) =>
+/** A listener at `at` now, a port of a host's or a socket's path, or none where another socket holds it. */
+const listenerAt = (at: Readonly<{ port: number; host: string }> | Readonly<{ path: string }>) =>
 	Effect.callback<Option.Option<Listener>>((resume) => {
 		const server = net.createServer()
 		server.once("error", () => resume(Effect.succeedNone))
-		server.listen(port, host, () => resume(Effect.succeedSome(server)))
+		server.listen(at, () => resume(Effect.succeedSome(server)))
 	})
 
 /** These listeners closed. */
@@ -81,7 +94,7 @@ const freePorts = (count: number): Effect.Effect<number, never, FileSystem.FileS
 				Array.from({ length: count }, (_, offset) => port + offset),
 				(at) => Arr.map(LOOPBACKS, (host) => ({ port: at, host }))
 			),
-			(at) => listenerAt(at.port, at.host)
+			listenerAt
 		)
 		yield* closedAll(Arr.getSomes(listeners))
 		return Arr.every(listeners, Option.isSome)
@@ -90,17 +103,127 @@ const freePorts = (count: number): Effect.Effect<number, never, FileSystem.FileS
 	})
 
 /**
- * A case's cluster of `shape`: a unit name of its own (`tcs-` and 8 random hex digits), its workers' capacity sized by
- * a busy backend of the package's own (pg.config.ts's), two members when `spread` (a family whose members serve half
- * the run's workers each), and over TLS free ports, the first and, spread, the one after it (freePorts).
+ * A case's cluster's unit name (`tcs-` and 8 random hex digits, clusterOf), or a member's or its data directory's, the
+ * unit name and `-<i>`: `cluster` is the cluster's.
+ */
+const CASE_NAME = regex("^(?<cluster>tcs-[0-9a-f]{8})(?:-[0-9]+)?$")
+
+/**
+ * The name a case's cluster is held by: an abstract Unix socket's (Linux's unix(7): a name in no directory, its first
+ * byte NUL), which the kernel frees with the socket, so with the process that holds it however that process ends, a
+ * SIGKILL's and its unit's stop included, where no finalizer of the process's runs and a directory it was to remove
+ * stays (resources/scratch.ts processScratch's remover is in the unit's cgroup and is stopped with it).
+ */
+const holdOf = (unit: string) => `\0toolchain-settle/${unit}`
+
+/**
+ * `unit`'s hold taken for the enclosing scope (holdOf), or none where a socket holds it already, this process's own
+ * among them. The hold never keeps its process alive (its listener unreferenced).
+ */
+export const holdTaken = (unit: string) =>
+	Effect.acquireRelease(
+		Effect.map(
+			listenerAt({ path: holdOf(unit) }),
+			Option.map((listener) => listener.unref())
+		),
+		(listener) => closedAll(Option.toArray(listener))
+	)
+
+/** Where the workbench's postgres@ units keep their data, a directory a member: `~/.local/var/postgres`. */
+const dataHome = Effect.map(
+	Effect.orDie(Config.String("HOME")),
+	(home) => `${home}/.local/var/postgres`
+)
+
+/** A member's data directory, the workbench's postgres@ unit's: `<dataHome>/<name>`. */
+export const dataOf = (name: string) => Effect.map(dataHome, (home) => `${home}/${name}`)
+
+/** The names in `directory`, or none where there is no directory. */
+const namesIn = (directory: string) =>
+	Effect.flatMap(FileSystem.FileSystem, (fs) =>
+		Effect.orElseSucceed(fs.readDirectory(directory), (): ReadonlyArray<string> => [])
+	)
+
+/**
+ * Case cluster `unit` gone, whatever is left of it: its members' units stopped (`postgres@<unit>-*`, systemctl's
+ * pattern over the units it has loaded) and their failures forgotten, then each member's data directory (the
+ * workbench's, `<dataHome>/<unit>-<i>`) and the cluster's state directory removed.
+ */
+const clusterRemoved = (unit: string) =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+		yield* Effect.forEach(
+			["stop", "reset-failed"],
+			(verb) =>
+				Effect.ignore(
+					spawner.exitCode(ChildProcess.make("systemctl", ["--user", verb, unitOf(`${unit}-*`)]))
+				),
+			{ discard: true }
+		)
+		const home = yield* dataHome
+		const names = yield* namesIn(home)
+		const members = Arr.filter(names, Str.startsWith(`${unit}-`))
+		yield* Effect.forEach(
+			members,
+			(member) => Effect.ignore(fs.remove(`${home}/${member}`, { recursive: true })),
+			{ discard: true }
+		)
+		const states = yield* Effect.orDie(statesHome)
+		yield* Effect.ignore(fs.remove(`${states}/${unit}`, { recursive: true }))
+	})
+
+/**
+ * Every case cluster no process holds (holdOf) removed (clusterRemoved): one a case's process left as it ended with its
+ * scope open, a worker the pool ended mid-case or a run's unit stopped (lane TOOLCHAIN6's stopped runs left four,
+ * 2026-11-21, their servers running until a person stopped them). The clusters are named by what they leave, their
+ * members' data directories and their state directories; each is held while it is removed, so a cluster a live case
+ * holds is never touched and two sweeps never remove one at once.
+ */
+const swept = Effect.gen(function* () {
+	const names = yield* Effect.flatMap(Effect.all([dataHome, Effect.orDie(statesHome)]), (homes) =>
+		Effect.forEach(homes, namesIn)
+	)
+	const clusters = new Set(
+		Arr.filterMap(Arr.flatten(names), (name) =>
+			Result.fromNullishOr(CASE_NAME.exec(name)?.groups.cluster, () => name)
+		)
+	)
+	yield* Effect.forEach(
+		clusters,
+		(unit) =>
+			Effect.scoped(
+				Effect.flatMap(holdTaken(unit), (hold) =>
+					Effect.when(clusterRemoved(unit), Effect.succeed(Option.isSome(hold)))
+				)
+			),
+		{ discard: true }
+	)
+})
+
+/**
+ * A case's cluster of `shape`: a unit name of its own (`tcs-` and 8 random hex digits), held by this process for the
+ * enclosing scope (holdTaken), its workers' capacity sized by a busy backend of the package's own (pg.config.ts's), two
+ * members when `spread` (a family whose members serve half the run's workers each), and over TLS free ports, the first
+ * and, spread, the one after it (freePorts). Drawing it first removes every case cluster no process holds (swept).
  */
 export const clusterOf = (
 	shape: Shape
-): Effect.Effect<LocalCluster<WorkerSizing>, never, FileSystem.FileSystem> =>
+): Effect.Effect<
+	LocalCluster<WorkerSizing>,
+	never,
+	FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner | Scope.Scope
+> =>
 	Effect.gen(function* () {
+		const unit = `tcs-${process.getBuiltinModule("node:crypto").randomBytes(4).toString("hex")}`
+		const hold = yield* holdTaken(unit)
+		if (Option.isNone(hold)) {
+			return yield* Effect.die(`a case's cluster's name, ${unit}, is held by another process`)
+		}
+		yield* swept
 		const port = shape.tls ? yield* freePorts(shape.spread ? 2 : 1) : 0
 		return localCluster({
-			unit: `tcs-${process.getBuiltinModule("node:crypto").randomBytes(4).toString("hex")}`,
+			unit,
 			network: shape.tls ? { kind: "tls", port } : { kind: "socket" },
 			owner: "toolchain_settle",
 			template: "toolchain_settle_template",
@@ -137,45 +260,54 @@ export const unitActive = (name: string) =>
 		)
 	)
 
-/**
- * `cluster`'s units and files gone as the enclosing scope closes, however it ends: each member's unit stopped by its
- * name and its failure forgotten, its data directory (the workbench's, ~/.local/var/postgres/<name>) and the cluster's
- * state directory removed.
- */
+/** `cluster` gone as the enclosing scope closes, however it ends (clusterRemoved), while the scope still holds it. */
 export const removedAtEnd = (cluster: LocalCluster) =>
-	Effect.addFinalizer(() =>
-		Effect.gen(function* () {
-			const fs = yield* FileSystem.FileSystem
-			const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-			const home = yield* Config.String("HOME")
-			const state = yield* Config.withDefault(
-				Config.String("XDG_STATE_HOME"),
-				`${home}/.local/state`
-			)
-			yield* Effect.forEach(
-				memberNames(cluster),
-				(name) =>
-					Effect.gen(function* () {
-						yield* Effect.ignore(
-							spawner.exitCode(ChildProcess.make("systemctl", ["--user", "stop", unitOf(name)]))
-						)
-						yield* Effect.ignore(
-							spawner.exitCode(
-								ChildProcess.make("systemctl", ["--user", "reset-failed", unitOf(name)])
-							)
-						)
-						const data = yield* dataOf(name)
-						yield* Effect.ignore(fs.remove(data, { recursive: true }))
-					}),
-				{ discard: true }
-			)
-			yield* Effect.ignore(fs.remove(`${state}/toolchain-pg/${cluster.unit}`, { recursive: true }))
-		}).pipe(Effect.orDie)
-	)
+	Effect.addFinalizer(() => clusterRemoved(cluster.unit))
 
-/** A member's data directory, the workbench's postgres@ unit's: `~/.local/var/postgres/<name>`. */
-export const dataOf = (name: string) =>
-	Effect.map(Effect.orDie(Config.String("HOME")), (home) => `${home}/.local/var/postgres/${name}`)
+/** A left cluster's case: one member or two, over its socket, and whether the process that drew it is still alive. */
+export type Left = Readonly<{ spread: boolean; alive: boolean }>
+
+/** Every left cluster's case, one each. */
+export const lefts: Gen<Left> = (source) => ({
+	spread: source.draw(boolean),
+	alive: source.draw(boolean)
+})
+
+/**
+ * A settled case cluster of `left`'s shape, removed as the enclosing scope closes. Where its process is not `alive` its
+ * hold is let go once it is settled, its units, data and state left as they are, as a process that ended with its scope
+ * open leaves them: the kernel frees the hold's name either way.
+ */
+export const leftCluster = (left: Left) =>
+	Effect.gen(function* () {
+		const holding = yield* Scope.make()
+		yield* Effect.addFinalizer(() => Scope.close(holding, Exit.void))
+		const cluster = yield* Scope.provide(holding)(clusterOf({ tls: false, spread: left.spread }))
+		yield* removedAtEnd(cluster)
+		yield* settled(cluster)
+		if (!left.alive) {
+			yield* Scope.close(holding, Exit.void)
+		}
+		return cluster
+	})
+
+/**
+ * What is there of `cluster` now: whether each member's unit is active (unitActive) and its data directory is, and
+ * whether the cluster's state directory is.
+ */
+export const presenceOf = (cluster: LocalCluster) =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		const exists = (path: string) => Effect.orElseSucceed(fs.exists(path), () => false)
+		const active = yield* Effect.forEach(memberNames(cluster), unitActive)
+		const data = yield* Effect.forEach(memberNames(cluster), (name) =>
+			Effect.flatMap(dataOf(name), exists)
+		)
+		const state = yield* Effect.flatMap(Effect.orDie(statesHome), (home) =>
+			exists(`${home}/${cluster.unit}`)
+		)
+		return [...active, ...data, state]
+	})
 
 /** Whether an effect failed: its Result's failure, as a fact. */
 export const failedOf = <A, E, R>(effect: Effect.Effect<A, E, R>) =>

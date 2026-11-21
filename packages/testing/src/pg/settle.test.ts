@@ -4,11 +4,12 @@
  * port; a member a setting of which was changed behind the spec's back, or that ALTER SYSTEM gave a setting the spec
  * does not state, is refused, naming `toolchain-pg settle`, and settled again, the unstated setting reset; a settled
  * member's predicate lock table stays one a read of pg_locks can copy (settings.ts lockStatusConnections); and a run
- * that reads a cluster never settled is refused at once, starting no unit and writing no state.
+ * that reads a cluster never settled is refused at once, starting no unit and writing no state; and a case cluster the
+ * process that drew it left as it ended is removed as the next case draws its own, where one a live case holds is kept.
  * Each case's cluster is a unit name of its own, its units stopped and its data removed when the case ends. Oracle: the
  * specification, stated in the checks.
  */
-import { Array as Arr, Effect, FileSystem } from "effect"
+import { Array as Arr, Effect, FileSystem, Option } from "effect"
 import { assert } from "#assert.ts"
 import { finite } from "#gen.ts"
 import { adminSql, serverBin } from "#pg/server.ts"
@@ -16,6 +17,10 @@ import {
 	clusterOf,
 	dataOf,
 	failedOf,
+	holdTaken,
+	leftCluster,
+	lefts,
+	presenceOf,
 	removedAtEnd,
 	shapes,
 	unitActive
@@ -179,6 +184,56 @@ export const unsettledStartsNothing = property.exhaust(finite(shapes), {
 			replacement:
 				'\t\tyield* Effect.forEach(memberNames(cluster), (name) => systemctl("start", name, step), { discard: true })\n\t\tconst keptPassword = yield* readIfThere(files.password)\n',
 			why: "A run's read starts each member's unit, as the old harness's need made and started its cluster, so a run changes a server every run shares; the property fails, the units started."
+		}
+	]
+})
+
+export const leftClustersSwept = property.exhaust(finite(lefts), {
+	box: "a settled cluster of one member or two, over its socket, the process that drew it alive or ended",
+	needs: {},
+	situations: [],
+	check: () => (left) =>
+		Effect.scoped(
+			Effect.gen(function* () {
+				const cluster = yield* leftCluster(left)
+				yield* clusterOf({ tls: false, spread: left.spread })
+				const hold = yield* holdTaken(cluster.unit)
+				const claimed = Option.isNone(hold)
+				const present = yield* presenceOf(cluster)
+				assert.deepEqual(
+					{
+						leftUnheld: Arr.some(present, Boolean) && !claimed,
+						keptWhole: left.alive && Arr.every(present, Boolean)
+					},
+					{ leftUnheld: false, keptWhole: left.alive }
+				)
+			})
+		),
+	oracle: {
+		kind: "specification",
+		name: "once the next case draws its cluster, no case cluster is left that no process holds (gone, or held by a sweep still removing it), and one its live case holds is kept whole: each member's unit active and its data there, and the cluster's state"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/pg/settle.fixtures.ts",
+			original:
+				"\t\t\t\t\tEffect.when(clusterRemoved(unit), Effect.succeed(Option.isSome(hold)))\n",
+			replacement: "\t\t\t\t\tEffect.when(Effect.void, Effect.succeed(Option.isSome(hold)))\n",
+			why: "Drawing a cluster removes none a process left, so a worker ended mid-case leaves its servers running until a person stops them (lane TOOLCHAIN6's stopped runs left four, 2026-11-21); the property fails, the ended case's cluster left."
+		},
+		{
+			file: "packages/testing/src/pg/settle.fixtures.ts",
+			original:
+				"\t\t\t\t\tEffect.when(clusterRemoved(unit), Effect.succeed(Option.isSome(hold)))\n",
+			replacement: "\t\t\t\t\tclusterRemoved(unit)\n",
+			why: "A sweep removes every case cluster it finds, held or not, so a case's draw stops another live case's servers under it; the property fails, the live case's cluster removed."
+		},
+		{
+			file: "packages/testing/src/pg/settle.fixtures.ts",
+			original: "\t\tconst hold = yield* holdTaken(unit)\n",
+			replacement: "\t\tconst hold = Option.some(unit)\n",
+			why: "A case's cluster is held by no process, so the next case's sweep takes it for one left and removes it while its case runs; the property fails, the live case's cluster removed."
 		}
 	]
 })

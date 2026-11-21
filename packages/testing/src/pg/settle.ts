@@ -93,22 +93,22 @@ const socketOf = (name: string): Effect.Effect<string, ClusterFailed> =>
 		onSuccess: (runtime) => `${runtime}/postgresql-${name}`
 	})
 
+/** Where every cluster's state is kept, a directory each (stateOf): `${XDG_STATE_HOME:-~/.local/state}/toolchain-pg`. */
+export const statesHome = Effect.gen(function* () {
+	const home = yield* Config.String("HOME")
+	const base = yield* Config.withDefault(Config.String("XDG_STATE_HOME"), `${home}/.local/state`)
+	return `${base}/toolchain-pg`
+})
+
 /**
- * A cluster's state, beside no server's data: `${XDG_STATE_HOME:-~/.local/state}/toolchain-pg/<unit>`, holding its
- * owner's password, its hba file (each member's hba_file) and its unrelated CA.
+ * A cluster's state, beside no server's data: `<statesHome>/<unit>`, holding its owner's password, its hba file (each
+ * member's hba_file) and its unrelated CA.
  */
 const stateOf = (cluster: LocalCluster): Effect.Effect<string, ClusterFailed> =>
-	Effect.mapError(
-		Effect.gen(function* () {
-			const home = yield* Config.String("HOME")
-			const base = yield* Config.withDefault(
-				Config.String("XDG_STATE_HOME"),
-				`${home}/.local/state`
-			)
-			return `${base}/toolchain-pg/${cluster.unit}`
-		}),
-		(error) => ClusterFailed.make({ cluster: cluster.unit, message: error.message })
-	)
+	Effect.mapBoth(statesHome, {
+		onSuccess: (base) => `${base}/${cluster.unit}`,
+		onFailure: (error) => ClusterFailed.make({ cluster: cluster.unit, message: error.message })
+	})
 
 /** The files a cluster's state holds. */
 const stateFiles = (state: string) => ({
