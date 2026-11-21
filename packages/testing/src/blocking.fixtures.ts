@@ -17,7 +17,7 @@ import type { CheckoutDir } from "#mutate/checkout.ts"
 import { type Property, property } from "#property.ts"
 import { HARDENED_FLAGS } from "#runner/config.ts"
 import { searchInline } from "#runner/inline.ts"
-import { runnerLimits } from "#runner/limits.ts"
+import { needStallMillis, runnerLimits } from "#runner/limits.ts"
 
 /**
  * The watchdog's property (live.ts) runs planted searches in programs of their own, since a runaway ends its process:
@@ -197,7 +197,8 @@ export const settledHere = (planted: Planted, seed: number) =>
 			id: idOf(planted),
 			seed,
 			reach: "full",
-			limits: { ...runnerLimits, deadline: planted.deadlineMillis }
+			limits: { ...runnerLimits, deadline: planted.deadlineMillis },
+			stall: needStallMillis
 		}),
 		(verdict) => (verdict.kind === "failed" ? verdict.finding.kind : verdict.kind)
 	)
@@ -258,7 +259,8 @@ const searchedAsProgram = (planted: Planted, seed: number) =>
 					id: `${idOf(planted)} after the watchdog sleeps`,
 					seed,
 					reach: "full",
-					limits: { ...runnerLimits, deadline: asleepDeadlineMillis }
+					limits: { ...runnerLimits, deadline: asleepDeadlineMillis },
+					stall: needStallMillis
 				})
 				const began = yield* liveMillis
 				const wakes = yield* watchdogWakes
@@ -270,7 +272,8 @@ const searchedAsProgram = (planted: Planted, seed: number) =>
 					id: idOf(planted),
 					seed,
 					reach: "full",
-					limits: { ...runnerLimits, deadline: planted.deadlineMillis }
+					limits: { ...runnerLimits, deadline: planted.deadlineMillis },
+					stall: needStallMillis
 				})
 				yield* Console.log(
 					`ended: ${verdict.kind === "failed" ? verdict.finding.kind : verdict.kind}`

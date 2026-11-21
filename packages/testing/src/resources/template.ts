@@ -79,9 +79,13 @@ export type Opened<T> = Readonly<{ clone: Effect.Effect<T, NeedFailed, Scope.Sco
 /**
  * A shared immutable value, built once where it lives and never changed after, of which a case only ever gets a clone:
  * opening it (once per worker, inside a need's open) builds it if it is not yet built and gives its Opened handle.
+ * `budget` is the CPU, in milliseconds, its open may spend on a worker, its build or the wait on another's included:
+ * its owner's measured choice, stated with its evidence where the template is declared, which every need over it
+ * (Database.fresh, seat, transaction, oneOf) is judged by (property.ts Need).
  */
 export type Template<T> = Readonly<{
 	key: string
+	budget: number
 	open: Effect.Effect<Opened<T>, NeedFailed, NeedContext>
 }>
 
@@ -116,6 +120,7 @@ export class DatabaseTemplate implements Template<Database> {
 	readonly name: string
 	readonly content: string
 	readonly from: Origin
+	readonly budget: number
 	readonly build: (target: TemplateDatabase) => Effect.Effect<void, NeedFailed, NeedContext>
 	readonly open: Effect.Effect<Opened<Database>, NeedFailed, NeedContext>
 
@@ -124,6 +129,7 @@ export class DatabaseTemplate implements Template<Database> {
 		this.name = spec.name
 		this.content = canonicalText(spec.content)
 		this.from = spec.from
+		this.budget = spec.budget
 		this.build = spec.build
 		this.key = canonicalText([
 			"database-template",
@@ -138,12 +144,17 @@ export class DatabaseTemplate implements Template<Database> {
 	}
 }
 
-/** What a database template states: the declaring module's `import.meta`, a name, the content, the origin and the build. */
+/**
+ * What a database template states: the declaring module's `import.meta`, a name, the content, the origin, the build,
+ * and the budget its open may spend (Template), which is no part of its identity: a budget restated is the same
+ * template.
+ */
 export type DatabaseTemplateSpec = Readonly<{
 	declaredIn: ImportMeta
 	name: string
 	content: Content
 	from: Origin
+	budget: number
 	build: (target: TemplateDatabase) => Effect.Effect<void, NeedFailed, NeedContext>
 }>
 

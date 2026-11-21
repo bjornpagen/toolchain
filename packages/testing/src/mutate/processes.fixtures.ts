@@ -2,7 +2,6 @@ import { Array as Arr, Effect, Stream, String as Str } from "effect"
 import { ChildProcess, type ChildProcessSpawner } from "effect/process"
 import { type MutantPool, servedArgv } from "#mutate/pool.ts"
 import { type Kept, type Kill, Property } from "#property.ts"
-import { runnerLimits } from "#runner/limits.ts"
 import type { Batch, CaseResult } from "#runner/protocol.ts"
 
 /** A case that passed, as a worker answers it. */
@@ -22,7 +21,7 @@ export const lost = (report: string): CaseResult => ({
 	outcome: { kind: "lost", report }
 })
 
-/** One case of property `id`, as a search orders it, its needs' open bound the runner's. */
+/** One case of property `id`, as a search orders it. */
 export const oneCase = (id: string, deadline: number): Batch => [
 	{
 		property: id,
@@ -31,7 +30,6 @@ export const oneCase = (id: string, deadline: number): Batch => [
 		keep: "nothing",
 		sense: { kind: "notes" },
 		deadline,
-		open: runnerLimits.open,
 		print: "failing"
 	}
 ]
@@ -61,21 +59,20 @@ export const checkProperty = (kills: ReadonlyArray<Kill>, kept: ReadonlyArray<Ke
 			),
 		keep: () => ({ kind: "unfound", why: "a fixture keeps nothing" }),
 		replay: () => Effect.succeed({ kind: "exhausted", cases: 1, box: "the check", measures: [] }),
-		ready: () =>
-			Effect.succeed({
-				cases: () => Effect.succeed([]),
-				series: () =>
-					Effect.succeed({
-						ran: 0,
-						passed: 0,
-						notes: [],
-						measures: [],
-						millis: 0,
-						cpu: 0,
-						stopped: { kind: "none" }
-					} as const),
-				count: () => Effect.succeed({ kind: "uncountable" } as const)
-			})
+		ready: Effect.succeed({
+			cases: () => Effect.succeed([]),
+			series: () =>
+				Effect.succeed({
+					ran: 0,
+					passed: 0,
+					notes: [],
+					measures: [],
+					millis: 0,
+					cpu: 0,
+					stopped: { kind: "none" }
+				} as const),
+			count: () => Effect.succeed({ kind: "uncountable" } as const)
+		})
 	})
 
 /**

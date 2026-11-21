@@ -1,5 +1,5 @@
 import { Array as Arr, Context, Effect, Option, Semaphore, type Scope } from "effect"
-import type { NeedContext, Property } from "#property.ts"
+import { type NeedContext, type Property, runNeedsOf } from "#property.ts"
 import {
 	LateUses,
 	NeedCache,
@@ -11,7 +11,7 @@ import {
 	stoppedOf,
 	withLateUses
 } from "#runner/case.ts"
-import { type Limits, runnerLimits } from "#runner/limits.ts"
+import { type Limits, needStallMillis, runnerLimits } from "#runner/limits.ts"
 import { moduleClosureAt } from "#runner/module-closure.ts"
 import { Perception, perceptionOf } from "#runner/perceive.ts"
 import {
@@ -25,55 +25,66 @@ import {
 	type SeriesRan,
 	seriesRanOf,
 	type Verdict,
-	type Work,
-	workOf
+	type Work
 } from "#runner/protocol.ts"
-import { ModuleClosure, WorkerIndex } from "#runner/services.ts"
+import { openedRuns, runValuesOf } from "#runner/runs.ts"
+import { ModuleClosure, RunValues, WorkerIndex } from "#runner/services.ts"
 
 /**
- * What a search run in this process needs from its caller: every need's context but the worker index, which is 0, and
- * the module closures, which this process hashes for the package it runs in.
+ * What a search run in this process needs from its caller: every need's context but the worker index, which is 0, the
+ * module closures, which this process hashes for the package it runs in, and the run need values, which this process
+ * opens itself.
  */
-type InlineContext = Exclude<NeedContext, WorkerIndex | ModuleClosure>
+type InlineContext = Exclude<NeedContext, WorkerIndex | ModuleClosure | RunValues>
 
 /**
  * The evaluator of one property in this process: each batch evaluated in turn, here, the property readied first as a
- * worker readies it: its needs opened in the caller's scope and services within the open bound its first batch's
- * orders carry, before any case and outside every case's deadline, and a need that did not open giving every case that
- * one outcome. A meta-test of the library's own searches, and a search nested inside a case, run on it: a search finds
+ * worker readies it: the run needs its needs read opened here once, as the runner's process opens them (runner/runs.ts),
+ * given this process's directory, then its needs opened at once in the caller's scope and services, before any case and
+ * outside every case's deadline, and a need that did not open giving every case that one outcome; every group of opens
+ * judged under `stall` as its stall window (runner/limits.ts needStallMillis, or a meta-test's own). A meta-test of the library's own searches, and a search nested inside a case, run on it: a search finds
  * on it exactly what it finds on the pool. Evaluations take turns, in the order they were asked for (a search that sends
  * two streams at once has them run one after the other, as one process runs them), and every one, however it ends
  * (interrupted included), waits for the cleanups of the cases it stopped as hung (Stopped) before it returns, so none
  * outlives it.
  */
 export const inlineEvaluator = (
-	property: Property
+	property: Property,
+	stall: number
 ): Effect.Effect<Evaluator, never, Scope.Scope | InlineContext> =>
 	Effect.gen(function* () {
 		const caller = yield* Effect.context<InlineContext | Scope.Scope>()
 		const closures = yield* moduleClosureAt(process.cwd(), Option.none())
+		const runs = yield* Effect.cached(
+			Effect.provideContext(openedRuns(runNeedsOf([property.needs]), process.cwd(), stall), caller)
+		)
 		const context = Context.add(
-			Context.add(caller, WorkerIndex, { index: 0, workers: 1 }),
-			ModuleClosure,
-			closures
+			Context.add(
+				Context.add(caller, WorkerIndex, { index: 0, workers: 1 }),
+				ModuleClosure,
+				closures
+			),
+			RunValues,
+			{ encoded: (key) => Effect.flatMap(runs, (values) => runValuesOf(values).encoded(key)) }
 		)
 		const perception = yield* perceptionOf
-		const cache = needCacheOf(Effect.succeed(context))
+		const cache = needCacheOf(Effect.succeed(context), stall)
 		const lateUses = new Map<CaseOrder, Printed>()
 		const stopped = stoppedOf()
 		const turn = yield* Semaphore.make(1)
 		let readied = Option.none<Readied>()
-		const readiedFor = (work: Work): Effect.Effect<Readied, never, NeedCache> =>
+		const readiedHere: Effect.Effect<Readied, never, NeedCache> = Effect.suspend(() =>
 			Option.match(readied, {
 				onSome: Effect.succeed,
 				onNone: () =>
-					Effect.map(readiedOf(property.ready, workOf(work).open), (made) => {
+					Effect.map(readiedOf(property.ready), (made) => {
 						readied = Option.some(made)
 						return made
 					})
 			})
+		)
 		const done = (work: Work) =>
-			Effect.flatMap(readiedFor(work), (made) => doneOf(made, work)).pipe(
+			Effect.flatMap(readiedHere, (made) => doneOf(made, work)).pipe(
 				Effect.provideService(NeedCache, cache),
 				Effect.provideService(Perception, perception),
 				Effect.provideService(Stopped, stopped),
@@ -131,15 +142,25 @@ export const inlineEvaluator = (
 		return evaluator
 	})
 
-/** How a search run in this process is identified and bounded: its identity, run seed, reach and limits. */
-export type InlineRun = Readonly<{ id: string; seed: number; reach: Reach; limits: Limits }>
+/**
+ * How a search run in this process is identified and bounded: its identity, run seed, reach and limits, and the stall
+ * window its needs' opens are judged under.
+ */
+export type InlineRun = Readonly<{
+	id: string
+	seed: number
+	reach: Reach
+	limits: Limits
+	stall: number
+}>
 
-/** The runner's own limits for a search run inline, with this identity and run seed, every phase run. */
+/** The runner's own limits and stall window for a search run inline, with this identity and run seed, every phase run. */
 export const inlineRun = (id: string, seed: number): InlineRun => ({
 	id,
 	seed,
 	reach: "full",
-	limits: runnerLimits
+	limits: runnerLimits,
+	stall: needStallMillis
 })
 
 /**
@@ -150,7 +171,9 @@ export const searchInline = (
 	property: Property,
 	run: InlineRun
 ): Effect.Effect<Verdict, never, Scope.Scope | InlineContext> =>
-	Effect.flatMap(inlineEvaluator(property), (evaluator) => property.search({ ...run, evaluator }))
+	Effect.flatMap(inlineEvaluator(property, run.stall), (evaluator) =>
+		property.search({ id: run.id, seed: run.seed, reach: run.reach, limits: run.limits, evaluator })
+	)
 
 /** Replays one token of a property in this process, as `toolchain-test replay` does on the pool. */
 export const replayInline = (
@@ -158,6 +181,9 @@ export const replayInline = (
 	run: InlineRun,
 	token: string
 ): Effect.Effect<Verdict, never, Scope.Scope | InlineContext> =>
-	Effect.flatMap(inlineEvaluator(property), (evaluator) =>
-		property.replay({ ...run, evaluator }, token)
+	Effect.flatMap(inlineEvaluator(property, run.stall), (evaluator) =>
+		property.replay(
+			{ id: run.id, seed: run.seed, reach: run.reach, limits: run.limits, evaluator },
+			token
+		)
 	)

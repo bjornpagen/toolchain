@@ -100,18 +100,21 @@ const steeringWindow = 16
 const caseDeadlineMillis = 60_000
 
 /**
- * How long one need may take to open on a worker that has not opened it (runner/case.ts NeedCache): the open runs once
- * per worker per need key, when the worker readies the first property that needs it, before that property's first case
- * and outside every case's deadline. It bounds the open's work, as a case's deadline bounds a case's (runner/work.ts):
- * its CPU, or its CPU's stall over a whole bound of wall time outside declared waits, so an open that waits on another
- * run's lease or a builder's lock is not cut short for it (2026-11-18: ten properties' opens waited past five minutes of
- * wall time on lease slots MANIFEST's and SETSREAD's runs held, and failed as unopened). An open past it fails the
- * property on that worker, once, as unopened; the parent watches a readying worker for this long and its silence grace.
+ * The stall window of a need's open (runner/case.ts NeedCache, runner/runs.ts): the wall time, outside declared waits
+ * on work, over which the open's process tree must spend some CPU (stalledShareOfCpu of it) or be stalled, blocked on
+ * something that will not come. It is the stall leg alone: the CPU an open may spend is its owner's budget, stated at
+ * each need (property.ts Need, RunNeed; resources/template.ts Template), with the evidence for that need. An open waits
+ * on another process's work only through a declared wait (live.ts waitingOn: every statement the library sends, a
+ * session's connect, the bootstrap superuser's psql), whose wall time this window counts none of (2026-11-18: ten
+ * properties' opens waited past five minutes of wall time on lease slots MANIFEST's and SETSREAD's runs held, and
+ * failed as unopened). An open stalled for it fails its property on that process, once, as unopened; the pool watches a
+ * readying worker's opens under it too (runner/pool.ts), with its silence grace.
  *
  * @limitKind measured
- * @owner the testing library's runner (runner/case.ts NeedCache, runner/worker.ts, runner/pool.ts)
- * @unit milliseconds per need's open
- * @scope each need's open on one worker, once per worker per need key; a property's needs open at once, each under it
+ * @owner the testing library's runner (runner/case.ts NeedCache, runner/runs.ts, runner/pool.ts)
+ * @unit milliseconds of wall time outside declared waits
+ * @scope each group of needs a process opens at once (a property's needs at its readying, a choice's member at its
+ *   first take, a run's run needs in the runner's process), judged over the process's work
  * @evidence packages/testing/out/need-open/ in TESTSYS lane CORE-2's toolchain clone
  *   (~/.cache/grizzle-release/TESTSYS/CORE-2/toolchain), the uncommitted record of `GRIZZLE_PG_CLUSTER=5967 sh
  *   forms.sh forms-cold-1` and `... forms-warm-2`: forms.sh, instrument.patch (each worker appends one JSON line per
@@ -131,24 +134,26 @@ const caseDeadlineMillis = 60_000
  *   lock while the others wait), then again with them built. A worker's readying is timed from before its first
  *   property of the module is imported to its needs open (each module's import, its import closure hashed for the
  *   template's name, the install's plan, the template's build or the wait on it, the clone pool started), so it bounds
- *   the opens from above
+ *   from above both the opens' work and any stretch of them in which their CPU did not move
  * @result unbuilt: 323 readyings, p50 0.6 s, p90 19.2 s, p99 32.2 s, slowest 34.7 s (oneOfTemplates; freshInstalled
  *   33.7 s, rolledBack 32.4 s, seated 28.3 s, freshBase 13.3 s, served 4.6 s); built: 295 readyings, p50 1.0 s, p90
  *   15.6 s, p99 20.7 s, slowest 22.9 s. No open failed; every property passed both runs (0 of 6 failed, 63 s each),
  *   where before this phase every first case of these forms was cut at 60 s at load 400 to 600. GZ-FOUNDATION's
  *   built-template first takes at load 300 to 350 reached 18.5 s; its unbuilt run at load 616 to 1,127 ended every
  *   first case within the 240 s it cited. Not measured: opens with fsync on, where a member's DROP DATABASE waits on
- *   the checkpoints it forces (RESOURCES saw clone waits to 84 s there)
- * @decision 300 s: 8.6 times the slowest open measured here (34.7 s at load 391 to 468), 3.3 times that open scaled to
- *   the worst load seen today (1,127, 2.6 times as loaded: about 91 s), and above the 240 s within which every first
- *   case of the unbuilt forms ended at that load. The costs are lopsided: a bound too short fails a property whose
- *   need was only slow to open, one too long only delays the report of an open that hangs, so the headroom is wide.
- *   Unmeasured gap: opens at loads past 1,127, and with fsync on
- * @revalidate a template whose build takes minutes (an install of many migrations), a family with fsync on, a run
- *   whose readyings come near a minute, a property reported unopened for running past it, another machine or a
- *   PostgreSQL repin
+ *   the checkpoints it forces (RESOURCES saw clone waits to 84 s there); the longest stretch of an open with no CPU
+ *   moved, apart from its whole readying
+ * @decision 300 s: no open measured here took more than 34.7 s of wall time whole (at load 391 to 468), so no stretch
+ *   of one without its CPU moving outlasted 34.7 s, under an eighth of the window; 3.3 times that whole open scaled to the worst load seen today (1,127,
+ *   2.6 times as loaded: about 91 s), and above the 240 s within which every first case of the unbuilt forms ended at
+ *   that load. The costs are lopsided: a window too short fails a property whose open was only slow, one too long only
+ *   delays the report of an open that hangs, so the headroom is wide. This record bounded each open's CPU too, as one
+ *   runner-wide open bound, until 2026-11-21 (lane NEEDBUDGET), when each need came to state its own budget. Unmeasured
+ *   gap: opens at loads past 1,127, and with fsync on
+ * @revalidate a family with fsync on, a run whose readyings come near a minute, a property reported unopened for a
+ *   stall, a wait on another process's work found undeclared, another machine or a PostgreSQL repin
  */
-const needOpenMillis = 300_000
+export const needStallMillis = 300_000
 
 /**
  * The share of one CPU a case's process tree must spend over a window of its deadline's wall time for its work to count
@@ -179,14 +184,13 @@ const needOpenMillis = 300_000
  */
 export const stalledShareOfCpu = 0.001
 
-/** The budgets one search runs under, and the bounds its cases' orders carry: a case's deadline and its needs' open. */
+/** The budgets one search runs under, and the bound its cases' orders carry: a case's deadline. */
 export type Limits = Readonly<{
 	runs: number
 	floor: number
 	steered: number
 	window: number
 	deadline: number
-	open: number
 }>
 
 /** The runner's own budgets. */
@@ -195,6 +199,5 @@ export const runnerLimits: Limits = {
 	floor: floorCases,
 	steered: steeredCases,
 	window: steeringWindow,
-	deadline: caseDeadlineMillis,
-	open: needOpenMillis
+	deadline: caseDeadlineMillis
 }

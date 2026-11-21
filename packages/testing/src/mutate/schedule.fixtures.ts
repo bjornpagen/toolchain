@@ -1,6 +1,6 @@
 import { Array as Arr, Effect, Option, Ref } from "effect"
 import { array, boolean, element, type Gen, int, shuffled } from "#gen.ts"
-import type { MutantPool, WorkerImage } from "#mutate/pool.ts"
+import type { MutantPool, Serves, WorkerImage } from "#mutate/pool.ts"
 import { lost, oneCase, passed } from "#mutate/processes.fixtures.ts"
 import { SHARINGS, type Sharing, type TrialVerdict } from "#mutate/schedule.ts"
 import { Property, PropertyId } from "#property.ts"
@@ -74,21 +74,20 @@ export const fakeProperty = (seen: Ref.Ref<Seen>, guide: Sense): Property =>
 			}),
 		replay: () =>
 			Effect.succeed({ kind: "exhausted", cases: 1, box: "one fake case", measures: [] }),
-		ready: () =>
-			Effect.succeed({
-				cases: () => Effect.succeed([]),
-				series: () =>
-					Effect.succeed({
-						ran: 0,
-						passed: 0,
-						notes: [],
-						measures: [],
-						millis: 0,
-						cpu: 0,
-						stopped: { kind: "none" }
-					} as const),
-				count: () => Effect.succeed({ kind: "uncountable" } as const)
-			})
+		ready: Effect.succeed({
+			cases: () => Effect.succeed([]),
+			series: () =>
+				Effect.succeed({
+					ran: 0,
+					passed: 0,
+					notes: [],
+					measures: [],
+					millis: 0,
+					cpu: 0,
+					stopped: { kind: "none" }
+				} as const),
+			count: () => Effect.succeed({ kind: "uncountable" } as const)
+		})
 	})
 
 /** The image key of stage `stage` of trial `trial`, which its leases are known by. */
@@ -105,7 +104,7 @@ export const fakePool = (
 	seen: Ref.Ref<Seen>
 ): MutantPool<never> => ({
 	width,
-	lease: (image: WorkerImage, workers: number, guide: "notes" | "blocks") =>
+	lease: (image: WorkerImage, workers: number, { guide }: Serves) =>
 		Effect.acquireRelease(
 			Effect.as(
 				Ref.update(seen, (s) => ({

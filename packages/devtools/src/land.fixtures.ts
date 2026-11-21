@@ -60,12 +60,20 @@ const WORKSPACE: ReadonlyArray<readonly [path: string, text: string]> = [
 ]
 
 /**
+ * The CPU, in milliseconds, the lockfile's open may spend (property.ts Need): a test's own input, a minute, far past
+ * what one pnpm install of an empty workspace's lockfile spends.
+ */
+const lockfileBudget = 60_000
+
+/**
  * The lockfile of an empty pnpm workspace, which pnpm writes once a worker: every scenario's repository commits this
  * text, so a case runs no pnpm of its own beside its landings' installs. Its importers name no package, so it fits every
  * repository whatever its name.
  */
 export const workspaceLockfile: Need<string> = {
 	key: "bjornpagen.devtools.land.workspace-lockfile",
+	budget: lockfileBudget,
+	runNeeds: [],
 	open: Effect.scoped(
 		Effect.gen(function* () {
 			const fs = yield* FileSystem.FileSystem

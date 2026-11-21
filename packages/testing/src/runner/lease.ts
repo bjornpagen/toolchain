@@ -1,8 +1,10 @@
+import type { NodeServices } from "@effect/platform-node/NodeServices"
 import { Array as Arr, Effect, Semaphore } from "effect"
-import { type MutantPool, rebasedTo, type WorkerImage } from "#mutate/pool.ts"
-import { runnerLimits } from "#runner/limits.ts"
+import { type MutantPool, rebasedTo, type Serves, type WorkerImage } from "#mutate/pool.ts"
+import { needStallMillis } from "#runner/limits.ts"
 import { type PoolFailed, poolOf } from "#runner/pool.ts"
 import { WORKER_ENTRY } from "#runner/run.ts"
+import { openedRuns } from "#runner/runs.ts"
 import { testWorkers } from "#workers.ts"
 
 /**
@@ -43,7 +45,8 @@ export const placesLeased = (width: number) => {
  * is the checkout itself in a repository whose package is its root) is taken in the image's root instead (rebasedTo),
  * so a worker tree's workers load the tree's modules and its test.config.ts, and run in the tree's package directory;
  * its workers take this process's flags and serve the image's mutant (PoolSpec served), and its environment adds to
- * this process's. A worker killed past its case deadline is forked again from the same image; closing the lease's
+ * this process's; the run needs its properties read (`runs`) open here once, in the image's package directory, before
+ * its workers start (runner/runs.ts), so a mutant reaches them on disk. A worker killed past its case deadline is forked again from the same image; closing the lease's
  * scope disconnects every worker and waits for it to exit on its own, so a coverage pass's dumps are written before the
  * scope closes.
  *
@@ -55,28 +58,37 @@ export const placesLeased = (width: number) => {
  * network modules waited 300 s at substrate_lease_gate); a cluster's lease now puts each worker on the member where its
  * run holds fewest (pg/lease.ts).
  */
-export const mutantPoolOf = (checkout: string, packageRoot: string): MutantPool<PoolFailed> => {
-	const { placesFor } = placesLeased(testWorkers)
-	return {
-		width: testWorkers,
-		lease: (image: WorkerImage, workers: number, guide: "notes" | "blocks") =>
-			Effect.gen(function* () {
-				const rebased = rebasedTo(checkout, image.root)
-				const root = rebased(packageRoot)
-				const taken = yield* placesFor(Math.max(1, Math.min(workers, testWorkers)))
-				const pool = yield* poolOf({
-					entry: rebased(WORKER_ENTRY),
-					root,
-					cwd: root,
-					env: image.env,
-					compile: image.compile,
-					places: { at: taken, of: testWorkers },
-					execArgv: process.execArgv,
-					served: image.served,
-					guide,
-					open: runnerLimits.open
+export const mutantPoolOf = (
+	checkout: string,
+	packageRoot: string
+): Effect.Effect<MutantPool<PoolFailed>, never, NodeServices> =>
+	Effect.map(Effect.context<NodeServices>(), (platform) => {
+		const { placesFor } = placesLeased(testWorkers)
+		return {
+			width: testWorkers,
+			lease: (image: WorkerImage, workers: number, serves: Serves) =>
+				Effect.gen(function* () {
+					const rebased = rebasedTo(checkout, image.root)
+					const root = rebased(packageRoot)
+					const taken = yield* placesFor(Math.max(1, Math.min(workers, testWorkers)))
+					const runs = yield* Effect.provideContext(
+						openedRuns(serves.runs, root, needStallMillis),
+						platform
+					)
+					const pool = yield* poolOf({
+						entry: rebased(WORKER_ENTRY),
+						root,
+						cwd: root,
+						env: image.env,
+						compile: image.compile,
+						places: { at: taken, of: testWorkers },
+						execArgv: process.execArgv,
+						served: image.served,
+						guide: serves.guide,
+						runs,
+						stall: needStallMillis
+					})
+					return pool.evaluator
 				})
-				return pool.evaluator
-			})
-	}
-}
+		}
+	})

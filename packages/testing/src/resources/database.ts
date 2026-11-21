@@ -22,6 +22,8 @@ import {
 	single
 } from "#resources/cluster.ts"
 import { canonicalText, type DatabaseTemplate, type Opened } from "#resources/template.ts"
+import { needStallMillis } from "#runner/limits.ts"
+import { judgedGroup } from "#runner/opening.ts"
 import { NeedFailed } from "#runner/services.ts"
 
 /**
@@ -109,6 +111,8 @@ const slot = (opened: Opened<Database>, ready: Queue.Queue<Ready>): Effect.Effec
 const fresh = (template: DatabaseTemplate): DatabaseNeed<Database> => ({
 	key: `@bjornpagen/testing/resources Database.fresh ${template.key}`,
 	template,
+	budget: template.budget,
+	runNeeds: [],
 	open: Effect.map(
 		Effect.gen(function* () {
 			const opened = yield* template.open
@@ -371,6 +375,8 @@ const heldNeed = <A>(
 ): DatabaseNeed<A> => ({
 	key,
 	template,
+	budget: template.budget,
+	runNeeds: [],
 	open: Effect.map(
 		Effect.gen(function* () {
 			const cluster = yield* required(
@@ -467,9 +473,11 @@ const transaction = (template: DatabaseTemplate): DatabaseNeed<Transaction> =>
  * `need` as a choice's member: opened on a process the first time a case there takes it, never when its property is
  * readied, since a case may never take it. Readying gives only the taker; the first take runs `need`'s open (its
  * template's build, the clone it holds) once, with the services and in the need's own scope that readying gave it, on a
- * fiber of its own, so the case that first takes it cannot cut it short and a later take reuses what it opened. Every
- * take awaits that open: one that fails, or dies (its defect's text the failure's message), fails every take with
- * NeedFailed, as a need that does not open when readied fails its property once, never a case. Opened when readied,
+ * fiber of its own, so the case that first takes it cannot cut it short and a later take reuses what it opened; that
+ * open is judged alone, by `need`'s budget and the stall window (runner/opening.ts judgedGroup), as a need opened alone
+ * when readied is. Its budget is `need`'s, so a readying that opens it among others counts what its first take may
+ * spend. Every take awaits that open: one that fails, or dies (its defect's text the failure's message), fails every
+ * take with NeedFailed, as a need that does not open when readied fails its property once, never a case. Opened when readied,
  * every member of a choice built its template at once on the worker's one connection lease: grizzle's
  * test/pg/fin/capacity-table.test.ts, whose nine seat templates are one choice, died LeaseBudgetExhausted while its
  * needs opened, before any case, though each of its cases takes one (lane LAND-GZ-B): nine template builds at once
@@ -478,11 +486,18 @@ const transaction = (template: DatabaseTemplate): DatabaseNeed<Transaction> =>
 const chosen = <A>(need: DatabaseNeed<A>): DatabaseNeed<A> => ({
 	key: need.key,
 	template: need.template,
+	budget: need.budget,
+	runNeeds: need.runNeeds,
 	open: Effect.map(Effect.context<NeedContext>(), (context) => {
 		const opened = Deferred.makeUnsafe<Effect.Effect<A, NeedFailed, Scope.Scope>, NeedFailed>()
 		let started = false
 		const open = Effect.catchCauseIf(
-			Effect.provideContext(need.open, context),
+			Effect.flatMap(judgedGroup([need], needStallMillis), (judged) =>
+				Effect.ensuring(
+					judged.within(need.key, Effect.provideContext(need.open, context)),
+					judged.ended
+				)
+			),
 			(cause) => !Cause.hasInterruptsOnly(cause),
 			(cause) =>
 				Effect.fail(

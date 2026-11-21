@@ -92,7 +92,6 @@ const orderOf = (run: SearchRun, draw: Draw, ordering: Ordering): CaseOrder => (
 	keep: ordering.keep,
 	sense: ordering.sense,
 	deadline: run.limits.deadline,
-	open: run.limits.open,
 	print: "failing"
 })
 
@@ -353,7 +352,6 @@ const tokenOrderOf = (run: SearchRun, replayed: ReplayCase): CaseOrder => ({
 	keep: "nothing",
 	sense: notesOnly,
 	deadline: run.limits.deadline,
-	open: run.limits.open,
 	print: "always"
 })
 
@@ -600,8 +598,7 @@ const streamSeriesOf = (
 					drawn
 				},
 				group,
-				deadline: run.limits.deadline,
-				open: run.limits.open
+				deadline: run.limits.deadline
 			}
 		])
 		start += indices.length
@@ -908,8 +905,7 @@ export const exhaustSearch =
 			const counted = yield* run.evaluator.count({
 				property: run.id,
 				every: perSeries,
-				cpu: run.limits.deadline,
-				open: run.limits.open
+				cpu: run.limits.deadline
 			})
 			if (counted.kind === "uncountable") {
 				return failed({ kind: "uncountable", box, deadline: run.limits.deadline })
@@ -945,8 +941,7 @@ export const exhaustSearch =
 						count: Math.min(windows * perSeries, size - at * windows * perSeries)
 					},
 					group,
-					deadline: run.limits.deadline,
-					open: run.limits.open
+					deadline: run.limits.deadline
 				}))
 			)
 			for (const summary of ran) {

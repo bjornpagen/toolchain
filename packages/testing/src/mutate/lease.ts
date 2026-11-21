@@ -1,3 +1,4 @@
+import type { NodeServices } from "@effect/platform-node/NodeServices"
 import { Effect } from "effect"
 import type { RealPath } from "#mutate/mutated.ts"
 import { type MutantPool, Unstarted } from "#mutate/pool.ts"
@@ -9,13 +10,14 @@ import { mutantPoolOf } from "#runner/lease.ts"
  * mutant's or a probe's image stops workers that start unmutated. Every caller that judges kills or mutants leases from
  * this pool, so such a mutant turns its property red rather than failing the run.
  */
-export const mutatorPool = (checkout: RealPath, packageRoot: RealPath): MutantPool<never> => {
-	const pool = mutantPoolOf(checkout, packageRoot)
-	return {
+export const mutatorPool = (
+	checkout: RealPath,
+	packageRoot: RealPath
+): Effect.Effect<MutantPool<never>, never, NodeServices> =>
+	Effect.map(mutantPoolOf(checkout, packageRoot), (pool): MutantPool<never> => ({
 		width: pool.width,
-		lease: (image, workers, guide) =>
-			Effect.catchTag(pool.lease(image, workers, guide), "PoolFailed", (failed) =>
+		lease: (image, workers, serves) =>
+			Effect.catchTag(pool.lease(image, workers, serves), "PoolFailed", (failed) =>
 				Effect.fail(Unstarted.make({ message: failed.message }))
 			)
-	}
-}
+	}))

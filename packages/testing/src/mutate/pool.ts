@@ -1,5 +1,6 @@
 import { type Effect, Option, Schema, type Scope, String as Str } from "effect"
 import type { MutatedFile, RealPath } from "#mutate/mutated.ts"
+import type { RunNeed } from "#property.ts"
 import type { CompileStore } from "#runner/compile-cache.ts"
 import type { Evaluator } from "#runner/protocol.ts"
 
@@ -84,9 +85,8 @@ export class Unstarted extends Schema.TaggedError<Unstarted, { readonly brand: u
  * The runner's pool as the mutator schedules it: its width (one worker a core, the Limit the runner reads), and a
  * lease: an evaluator over `workers` workers started fresh from `image` for the enclosing scope, which every batch it is
  * given runs on and no other lease's batch ever does (no stealing across leases); a worker the case deadline ends is
- * started again from the same image, and closing the scope ends them all; or Unstarted, when no worker starts. `guide`
- * is "blocks" when a property the lease serves guides its search by blocks, so its workers start V8's coverage before
- * they load a module, as a run's do (runner/run.ts); otherwise "notes". The mutator never leases more workers at once
+ * started again from the same image, and closing the scope ends them all; or Unstarted, when no worker starts. What it
+ * serves (Serves) says how its workers start and what opens before them. The mutator never leases more workers at once
  * than the width (schedule.ts).
  */
 export type MutantPool<E> = Readonly<{
@@ -94,6 +94,14 @@ export type MutantPool<E> = Readonly<{
 	lease: (
 		image: WorkerImage,
 		workers: number,
-		guide: "notes" | "blocks"
+		serves: Serves
 	) => Effect.Effect<Evaluator, E | Unstarted, Scope.Scope>
 }>
+
+/**
+ * What a lease's properties need of its workers: `guide`, "blocks" when one of them guides its search by blocks, so its
+ * workers start V8's coverage before they load a module, as a run's do (runner/run.ts), otherwise "notes"; and `runs`,
+ * the run needs their needs read (property.ts runNeedsOf), which the lease opens once in its image before its workers
+ * start, as a run does.
+ */
+export type Serves = Readonly<{ guide: "notes" | "blocks"; runs: ReadonlyArray<RunNeed<unknown>> }>

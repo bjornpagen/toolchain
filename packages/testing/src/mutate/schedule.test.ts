@@ -138,7 +138,7 @@ export const scheduledTrials = property.explore(scheduleGen, {
 	kills: [
 		{
 			file: "packages/testing/src/mutate/schedule.ts",
-			original: 'Arr.some(stage.properties, (subject) => subject.property.guide.kind === "blocks")',
+			original: 'Arr.some(properties, (subject) => subject.property.guide.kind === "blocks")',
 			replacement: "false",
 			why: "Every trial's workers start guided by notes, so a property that guides its search by blocks perceives no block coverage under a kill and goes red with no mutant (sense.test.ts#senseIndependence's kill read as killed)."
 		},

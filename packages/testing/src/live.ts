@@ -2,6 +2,8 @@ import { isMainThread, Worker } from "node:worker_threads"
 import { Array as Arr, Clock, Duration, Effect, Fiber, Option, Record as Rec } from "effect"
 import { stalledShareOfCpu } from "#runner/limits.ts"
 import {
+	type Bound,
+	deadlineBound,
 	enterWait,
 	heldWork,
 	judgeOf,
@@ -488,7 +490,7 @@ export const watchedCase = <A, E, R>(
 	return Effect.acquireUseRelease(
 		Effect.flatMap(liveMillis, (now) =>
 			Effect.sync(() => {
-				const judge = judgeOf(heldWork(now, ownCpu()), hangMillis)
+				const judge = judgeOf(heldWork(now, ownCpu()), deadlineBound(hangMillis))
 				return watchdogOfProcess().watch({
 					hangsAt: Option.match(limits.cut, {
 						onNone: () => now + hangMillis,
@@ -526,23 +528,23 @@ export const waitingOn =
 		)
 
 /**
- * Ends once `work` has spent `deadline` milliseconds of CPU or its CPU has not moved over a whole `deadline` of wall time
- * outside its declared waits (runner/work.ts standingOf), with the leg that fired and what it measured (Overrun). It reads the work only when its
- * live-clock timer fires, at a window's end or when the CPU left could run out sooner, so work that ends in time pays one
- * timer and no reading.
+ * Ends once `work` has spent its bound's CPU or its CPU has not moved over a whole stall window of wall time outside its
+ * declared waits (runner/work.ts standingOf), with the leg that fired and what it measured (Overrun). It reads the work
+ * only when its live-clock timer fires, at a window's end or when the CPU left could run out sooner, so work that ends
+ * in time pays one timer and no reading.
  */
-export const overrun = (work: TreeWork, deadline: number): Effect.Effect<Overrun> => {
+export const overrun = (work: TreeWork, bound: Bound): Effect.Effect<Overrun> => {
 	const watch = (window: Reading, readAt: number): Effect.Effect<Overrun> =>
 		Effect.flatMap(Effect.andThen(liveSleepUntil(readAt), liveMillis), (wall) => {
 			const standing = standingOf({
 				began: work.began,
 				window,
 				now: readingOf(work, wall),
-				deadline
+				bound
 			})
 			return standing.kind === "working"
 				? watch(standing.window, standing.readAgainAt)
 				: Effect.succeed(standing)
 		})
-	return watch(work.began, work.began.wall + deadline)
+	return watch(work.began, work.began.wall + Math.min(bound.cpu, bound.stall))
 }

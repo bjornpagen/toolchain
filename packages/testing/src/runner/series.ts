@@ -35,7 +35,7 @@ const branchChooser = (branch: Branch): ChooserSpec => ({
 
 /**
  * The order of a series' case drawn by `chooser` under `drawn`'s steering, its tape kept as `keep` says, its notes
- * perceived, under the series' deadline and open bound.
+ * perceived, under the series' deadline.
  */
 const orderOf = (
 	series: SeriesOrder,
@@ -49,7 +49,6 @@ const orderOf = (
 	keep,
 	sense: { kind: "notes" },
 	deadline: series.deadline,
-	open: series.open,
 	print: "failing"
 })
 

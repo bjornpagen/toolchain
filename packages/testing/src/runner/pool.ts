@@ -37,6 +37,7 @@ import {
 	type Printed,
 	ranOf,
 	resultsOf,
+	type RunValue,
 	seriesRanOf,
 	type ToWorker,
 	type Work,
@@ -55,6 +56,8 @@ import {
 } from "#runner/schedule.ts"
 import type { ChildrenStated, PoolUsage, PropertyUsage } from "#runner/usage.ts"
 import {
+	type Bound,
+	deadlineBound,
 	noWaits,
 	type Overrun,
 	overrunText,
@@ -77,10 +80,10 @@ import {
  * worker reports how long it spent readying each property, which is what the scheduling measures a module's readying
  * by. Which worker runs a case never reaches its result. A worker runs a unit in
  * phases it tells the parent of: readying the unit's property, the first unit of it the worker took (its module
- * imported, its needs opened), then evaluating its cases; the parent watches a unit from the moment it sends it, in the
- * readying phase until the worker says otherwise, since a worker whose module's load never ends (a top-level loop, a
- * mutant's) may never get a word out; a worker silent past its phase's bound (the needs' open bound, or the cases'
- * deadlines added up) and the silence grace is killed, its unit reported lost with the phase it was in, and a new
+ * imported, then its needs opened), then evaluating its cases; the parent watches a unit from the moment it sends it, in
+ * the importing phase until the worker says otherwise, since a worker whose module's load never ends (a top-level loop,
+ * a mutant's) may never get a word out; a worker silent past its phase's bound (a load's, the budgets of the needs it
+ * opens summed, or the cases' deadlines added up) and the silence grace is killed, its unit reported lost with the phase it was in, and a new
  * worker forked in its place. Which worker ran a case never reaches a result, so a search finds the same at
  * any width.
  */
@@ -99,11 +102,21 @@ type Unit = Readonly<{
 }>
 
 /**
- * What a worker is doing with the unit it runs: readying the unit's property (importing its module, opening its needs,
- * before any case of it and outside every case's deadline), or evaluating its cases; the parent watches each phase
- * under its own bound.
+ * What a worker is doing with the unit it runs: readying the unit's property, before any case of it and outside every
+ * case's deadline, by importing its module (`importing`, from the moment the parent sends the unit, until the worker
+ * says it opens its needs) and then opening the needs not yet open on it at once (`opening`, under `budget`, their
+ * budgets summed, as the worker states it); or evaluating its cases. The parent watches each phase under its own bound.
  */
-type Phase = "readying" | "evaluating"
+type Phase =
+	| Readonly<{ kind: "importing" }>
+	| Readonly<{ kind: "opening"; budget: number }>
+	| Readonly<{ kind: "evaluating" }>
+
+/** The importing phase, as every watch of it is. */
+const importing: Phase = { kind: "importing" }
+
+/** The evaluating phase, as every watch of it is. */
+const evaluating: Phase = { kind: "evaluating" }
 
 /**
  * A worker process and what the parent knows of it: the units it was sent and has not finished, the one it runs and in
@@ -216,9 +229,12 @@ export const placesOf = (workers: number): Places => ({
  * the hook to the flags, and hashes the closures it answers its workers with over the files as they load them), and
  * what its environment adds to this process's; the store its workers keep Node's compile cache in, in their root's
  * directory (runner/compile-cache.ts); the places its workers take (one a core for a run); and whether any
- * search guides by blocks (each worker then starts V8's coverage before it loads a module). A worker the parent kills is forked again from the same spec, in the same place. `open` is the run's
- * open bound: within it and the silence grace a worker must be ready (its runner config loaded, its services
- * declared), or it is ended as one that cannot start.
+ * search guides by blocks (each worker then starts V8's coverage before it loads a module); and the values of the run
+ * needs its properties read (runner/runs.ts), opened once before the pool, which every worker it forks is sent before
+ * any unit. A worker the parent kills is forked again from the same spec, in the same place. `stall` is the stall window
+ * the pool watches its workers' loads and opens under (runner/limits.ts needStallMillis; a meta-test's own, shorter):
+ * within a load's bound (loadBoundOf) and the silence grace a worker must be ready (its runner config loaded, its
+ * services declared), or it is ended as one that cannot start.
  */
 export type PoolSpec = Readonly<{
 	entry: string
@@ -230,7 +246,8 @@ export type PoolSpec = Readonly<{
 	execArgv: ReadonlyArray<string>
 	served: Option.Option<Served>
 	guide: "notes" | "blocks"
-	open: number
+	runs: ReadonlyArray<RunValue>
+	stall: number
 }>
 
 /**
@@ -309,7 +326,7 @@ const endGroup = (child: ChildProcess): Effect.Effect<void> =>
 	})
 
 /** What happens to a worker, as the pool's one fiber handles it, in order: it was forked, or is still not ready past
- * the open bound and the grace; units sent to it, a message, its exit, its silence past a phase of a unit's bound and
+ * a load's bound and the grace; units sent to it, a message, its exit, its silence past a phase of a unit's bound and
  * grace, or an error of its process or channel (its IPC channel failing as it reads, a message it could not be sent),
  * which ends it, the error kept in what it last wrote, so its exit reports its unit lost with it. */
 type Event =
@@ -329,17 +346,43 @@ type Event =
 const SILENCE_GRACE_MILLIS = 2 * watchdogGraceMillis + Duration.toMillis(HUNG_CLEANUP_GRACE)
 
 /**
- * A phase's bound for a unit: readying, its orders' open bound, within which each need opens on the worker (the
- * module's import shares it); evaluating, each case's deadline, added up.
+ * How much work a load the parent watches may do before its worker is ended, under the stall window `stall`: a
+ * worker's start (its runner config's load, its services declared) and the import of a property's module on it, neither
+ * of which a need's budget covers. The stall window on both legs (in production, needStallMillis).
+ *
+ * @limitKind derived
+ * @owner the testing library's pool (runner/pool.ts)
+ * @unit milliseconds of CPU, and of wall time outside declared waits over which that CPU must move
+ * @scope each worker's start, and each import of a property's module on a worker, as the pool watches it
+ * @derivation a load is the runner's own machinery, whose work no need's owner states, and a load that spends a whole
+ *   stall window of CPU, or none over one, never ends (a module's top-level loop, a mutant's). The open bound that
+ *   bounded each load with every need's open before (needOpenMillis, 300 s) was the stall window's record, so a load is
+ *   held to what it was
+ * @from runner/limits.ts needStallMillis
  */
-const boundOf = (unit: Unit, phase: Phase): number => {
-	switch (phase) {
-		case "readying":
-			return workOf(unit.work).open
+const loadBoundOf = (stall: number): Bound => ({ cpu: stall, stall })
+
+/**
+ * A phase's bound for a unit, under the stall window `stall`: importing, a load's (loadBoundOf); opening, the budgets of
+ * the needs the worker opens at once, summed, as it stated them, and the stall window; evaluating, each case's
+ * deadline, added up.
+ */
+const boundOf = (unit: Unit, phase: Phase, stall: number): Bound => {
+	switch (phase.kind) {
+		case "importing":
+			return loadBoundOf(stall)
+		case "opening":
+			return { cpu: phase.budget, stall }
 		case "evaluating":
-			return deadlinesOf(unit.work)
+			return deadlineBound(deadlinesOf(unit.work))
 	}
 }
+
+/** A bound with the silence grace on each leg: past it, the worker's own guards have failed. */
+const graced = (bound: Bound): Bound => ({
+	cpu: bound.cpu + SILENCE_GRACE_MILLIS,
+	stall: bound.stall + SILENCE_GRACE_MILLIS
+})
 
 /**
  * Who ended a worker whose unit is lost: the pool, past the phase's bound and the grace, by the leg of its watch that
@@ -370,11 +413,16 @@ const heardText = (
 			`its last message "${last.kind}", ${((now - last.at) / 1000).toFixed(1)} s before it ended`
 	})
 
-/** What the report of a unit lost with its worker says the worker was doing. */
-const lostIn = (unit: Unit, phase: Phase): string => {
-	switch (phase) {
-		case "readying":
-			return `the worker readying its property (importing its module and opening its needs, each need within the open bound of ${Duration.format(Duration.millis(boundOf(unit, phase)))})`
+/** Milliseconds as a report states them. */
+const formatted = (millis: number): string => Duration.format(Duration.millis(millis))
+
+/** What the report of a unit lost with its worker, watched under the stall window `stall`, says the worker was doing. */
+const lostIn = (phase: Phase, stall: number): string => {
+	switch (phase.kind) {
+		case "importing":
+			return `the worker readying its property (importing its module, within a load's bound of ${formatted(stall)} of CPU and the stall window of ${formatted(stall)})`
+		case "opening":
+			return `the worker readying its property (opening its needs at once, within their budgets summed, ${formatted(phase.budget)} of CPU, and the stall window of ${formatted(stall)})`
 		case "evaluating":
 			return "the worker running it"
 	}
@@ -674,8 +722,8 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 			})
 
 		/**
-		 * Watches a worker in a phase of one of its units: silent while its process tree spends the phase's bound and the
-		 * grace in CPU, or does not move over a whole bound and grace of wall time (live.ts overrun), it is killed, the leg
+		 * Watches a worker in a phase of one of its units: silent while its process tree spends the phase's CPU bound and the
+		 * grace, or does not move over a whole stall window and grace of wall time (live.ts overrun), it is killed, the leg
 		 * that fired kept for its report. A worker whose case the machine slows keeps moving and is left to its own guard.
 		 */
 		const watch = (worker: Worker, id: number, phase: Phase) =>
@@ -692,7 +740,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 							processWork(Option.fromUndefinedOr(worker.child.pid), began, (wall) =>
 								waitedBy(worker.waits, wall)
 							),
-							boundOf(unit.value, phase) + SILENCE_GRACE_MILLIS
+							graced(boundOf(unit.value, phase, spec.stall))
 						),
 						(verdict) =>
 							Queue.offer(events, { kind: "silent", worker, unit: id, phase, overrun: verdict })
@@ -730,7 +778,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 					case "forked":
 						yield* Effect.forkIn(
 							Effect.andThen(
-								Effect.sleep(Duration.millis(spec.open + SILENCE_GRACE_MILLIS)),
+								Effect.sleep(Duration.millis(loadBoundOf(spec.stall).stall + SILENCE_GRACE_MILLIS)),
 								Queue.offer(events, { kind: "unready", worker })
 							).pipe(Effect.asVoid),
 							scope
@@ -740,7 +788,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 						if (!worker.ready && workers[worker.index] === worker) {
 							yield* breaks(
 								worker,
-								`a worker was not ready within the open bound of ${Duration.format(Duration.millis(spec.open))} and the grace (its runner config's load never ended, or its services never came), so it is ended and not forked again; what it last wrote:\n${worker.output}`
+								`a worker was not ready within a load's bound of ${formatted(loadBoundOf(spec.stall).stall)} and the grace (its runner config's load never ended, or its services never came), so it is ended and not forked again; what it last wrote:\n${worker.output}`
 							)
 							yield* endGroup(worker.child)
 						}
@@ -751,7 +799,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 						return
 					case "sent":
 						if (Option.isNone(worker.running)) {
-							yield* watch(worker, event.unit, "readying")
+							yield* watch(worker, event.unit, importing)
 						}
 						return
 					case "silent":
@@ -779,7 +827,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 						worker.ready = false
 						Option.map(lost, ({ unit, phase }) => {
 							const how = event.signal ?? `exit ${event.code}`
-							const report = `${lostIn(unit, phase)} ended (${how}) ${endedBy(worker.ended)}; ${heardText(worker.heard, now)}; what it last wrote:\n${worker.output}`
+							const report = `${lostIn(phase, spec.stall)} ended (${how}) ${endedBy(worker.ended)}; ${heardText(worker.heard, now)}; what it last wrote:\n${worker.output}`
 							finish(worker, unit, doneWith(unit.work, lostResult(report)))
 						})
 						handBack(worker, [])
@@ -818,6 +866,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 								starts.millis += received.millis
 								starts.cpu += received.cpu
 								worker.ready = true
+								send(worker, { kind: "runs", values: spec.runs })
 								feedAll()
 								return
 							case "failed":
@@ -827,7 +876,13 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 								}
 								return
 							case "readying":
-								yield* watch(worker, received.unit, "readying")
+								yield* watch(worker, received.unit, importing)
+								return
+							case "opening":
+								yield* watch(worker, received.unit, {
+									kind: "opening",
+									budget: received.budget
+								})
 								return
 							case "readied":
 								Option.map(
@@ -851,7 +906,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 								)
 								return
 							case "started":
-								yield* watch(worker, received.unit, "evaluating")
+								yield* watch(worker, received.unit, evaluating)
 								return
 							case "done": {
 								worker.usage.reported = received.cpu

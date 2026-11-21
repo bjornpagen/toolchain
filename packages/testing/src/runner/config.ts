@@ -3,7 +3,7 @@ import { type Cause, type Context, Effect, Layer, Schema, type Scope } from "eff
 import { failureText } from "#failure.ts"
 import type { Equivalent, Family as OperatorFamily } from "#mutants.ts"
 import type { RunnerServices } from "#property.ts"
-import type { ModuleClosure, WorkerIndex } from "#runner/services.ts"
+import type { ModuleClosure, RunValues, WorkerIndex } from "#runner/services.ts"
 
 /**
  * The flags every process of a run runs under, the parent and each worker: no `__proto__` accessor and no inspector
@@ -31,11 +31,17 @@ export const HARDENED_FLAGS: ReadonlyArray<string> = [
  */
 export const SMALL_STACK = "--stack-size=160"
 
-/** What the runner provides every need itself: the platform, the worker's index, closures and the run's lease. */
+/**
+ * What the runner provides a repository's layer and every need itself: the platform, the worker's index and closures.
+ * Every need is given its run's run need values too (RunValues), which no layer reads.
+ */
 export type RunnerProvided = NodeServices | WorkerIndex | ModuleClosure
 
 /** The services a repository's runner config provides through its layer: every RunnerServices entry it declares. */
-export type RepositoryServices = Exclude<RunnerServices[keyof RunnerServices], RunnerProvided>
+export type RepositoryServices = Exclude<
+	RunnerServices[keyof RunnerServices],
+	RunnerProvided | RunValues
+>
 
 /** A repository's runner services failed to build: every need that would have used them fails with this. */
 export class RunnerServicesFailed extends Schema.TaggedError<

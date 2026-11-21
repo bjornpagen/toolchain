@@ -15,7 +15,8 @@ import { ENDINGS, madeAndEnded, madeGen, PLACES } from "#resources/scratch.fixtu
 import { Scratch } from "#resources/scratch.ts"
 import { toolchainTestCache } from "#runner/cache-home.ts"
 import { moduleClosureAt } from "#runner/module-closure.ts"
-import { ModuleClosure, WorkerIndex } from "#runner/services.ts"
+import { runValuesOf } from "#runner/runs.ts"
+import { ModuleClosure, RunValues, WorkerIndex } from "#runner/services.ts"
 
 export const scratchOwn = property.explore(array(int(0, 3), { min: 0, max: 4 }), {
 	needs: {},
@@ -27,7 +28,8 @@ export const scratchOwn = property.explore(array(int(0, 3), { min: 0, max: 4 }),
 			const closures = yield* moduleClosureAt(process.cwd(), Option.none())
 			const take = yield* Scratch.dir.open.pipe(
 				Effect.provideService(WorkerIndex, { index: 0, workers: 1 }),
-				Effect.provideService(ModuleClosure, closures)
+				Effect.provideService(ModuleClosure, closures),
+				Effect.provideService(RunValues, runValuesOf([]))
 			)
 			const used = yield* Scope.make()
 			const dir = yield* Scope.provide(take, used)

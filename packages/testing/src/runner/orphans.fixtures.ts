@@ -47,7 +47,8 @@ const heldAsProgram = (root: string, held: string, pidFile: string, childFile: s
 				execArgv: process.execArgv,
 				served: Option.none(),
 				guide: "notes",
-				open: 3_600_000
+				runs: [],
+				stall: 3_600_000
 			})
 			yield* Effect.forkScoped(
 				pool.evaluator.evaluate(
@@ -60,7 +61,6 @@ const heldAsProgram = (root: string, held: string, pidFile: string, childFile: s
 								keep: "nothing",
 								sense: { kind: "notes" },
 								deadline: 3_600_000,
-								open: 3_600_000,
 								print: "failing"
 							}
 						]

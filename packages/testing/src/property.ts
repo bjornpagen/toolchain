@@ -1,5 +1,14 @@
 import type { NodeServices } from "@effect/platform-node/NodeServices"
-import { Array as Arr, Brand, Effect, Formatter, Option, type Scope } from "effect"
+import {
+	Array as Arr,
+	Brand,
+	Effect,
+	Formatter,
+	Option,
+	Record as Rec,
+	Schema,
+	type Scope
+} from "effect"
 import type {
 	CommandName,
 	NoCommands,
@@ -32,10 +41,10 @@ import {
 	replay,
 	type Searched
 } from "#runner/search.ts"
-import type { ModuleClosure, NeedFailed, WorkerIndex } from "#runner/services.ts"
+import { type ModuleClosure, NeedFailed, RunValues, type WorkerIndex } from "#runner/services.ts"
 
 export type { Aimed, Case, FiniteSpace, Oracle, Space, Steered }
-export { ModuleClosure, NeedFailed, WorkerIndex } from "#runner/services.ts"
+export { ModuleClosure, NeedFailed, RunValues, WorkerIndex } from "#runner/services.ts"
 export type { Dictionary } from "#dictionary.ts"
 export type { CaseList } from "#gen.ts"
 
@@ -73,6 +82,7 @@ export interface RunnerServices {
 	readonly platform: NodeServices
 	readonly worker: WorkerIndex
 	readonly closures: ModuleClosure
+	readonly runs: RunValues
 }
 
 /** What a need may require: the worker's scope and the runner's services. */
@@ -81,16 +91,86 @@ export type NeedContext = Scope.Scope | RunnerServices[keyof RunnerServices]
 /**
  * A per-case resource. `open` runs once per worker, in the worker's scope, when the worker readies the first property
  * that needs it (needs with the same `key` share it): before that property's first case there and outside every case's
- * deadline, within the runner's open bound (needOpenMillis), so a need that fails to open or outruns it fails the
- * property once, never a case. It keeps warm what the need keeps warm (a pool of pre-cloned databases); the effect it
- * returns gives one case its resource in the case's scope, released when the case ends; a take that fails (NeedFailed)
- * fails the property once as well, unopened, never the case, and is never shrunk. A shared mutable
- * resource is unrepresentable: what is shared is immutable (a Template) and what a case gets is its own.
+ * deadline, so a need that fails to open fails the property once, never a case. A property's needs open at once, judged
+ * as one group of work: their process may spend the sum of their `budget`s in CPU, and its CPU must move over every
+ * stall window of wall time outside declared waits (runner/limits.ts needStallMillis), or every need of the group still
+ * opening fails, unopened; a need that opens alone is judged by its own budget. `budget` is the CPU, in milliseconds,
+ * its open may spend: its owner's measured choice, stated at the need with its evidence, since only the owner knows
+ * what its open does. It keeps warm what the need keeps warm (a pool of pre-cloned databases); the effect it returns
+ * gives one case its resource in the case's scope, released when the case ends; a take that fails (NeedFailed) fails
+ * the property once as well, unopened, never the case, and is never shrunk. `runNeeds` are the run needs its open reads
+ * the values of (Need.overRun), which the runner opens once before it forks a worker; none for a need that reads none.
+ * A shared mutable resource is unrepresentable: what is shared is immutable (a Template, a run need's value) and what a
+ * case gets is its own.
  */
 export type Need<A> = Readonly<{
 	key: string
+	budget: number
+	runNeeds: ReadonlyArray<RunNeed<unknown>>
 	open: Effect.Effect<Effect.Effect<A, NeedFailed, Scope.Scope>, NeedFailed, NeedContext>
 }>
+
+/**
+ * What a run need's open may require: the run's scope, which what it makes (a build's directory, a server) lives in
+ * until the run's pools have closed, and the platform.
+ */
+export type RunNeedContext = Scope.Scope | NodeServices
+
+/**
+ * A resource made once per run, for every worker of it: `open` runs ONCE, in the runner's own process, before it forks
+ * any worker (runner/runs.ts), given the directory the run's workers run in (the package's directory in the checkout,
+ * or a worker tree's under a mutant, which a mutant therefore reaches only on disk), within its `budget` of CPU and the
+ * stall window; its value crosses to every worker as data, `value`'s JSON encoding, so no worker builds it or waits on
+ * another that does. A need reads it through Need.overRun. One that fails to open, or whose value does not encode,
+ * fails every need that reads it with its NeedFailed, unopened, never a case. Run needs of one key share one open.
+ */
+export type RunNeed<A> = Readonly<{
+	key: string
+	budget: number
+	value: Schema.Codec<A, Schema.Json>
+	open: (directory: string) => Effect.Effect<A, NeedFailed, RunNeedContext>
+}>
+
+/**
+ * What a need over a run need states (Need.overRun): its key and budget, as any need's, and its open given the run
+ * need's value.
+ */
+export type OverRun<R, A> = Readonly<{
+	key: string
+	budget: number
+	open: (
+		value: R
+	) => Effect.Effect<Effect.Effect<A, NeedFailed, Scope.Scope>, NeedFailed, NeedContext>
+}>
+
+/**
+ * The value of `run` on this process, as the runner sent it (RunValues), decoded by its schema: what the runner's open
+ * gave, or the NeedFailed it failed with there.
+ */
+const runValueOf = <R>(run: RunNeed<R>): Effect.Effect<R, NeedFailed, RunValues> =>
+	Effect.flatMap(
+		RunValues.use((values) => values.encoded(run.key)),
+		(encoded) =>
+			Effect.mapError(Schema.decodeEffect(run.value)(encoded), (error) =>
+				NeedFailed.make({
+					need: run.key,
+					message: `the value the runner sent does not decode: ${error.message}`
+				})
+			)
+	)
+
+/**
+ * Needs as values: `Need.overRun(run, need)`, a need whose open reads the value of the run need `run`, which it
+ * declares (runNeeds), so the runner opens `run` once before its workers start and each worker's open gets its value.
+ */
+export const Need = {
+	overRun: <R, A>(run: RunNeed<R>, need: OverRun<R, A>): Need<A> => ({
+		key: need.key,
+		budget: need.budget,
+		runNeeds: [run],
+		open: Effect.flatMap(runValueOf(run), need.open)
+	})
+} as const
 
 /** A property's needs, by the name its check reads each resource under. */
 export type Needs = Readonly<Record<string, Need<unknown>>>
@@ -106,6 +186,13 @@ export type Resources<N extends Needs> = {
 
 /** The resource a need gives. */
 export type NeedValue<X> = X extends Need<infer A> ? A : never
+
+/** The run needs `needs` read the values of, each key once: what the runner opens before it forks their workers. */
+export const runNeedsOf = (needs: ReadonlyArray<Needs>): ReadonlyArray<RunNeed<unknown>> =>
+	Arr.dedupeWith(
+		Arr.flatMap(needs, (each) => Arr.flatMap(Rec.values(each), (need) => need.runNeeds)),
+		(one, other) => one.key === other.key
+	)
 
 /** What a check may require beyond its resources: the case's scope and the platform. */
 export type CheckContext = Scope.Scope | NodeServices

@@ -73,7 +73,7 @@ export const trialTemplatesApart = property.exhaust(runPairs, {
 				const target = yield* realPathOf(`${packageRoot}/src/mutate/mark.fixtures.ts`)
 				const trees = yield* treesOf(packageRoot)
 				const images = yield* imagesOf(packageRoot, trees)
-				const pool = mutantPoolOf(packageRoot, packageRoot)
+				const pool = yield* mutantPoolOf(packageRoot, packageRoot)
 				const opened = yield* Effect.forEach(pair, (loads, at) =>
 					Effect.scoped(
 						Effect.gen(function* () {
@@ -85,10 +85,10 @@ export const trialTemplatesApart = property.exhaust(runPairs, {
 							const evaluator = yield* pool.lease(
 								{ ...image, env: { [MARK_TOKEN]: token, [MARK_FILE]: file } },
 								1,
-								"notes"
+								{ guide: "notes", runs: [] }
 							)
 							const results = yield* evaluator.evaluate(
-								[markedCase(runnerLimits.deadline, runnerLimits.open)],
+								[markedCase(runnerLimits.deadline)],
 								() => true
 							)
 							assert.deepEqual(

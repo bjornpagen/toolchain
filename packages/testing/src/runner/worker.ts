@@ -8,6 +8,7 @@ import {
 	Latch,
 	Option,
 	Queue,
+	Record as Rec,
 	Result,
 	Schema,
 	Scope
@@ -25,10 +26,12 @@ import {
 	stoppedOf
 } from "#runner/case.ts"
 import { askedClosuresOf } from "#runner/closure-requests.ts"
+import { needStallMillis } from "#runner/limits.ts"
 import { configOf, propertyAt } from "#runner/load.ts"
 import { Perception, perceptionOf } from "#runner/perceive.ts"
 import { FromWorker, lostResult, ToWorker, type Work, workOf } from "#runner/protocol.ts"
-import { ModuleClosure, WorkerIndex } from "#runner/services.ts"
+import { runValuesOf } from "#runner/runs.ts"
+import { ModuleClosure, RunValues, WorkerIndex } from "#runner/services.ts"
 import { runOfLabel } from "#runner/stack.ts"
 import { childrenCpuNow, childrenSince } from "#runner/usage.ts"
 import { reportWaitsTo } from "#runner/work.ts"
@@ -39,9 +42,11 @@ import { startProcessCoverage } from "#sense.ts"
  * runner config, then evaluates the units the parent sends, one at a time, in the order sent: it tells the parent when
  * it starts each, so the parent knows which are unstarted, and gives back the unstarted ones the parent revokes to
  * hand to an idle worker. The first unit of a property here readies it first, a phase of its own that it tells the
- * parent of: its module is imported (once, and it stays loaded) and its needs are opened within the open bound its
- * orders carry (each once per key, staying open in the worker's scope until the parent disconnects), before any case
- * of it starts and outside every case's deadline. A property that could not be readied (its module did not load, a
+ * parent of: its module is imported (once, and it stays loaded), then the needs of it not yet open here are opened at
+ * once, under their budgets summed, which it tells the parent (each once per key, staying open in the worker's scope
+ * until the parent disconnects), before any case of it starts and outside every case's deadline. Its needs read its
+ * run's run need values from the parent's first message (runs), which the runner opened once before it forked any
+ * worker. A property that could not be readied (its module did not load, a
  * need did not open) gives every case of it here that one outcome. When the parent retires a property (its search
  * ended), after the units of it sent before, the needs no other property readied here uses are released. When its run guides a search by blocks, it starts
  * V8's precise coverage before it loads any module.
@@ -101,12 +106,16 @@ const main = Effect.gen(function* () {
 		Scope.Scope,
 		scope
 	)
+	let runs = runValuesOf([])
+	const runValues: Context.Service.Shape<typeof RunValues> = {
+		encoded: (key) => Effect.suspend(() => runs.encoded(key))
+	}
 	const services = yield* Effect.cached(
 		Effect.map(Scope.provide(scope)(Effect.provideContext(config.services, runner)), (built) =>
-			Context.merge(runner, built)
+			Context.add(Context.merge(runner, built), RunValues, runValues)
 		)
 	)
-	const cache = needCacheOf(services)
+	const cache = needCacheOf(services, needStallMillis)
 	const stopped = stoppedOf()
 	const perception = yield* perceptionOf
 	const pending: Array<Next> = []
@@ -130,6 +139,9 @@ const main = Effect.gen(function* () {
 			}
 			const order = decoded.value
 			switch (order.kind) {
+				case "runs":
+					runs = runValuesOf(order.values)
+					break
 				case "evaluate":
 					for (const unit of order.units) {
 						pending.push({ kind: "unit", unit })
@@ -170,12 +182,12 @@ const main = Effect.gen(function* () {
 	const readied = new Map<string, Readied>()
 
 	/**
-	 * A property readied here, its module imported and its needs opened within `bound`, before any case of it; its needs'
-	 * keys are held for it until it retires.
+	 * A property readied here for `unit`, its module imported, then the parent told the budget of the needs it opens
+	 * now and those needs opened at once, before any case of it; its needs' keys are held for it until it retires.
 	 */
 	const ready = (
 		label: string,
-		bound: number
+		unit: number
 	): Effect.Effect<Readonly<{ readied: Readied; imported: number }>> =>
 		Effect.gen(function* () {
 			const [importing, loaded] = yield* Effect.timed(
@@ -187,7 +199,12 @@ const main = Effect.gen(function* () {
 				return { readied: refused, imported }
 			}
 			holdings.readied(label, needKeysOf(loaded.success.needs))
-			const opened = yield* readiedOf(loaded.success.ready, bound).pipe(
+			yield* send({
+				kind: "opening",
+				unit,
+				budget: cache.budget(Rec.values(loaded.success.needs))
+			})
+			const opened = yield* readiedOf(loaded.success.ready).pipe(
 				Effect.provideService(NeedCache, cache)
 			)
 			return { readied: opened, imported }
@@ -213,7 +230,7 @@ const main = Effect.gen(function* () {
 					yield* send({ kind: "readying", unit: unit.unit })
 					const cpu = process.cpuUsage()
 					const children = childrenCpuNow()
-					const [took, made] = yield* Effect.timed(ready(first.property, first.open))
+					const [took, made] = yield* Effect.timed(ready(first.property, unit.unit))
 					readied.set(first.property, made.readied)
 					yield* send({
 						kind: "readied",

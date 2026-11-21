@@ -1,5 +1,6 @@
 import { Effect, Redacted, type Scope } from "effect"
 import pg from "pg"
+import { waitingOn } from "#live.ts"
 import { bootstrapSuperuser } from "#pg/server.ts"
 import type { PgMember } from "#pg/settle.ts"
 import type { PgSession, Statements } from "#resources/cluster.ts"
@@ -16,7 +17,10 @@ const sessionFailed = (member: PgMember, doing: string) => (cause: unknown) =>
  * A session over node-postgres (pg, a peer of this module) on `member` with `config` (where and as whom it signs in),
  * in `database`, for the scope, as `applicationName`, in pg's pipeline mode, so a statement sent while another runs
  * follows it on the wire, each its own exchange ending in a Sync, and concurrent callers take turns in the server;
- * every statement goes out on the extended protocol with its rows positional, each column the server's text.
+ * every statement goes out on the extended protocol with its rows positional, each column the server's text. Its
+ * connect and its end are declared waits of this process (live.ts waitingOn), as its statements are (resources/cluster.ts
+ * run): each waits on the member's work (a backend forked and signed in, a backend leaving), which no guard of this
+ * process counts as its stall.
  */
 const pgSession = (
 	applicationName: string,
@@ -38,14 +42,18 @@ const pgSession = (
 						})
 				),
 				(client) =>
-					Effect.tryPromise({
-						try: () => client.connect(),
-						catch: sessionFailed(member, `a session in ${database}`)
-					})
+					waitingOn(`a session's connect in ${database} on member ${member.name}`)(
+						Effect.tryPromise({
+							try: () => client.connect(),
+							catch: sessionFailed(member, `a session in ${database}`)
+						})
+					)
 			),
 			(client) =>
 				Effect.ignore(
-					Effect.tryPromise({ try: () => client.end(), catch: sessionFailed(member, "an end") })
+					waitingOn(`a session's end in ${database} on member ${member.name}`)(
+						Effect.tryPromise({ try: () => client.end(), catch: sessionFailed(member, "an end") })
+					)
 				)
 		),
 		(client): PgSession => ({

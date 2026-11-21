@@ -42,6 +42,8 @@ export default defineRunner({
 		"src/runner/launcher.test.ts",
 		"src/runner/resolutions.test.ts",
 		"src/runner/schedule.test.ts",
+		"src/runner/opening.test.ts",
+		"src/runner/runs.test.ts",
 		"src/runner/steer.test.ts",
 		"src/runner/touched.test.ts",
 		"src/mutate/*.test.ts",

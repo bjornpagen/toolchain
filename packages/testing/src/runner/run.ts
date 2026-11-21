@@ -17,13 +17,13 @@ import {
 import type { Oracle } from "#explore.ts"
 import { failureText } from "#failure.ts"
 import { liveMillis } from "#live.ts"
-import type { Kill, PropertyId, PropertyKind } from "#property.ts"
+import { type Kill, type PropertyId, type PropertyKind, runNeedsOf } from "#property.ts"
 import { PgCluster } from "#resources/cluster.ts"
 import { collect, templatesOf } from "#resources/collect.ts"
 import type { DatabaseTemplate } from "#resources/template.ts"
 import { sharedStore } from "#runner/compile-cache.ts"
 import { type RunnerConfig, SMALL_STACK } from "#runner/config.ts"
-import { runnerLimits } from "#runner/limits.ts"
+import { needStallMillis, runnerLimits } from "#runner/limits.ts"
 import {
 	configOf,
 	type Discovered,
@@ -36,6 +36,7 @@ import {
 import { moduleClosureAt } from "#runner/module-closure.ts"
 import { type Pool, PoolFailed, placesOf, placesShared, poolOf } from "#runner/pool.ts"
 import type { Reach, Verdict } from "#runner/protocol.ts"
+import { openedRuns } from "#runner/runs.ts"
 import { ModuleClosure, WorkerIndex } from "#runner/services.ts"
 import { labelOf, runOfLabel, type Stack } from "#runner/stack.ts"
 import type { RunUsage } from "#runner/usage.ts"
@@ -376,7 +377,8 @@ export const runSeedLogged: Effect.Effect<RunSeed, Config.ConfigError | Schema.S
 
 /**
  * Runs a package's properties on the pool, every property's search at once, its cases spread over every worker:
- * loads the package's runner config and the test modules the request names, forks the pool (a worker for every two
+ * loads the package's runner config and the test modules the request names, opens once, here, the run needs their
+ * needs read (runner/runs.ts), forks the pool (a worker for every two
  * cores, and never more workers than the run has properties, runWorkers, so a run opens no connection it has no work
  * for, under this process's flags, the hardened flags and the config's conditions among them), and gives each
  * property's verdict. The pool is closed before it returns, every worker ended and what its needs held released (a
@@ -397,6 +399,11 @@ export const runPackage = (
 		)(
 			Effect.scoped(
 				Effect.gen(function* () {
+					const values = yield* openedRuns(
+						runNeedsOf(Arr.map(discovered, (found) => found.property.needs)),
+						request.root,
+						needStallMillis
+					)
 					const runs = Arr.map(discovered, (found) => ({ found, stack: stackOf(found) }))
 					const kinds = new Map(
 						Arr.map(runs, ({ found, stack }) => {
@@ -431,7 +438,8 @@ export const runPackage = (
 							execArgv: flagsOf(stack),
 							served: Option.none(),
 							guide,
-							open: runnerLimits.open
+							runs: values,
+							stall: needStallMillis
 						})
 						pools.set(label, pool)
 					}
@@ -509,7 +517,7 @@ export const replayToken = (
 ): Effect.Effect<
 	Readonly<{ id: string; oracle: Oracle; verdict: Verdict }>,
 	LoadFailed | PoolFailed,
-	Scope.Scope | FileSystem.FileSystem | Path.Path
+	Scope.Scope | NodeServices
 > =>
 	Effect.gen(function* () {
 		yield* configOf(root)
@@ -517,6 +525,11 @@ export const replayToken = (
 		const module = moduleOfArgument(named.id)
 		const loaded = yield* discover(root, [module])
 		const found = Arr.filter(loaded, (discovered) => discovered.id === named.id)
+		const values = yield* openedRuns(
+			runNeedsOf(Arr.map(found, (discovered) => discovered.property.needs)),
+			root,
+			needStallMillis
+		)
 		const pool = yield* poolOf({
 			entry: WORKER_ENTRY,
 			root,
@@ -527,7 +540,8 @@ export const replayToken = (
 			execArgv: flagsOf(named.stack),
 			served: Option.none(),
 			guide: "notes",
-			open: runnerLimits.open
+			runs: values,
+			stall: needStallMillis
 		})
 		return yield* Option.match(Arr.head(found), {
 			onNone: () =>

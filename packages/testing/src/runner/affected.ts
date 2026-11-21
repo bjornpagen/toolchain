@@ -630,8 +630,9 @@ const judgedOf = (repository: string, packageRoot: string, subjects: ReadonlyArr
 		const killedRoot = yield* realPathOf(packageRoot)
 		const trees = yield* treesOf(checkout)
 		const images = yield* imagesOf(checkout, trees)
+		const pool = yield* mutatorPool(checkout, killedRoot)
 		return yield* killsOf(
-			mutatorPool(checkout, killedRoot),
+			pool,
 			{ seed: 0, limits: runnerLimits },
 			checkout,
 			images,

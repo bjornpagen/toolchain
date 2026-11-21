@@ -84,9 +84,8 @@ export type Sense = typeof Sense.Type
 /**
  * One case, as a search orders it: the property (by identity), how its decisions are chosen, the steering it is drawn
  * under, whether its tape comes back when it passes (`tape`, for a seed or an enumeration's next branch), what it
- * perceives, how long it may run before it is hung (milliseconds), how long its property's needs may take to open on a
- * process that has not opened them (milliseconds, before the case and outside its deadline), and whether a passing
- * case is printed too (a failing or hung case always is).
+ * perceives, how long it may run before it is hung (milliseconds), and whether a passing case is printed too (a failing
+ * or hung case always is).
  */
 const CaseOrder = Schema.Struct({
 	property: Schema.String,
@@ -95,7 +94,6 @@ const CaseOrder = Schema.Struct({
 	keep: Schema.Literals(["nothing", "tape"]),
 	sense: Sense,
 	deadline: Schema.Finite,
-	open: Schema.Finite,
 	print: Schema.Literals(["failing", "always"])
 })
 
@@ -230,15 +228,14 @@ export type SeriesFrom = typeof SeriesFrom.Type
 /**
  * A series of one property's cases on one process, the unit an exhaustion and an exploration's rotating stream are sent
  * in: its property, where its cases come from, how many of them one evaluation takes (`group`: one, or a batched
- * property's batch size), and each case's deadline and its needs' open bound. The process draws the cases itself, runs
- * them in order, and gives back one summary, so its cases cross no process boundary one by one.
+ * property's batch size), and each case's deadline. The process draws the cases itself, runs them in order, and gives
+ * back one summary, so its cases cross no process boundary one by one.
  */
 const SeriesOrder = Schema.Struct({
 	property: Schema.String,
 	from: SeriesFrom,
 	group: Schema.Finite,
-	deadline: Schema.Finite,
-	open: Schema.Finite
+	deadline: Schema.Finite
 })
 
 export type SeriesOrder = typeof SeriesOrder.Type
@@ -284,15 +281,13 @@ export type SeriesRan = typeof SeriesRan.Type
 
 /**
  * An order to count an exhaustion's space on the process it is sent to, before any of its cases runs: its property,
- * every how many cases to give the branch of (where the exhaustion's series start), the CPU the count may spend before
- * the space is uncountable (enumerate.ts countWithin), and its needs' open bound, within which the process readies the
- * property it counts the space of.
+ * every how many cases to give the branch of (where the exhaustion's series start), and the CPU the count may spend
+ * before the space is uncountable (enumerate.ts countWithin).
  */
 const CountOrder = Schema.Struct({
 	property: Schema.String,
 	every: Schema.Finite,
-	cpu: Schema.Finite,
-	open: Schema.Finite
+	cpu: Schema.Finite
 })
 
 export type CountOrder = typeof CountOrder.Type
@@ -329,21 +324,15 @@ const Work = Schema.Union([
 
 export type Work = typeof Work.Type
 
-/** The property a unit's work is of, and its needs' open bound, as its orders carry them. */
-export const workOf = (work: Work): Readonly<{ property: string; open: number; cases: number }> => {
+/** The property a unit's work is of, and how many cases it holds, as its orders carry them. */
+export const workOf = (work: Work): Readonly<{ property: string; cases: number }> => {
 	switch (work.kind) {
-		case "cases": {
-			const first = Arr.headNonEmpty(work.batch)
-			return { property: first.property, open: first.open, cases: work.batch.length }
-		}
+		case "cases":
+			return { property: Arr.headNonEmpty(work.batch).property, cases: work.batch.length }
 		case "series":
-			return {
-				property: work.series.property,
-				open: work.series.open,
-				cases: seriesCases(work.series.from)
-			}
+			return { property: work.series.property, cases: seriesCases(work.series.from) }
 		case "count":
-			return { property: work.count.property, open: work.count.open, cases: 0 }
+			return { property: work.count.property, cases: 0 }
 	}
 }
 
@@ -483,7 +472,7 @@ export const doneWith = (work: Work, result: CaseResult): Done => {
 
 /**
  * The result of a case whose property's need `need` did not open on its process: why (its NeedFailed's message, its
- * open past the open bound among them).
+ * open past its group's bound among them).
  */
 export const unopenedResult = (need: string, message: string): CaseResult =>
 	unranResult({ kind: "unopened", need, message })
@@ -608,11 +597,24 @@ export type Verdict =
 	| Readonly<{ kind: "failed"; finding: Finding }>
 
 /**
- * A message from the parent to a worker: evaluate these units, each a batch under its id; give back these unstarted
- * units; the closure hash of a module it asked for (runner/closure-requests.ts); or a property retired, its search
- * ended, so no unit of it comes after the ones already sent.
+ * One run need's value as the runner's process opened it (runner/runs.ts), by its key: its value's JSON encoding, or why
+ * it did not open (or did not encode), which every need reading it fails with.
+ */
+const RunValue = Schema.Union([
+	Schema.Struct({ kind: Schema.Literal("opened"), key: Schema.String, value: Schema.Json }),
+	Schema.Struct({ kind: Schema.Literal("failed"), key: Schema.String, message: Schema.String })
+])
+
+export type RunValue = typeof RunValue.Type
+
+/**
+ * A message from the parent to a worker: its run's run need values, the first message a worker is sent once it is
+ * ready, before any unit; evaluate these units, each a batch under its id; give back these unstarted units; the
+ * closure hash of a module it asked for (runner/closure-requests.ts); or a property retired, its search ended, so no
+ * unit of it comes after the ones already sent.
  */
 export const ToWorker = Schema.Union([
+	Schema.Struct({ kind: Schema.Literal("runs"), values: Schema.Array(RunValue) }),
 	Schema.Struct({
 		kind: Schema.Literal("evaluate"),
 		units: Schema.NonEmptyArray(Schema.Struct({ unit: Schema.Finite, work: Work }))
@@ -637,8 +639,9 @@ export type ChildrenCpu = typeof ChildrenCpu.Type
 
 /**
  * A message from a worker to the parent: it is ready, and how many milliseconds it took to start, and of CPU; it is readying
- * a unit's property, the first unit of it the worker took (importing its module and opening its needs, within the open
- * bound); it readied it, in how many milliseconds, of which how many importing its module (none when it had before),
+ * a unit's property, the first unit of it the worker took (importing its module, then opening its needs); it imported
+ * the module and opens the needs not yet open on it, at once, within `budget`, their budgets summed (ms of CPU); it
+ * readied it, in how many milliseconds, of which how many importing its module (none when it had before),
  * what scheduling measures readying by, and how many of CPU, its children's beside; it started a unit's cases; it finished one, with each order's result, the worker's CPU so
  * far and its children's CPU while it ran; it gave back
  * these units, of those the parent revoked, none of which it had started; a case (a unit's `at`-th order) was used
@@ -651,6 +654,7 @@ export type ChildrenCpu = typeof ChildrenCpu.Type
 export const FromWorker = Schema.Union([
 	Schema.Struct({ kind: Schema.Literal("ready"), cpu: Schema.Finite, millis: Schema.Finite }),
 	Schema.Struct({ kind: Schema.Literal("readying"), unit: Schema.Finite }),
+	Schema.Struct({ kind: Schema.Literal("opening"), unit: Schema.Finite, budget: Schema.Finite }),
 	Schema.Struct({
 		kind: Schema.Literal("readied"),
 		unit: Schema.Finite,

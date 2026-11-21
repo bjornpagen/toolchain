@@ -25,6 +25,7 @@ import type { CheckContext, Need, NeedContext, Needs, NeedValue, Resources } fro
 import { fnv1a32 } from "#random.ts"
 import { type Drawn, replayTokenOf } from "#replay.ts"
 import type { RunnerServicesFailed } from "#runner/config.ts"
+import { type Judged, judgedGroup, budgetOf, type Member } from "#runner/opening.ts"
 import { Perception } from "#runner/perceive.ts"
 import {
 	type CaseOrder,
@@ -46,7 +47,14 @@ import {
 } from "#runner/protocol.ts"
 import { seriesRun } from "#runner/series.ts"
 import { NeedFailed } from "#runner/services.ts"
-import { type Overrun, overrunText, ownCpu, ownWork, waitedOnNow } from "#runner/work.ts"
+import {
+	deadlineBound,
+	type Overrun,
+	overrunText,
+	ownCpu,
+	ownWork,
+	waitedOnNow
+} from "#runner/work.ts"
 import { type Observed, type Recording, recording, simplestChooser } from "#source.ts"
 
 /**
@@ -79,83 +87,128 @@ const slotIdOf = (key: string) => `@bjornpagen/testing/runner/case/need/${key}`
 const needSlotOf = <A>(need: Need<A>) => Context.Service<NeedSlot<A>>(slotIdOf(need.key))
 
 /**
- * The needs an evaluating process has opened. `opened` opens a need the first time the process asks for it (needs of
- * one key share it), in a scope of its own under the process's and with the process's services, on a fiber of its own,
- * within `bound` milliseconds of its work (live.ts overrun: its CPU, or its CPU's stall over a whole bound of wall time
- * outside declared waits, so a wait on another process's lease or lock is no part of it); every later ask gets what
- * that open gave: the need's taker, or the
- * NeedFailed it failed with (its open past the bound among them, and an open that died, its defect's text the
- * failure's message, so a defect opening a need refuses its property on that process, every case unopened, never
- * ending the process with nothing said), which no later ask retries. What a need keeps warm
- * stays warm across cases and properties until `release` closes its scope (what it holds: clones, sessions, lease
- * permits, released) and forgets it, so a later ask opens it again.
+ * The needs an evaluating process has opened. `opened` opens those of `needs` the process has not opened (needs of one
+ * key share one), all at once, as one group judged under their budgets summed and the stall window (runner/opening.ts
+ * judgedGroup: the process's CPU, or its CPU's stall over a whole window of wall time outside declared waits, so a wait
+ * on another process's work is no part of it), each in a scope of its own under the process's and with the process's
+ * services, on a fiber of its own, and awaits every one of `needs`; `taker` gives one need's taker, opening it alone
+ * (under its own budget) when the process has not; `budget` is what `opened` would judge `needs`' group by now, the
+ * budgets of those not yet opened, summed, which a worker tells its pool. Every later ask gets what the first open gave:
+ * the need's taker, or the NeedFailed it failed with (its group past its bound among them, and an open that died, its
+ * defect's text the failure's message, so a defect opening a need refuses its property on that process, every case
+ * unopened, never ending the process with nothing said), which no later ask retries. What a need keeps warm stays warm
+ * across cases and properties until `release` closes its scope (what it holds: clones, sessions, lease permits,
+ * released) and forgets it, so a later ask opens it again.
  */
 export class NeedCache extends Context.Service<
 	NeedCache,
 	Readonly<{
-		opened: <A>(need: Need<A>, bound: number) => Effect.Effect<Taker<A>, NeedFailed>
+		opened: (needs: ReadonlyArray<Need<unknown>>) => Effect.Effect<void, NeedFailed>
+		taker: <A>(need: Need<A>) => Effect.Effect<Taker<A>, NeedFailed>
+		budget: (needs: ReadonlyArray<Need<unknown>>) => number
 		release: (keys: ReadonlyArray<string>) => Effect.Effect<void>
 	}>
 >()("@bjornpagen/testing/runner/case/NeedCache") {}
 
+/** A need this process owes an open: its key and budget, and its open into its slot, under its group's judge. */
+type Owed = Member & Readonly<{ into: (judged: Judged) => Effect.Effect<void> }>
+
 /**
  * The need cache of a process whose needs open in the context `services` gives: its scope, the platform, its worker
- * index and the repository's services, which the process builds the first time a need opens, so a process whose cases
- * take no need never builds them. Services that fail to build fail every need that opens with their failure.
+ * index, its run's run need values and the repository's services, which the process builds the first time a need opens,
+ * so a process whose cases take no need never builds them. Services that fail to build fail every need that opens with
+ * their failure. Each group of needs it opens is judged under `stall` as its stall window (runner/limits.ts
+ * needStallMillis, or a test's own).
  */
 export const needCacheOf = (
-	services: Effect.Effect<Context.Context<NeedContext>, RunnerServicesFailed>
+	services: Effect.Effect<Context.Context<NeedContext>, RunnerServicesFailed>,
+	stall: number
 ): Context.Service.Shape<typeof NeedCache> => {
 	let slots: Context.Context<never> = Context.empty()
 	const scopes = new Map<string, Scope.Closeable>()
+	/** A need's open, in a scope of its own under the process's, judged as a member of its group. */
+	const openOf = <A>(need: Need<A>, judged: Judged): Effect.Effect<Taker<A>, NeedFailed> =>
+		Effect.catchCauseIf(
+			judged.within(
+				need.key,
+				Effect.flatMap(
+					Effect.mapError(services, (failed) =>
+						NeedFailed.make({ need: need.key, message: failed.message })
+					),
+					(context) =>
+						Effect.flatMap(Scope.fork(Context.get(context, Scope.Scope)), (scope) => {
+							scopes.set(need.key, scope)
+							return Effect.provideContext(need.open, Context.add(context, Scope.Scope, scope))
+						})
+				)
+			),
+			(cause) => !Cause.hasInterruptsOnly(cause),
+			(cause) =>
+				Effect.fail(
+					Option.getOrElse(Cause.findErrorOption(cause), () =>
+						NeedFailed.make({ need: need.key, message: failureText(cause) })
+					)
+				)
+		)
+	/** The slot `need` is kept in here, and the open it is owed when this ask makes the slot. */
+	const slotOf = <A>(need: Need<A>): Readonly<{ slot: NeedSlot<A>; owed: Option.Option<Owed> }> =>
+		Option.match(Context.getOption(slots, needSlotOf(need)), {
+			onSome: (slot) => ({ slot, owed: Option.none() }),
+			onNone: () => {
+				const slot = Deferred.makeUnsafe<Taker<A>, NeedFailed>()
+				slots = Context.add(slots, needSlotOf(need), slot)
+				const owed: Owed = {
+					key: need.key,
+					budget: need.budget,
+					into: (judged) => Effect.asVoid(Deferred.into(openOf(need, judged), slot))
+				}
+				return { slot, owed: Option.some(owed) }
+			}
+		})
+	/** Begins the owed opens at once, as one group under its judge, on a fiber of its own that no ask can cut short. */
+	const begin = (owed: ReadonlyArray<Owed>): Effect.Effect<void> =>
+		Arr.match(owed, {
+			onEmpty: () => Effect.void,
+			onNonEmpty: (group) =>
+				Effect.asVoid(
+					Effect.forkDetach(
+						Effect.flatMap(judgedGroup(group, stall), (judged) =>
+							Effect.andThen(
+								Effect.forEach(group, (one) => one.into(judged), {
+									concurrency: "unbounded",
+									discard: true
+								}),
+								judged.ended
+							)
+						)
+					)
+				)
+		})
+	/** `needs`, each key once. */
+	const distinct = (needs: ReadonlyArray<Need<unknown>>): ReadonlyArray<Need<unknown>> =>
+		Arr.dedupeWith(needs, (one, other) => one.key === other.key)
 	return {
-		opened: <A>(need: Need<A>, bound: number) =>
-			Effect.suspend(() =>
-				Option.match(Context.getOption(slots, needSlotOf(need)), {
-					onSome: (slot) => Deferred.await(slot),
-					onNone: () => {
-						const slot = Deferred.makeUnsafe<Taker<A>, NeedFailed>()
-						slots = Context.add(slots, needSlotOf(need), slot)
-						const open = Effect.catchCauseIf(
-							Effect.raceFirst(
-								Effect.flatMap(
-									Effect.mapError(services, (failed) =>
-										NeedFailed.make({ need: need.key, message: failed.message })
-									),
-									(context) =>
-										Effect.flatMap(Scope.fork(Context.get(context, Scope.Scope)), (scope) => {
-											scopes.set(need.key, scope)
-											return Effect.provideContext(
-												need.open,
-												Context.add(context, Scope.Scope, scope)
-											)
-										})
-								),
-								Effect.flatMap(
-									Effect.flatMap(liveMillis, (wall) => overrun(ownWork(wall, ownCpu()), bound)),
-									(verdict) =>
-										Effect.fail(
-											NeedFailed.make({
-												need: need.key,
-												message: `its open ran past the open bound of ${Duration.format(Duration.millis(bound))} (needOpenMillis): ${overrunText(verdict)}`
-											})
-										)
-								)
-							),
-							(cause) => !Cause.hasInterruptsOnly(cause),
-							(cause) =>
-								Effect.fail(
-									Option.getOrElse(Cause.findErrorOption(cause), () =>
-										NeedFailed.make({ need: need.key, message: failureText(cause) })
-									)
-								)
-						)
-						return Effect.andThen(
-							Effect.forkDetach(Deferred.into(open, slot)),
-							Deferred.await(slot)
-						)
-					}
-				})
+		opened: (needs) =>
+			Effect.suspend(() => {
+				const asked = Arr.map(distinct(needs), slotOf)
+				return Effect.andThen(
+					begin(Arr.getSomes(Arr.map(asked, ({ owed }) => owed))),
+					Effect.forEach(asked, ({ slot }) => Deferred.await(slot), {
+						concurrency: "unbounded",
+						discard: true
+					})
+				)
+			}),
+		taker: (need) =>
+			Effect.suspend(() => {
+				const { slot, owed } = slotOf(need)
+				return Effect.andThen(begin(Option.toArray(owed)), Deferred.await(slot))
+			}),
+		budget: (needs) =>
+			budgetOf(
+				Arr.filter(distinct(needs), (need) =>
+					Option.isNone(Context.getOption(slots, needSlotOf(need)))
+				)
 			),
 		release: (keys) =>
 			Effect.forEach(
@@ -226,17 +279,12 @@ export const needKeysOf = (needs: Needs): ReadonlyArray<string> =>
 export type CaseEnv = NeedCache | Perception | LateUses | Stopped | NodeServices
 
 /**
- * A property's needs opened on this process, all at once, each within `bound` milliseconds (NeedCache.opened), before
- * any case of the property and outside every case's deadline: the first that does not open is why the property's
- * cases cannot run here.
+ * A property's needs opened on this process, all at once, as one group under their budgets summed (NeedCache.opened),
+ * before any case of the property and outside every case's deadline: the first that does not open is why the
+ * property's cases cannot run here.
  */
-const openAll = (needs: Needs, bound: number): Effect.Effect<void, NeedFailed, NeedCache> =>
-	NeedCache.use((cache) =>
-		Effect.forEach(Rec.values(needs), (need) => cache.opened(need, bound), {
-			concurrency: "unbounded",
-			discard: true
-		})
-	)
+const openAll = (needs: Needs): Effect.Effect<void, NeedFailed, NeedCache> =>
+	NeedCache.use((cache) => cache.opened(Rec.values(needs)))
 
 /** One case's taker of a need its process opened, as `Struct.map` maps a property's needs. */
 interface Taking extends Struct.Lambda {
@@ -262,17 +310,16 @@ const once = <A, E>(effect: Effect.Effect<A, E, Scope.Scope>): Effect.Effect<A, 
 
 /**
  * One case's resources, by the name its check reads each under: each an effect that takes the need's resource, the
- * need opened on this process before the case (openAll, within `bound`), in the case's scope the first time the check
- * yields it, and gives the same resource every later time.
+ * need opened on this process before the case (openAll), in the case's scope the first time the check yields it, and
+ * gives the same resource every later time.
  */
 const resourcesOf = <N extends Needs>(
 	needs: N,
-	cache: Context.Service.Shape<typeof NeedCache>,
-	bound: number
+	cache: Context.Service.Shape<typeof NeedCache>
 ): Resources<N> =>
 	Struct.map(
 		needs,
-		Struct.lambda<Taking>((need) => once(Effect.flatten(cache.opened(need, bound))))
+		Struct.lambda<Taking>((need) => once(Effect.flatten(cache.taker(need))))
 	)
 
 /**
@@ -331,11 +378,11 @@ const evaluationOf = <S, F extends string>(
 })
 
 /**
- * How a process readies a property for its cases: it opens the property's needs within `bound` milliseconds, before
- * any case and outside every case's deadline, and gives the evaluation of its batches with them open; or why a need did
- * not open, which no case of the property can run without.
+ * How a process readies a property for its cases: it opens the property's needs at once, under their budgets summed,
+ * before any case and outside every case's deadline, and gives the evaluation of its batches with them open; or why a
+ * need did not open, which no case of the property can run without.
  */
-export type Readying = (bound: number) => Effect.Effect<Evaluation, NeedFailed, NeedCache>
+export type Readying = Effect.Effect<Evaluation, NeedFailed, NeedCache>
 
 /**
  * How a property's cases are drawn and printed, its value type erased into closures: the generator a case's steering
@@ -575,7 +622,7 @@ const guarded = <E, R>(
 			const ended = yield* restore(
 				Effect.raceFirst(
 					Effect.map(Fiber.await(running), settledOf),
-					Effect.map(overrun(ownWork(wall, own), deadline), (ran): Settled => ({
+					Effect.map(overrun(ownWork(wall, own), deadlineBound(deadline)), (ran): Settled => ({
 						kind: "hung",
 						overrun: ran,
 						waitedOn: waitedOnNow()
@@ -673,12 +720,9 @@ export type Readied =
 	| Readonly<{ kind: "ready"; evaluate: Evaluation }>
 	| Readonly<{ kind: "refused"; result: CaseResult }>
 
-/** A property readied on this process, its needs opened within `bound`: ready, or refused as unopened. */
-export const readiedOf = (
-	ready: Readying,
-	bound: number
-): Effect.Effect<Readied, never, NeedCache> =>
-	Effect.match(ready(bound), {
+/** A property readied on this process, its needs opened: ready, or refused as unopened. */
+export const readiedOf = (ready: Readying): Effect.Effect<Readied, never, NeedCache> =>
+	Effect.match(ready, {
 		onFailure: (unopened): Readied => ({
 			kind: "refused",
 			result: unopenedResult(unopened.need, unopened.message)
@@ -896,7 +940,7 @@ const evaluateCase =
 											order.sense,
 											Effect.scoped(
 												NeedCache.use((cache) =>
-													check(resourcesOf(needs, cache, order.open), drawn.handle.c)(drawn.value)
+													check(resourcesOf(needs, cache), drawn.handle.c)(drawn.value)
 												)
 											)
 										),
@@ -919,20 +963,18 @@ const evaluateCase =
 		})
 
 /**
- * How a property checked one case at a time is readied on a process: its needs opened within the bound, then each
- * case of a batch evaluated in turn (evaluateCase).
+ * How a property checked one case at a time is readied on a process: its needs opened at once (openAll), then each case
+ * of a batch evaluated in turn (evaluateCase).
  */
-export const casesReadied =
-	<S, F extends string, N extends Needs, E>(
-		drawing: Drawing<S, F>,
-		needs: N,
-		check: CaseCheck<S, F, N, E>
-	): Readying =>
-	(bound) =>
-		Effect.as(
-			openAll(needs, bound),
-			evaluationOf(drawing, (batch) => Effect.forEach(batch, evaluateCase(drawing, needs, check)))
-		)
+export const casesReadied = <S, F extends string, N extends Needs, E>(
+	drawing: Drawing<S, F>,
+	needs: N,
+	check: CaseCheck<S, F, N, E>
+): Readying =>
+	Effect.as(
+		openAll(needs),
+		evaluationOf(drawing, (batch) => Effect.forEach(batch, evaluateCase(drawing, needs, check)))
+	)
 
 /**
  * Evaluates a batch of a batched property's cases in one check, its needs open: draws each case (one its space throws
@@ -959,7 +1001,7 @@ const evaluateBatch =
 			const runs = yield* watchedCase(
 				{ caseHang: Duration.millis(deadlineOf(batch)), cut: Option.none() },
 				blockedReport(slots, drawing.print),
-				runsOf(drawing, needs, checkAll, Arr.headNonEmpty(batch).open, slots, deadlineOf(batch))
+				runsOf(drawing, needs, checkAll, slots, deadlineOf(batch))
 			)
 			const millis = (yield* millisSince(began)) / batch.length
 			const cpu = (yield* cpuSince(cpuBegan)) / batch.length
@@ -968,23 +1010,20 @@ const evaluateBatch =
 			)
 		})
 
-/** How a batched property is readied on a process: its needs opened within the bound, then each batch evaluated in
+/** How a batched property is readied on a process: its needs opened at once (openAll), then each batch evaluated in
  * one check (evaluateBatch). */
-export const batchesReadied =
-	<S, F extends string, N extends Needs, E>(
-		drawing: Drawing<S, F>,
-		needs: N,
-		checkAll: BatchCheck<S, F, N, E>
-	): Readying =>
-	(bound) =>
-		Effect.as(openAll(needs, bound), evaluationOf(drawing, evaluateBatch(drawing, needs, checkAll)))
+export const batchesReadied = <S, F extends string, N extends Needs, E>(
+	drawing: Drawing<S, F>,
+	needs: N,
+	checkAll: BatchCheck<S, F, N, E>
+): Readying =>
+	Effect.as(openAll(needs), evaluationOf(drawing, evaluateBatch(drawing, needs, checkAll)))
 
 /** Each case's run, in the batch's order: the batch's check over its drawn cases, then each case's verdict. */
 const runsOf = <S, F extends string, N extends Needs, E>(
 	drawing: Drawing<S, F>,
 	needs: N,
 	checkAll: BatchCheck<S, F, N, E>,
-	bound: number,
 	slots: ReadonlyArray<Slot<S, F>>,
 	deadline: number
 ): Effect.Effect<ReadonlyArray<Ran>, never, CaseEnv> =>
@@ -997,7 +1036,7 @@ const runsOf = <S, F extends string, N extends Needs, E>(
 			const whole: Settled = Arr.isReadonlyArrayNonEmpty(drawnCases)
 				? yield* guarded(
 						NeedCache.use((cache) =>
-							Effect.map(checkAll(resourcesOf(needs, cache, bound))(drawnCases), (given) => {
+							Effect.map(checkAll(resourcesOf(needs, cache))(drawnCases), (given) => {
 								verdicts = given
 							})
 						),

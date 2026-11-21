@@ -410,18 +410,29 @@ export const heldWork = (wall: number, own: number): TreeWork =>
 	selfWork(wall, own, () => effortOfProcess("self").stir)
 
 /**
- * A judge of `work` under `deadline` milliseconds that keeps its window between readings: at each reading, at `wall` on
- * the live clock, it says whether the work is over its deadline (spent, or stalled over a whole window) and carries a
- * working window forward.
+ * How much work a piece of work may do, in milliseconds, one number for each of a guard's legs: `cpu`, the CPU its
+ * process tree may spend, its budget; and `stall`, the wall time outside declared waits on work over which that CPU must
+ * move, its window. A case's deadline is both (deadlineBound); a need's open is judged by its owner's budget and the
+ * runner's stall window (runner/limits.ts needStallMillis), which are different numbers with different evidence.
  */
-export const judgeOf = (work: TreeWork, deadline: number): ((wall: number) => boolean) => {
+export type Bound = Readonly<{ cpu: number; stall: number }>
+
+/** A case's deadline as a guard judges it: `deadline` milliseconds of CPU, and as the window its CPU must move over. */
+export const deadlineBound = (deadline: number): Bound => ({ cpu: deadline, stall: deadline })
+
+/**
+ * A judge of `work` under `bound` that keeps its window between readings: at each reading, at `wall` on the live clock,
+ * it says whether the work is over its bound (spent, or stalled over a whole window) and carries a working window
+ * forward.
+ */
+export const judgeOf = (work: TreeWork, bound: Bound): ((wall: number) => boolean) => {
 	let window = work.began
 	return (wall) => {
 		const standing = standingOf({
 			began: work.began,
 			window,
 			now: readingOf(work, wall),
-			deadline
+			bound
 		})
 		if (standing.kind !== "working") {
 			return true
@@ -444,22 +455,22 @@ export type Reading = Readonly<{
 }>
 
 /**
- * Where a case stands against its deadline at a reading: working, with the window it is judged over next (the reading
- * its current window began at, or this one once a whole deadline of wall time outside declared waits has passed) and
- * when to read it again; or over its deadline (Overrun).
+ * Where a piece of work stands against its bound at a reading: working, with the window it is judged over next (the
+ * reading its current window began at, or this one once a whole stall window of wall time outside declared waits has
+ * passed) and when to read it again; or over its bound (Overrun).
  */
 export type Standing = Readonly<{ kind: "working"; window: Reading; readAgainAt: number }> | Overrun
 
 /**
- * Which of a guard's legs a piece of work is over its `deadline` milliseconds by, with what it measured: `spent`, its
- * tree's CPU since it began (`spent`, ms) at the deadline, a runaway; `stalled`, its tree's CPU moved by `moved` ms
- * over a window of `over` ms of wall time outside its declared waits on work, a whole deadline, which is less than the
- * `progress` ms that shows progress there even with the `queued` ms the tree's other processes waited on a runqueue for
- * more (queuedBetween), while none of them did storage work (storedBetween), so it waited on something that did not
- * come; `waited`, the window's wall time in declared waits on work besides, which the leg counts none of.
+ * Which of a guard's legs a piece of work is over its bound by, with what it measured: `spent`, its tree's CPU since it
+ * began (`spent`, ms) at its CPU budget (`budget`, ms), a runaway; `stalled`, its tree's CPU moved by `moved` ms over a
+ * window of `over` ms of wall time outside its declared waits on work, a whole stall window (`window`, ms), which is
+ * less than the `progress` ms that shows progress there even with the `queued` ms the tree's other processes waited on
+ * a runqueue for more (queuedBetween), while none of them did storage work (storedBetween), so it waited on something
+ * that did not come; `waited`, the window's wall time in declared waits on work besides, which the leg counts none of.
  */
 export type Overrun =
-	| Readonly<{ kind: "spent"; spent: number; deadline: number }>
+	| Readonly<{ kind: "spent"; spent: number; budget: number }>
 	| Readonly<{
 			kind: "stalled"
 			moved: number
@@ -467,7 +478,7 @@ export type Overrun =
 			over: number
 			waited: number
 			progress: number
-			deadline: number
+			window: number
 	  }>
 
 /** Milliseconds as seconds to the tenth, as a report states them. */
@@ -477,19 +488,18 @@ const seconds = (millis: number): string => `${(millis / millisPerSecond).toFixe
 export const overrunText = (overrun: Overrun): string => {
 	switch (overrun.kind) {
 		case "spent":
-			return `its process tree spent ${seconds(overrun.spent)} of CPU, its bound ${seconds(overrun.deadline)}`
+			return `its process tree spent ${seconds(overrun.spent)} of CPU, its budget ${seconds(overrun.budget)}`
 		case "stalled":
-			return `its process tree's CPU moved ${overrun.moved.toFixed(0)} ms and its other processes waited ${overrun.queued.toFixed(1)} ms to run over ${seconds(overrun.over)} of wall time outside declared waits on work (${seconds(overrun.waited)} in them besides), under the ${overrun.progress.toFixed(0)} ms that shows progress over its bound of ${seconds(overrun.deadline)}, and no other process of its tree did storage work`
+			return `its process tree's CPU moved ${overrun.moved.toFixed(0)} ms and its other processes waited ${overrun.queued.toFixed(1)} ms to run over ${seconds(overrun.over)} of wall time outside declared waits on work (${seconds(overrun.waited)} in them besides), under the ${overrun.progress.toFixed(0)} ms that shows progress over its stall window of ${seconds(overrun.window)}, and no other process of its tree did storage work`
 	}
 }
 
 /**
- * How much a tree's CPU must move over a window of `deadline` wall milliseconds to be progress: stalledShareOfCpu of one CPU
- * over it, and never less than one clock tick, the smallest change Linux states of a child's CPU (and more than a timer's
- * wake-up and a reading cost a process that waits).
+ * How much a tree's CPU must move over a window of `window` wall milliseconds to be progress: stalledShareOfCpu of one
+ * CPU over it, and never less than one clock tick, the smallest change Linux states of a child's CPU (and more than a
+ * timer's wake-up and a reading cost a process that waits).
  */
-const progressOver = (deadline: number): number =>
-	Math.max(deadline * stalledShareOfCpu, TICK_MILLIS)
+const progressOver = (window: number): number => Math.max(window * stalledShareOfCpu, TICK_MILLIS)
 
 /**
  * How long the processes a case's work counts beside the guard's own waited on a runqueue between two readings, in
@@ -517,33 +527,34 @@ const storedBetween = (before: Reading, after: Reading): boolean =>
 	after.stir.stored > before.stir.stored
 
 /**
- * A case's standing at `now`, having begun at `began`, its current window begun at `window`, under `deadline`
- * milliseconds. A window is whole once a deadline of its wall time lies outside declared waits on work; its work moves
- * by its tree's CPU with the runqueue wait of the processes it counts beside the guard's own (queuedBetween), together
- * at least progressOver, or by any storage work of theirs (storedBetween): a child the machine keeps waiting to run, or
- * one blocked on storage or swap, is working, and a tree that only wakes now and then is not. A working case is read again when its
- * window could next be whole, or sooner when its remaining CPU, spent at one CPU, would reach the deadline first.
+ * A piece of work's standing at `now`, having begun at `began`, its current window begun at `window`, under `bound`: its
+ * CPU budget and its stall window. A window is whole once a stall window of its wall time lies outside declared waits on
+ * work; its work moves by its tree's CPU with the runqueue wait of the processes it counts beside the guard's own
+ * (queuedBetween), together at least progressOver, or by any storage work of theirs (storedBetween): a child the machine
+ * keeps waiting to run, or one blocked on storage or swap, is working, and a tree that only wakes now and then is not.
+ * Working work is read again when its window could next be whole, or sooner when its remaining CPU, spent at one CPU,
+ * would reach its budget first.
  */
 export const standingOf = (
-	input: Readonly<{ began: Reading; window: Reading; now: Reading; deadline: number }>
+	input: Readonly<{ began: Reading; window: Reading; now: Reading; bound: Bound }>
 ): Standing => {
-	const { began, window, now, deadline } = input
+	const { began, window, now, bound } = input
 	const spent = now.cpu - began.cpu
-	if (spent >= deadline) {
-		return { kind: "spent", spent, deadline }
+	if (spent >= bound.cpu) {
+		return { kind: "spent", spent, budget: bound.cpu }
 	}
 	const waited = now.waited - window.waited
 	const over = now.wall - window.wall - waited
-	const progress = progressOver(deadline)
+	const progress = progressOver(bound.stall)
 	const moved = now.cpu - window.cpu
 	const queued = queuedBetween(window, now)
-	const whole = over >= deadline
+	const whole = over >= bound.stall
 	if (whole && moved + queued < progress && !storedBetween(window, now)) {
-		return { kind: "stalled", moved, queued, over, waited, progress, deadline }
+		return { kind: "stalled", moved, queued, over, waited, progress, window: bound.stall }
 	}
 	return {
 		kind: "working",
 		window: whole ? now : window,
-		readAgainAt: now.wall + Math.min(whole ? deadline : deadline - over, deadline - spent)
+		readAgainAt: now.wall + Math.min(whole ? bound.stall : bound.stall - over, bound.cpu - spent)
 	}
 }

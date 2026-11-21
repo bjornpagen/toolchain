@@ -3,6 +3,7 @@ import type { NodeServices } from "@effect/platform-node/NodeServices"
 import { Array as Arr, Context, Duration, Effect, Option, Record as Rec, Scope } from "effect"
 import { element, finite, type Gen, int, map, subarray } from "#gen.ts"
 import { HUNG_CLEANUP_GRACE, liveSleep } from "#live.ts"
+import { plantedBudget } from "#planted.fixtures.ts"
 import {
 	type Case,
 	type Need,
@@ -14,10 +15,11 @@ import {
 import { Database } from "#resources/database.ts"
 import { type DatabaseTemplate, Template } from "#resources/template.ts"
 import { needCacheOf } from "#runner/case.ts"
-import { runnerLimits } from "#runner/limits.ts"
+import { needStallMillis } from "#runner/limits.ts"
 import { moduleClosureAt } from "#runner/module-closure.ts"
+import { runValuesOf } from "#runner/runs.ts"
 import { widths } from "#runner/search.fixtures.ts"
-import { ModuleClosure, WorkerIndex } from "#runner/services.ts"
+import { ModuleClosure, RunValues, WorkerIndex } from "#runner/services.ts"
 
 /**
  * What the meta-tests of a case's evaluation (runner/case.ts) share: inner properties that hang, that use their case
@@ -221,13 +223,13 @@ export const lifetimesOf = (shape: Lifetimes): Readonly<{ counts: Counts; proper
 	}
 }
 
-/** How a drawn need's open ends: it opens, its open fails, or it runs past the open bound. */
-const OPEN_ENDINGS = ["opens", "fails", "outruns the open bound"] as const
+/** How a drawn need's open ends: it opens, its open fails, or it stalls past the stall window, spending no CPU. */
+const OPEN_ENDINGS = ["opens", "fails", "stalls past the stall window"] as const
 
 export type OpenEnding = (typeof OPEN_ENDINGS)[number]
 
 /** The ways a need may fail to open. */
-export const UNOPENED_ENDINGS = ["fails", "outruns the open bound"] as const
+export const UNOPENED_ENDINGS = ["fails", "stalls past the stall window"] as const
 
 export type UnopenedEnding = (typeof UNOPENED_ENDINGS)[number]
 
@@ -242,8 +244,8 @@ export type OpenCounts = { opens: number; checks: number }
 
 /**
  * A need of key `key` whose open counts itself in `counts`, takes `millis` on the live clock (none at once), then ends
- * as `ending` says: opens (its resource the count of opens so far), or fails with FAILED_OPEN; an open meant to outrun
- * its bound opens, late.
+ * as `ending` says: opens (its resource the count of opens so far), or fails with FAILED_OPEN; an open meant to stall
+ * past its stall window opens, late.
  */
 const drawnNeed = (
 	key: string,
@@ -252,6 +254,8 @@ const drawnNeed = (
 	counts: OpenCounts
 ): Need<number> => ({
 	key,
+	budget: plantedBudget,
+	runNeeds: [],
 	open: Effect.andThen(
 		Effect.sync(() => {
 			counts.opens += 1
@@ -342,7 +346,12 @@ type FailingNeeds = Readonly<{ failing: Need<never> }>
 
 /** The failing need: it opens, and its every take fails the case taking it, counted in `counts`. */
 const failingTake = (counts: Reaches): FailingNeeds => ({
-	failing: { key: FAILING_NEED, open: Effect.succeed(failingIn(counts)) }
+	failing: {
+		key: FAILING_NEED,
+		budget: plantedBudget,
+		runNeeds: [],
+		open: Effect.succeed(failingIn(counts))
+	}
 })
 
 /** Where an inner search's case meets the failing need's failure, as `failure` says. */
@@ -533,6 +542,8 @@ type HeldCounts = { opens: number; releases: number }
 /** A need of key `key` whose open acquires one resource in the need's scope, counted in `counts`. */
 const countedNeed = (key: string, counts: HeldCounts): Need<number> => ({
 	key,
+	budget: plantedBudget,
+	runNeeds: [],
 	open: Effect.map(
 		Effect.acquireRelease(
 			Effect.sync(() => {
@@ -558,14 +569,18 @@ const processNeedCache = Effect.gen(function* () {
 	const closures = yield* moduleClosureAt(process.cwd(), Option.none())
 	const context = Context.add(
 		Context.add(
-			Context.add(platform, WorkerIndex, { index: 0, workers: 1 }),
-			ModuleClosure,
-			closures
+			Context.add(
+				Context.add(platform, WorkerIndex, { index: 0, workers: 1 }),
+				ModuleClosure,
+				closures
+			),
+			RunValues,
+			runValuesOf([])
 		),
 		Scope.Scope,
 		scope
 	)
-	return needCacheOf(Effect.succeed(context))
+	return needCacheOf(Effect.succeed(context), needStallMillis)
 })
 
 /** An open, released and opened again need's counts after each release, from `cycles` cycles. */
@@ -576,11 +591,11 @@ export const cycledReleases = (cycles: number, kept: number) =>
 		const others: HeldCounts = { opens: 0, releases: 0 }
 		const keptNeeds = Array.from({ length: kept }, (_, at) => countedNeed(`kept${at}`, others))
 		for (const need of keptNeeds) {
-			yield* Effect.ignore(cache.opened(need, runnerLimits.open))
+			yield* Effect.ignore(cache.opened([need]))
 		}
 		const after: Array<Readonly<{ opens: number; releases: number; others: number }>> = []
 		for (let cycle = 0; cycle < cycles; cycle += 1) {
-			yield* Effect.ignore(cache.opened(countedNeed("cycled", cycled), runnerLimits.open))
+			yield* Effect.ignore(cache.opened([countedNeed("cycled", cycled)]))
 			yield* cache.release(["cycled"])
 			after.push({ opens: cycled.opens, releases: cycled.releases, others: others.releases })
 		}
@@ -602,6 +617,7 @@ const unbuilt = (member: ChoiceMember): DatabaseTemplate =>
 		name: `choice ${member}`,
 		content: { member },
 		from: Template.cluster,
+		budget: plantedBudget,
 		build: () => Effect.void
 	})
 
@@ -622,6 +638,8 @@ export const choosing = (
 	const needs = Database.oneOf(templates, (template) => ({
 		key: `choosing ${template.name}`,
 		template,
+		budget: template.budget,
+		runNeeds: [],
 		open: Effect.sync(() => {
 			const member = Arr.findFirst(CHOICE_MEMBERS, (name) => templates[name] === template)
 			if (Option.isSome(member)) {

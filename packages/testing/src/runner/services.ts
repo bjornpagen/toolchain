@@ -32,3 +32,14 @@ export class ModuleClosure extends Context.Service<
 	ModuleClosure,
 	Readonly<{ hashOf: (module: string) => Effect.Effect<ClosureHash, NeedFailed> }>
 >()("@bjornpagen/testing/runner/services/ModuleClosure") {}
+
+/**
+ * The values of a run's run needs (property.ts RunNeed), as the runner's process opened them once before it forked its
+ * workers and sent them to each (runner/runs.ts): each by its run need's key, Schema-encoded as JSON, or the NeedFailed
+ * it failed with there, which every need reading it fails with in turn. A need reads one through Need.overRun, which
+ * declares the run need, so the runner opens it; a key no run need of the run has fails as NeedFailed.
+ */
+export class RunValues extends Context.Service<
+	RunValues,
+	Readonly<{ encoded: (key: string) => Effect.Effect<Schema.Json, NeedFailed> }>
+>()("@bjornpagen/testing/runner/services/RunValues") {}

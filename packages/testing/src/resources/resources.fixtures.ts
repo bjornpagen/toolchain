@@ -5,6 +5,7 @@ import { boolean, characterOf, type Gen, int, string } from "#gen.ts"
 import testingCluster from "#pg.config.ts"
 import { bootstrapSuperuser, serverBin } from "#pg/server.ts"
 import { pgOwnerSession, pgSuperuserSession } from "#pg/session.ts"
+import { plantedBudget } from "#planted.fixtures.ts"
 import type { Need } from "#property.ts"
 import {
 	DatabasePrefix,
@@ -19,7 +20,7 @@ import {
 } from "#resources/cluster.ts"
 import type { TemplateDatabase } from "#resources/database.ts"
 import { type DatabaseTemplate, Template } from "#resources/template.ts"
-import { ModuleClosure, NeedFailed, WorkerIndex } from "#runner/services.ts"
+import { ModuleClosure, NeedFailed, RunValues, WorkerIndex } from "#runner/services.ts"
 
 /** A database name the fixture read back from the cluster. */
 const databaseNameOf = Brand.nominal<DatabaseName>()
@@ -40,19 +41,23 @@ const fixtureCluster: PgClusterSpec = {
 export const fixtureServices = PgCluster.layer(fixtureCluster)
 
 /** The services a property about the resources themselves runs their internals under, from its worker's need context. */
-export type Services = Context.Context<PgCluster | ModuleClosure | WorkerIndex>
+export type Services = Context.Context<PgCluster | ModuleClosure | WorkerIndex | RunValues>
 
 /** A need giving each case its worker's services, so a check can open templates and pools itself. */
 export const services: Need<Services> = {
 	key: "@bjornpagen/testing/resources fixture services",
+	budget: plantedBudget,
+	runNeeds: [],
 	open: Effect.map(
 		Effect.gen(function* () {
 			const cluster = yield* required(PgCluster, "the fixture's runner config provides it")
 			const closures = yield* ModuleClosure
 			const worker = yield* WorkerIndex
+			const runs = yield* RunValues
 			return Context.make(PgCluster, cluster).pipe(
 				Context.add(ModuleClosure, closures),
-				Context.add(WorkerIndex, worker)
+				Context.add(WorkerIndex, worker),
+				Context.add(RunValues, runs)
 			)
 		}),
 		Effect.succeed
@@ -133,6 +138,7 @@ export const marksTemplate = Template.database({
 	name: "marks",
 	content: { statements: marksSchema },
 	from: Template.cluster,
+	budget: plantedBudget,
 	build: building(marksSchema)
 })
 
@@ -147,6 +153,7 @@ export const derivedTemplate = (origin: DatabaseTemplate, token: string) =>
 		name: `derived ${token}`,
 		content: { token },
 		from: origin,
+		budget: plantedBudget,
 		build: building(["CREATE TABLE public.derived (value int4 NOT NULL)"])
 	})
 
@@ -171,6 +178,7 @@ export const seatTemplate = Template.database({
 	name: "seat",
 	content: { statements: seatSchema },
 	from: Template.cluster,
+	budget: plantedBudget,
 	build: building(seatSchema)
 })
 
@@ -188,6 +196,7 @@ export const unpopulatedViewTemplate = Template.database({
 		]
 	},
 	from: Template.cluster,
+	budget: plantedBudget,
 	build: building([
 		"CREATE TABLE public.items (id int8 GENERATED ALWAYS AS IDENTITY PRIMARY KEY, value int4 NOT NULL)",
 		"CREATE MATERIALIZED VIEW public.tallies AS SELECT pg_catalog.count(*) AS n FROM public.items WITH NO DATA"
@@ -229,6 +238,7 @@ export const freshTemplate = (locale: string, token: string) =>
 		name: `fresh ${token}`,
 		content: { token },
 		from: Template.fresh(locale),
+		budget: plantedBudget,
 		build: building([])
 	})
 
@@ -245,6 +255,7 @@ export const tokenTemplate = (
 		name: `token ${token}`,
 		content: { token },
 		from: Template.cluster,
+		budget: plantedBudget,
 		build
 	})
 

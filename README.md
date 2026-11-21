@@ -14,6 +14,36 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: every need states its budget; run needs (2026-11-21)
+
+A need's open was held to one runner-wide bound, `needOpenMillis` (300 s), on both legs of its guard: the CPU it may
+spend and the wall time over which that CPU must move. The two are split. The stall window stays the runner's
+(`needStallMillis`, its measured record in runner/limits.ts); the CPU is each need's own `budget`, the owner's measured
+choice, since only the owner knows what its open does. `Limits.open` and every order's `open` are gone. A property's
+needs still open at once on a worker, judged as one group: they may spend their budgets summed, and a need that opens
+alone is held to its own. A need that waits on another process's work declares it (`waitingOn` from
+`@bjornpagen/testing/live`, as every statement the library sends, a node-postgres session's connect and end, and the
+bootstrap superuser's psql do), so the stall window counts none of it. Before you move `vendor/toolchain` past this
+section, in the same commit:
+
+1. **Every Need literal** states `budget` (milliseconds of CPU its open may spend) and `runNeeds` (`[]` for a need that
+   reads no run need). The number is a measured limit: its JSDoc carries `@limitKind measured` and its seven tags (the
+   `indefensible-numbers` skill). A run's CPU report is a record of it: `~/.cache/toolchain-test/runs/<seed>-<pid>.json`
+   holds each property's `readyingCpu`, its readyings' CPU summed over every worker that readied it, which bounds any
+   one open of its needs from above. A test's own planted need is a test's input and needs no evidence.
+2. **Every `Template.database({ ... })`** states `budget`, the CPU its open may spend on a worker, its build or the wait
+   on another worker's build included; `Database.fresh`, `seat`, `transaction` and `oneOf` take it from the template. A
+   `DatabaseNeed` literal states `budget` and `runNeeds` as any need does. The budget is no part of a template's
+   identity: no template is rebuilt for it.
+3. **A resource a run makes once for every worker** (an app's build) is a `RunNeed`: `{ key, budget, value, open }`,
+   where `value` is a Schema whose encoding is JSON and `open: (directory) => Effect<A, NeedFailed, Scope |
+   NodeServices>` gets the directory the run's workers run in (the package's directory, or a worker tree's under a
+   mutant). The runner opens it ONCE, in its own process, before it forks any worker, under its budget and the stall
+   window, and sends its encoded value to every worker. A worker need reads it with `Need.overRun(run, { key, budget,
+   open: (value) => ... })`, which declares it, so a run opens only the run needs its properties read. No worker builds
+   it or waits on another that does: delete the build lock (a property reading a run need runs its mutants from worker
+   trees, as one needing `Checkout.dir` does). One that fails to open fails every property that reads it, unopened.
+
 ## Consumer migration: no gate, no lock: lanes land on the hub, trunk gates (2026-11-21)
 
 Bjorn, 2026-11-21, after a lane killed a `nohup`'d gate run, its children and its parent, the account's systemd: every

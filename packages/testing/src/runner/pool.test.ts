@@ -4,10 +4,10 @@
  * for the pool ends the worker's process group with it, at once when the worker ends with no finalizer of its own run
  * (SIGKILL, as its watchdog ends it), while the pool is still open, and once the worker has exited when the pool
  * closes. A unit whose worker never finishes loading its module (its top level loops forever), whatever its property
- * needs, is reported lost while readying, within the open bound and the silence grace, never left waiting for a word
+ * needs, is reported lost while readying, within a load's bound and the silence grace, never left waiting for a word
  * from a worker that cannot send one; and a unit sent to a worker that can no longer say anything (its main thread held
  * between units) is reported lost too, watched from the moment it was sent; and a worker whose runner config's load never
- * ends is ended within the open bound and the grace, its units lost, not waited for; and a worker whose parent is killed
+ * ends is ended within a load's bound and the grace, its units lost, not waited for; and a worker whose parent is killed
  * ends with it, with every process it started in its group (its launch binds the group to the parent, pool.ts
  * launchOf), even with its main thread held. Oracle: stated per property.
  */
@@ -20,7 +20,7 @@ import { property } from "#property.ts"
 import { Scratch } from "#resources/scratch.ts"
 import { sharedStore } from "#runner/compile-cache.ts"
 import { placesLeased } from "#runner/lease.ts"
-import { runnerLimits } from "#runner/limits.ts"
+import { needStallMillis, runnerLimits } from "#runner/limits.ts"
 import { heldProgram, orphansProgram } from "#runner/orphans.fixtures.ts"
 import {
 	COUNTED,
@@ -78,10 +78,11 @@ export const workersLeaveNoChild = property.exhaust(finite(leavings), {
 							execArgv: process.execArgv,
 							served: Option.none(),
 							guide: "notes",
-							open: runnerLimits.open
+							runs: [],
+							stall: needStallMillis
 						})
 						const results = yield* pool.evaluator.evaluate(
-							[plantedCase(leaving, runnerLimits.deadline, runnerLimits.open)],
+							[plantedCase(leaving, runnerLimits.deadline)],
 							() => true
 						)
 						const written = yield* fs.readFileString(file)
@@ -165,10 +166,10 @@ export const loadsNever = property.exhaust(finite(boolean), {
 							execArgv: process.execArgv,
 							served: Option.none(),
 							guide: "notes",
-							open: runnerLimits.open
+							runs: [],
+							stall: 1000
 						}),
-						(pool) =>
-							pool.evaluator.evaluate([shortCase(loopingProperty(needs), 100, 1000)], () => true)
+						(pool) => pool.evaluator.evaluate([shortCase(loopingProperty(needs), 100)], () => true)
 					)
 				)
 				assert.deepEqual(
@@ -182,14 +183,15 @@ export const loadsNever = property.exhaust(finite(boolean), {
 			}),
 	oracle: {
 		kind: "specification",
-		name: "a unit whose worker never finishes loading its module is reported lost, readying, within the open bound and the silence grace"
+		name: "a unit whose worker never finishes loading its module is reported lost, readying, within a load's bound and the silence grace"
 	},
 	kept: [],
 	kills: [
 		{
 			file: "packages/testing/src/runner/pool.ts",
-			original: "\t\t\treturn workOf(unit.work).open\n",
-			replacement: "\t\t\treturn Number.POSITIVE_INFINITY\n",
+			original: "\t\t\treturn loadBoundOf(stall)\n",
+			replacement:
+				"\t\t\treturn { cpu: Number.POSITIVE_INFINITY, stall: Number.POSITIVE_INFINITY }\n",
 			why: "A unit's readying has no bound, so a worker whose module's load never ends is never ended and its search never returns; this property's case hangs past its deadline."
 		}
 	]
@@ -216,10 +218,11 @@ export const slowWorkerKept = property.exhaust(finite(boolean), {
 							execArgv: process.execArgv,
 							served: Option.none(),
 							guide: "notes",
-							open: runnerLimits.open
+							runs: [],
+							stall: 1000
 						})
 						const results = yield* pool.evaluator.evaluate(
-							[shortCase(slowlyWorkingProperty(inChild), SLOW_WORKER_DEADLINE, 1000)],
+							[shortCase(slowlyWorkingProperty(inChild), SLOW_WORKER_DEADLINE)],
 							() => true
 						)
 						return Arr.map(Arr.flatten(results), (result) => result.outcome.kind)
@@ -264,15 +267,16 @@ export const silentBeforeReadying = property.exhaust(finite(boolean), {
 							execArgv: process.execArgv,
 							served: Option.none(),
 							guide: "notes",
-							open: runnerLimits.open
+							runs: [],
+							stall: 1000
 						})
 						const silenced = yield* pool.evaluator.evaluate(
-							[shortCase(planted.silences, runnerLimits.deadline, 1000)],
+							[shortCase(planted.silences, runnerLimits.deadline)],
 							() => true
 						)
 						yield* pool.retire(planted.silences)
 						const next = yield* pool.evaluator.evaluate(
-							[shortCase(planted.next, runnerLimits.deadline, 1000)],
+							[shortCase(planted.next, runnerLimits.deadline)],
 							() => true
 						)
 						return Arr.map(Arr.flatten([...silenced, ...next]), (result) => result.outcome.kind)
@@ -282,7 +286,7 @@ export const silentBeforeReadying = property.exhaust(finite(boolean), {
 			}),
 	oracle: {
 		kind: "specification",
-		name: "a unit sent to a worker that can no longer say anything is reported lost within the open bound and the silence grace"
+		name: "a unit sent to a worker that can no longer say anything is reported lost within a load's bound and the silence grace"
 	},
 	budget: { runs: 2, steered: 0 },
 	kept: [],
@@ -318,16 +322,17 @@ export const lostNamesItsLeg = property.exhaust(finite(silenceSpace), {
 							execArgv: process.execArgv,
 							served: Option.none(),
 							guide: "notes",
-							open: runnerLimits.open
+							runs: [],
+							stall: 1000
 						})
 						const silencer = silencerOf(silence)
 						const silenced = yield* pool.evaluator.evaluate(
-							[shortCase(silencer, runnerLimits.deadline, 1000)],
+							[shortCase(silencer, runnerLimits.deadline)],
 							() => true
 						)
 						yield* pool.retire(silencer)
 						const next = yield* pool.evaluator.evaluate(
-							[shortCase("src/runner/pool.fixtures.ts#passesAtOnce", runnerLimits.deadline, 1000)],
+							[shortCase("src/runner/pool.fixtures.ts#passesAtOnce", runnerLimits.deadline)],
 							() => true
 						)
 						return Arr.flatten([...silenced, ...next])
@@ -365,9 +370,9 @@ export const lostNamesItsLeg = property.exhaust(finite(silenceSpace), {
 		},
 		{
 			file: "packages/testing/src/runner/work.ts",
-			original: '\t\treturn { kind: "spent", spent, deadline }',
+			original: '\t\treturn { kind: "spent", spent, budget: bound.cpu }',
 			replacement:
-				'\t\treturn { kind: "stalled", moved: spent, queued: 0, over: now.wall - window.wall, waited: 0, progress: 0, deadline }',
+				'\t\treturn { kind: "stalled", moved: spent, queued: 0, over: now.wall - window.wall, waited: 0, progress: 0, window: bound.stall }',
 			why: "A CPU runaway reported as a stall, so the report names the wrong leg; the spinning worker's case fails."
 		},
 		{
@@ -400,10 +405,11 @@ export const unreadMessageEndsItsWorker = property.exhaust(finite(boolean), {
 							execArgv: process.execArgv,
 							served: Option.none(),
 							guide: "notes",
-							open: runnerLimits.open
+							runs: [],
+							stall: 1000
 						})
 						const evaluated = yield* pool.evaluator.evaluate(
-							[shortCase(speakerOf(unread), UNREAD_DEADLINE, 1000)],
+							[shortCase(speakerOf(unread), UNREAD_DEADLINE)],
 							() => true
 						)
 						return Arr.flatten(evaluated)
@@ -462,10 +468,11 @@ export const declaredWaitKept = property.exhaust(finite(declaredWaitDeadlines), 
 							execArgv: process.execArgv,
 							served: Option.none(),
 							guide: "notes",
-							open: runnerLimits.open
+							runs: [],
+							stall: 1000
 						})
 						const results = yield* pool.evaluator.evaluate(
-							[shortCase(WAITS_DECLARED, deadline, 1000)],
+							[shortCase(WAITS_DECLARED, deadline)],
 							() => true
 						)
 						return Arr.map(Arr.flatten(results), (result) => result.outcome.kind)
@@ -523,14 +530,14 @@ export const countedOnAWorker = property.exhaust(finite(countsEvery), {
 							execArgv: process.execArgv,
 							served: Option.none(),
 							guide: "notes",
-							open: runnerLimits.open
+							runs: [],
+							stall: needStallMillis
 						}),
 						(pool) =>
 							pool.evaluator.count({
 								property: COUNTED,
 								every,
-								cpu: runnerLimits.deadline,
-								open: runnerLimits.open
+								cpu: runnerLimits.deadline
 							})
 					)
 				)
@@ -594,14 +601,15 @@ export const openDiesUnopened = property.exhaust(finite(boolean), {
 							execArgv: process.execArgv,
 							served: Option.none(),
 							guide: "notes",
-							open: runnerLimits.open
+							runs: [],
+							stall: needStallMillis
 						})
 						const dying = yield* pool.evaluator.evaluate(
-							[shortCase(dyingProperty(thrown), runnerLimits.deadline, runnerLimits.open)],
+							[shortCase(dyingProperty(thrown), runnerLimits.deadline)],
 							() => false
 						)
 						const next = yield* pool.evaluator.evaluate(
-							[shortCase(silencing(false).next, runnerLimits.deadline, runnerLimits.open)],
+							[shortCase(silencing(false).next, runnerLimits.deadline)],
 							() => false
 						)
 						return Arr.map(Arr.flatten([...dying, ...next]), (result) =>
@@ -621,8 +629,8 @@ export const openDiesUnopened = property.exhaust(finite(boolean), {
 	kills: [
 		{
 			file: "packages/testing/src/runner/case.ts",
-			original: "\t\t\t\t\t\t\t(cause) => !Cause.hasInterruptsOnly(cause),",
-			replacement: "\t\t\t\t\t\t\t() => false,",
+			original: "\t\t\t(cause) => !Cause.hasInterruptsOnly(cause),",
+			replacement: "\t\t\t() => false,",
 			why: "A need's open that dies ends its worker, as before: the worker's main effect fails, it says so to the parent and exits 0, and its unit is lost with nothing written (GZ-NETWORK: admission.test.ts's property lost its worker readying, \"ended (exit 0)\"); this property fails."
 		}
 	]
@@ -663,9 +671,9 @@ export const closedOnReturn = property.exhaust(finite(boolean), {
 		{
 			file: "packages/testing/src/runner/run.ts",
 			original:
-				"\t\t\tEffect.scoped(\n\t\t\t\tEffect.gen(function* () {\n\t\t\t\t\tconst runs = Arr.map(discovered",
+				"\t\t\tEffect.scoped(\n\t\t\t\tEffect.gen(function* () {\n\t\t\t\t\tconst values = yield* openedRuns(",
 			replacement:
-				"\t\t\t(<A>(effect: A) => effect)(\n\t\t\t\tEffect.gen(function* () {\n\t\t\t\t\tconst runs = Arr.map(discovered",
+				"\t\t\t(<A>(effect: A) => effect)(\n\t\t\t\tEffect.gen(function* () {\n\t\t\t\t\tconst values = yield* openedRuns(",
 			why: "A run's pool stays open in its caller's scope past its properties, as before: its workers hold what their services drew (a lease's permit) while the caller runs the kills' trials, which wait for it (GZ-NETWORK: 32 network modules hung, 64 idle workers holding their leases and five trials waiting on the lease gate); this property fails."
 		}
 	]
@@ -697,13 +705,11 @@ export const workersTakeTheirPlaces = property.exhaust(
 								execArgv: process.execArgv,
 								served: Option.none(),
 								guide: "notes",
-								open: runnerLimits.open
+								runs: [],
+								stall: needStallMillis
 							}),
 							(pool) =>
-								pool.evaluator.evaluate(
-									[placedCase(at, of, runnerLimits.deadline, runnerLimits.open)],
-									() => false
-								)
+								pool.evaluator.evaluate([placedCase(at, of, runnerLimits.deadline)], () => false)
 						)
 					)
 					assert.deepEqual(
@@ -815,16 +821,16 @@ export const startsNever = property.exhaust(finite(boolean), {
 							execArgv: process.execArgv,
 							served: Option.none(),
 							guide: "notes",
-							open: 1000
+							runs: [],
+							stall: 1000
 						}),
-						(pool) =>
-							pool.evaluator.evaluate([shortCase(loopingProperty(needs), 100, 1000)], () => true)
+						(pool) => pool.evaluator.evaluate([shortCase(loopingProperty(needs), 100)], () => true)
 					)
 				)
 				assert.deepEqual(
 					Arr.map(Arr.flatten(results), (result) =>
 						result.outcome.kind === "lost"
-							? Str.includes("was not ready within the open bound")(result.outcome.report)
+							? Str.includes("was not ready within a load's bound")(result.outcome.report)
 							: false
 					),
 					[true]
@@ -832,7 +838,7 @@ export const startsNever = property.exhaust(finite(boolean), {
 			}),
 	oracle: {
 		kind: "specification",
-		name: "a worker whose runner config's load never ends is ended within the open bound and the grace, its units lost"
+		name: "a worker whose runner config's load never ends is ended within a load's bound and the grace, its units lost"
 	},
 	kept: [],
 	kills: [

@@ -10,6 +10,33 @@ const scratchDir = Brand.nominal<ScratchDir>()
 
 const key = "@bjornpagen/testing/resources Scratch.dir"
 
+/**
+ * The CPU Scratch.dir's open may spend (property.ts Need budget): it makes the worker's scratch root and starts its
+ * remover (processScratch), a shell that waits on a pipe.
+ *
+ * @limitKind measured
+ * @owner the testing library (resources/scratch.ts Scratch.dir)
+ * @unit milliseconds of CPU, the remover's among them
+ * @scope each open of Scratch.dir on a process, alone or in the group of needs it opens at once with
+ * @evidence ~/Documents/toolchain/packages/testing/out/need-budget/20261121T132823/ (written in lane NEEDBUDGET's
+ *   ~/.cache/toolchain/needbudget and copied there), the uncommitted record of `sh run.sh` in it: probe.mjs, which opens
+ *   the need 300 times in a fresh scope each and reads its process tree's CPU before and after each open as the
+ *   library's judge does (runner/work.ts ownWork); alone-*.json and together-*.json, every open's CPU and wall
+ *   milliseconds; summary.txt and environment.txt
+ * @observed 2026-11-21 13:35:48 to 13:36:11 UTC
+ * @environment cassowary, Ubuntu 26.04 (Linux 7.0.0-1018-aws) on an AWS Graviton3 (arm64) instance with 64 logical
+ *   CPUs and 247 GiB, Node 26.13.1; load average 394 to 447 and CPU pressure (some avg10) 81 to 86 % from other sessions;
+ *   toolchain a6172d026 with lane NEEDBUDGET's change
+ * @workload 300 opens a process, one after another, each in a scope closed after it (its root and remover gone): three
+ *   processes alone, then four at once, the root in the run's temporary directory
+ * @result 2,100 opens: CPU p50 2.7 ms, p99 14.0 ms alone and 17.2 ms at once, slowest 35.5 ms (wall slowest 321 ms);
+ *   no open failed
+ * @decision 1 s: 28 times the slowest open measured. An open past it is a runaway, and in a group it adds a second to a
+ *   sum a template's budget dominates. Unmeasured: a temporary directory on a slow or full filesystem
+ * @revalidate a change to what the open does (processScratch), a Node upgrade, another machine
+ */
+const scratchDirBudgetMillis = 1000
+
 /** Node's child processes: a scratch directory's remover is started with a pipe the maker alone holds. */
 const childProcesses = process.getBuiltinModule("node:child_process")
 
@@ -92,6 +119,8 @@ const openRoot: Effect.Effect<string, NeedFailed, FileSystem.FileSystem | Scope.
  */
 const dir: Need<ScratchDir> = {
 	key,
+	budget: scratchDirBudgetMillis,
+	runNeeds: [],
 	open: Effect.map(Effect.all([openRoot, FileSystem.FileSystem]), ([root, fs]) =>
 		Effect.mapBoth(fs.makeTempDirectoryScoped({ directory: root, prefix: "case-" }), {
 			onFailure: (error) => NeedFailed.make({ need: key, message: error.message }),

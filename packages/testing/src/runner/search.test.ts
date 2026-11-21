@@ -37,7 +37,7 @@ import { assert } from "#assert.ts"
 import { boolean, characterOf, int, string } from "#gen.ts"
 import { type Case, property, ReplayToken } from "#property.ts"
 import { replayTokenOf } from "#replay.ts"
-import { runnerLimits } from "#runner/limits.ts"
+import { needStallMillis, runnerLimits } from "#runner/limits.ts"
 import type { CasePhase } from "#runner/protocol.ts"
 import {
 	aimedOneSearch,
@@ -139,9 +139,9 @@ export const streams = property.explore(
 						floor: shape.floor,
 						steered: 0,
 						window: shape.window,
-						deadline: runnerLimits.deadline,
-						open: runnerLimits.open
+						deadline: runnerLimits.deadline
 					},
+					stall: needStallMillis,
 					width: shape.width
 				})
 				assert.deepEqual(
@@ -195,8 +195,7 @@ export const seriesPerWorker = property.explore(
 					floor: shape.stream,
 					steered: 0,
 					window: shape.window,
-					deadline: runnerLimits.deadline,
-					open: runnerLimits.open
+					deadline: runnerLimits.deadline
 				}
 				const streamSize = Math.max(shape.window, Math.ceil(shape.stream / shape.width))
 				const windows = Math.ceil(shape.space / shape.window)
@@ -212,6 +211,7 @@ export const seriesPerWorker = property.explore(
 					seed: shape.seed,
 					reach: "full",
 					limits,
+					stall: needStallMillis,
 					width: shape.width
 				})
 				const exhausted = yield* seriesCutAt(spaceOf(shape.space), {
@@ -219,6 +219,7 @@ export const seriesPerWorker = property.explore(
 					seed: shape.seed,
 					reach: "full",
 					limits,
+					stall: needStallMillis,
 					width: shape.width
 				})
 				assert.deepEqual(
@@ -277,6 +278,7 @@ export const batchedWindows = property.explore(batchedShapes, {
 					floor: Math.ceil(shape.runs / 4),
 					steered: shape.runs
 				},
+				stall: needStallMillis,
 				width: shape.width
 			}
 			const split = batchedOf(id, shape, shape.batches)
@@ -588,8 +590,7 @@ export const steeringPhases = property.explore(
 					floor: shape.floor,
 					steered: runnerLimits.steered,
 					window: shape.window,
-					deadline: runnerLimits.deadline,
-					open: runnerLimits.open
+					deadline: runnerLimits.deadline
 				}
 				const inner = aimRecorder([
 					keptOf(id, { drawn: { kind: "unsteered" }, values: [shape.kept] })
@@ -645,6 +646,7 @@ export const rotatingSeries = property.explore(streamedShapes, {
 				seed: shape.seed,
 				reach: "rotating",
 				limits: { ...runnerLimits, runs: shape.runs, window: shape.window },
+				stall: needStallMillis,
 				width: shape.width
 			})
 			const values = streamOf(id, shape)

@@ -42,7 +42,6 @@ const oneRun = (id: string): Batch => [
 		keep: "nothing",
 		sense: { kind: "notes" },
 		deadline: runnerLimits.deadline,
-		open: runnerLimits.open,
 		print: "failing"
 	}
 ]
@@ -75,21 +74,20 @@ export const foreignSubject = (module: string): Subject => ({
 		keep: () => ({ kind: "unfound", why: "a foreign module keeps nothing" }),
 		replay: () =>
 			Effect.succeed({ kind: "exhausted", cases: 1, box: "the module's run", measures: [] }),
-		ready: () =>
-			Effect.succeed({
-				cases: () => Effect.succeed([]),
-				series: () =>
-					Effect.succeed({
-						ran: 0,
-						passed: 0,
-						notes: [],
-						measures: [],
-						millis: 0,
-						cpu: 0,
-						stopped: { kind: "none" }
-					} as const),
-				count: () => Effect.succeed({ kind: "uncountable" } as const)
-			})
+		ready: Effect.succeed({
+			cases: () => Effect.succeed([]),
+			series: () =>
+				Effect.succeed({
+					ran: 0,
+					passed: 0,
+					notes: [],
+					measures: [],
+					millis: 0,
+					cpu: 0,
+					stopped: { kind: "none" }
+				} as const),
+			count: () => Effect.succeed({ kind: "uncountable" } as const)
+		})
 	})
 })
 

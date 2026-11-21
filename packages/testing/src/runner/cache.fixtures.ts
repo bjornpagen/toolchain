@@ -23,6 +23,7 @@ import {
 	string,
 	unicodeScalar
 } from "#gen.ts"
+import { plantedBudget } from "#planted.fixtures.ts"
 import { type Need, NeedFailed, PropertyId } from "#property.ts"
 import {
 	type Edit,
@@ -214,6 +215,8 @@ export const cacheIn = (directory: string, digest: Context.Service.Shape<typeof 
 /** Node's SHA-256, opened once per evaluating process. */
 export const digests: Need<Context.Service.Shape<typeof Digest.Digest>> = {
 	key: "@bjornpagen/testing/runner/cache.fixtures/digest",
+	budget: plantedBudget,
+	runNeeds: [],
 	open: Effect.map(Layer.build(layerDigest), (built) =>
 		Effect.succeed(Context.get(built, Digest.Digest))
 	)
@@ -222,6 +225,8 @@ export const digests: Need<Context.Service.Shape<typeof Digest.Digest>> = {
 /** A directory of the case's own, removed when the case ends. */
 export const scratch: Need<string> = {
 	key: "@bjornpagen/testing/runner/cache.fixtures/scratch",
+	budget: plantedBudget,
+	runNeeds: [],
 	open: Effect.map(FileSystem.FileSystem, (fs) =>
 		Effect.mapError(fs.makeTempDirectoryScoped({ prefix: "toolchain-verdicts-" }), (failure) =>
 			NeedFailed.make({ need: "scratch", message: failure.message })

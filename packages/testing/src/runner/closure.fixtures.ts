@@ -14,6 +14,7 @@ import {
 import { Digest } from "effect/crypto"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { aimed, array, boolean, element, type Gen, oneOf } from "#gen.ts"
+import { plantedBudget } from "#planted.fixtures.ts"
 import { type Need, NeedFailed } from "#property.ts"
 import {
 	type Closure,
@@ -731,6 +732,8 @@ export const closuresIn = (
 /** The native parser and Node's SHA-256, opened once per evaluating process. */
 export const hashing: Need<Hashing> = {
 	key: "@bjornpagen/testing/runner/closure.fixtures/hashing",
+	budget: plantedBudget,
+	runNeeds: [],
 	open: Effect.map(Layer.build(Layer.merge(moduleSyntax, layerDigest)), (built) =>
 		Effect.succeed({
 			syntax: Context.get(built, ModuleSyntax),
@@ -742,6 +745,8 @@ export const hashing: Need<Hashing> = {
 /** A directory of the case's own, removed when the case ends. */
 export const scratch: Need<string> = {
 	key: "@bjornpagen/testing/runner/closure.fixtures/scratch",
+	budget: plantedBudget,
+	runNeeds: [],
 	open: Effect.map(FileSystem.FileSystem, (fs) =>
 		Effect.flatMap(
 			Effect.mapError(fs.makeTempDirectoryScoped({ prefix: "toolchain-closure-" }), (failure) =>

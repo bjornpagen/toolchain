@@ -131,7 +131,7 @@ export const killsCommand = (root: string, selected: ReadonlyArray<string>) =>
 				Arr.filter(discovered, (found) => Arr.isReadonlyArrayNonEmpty(found.property.kills))
 			)
 			const subjects = subjectsOf(fresh)
-			const pool = mutatorPool(checkout, packageRoot)
+			const pool = yield* mutatorPool(checkout, packageRoot)
 			const trees = yield* treesOf(checkout)
 			const images = yield* imagesOf(checkout, trees)
 			const judged = yield* killsOf(
@@ -340,7 +340,7 @@ export const mutateCommand = (root: string, args: ReadonlyArray<string>) =>
 						})
 				}
 			)
-			const pool = mutatorPool(checkout, packageRoot)
+			const pool = yield* mutatorPool(checkout, packageRoot)
 			const trees = yield* treesOf(checkout)
 			const images = yield* imagesOf(checkout, trees)
 			const operators = Arr.isReadonlyArrayNonEmpty(parsed.operators) ? parsed.operators : every
@@ -577,7 +577,7 @@ export const censusCommand = (root: string, args: ReadonlyArray<string>) =>
 					reading,
 					settled
 				}).pipe(Effect.provide(digest))
-			const pool = mutatorPool(checkout, packageRoot)
+			const pool = yield* mutatorPool(checkout, packageRoot)
 			const ofProperties = yield* census(pool, subjectsOf(properties), { kind: "places" })
 			const ofForeign = yield* Option.match(parsed.foreign, {
 				onNone: () => Effect.succeed([]),

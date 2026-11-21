@@ -14,7 +14,7 @@
  *   awaited before the process's next case.
  * - A property's needs open before its first case on a process, once there, and outside every case's deadline: a need
  *   slower to open than the case deadline hangs no case.
- * - A need that does not open on a process (its open fails, or runs past the open bound) fails its property once, with
+ * - A need that does not open on a process (its open fails, or stalls past the stall window) fails its property once, with
  *   the need and why, and no case of the property runs there.
  * - A need that fails inside a case (a take of a need the property opened, or a need its check opens itself), checked
  *   one case at a time or a batch at a time, fails its property once, unopened, with the need and why: no case is
@@ -225,8 +225,7 @@ export const caseLifetimes = property.explore(
 						floor: 1,
 						steered: 0,
 						window: runnerLimits.window,
-						deadline: shape.deadline,
-						open: runnerLimits.open
+						deadline: shape.deadline
 					},
 					width: shape.width
 				})
@@ -277,8 +276,8 @@ export const opensOutsideTheCase = property.explore(slowOpens, {
 	kills: [
 		{
 			file: "packages/testing/src/runner/case.ts",
-			original: "\t\t\topenAll(needs, bound),",
-			replacement: "\t\t\tEffect.void,",
+			original: "\t\topenAll(needs),",
+			replacement: "\t\tEffect.void,",
 			why: "A property's needs are no longer opened when it is readied, so the first case that takes one opens it inside its own deadline (need-open-in-case, GZ-FOUNDATION's template forms killed at 60 s on their first cases); a need slower to open than the case deadline hangs that case, and the property fails."
 		}
 	]
@@ -301,7 +300,7 @@ export const unopenedOnce = property.explore(
 					const inner = needing(ending === "fails" ? 0 : 4 * bound, ending, others)
 					const verdict = yield* searchedAt(inner.property, {
 						...fullRun("unopened once/inner", 0),
-						limits: { ...runnerLimits, open: bound }
+						stall: bound
 					})
 					const found = findingOf(verdict)
 					assert.deepEqual(
@@ -335,15 +334,15 @@ export const unopenedOnce = property.explore(
 		kills: [
 			{
 				file: "packages/testing/src/runner/case.ts",
-				original: "\t\t\topenAll(needs, bound),",
-				replacement: "\t\t\tEffect.ignore(openAll(needs, bound)),",
+				original: "\t\topenAll(needs),",
+				replacement: "\t\tEffect.ignore(openAll(needs)),",
 				why: "A need that did not open is left to the cases, as 3714090 left it: each case takes it and fails on its failure, so the property is falsified case by case instead of failing once as unopened, and its cases run; the property fails."
 			},
 			{
-				file: "packages/testing/src/runner/case.ts",
+				file: "packages/testing/src/runner/opening.ts",
 				original:
-					"\t\t\t\t\t\t\t\t\tEffect.flatMap(liveMillis, (wall) => overrun(ownWork(wall, ownCpu()), bound)),",
-				replacement: "\t\t\t\t\t\t\t\t\tEffect.never,",
+					"\t\t\tEffect.flatMap(liveMillis, (wall) => overrun(ownWork(wall, ownCpu()), bound)),",
+				replacement: "\t\t\tEffect.never,",
 				why: "A need's open has no bound, so one that never ends holds its process forever, and one past the bound opens late instead of failing its property; the outrunning need's property passes, and this property fails."
 			}
 		]

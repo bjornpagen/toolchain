@@ -64,9 +64,10 @@ import {
 import type { DatabaseTemplate } from "#resources/template.ts"
 import { defineRunner, noMutation } from "#runner/config.ts"
 import { collectedAround } from "#runner/run.ts"
-import { ModuleClosure, WorkerIndex } from "#runner/services.ts"
+import { runValuesOf } from "#runner/runs.ts"
+import { ModuleClosure, RunValues, WorkerIndex } from "#runner/services.ts"
 import { deadlocks } from "#runner/work.fixtures.ts"
-import { overrunText, ownCpu, ownWork, waitedOnNow } from "#runner/work.ts"
+import { deadlineBound, overrunText, ownCpu, ownWork, waitedOnNow } from "#runner/work.ts"
 
 export const freshIsolation = property.explore(array(int(-5, 5), { min: 0, max: 6 }), {
 	needs: { db: Database.fresh(marksTemplate), services },
@@ -434,7 +435,7 @@ export const refusedDropCollected = property.exhaust(finite(int(1, 3)), {
 									Context.make(ModuleClosure, {
 										hashOf: () => runnerClosures.hashOf(fixturesModule)
 									}),
-									Context.make(WorkerIndex, worker)
+									Context.make(WorkerIndex, worker).pipe(Context.add(RunValues, runValuesOf([])))
 								)
 							)
 						)
@@ -545,6 +546,7 @@ export const clonedAsAsked = property.explore(int(0, 50), {
 					name: marksTemplate.name,
 					content: marksTemplate.content,
 					from: marksTemplate.from,
+					budget: marksTemplate.budget,
 					build: marksTemplate.build,
 					open: Effect.map(marksTemplate.open, (opened) => ({
 						clone: Effect.andThen(
@@ -614,7 +616,9 @@ export const staleCollected = property.explore(int(1, 3), {
 						const template = tokenTemplate(prefix, () => Effect.void)
 						const runnerClosures = Context.get(ctx, ModuleClosure)
 						const closure = (module: string) =>
-							Context.make(ModuleClosure, { hashOf: () => runnerClosures.hashOf(module) })
+							Context.make(ModuleClosure, { hashOf: () => runnerClosures.hashOf(module) }).pipe(
+								Context.add(RunValues, runValuesOf([]))
+							)
 						const ended = yield* Scope.make()
 						const endedCluster = yield* Scope.provide(Layer.build(ownCluster(prefix)), ended)
 						const left = yield* Effect.provideContext(
@@ -688,7 +692,8 @@ export const inUseKept = property.exhaust(
 					const ctx = yield* context
 					const worker = Context.get(ctx, WorkerIndex)
 					const runner = Context.make(ModuleClosure, Context.get(ctx, ModuleClosure)).pipe(
-						Context.add(WorkerIndex, worker)
+						Context.add(WorkerIndex, worker),
+						Context.add(RunValues, Context.get(ctx, RunValues))
 					)
 					const outcome = yield* Effect.scoped(
 						Effect.gen(function* () {
@@ -790,7 +795,8 @@ export const cloneOutlivesNoTemplate = property.exhaust(
 					)
 					const ctx = yield* context
 					const runner = Context.make(ModuleClosure, Context.get(ctx, ModuleClosure)).pipe(
-						Context.add(WorkerIndex, Context.get(ctx, WorkerIndex))
+						Context.add(WorkerIndex, Context.get(ctx, WorkerIndex)),
+						Context.add(RunValues, Context.get(ctx, RunValues))
 					)
 					const outcome = yield* Effect.scoped(
 						Effect.gen(function* () {
@@ -1206,7 +1212,10 @@ export const cloneDropWaitIsDeclared = property.exhaust(finite(deadlocks), {
 							const wall = yield* liveMillis
 							const verdict = yield* Effect.raceFirst(
 								Effect.as(dropped, "passed"),
-								Effect.map(overrun(ownWork(wall, ownCpu()), shape.deadline), overrunText)
+								Effect.map(
+									overrun(ownWork(wall, ownCpu()), deadlineBound(shape.deadline)),
+									overrunText
+								)
 							)
 							const clone = yield* Deferred.await(named)
 							const after = yield* Deferred.await(seen)

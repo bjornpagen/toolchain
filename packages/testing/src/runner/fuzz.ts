@@ -1,12 +1,14 @@
 import { Array as Arr, Console, Duration, Effect, Option, Random, Schema } from "effect"
 import { budgetOf, type FuzzBudget, FuzzTime } from "#fuzz.ts"
 import { liveMillis } from "#live.ts"
+import { runNeedsOf } from "#property.ts"
 import { sharedStore } from "#runner/compile-cache.ts"
-import { runnerLimits } from "#runner/limits.ts"
+import { needStallMillis, runnerLimits } from "#runner/limits.ts"
 import { placesOf, poolOf } from "#runner/pool.ts"
 import type { Verdict } from "#runner/protocol.ts"
 import { failureLines, lineOf } from "#runner/report.ts"
 import { loadPackage, WORKER_ENTRY } from "#runner/run.ts"
+import { openedRuns } from "#runner/runs.ts"
 import { testWorkers } from "#workers.ts"
 
 /**
@@ -85,7 +87,12 @@ export const fuzz = (root: string, args: ReadonlyArray<string>) =>
 				guide: Arr.some(sampled, (found) => found.property.guide.kind === "blocks")
 					? "blocks"
 					: "notes",
-				open: runnerLimits.open
+				runs: yield* openedRuns(
+					runNeedsOf(Arr.map(sampled, (found) => found.property.needs)),
+					root,
+					needStallMillis
+				),
+				stall: needStallMillis
 			})
 			const began = yield* liveMillis
 			let rounds = 0

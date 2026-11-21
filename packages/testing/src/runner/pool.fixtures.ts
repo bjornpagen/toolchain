@@ -2,6 +2,7 @@ import { Array as Arr, Config, Duration, Effect, FileSystem } from "effect"
 import { ChildProcess } from "effect/process"
 import { boolean, finite, type Gen, int, map } from "#gen.ts"
 import { liveSleep, waitingOn } from "#live.ts"
+import { plantedBudget } from "#planted.fixtures.ts"
 import { type Need, property } from "#property.ts"
 import { Scratch } from "#resources/scratch.ts"
 import type { Batch } from "#runner/protocol.ts"
@@ -110,7 +111,7 @@ export const runsAwayWithAChild = property.exhaust(finite(int(0, 1)), {
  * The planted property's case that does what `leaving` says, as a search orders it: its decisions, the count's offset
  * from one, then whether it ends its worker.
  */
-export const plantedCase = (leaving: Leaving, deadline: number, open: number): Batch => [
+export const plantedCase = (leaving: Leaving, deadline: number): Batch => [
 	{
 		property: PLANTED,
 		chooser: {
@@ -121,7 +122,6 @@ export const plantedCase = (leaving: Leaving, deadline: number, open: number): B
 		keep: "nothing",
 		sense: { kind: "notes" },
 		deadline,
-		open,
 		print: "failing"
 	}
 ]
@@ -173,10 +173,10 @@ export const loopingProperty = (needs: boolean): string =>
 	needs ? "src/runner/loops.fixtures.ts#withNeeds" : "src/runner/loops.fixtures.ts#withoutNeeds"
 
 /**
- * The one case of a property `id` ordered at a short case deadline and open bound, so a worker that never reports on it
- * is ended within those and the silence grace.
+ * The one case of a property `id` ordered at a case deadline, so a worker that never reports on it is ended within it
+ * (or its pool's stall window, readying) and the silence grace.
  */
-export const shortCase = (id: string, deadline: number, open: number): Batch => [
+export const shortCase = (id: string, deadline: number): Batch => [
 	{
 		property: id,
 		chooser: { kind: "simplest" },
@@ -184,7 +184,6 @@ export const shortCase = (id: string, deadline: number, open: number): Batch => 
 		keep: "nothing",
 		sense: { kind: "notes" },
 		deadline,
-		open,
 		print: "failing"
 	}
 ]
@@ -236,6 +235,8 @@ export const legSaid = (silence: Silence): string => {
  */
 const waitsOnRelease: Need<void> = {
 	key: "pool.fixtures.ts waits on release",
+	budget: plantedBudget,
+	runNeeds: [],
 	open: Effect.as(
 		Effect.addFinalizer(() =>
 			Effect.sync(() => {
@@ -298,6 +299,8 @@ export const waitsDeclared = property.exhaust(finite(int(0, 1)), {
  */
 const blocksOnRelease: Need<void> = {
 	key: "pool.fixtures.ts blocks on release",
+	budget: plantedBudget,
+	runNeeds: [],
 	open: Effect.as(
 		Effect.addFinalizer(() =>
 			Effect.sync(() => {
@@ -529,6 +532,8 @@ export const DIED_OPENING = "the planted need's open died"
 /** A need whose open dies, by a thrown error (`thrown`) or by Effect.die, as an unexpected defect opening a need does. */
 const diesOpening = (thrown: boolean): Need<void> => ({
 	key: `pool.fixtures.ts dies opening ${thrown ? "by a throw" : "by Effect.die"}`,
+	budget: plantedBudget,
+	runNeeds: [],
 	open: thrown
 		? Effect.sync(() => {
 				throw new Error(DIED_OPENING)
@@ -605,7 +610,7 @@ export const releasingRoot = (directory: string) =>
 					`import { property } from "${import.meta.resolve("#property.ts")}"`,
 					"export const holds = property.exhaust(finite(int(0, 1)), {",
 					'\tbox: "two values",',
-					'\tneeds: { held: { key: "held.test.ts held", open: Effect.succeed(Effect.void) } },',
+					'\tneeds: { held: { key: "held.test.ts held", budget: 60_000, runNeeds: [], open: Effect.succeed(Effect.void) } },',
 					"\tsituations: [],",
 					"\tcheck: () => () => Effect.void,",
 					'\toracle: { kind: "specification", name: "a property planted to build its worker\'s services" },',
@@ -626,6 +631,8 @@ const PLACED = "src/runner/pool.fixtures.ts#reportsItsPlace"
 /** A need that gives its case the place its worker reports (WorkerIndex), read as the worker opens it. */
 const placeOf: Need<Readonly<{ index: number; workers: number }>> = {
 	key: "pool.fixtures.ts place",
+	budget: plantedBudget,
+	runNeeds: [],
 	open: Effect.map(Effect.service(WorkerIndex), (place) => Effect.succeed(place))
 }
 
@@ -656,13 +663,8 @@ export const reportsItsPlace = property.exhaust(
 	}
 )
 
-/** The case of the planted place property that expects place `index` of `workers`, at a deadline and open bound. */
-export const placedCase = (
-	index: number,
-	workers: number,
-	deadline: number,
-	open: number
-): Batch => [
+/** The case of the planted place property that expects place `index` of `workers`, at a deadline. */
+export const placedCase = (index: number, workers: number, deadline: number): Batch => [
 	{
 		property: PLACED,
 		chooser: { kind: "forced", values: Float64Array.of(index, workers - 1) },
@@ -670,7 +672,6 @@ export const placedCase = (
 		keep: "nothing",
 		sense: { kind: "notes" },
 		deadline,
-		open,
 		print: "failing"
 	}
 ]

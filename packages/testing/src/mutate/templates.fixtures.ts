@@ -1,6 +1,7 @@
 import { Config, Effect, Equal, FileSystem, Option, Schema } from "effect"
 import { element, finite, int } from "#gen.ts"
 import { mark } from "#mutate/mark.fixtures.ts"
+import { plantedBudget } from "#planted.fixtures.ts"
 import { property } from "#property.ts"
 import { PgCluster, required, run } from "#resources/cluster.ts"
 import { inDatabase, services } from "#resources/resources.fixtures.ts"
@@ -79,6 +80,7 @@ const markedTemplate = (token: string) =>
 		name: `marked ${token}`,
 		content: { token },
 		from: Template.cluster,
+		budget: plantedBudget,
 		build: (built) =>
 			Effect.scoped(
 				Effect.gen(function* () {
@@ -148,8 +150,8 @@ export const opensMarked = property.exhaust(finite(int(0, 1)), {
 	kills: []
 })
 
-/** The planted property's one case, as a search orders it, at the runner's deadline and open bound. */
-export const markedCase = (deadline: number, open: number): Batch => [
+/** The planted property's one case, as a search orders it, at the runner's deadline. */
+export const markedCase = (deadline: number): Batch => [
 	{
 		property: PLANTED,
 		chooser: { kind: "simplest" },
@@ -157,7 +159,6 @@ export const markedCase = (deadline: number, open: number): Batch => [
 		keep: "nothing",
 		sense: { kind: "notes" },
 		deadline,
-		open,
 		print: "failing"
 	}
 ]

@@ -4,7 +4,14 @@ import { liveMillis, liveSleep, waitingOn } from "#live.ts"
 import { type Property, property } from "#property.ts"
 import { type Limits, runnerLimits } from "#runner/limits.ts"
 import { fullRun, type InnerRun } from "#runner/search.fixtures.ts"
-import { ownCpu, ownWork, type Reading, type Stir } from "#runner/work.ts"
+import {
+	type Bound,
+	deadlineBound,
+	ownCpu,
+	ownWork,
+	type Reading,
+	type Stir
+} from "#runner/work.ts"
 
 /**
  * What the meta-tests of a case's deadline as a budget of its work (runner/work.ts, case.ts guarded) share: inner
@@ -297,14 +304,14 @@ const WINDOW_PROGRESS = 10
  */
 export const windowOf = (
 	move: OtherMove
-): Readonly<{ window: Reading; now: Reading; deadline: number }> => {
+): Readonly<{ window: Reading; now: Reading; bound: Bound }> => {
 	const quiet: Stir = { queued: 10, stored: 10 }
 	const window: Reading = { wall: 0, cpu: 5, waited: 0, stir: quiet }
 	const later: Reading = { ...window, wall: WINDOW_DEADLINE }
-	const stirred = (stir: Stir): Readonly<{ window: Reading; now: Reading; deadline: number }> => ({
+	const stirred = (stir: Stir): Readonly<{ window: Reading; now: Reading; bound: Bound }> => ({
 		window,
 		now: { ...later, stir },
-		deadline: WINDOW_DEADLINE
+		bound: deadlineBound(WINDOW_DEADLINE)
 	})
 	switch (move) {
 		case "none":

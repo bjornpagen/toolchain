@@ -1,7 +1,7 @@
 import { Array as Arr, Effect, Schema, type Scope } from "effect"
 import type { Loading } from "#mutate/checkout.ts"
-import { type MutantPool, Unstarted, type WorkerImage } from "#mutate/pool.ts"
-import type { Property, PropertyId } from "#property.ts"
+import { type MutantPool, type Serves, Unstarted, type WorkerImage } from "#mutate/pool.ts"
+import { type Property, type PropertyId, runNeedsOf } from "#property.ts"
 import type { Limits } from "#runner/limits.ts"
 import type { Evaluator, Finding } from "#runner/protocol.ts"
 
@@ -75,6 +75,18 @@ const firstRed = <L>(
 			)
 }
 
+/**
+ * What a stage's properties need of its workers (mutate/pool.ts Serves): coverage before they load a module when one
+ * guides its search by blocks, and the run needs their needs read.
+ */
+const servesOf = (properties: Arr.NonEmptyReadonlyArray<Subject>): Serves => {
+	const blocks = Arr.some(properties, (subject) => subject.property.guide.kind === "blocks")
+	return {
+		guide: blocks ? "blocks" : "notes",
+		runs: runNeedsOf(Arr.map(properties, (subject) => subject.property.needs))
+	}
+}
+
 /** A trial's stages run in order, each on `workers` fresh workers of its image, until one goes red. */
 const trialOn = <E, L>(
 	pool: MutantPool<E>,
@@ -87,27 +99,17 @@ const trialOn = <E, L>(
 		? Effect.succeed({ kind: "green" })
 		: Effect.scoped(
 				Effect.flatMap(stage.image, (image) =>
-					pool
-						.lease(
-							image,
-							workers,
-							Arr.some(stage.properties, (subject) => subject.property.guide.kind === "blocks")
-								? "blocks"
-								: "notes"
+					pool.lease(image, workers, servesOf(stage.properties)).pipe(
+						Effect.flatMap((evaluator) => firstRed(run, evaluator, stage.label, stage.properties)),
+						Effect.catchIf(Schema.is(Unstarted), (unstarted): Effect.Effect<TrialVerdict<L>> =>
+							Effect.succeed({
+								kind: "red",
+								stage: stage.label,
+								property: Arr.headNonEmpty(stage.properties).id,
+								red: { kind: "unstarted", message: unstarted.message }
+							})
 						)
-						.pipe(
-							Effect.flatMap((evaluator) =>
-								firstRed(run, evaluator, stage.label, stage.properties)
-							),
-							Effect.catchIf(Schema.is(Unstarted), (unstarted): Effect.Effect<TrialVerdict<L>> =>
-								Effect.succeed({
-									kind: "red",
-									stage: stage.label,
-									property: Arr.headNonEmpty(stage.properties).id,
-									red: { kind: "unstarted", message: unstarted.message }
-								})
-							)
-						)
+					)
 				)
 			).pipe(
 				Effect.filterOrElse(

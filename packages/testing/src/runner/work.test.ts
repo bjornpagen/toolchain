@@ -122,8 +122,8 @@ export const runawayIsHung = property.exhaust(finite(runaways), {
 	kills: [
 		{
 			file: "packages/testing/src/runner/work.ts",
-			original: "\tif (spent >= deadline) {",
-			replacement: "\tif (spent >= deadline * 1000) {",
+			original: "\tif (spent >= bound.cpu) {",
+			replacement: "\tif (spent >= bound.cpu * 1000) {",
 			why: "The CPU budget is never reached: a runaway that yields moves its CPU in every window and is never stalled, so it runs to its end and passes; the runaway property fails."
 		}
 	]

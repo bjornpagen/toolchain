@@ -26,7 +26,7 @@ import {
 import { floorSeed, rotatingSeed } from "#random.ts"
 import { type Drawn, type ReplayCase, replayOf, replayTokenOf } from "#replay.ts"
 import { inlineEvaluator, searchInline } from "#runner/inline.ts"
-import { type Limits, runnerLimits } from "#runner/limits.ts"
+import { type Limits, needStallMillis, runnerLimits } from "#runner/limits.ts"
 import {
 	type Batch,
 	type CasePhase,
@@ -40,7 +40,7 @@ import {
 	type Verdict,
 	workOf
 } from "#runner/protocol.ts"
-import type { ModuleClosure, WorkerIndex } from "#runner/services.ts"
+import type { ModuleClosure, RunValues, WorkerIndex } from "#runner/services.ts"
 import { sample } from "#source.ts"
 
 /**
@@ -55,6 +55,7 @@ export type InnerRun = Readonly<{
 	seed: number
 	reach: Reach
 	limits: Limits
+	stall: number
 	width: number
 }>
 
@@ -69,10 +70,11 @@ const throughStop = (
 	)
 
 /**
- * What a search run in this process needs from its caller: every need's context but the worker index, which is 0, and
- * the module closures, which the inline evaluator hashes for the package it runs in.
+ * What a search run in this process needs from its caller: every need's context but the worker index, which is 0, the
+ * module closures, which the inline evaluator hashes for the package it runs in, and the run need values, which it
+ * opens itself.
  */
-type InProcess = Exclude<NeedContext, WorkerIndex | ModuleClosure> | Scope.Scope
+type InProcess = Exclude<NeedContext, WorkerIndex | ModuleClosure | RunValues> | Scope.Scope
 
 /**
  * An evaluator of one property in this process that judges `width` batches at once and gives back their results in
@@ -82,12 +84,13 @@ type InProcess = Exclude<NeedContext, WorkerIndex | ModuleClosure> | Scope.Scope
  */
 const widthEvaluator = (
 	inner: Property,
-	width: number
+	width: number,
+	stall: number
 ): Effect.Effect<Evaluator, never, InProcess> =>
 	Effect.gen(function* () {
 		const lanes = yield* Effect.forEach(
 			Array.from({ length: width }, (_, lane) => lane),
-			() => inlineEvaluator(inner)
+			() => inlineEvaluator(inner, stall)
 		)
 		const one = (batch: Batch, lane: number) =>
 			Option.match(Arr.get(lanes, lane), {
@@ -148,7 +151,7 @@ export const searchedAt = (
 	inner: Property,
 	run: InnerRun
 ): Effect.Effect<Verdict, never, InProcess> =>
-	Effect.flatMap(widthEvaluator(inner, run.width), (evaluator) =>
+	Effect.flatMap(widthEvaluator(inner, run.width, run.stall), (evaluator) =>
 		inner.search({
 			id: run.id,
 			seed: run.seed,
@@ -171,7 +174,7 @@ export const seriesCutAt = (
 	InProcess
 > =>
 	Effect.gen(function* () {
-		const evaluator = yield* widthEvaluator(inner, run.width)
+		const evaluator = yield* widthEvaluator(inner, run.width, run.stall)
 		const cuts: Array<ReadonlyArray<number>> = []
 		const recording: Evaluator = {
 			...evaluator,
@@ -222,7 +225,7 @@ export const replayedAt = (
 	run: InnerRun,
 	token: string
 ): Effect.Effect<Verdict, never, InProcess> =>
-	Effect.flatMap(widthEvaluator(inner, run.width), (evaluator) =>
+	Effect.flatMap(widthEvaluator(inner, run.width, run.stall), (evaluator) =>
 		inner.replay(
 			{ id: run.id, seed: run.seed, reach: run.reach, limits: run.limits, evaluator },
 			token
@@ -235,6 +238,7 @@ export const fullRun = (id: string, seed: number): InnerRun => ({
 	seed,
 	reach: "full",
 	limits: runnerLimits,
+	stall: needStallMillis,
 	width: 1
 })
 
@@ -521,7 +525,7 @@ export const evaluationsAt = (
 	InProcess
 > =>
 	Effect.gen(function* () {
-		const evaluator = yield* widthEvaluator(inner, run.width)
+		const evaluator = yield* widthEvaluator(inner, run.width, run.stall)
 		const sent: Array<ReadonlyArray<number>> = []
 		const recording: Evaluator = {
 			...evaluator,
@@ -848,6 +852,7 @@ export const witnessRun = (sketch: VerdictSketch, at: SeedAndWidth) =>
 				seed: at.seed,
 				reach: "witnesses",
 				limits: witnessLimits(sketch.budget),
+				stall: needStallMillis,
 				width: at.width
 			}),
 			(verdict) => ({ verdict, witnesses: Arr.sort(inner.values, Order.Number) })
@@ -1072,6 +1077,7 @@ export const fidelityRun = (sketch: FidelitySketch, at: SeedAndWidth): InnerRun 
 	seed: at.seed,
 	reach: "full",
 	limits: witnessLimits(sketch.budget),
+	stall: needStallMillis,
 	width: at.width
 })
 
@@ -1132,4 +1138,10 @@ export const searchedInline = (
 	inner: Property,
 	run: InnerRun
 ): Effect.Effect<Verdict, never, InProcess> =>
-	searchInline(inner, { id: run.id, seed: run.seed, reach: run.reach, limits: run.limits })
+	searchInline(inner, {
+		id: run.id,
+		seed: run.seed,
+		reach: run.reach,
+		limits: run.limits,
+		stall: run.stall
+	})
