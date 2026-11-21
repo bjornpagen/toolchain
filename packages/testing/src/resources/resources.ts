@@ -18,7 +18,7 @@ export {
 	type TemplateDatabase,
 	type Transaction
 } from "#resources/database.ts"
-export { Scratch, type ScratchDir } from "#resources/scratch.ts"
+export { cachedScratch, Scratch, type ScratchDir } from "#resources/scratch.ts"
 export {
 	type Content,
 	DatabaseTemplate,

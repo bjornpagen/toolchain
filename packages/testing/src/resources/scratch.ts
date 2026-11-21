@@ -1,5 +1,6 @@
-import { Brand, Effect, FileSystem, type PlatformError, type Scope } from "effect"
+import { Brand, type Config, Effect, FileSystem, type PlatformError, type Scope } from "effect"
 import type { Need } from "#property.ts"
+import { toolchainTestCache } from "#runner/cache-home.ts"
 import { NeedFailed } from "#runner/services.ts"
 
 /** A directory that is one case's alone: made empty for it, removed with everything in it when the case ends. */
@@ -52,6 +53,27 @@ export const processScratch = (
 				})
 		)
 		return directory
+	})
+
+/**
+ * A temporary directory of this process's (processScratch) in toolchain-test's cache, `<cache>/scratch`
+ * (runner/cache-home.ts): on the disk a user's caches share with a package manager's store, where the run's temporary
+ * directory may be a tmpfs. A package installed into it is hardlinked from the store file by file, where a tmpfs, on
+ * another filesystem, takes a copy of every file and an inode for each; and like every process scratch it is removed
+ * when its scope closes or its process ends, however it ends.
+ */
+export const cachedScratch = (
+	prefix: string
+): Effect.Effect<
+	string,
+	PlatformError.PlatformError | Config.ConfigError,
+	FileSystem.FileSystem | Scope.Scope
+> =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		const directory = `${yield* toolchainTestCache}/scratch`
+		yield* fs.makeDirectory(directory, { recursive: true })
+		return yield* processScratch({ prefix, directory })
 	})
 
 /**

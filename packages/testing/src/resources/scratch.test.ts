@@ -1,17 +1,19 @@
 /**
  * A scratch directory (scratch.ts Scratch.dir) is its case's own: empty when the case gets it, and gone, with
  * everything the case wrote in it, once the case ends; a check removes what it finds left before it judges, so a kill's
- * run leaves nothing behind. And no scratch directory outlives the process that made it (processScratch), however that
- * process ends: its scope closed, exited with the scope open, or killed, the maker a program of the package's checkout
+ * run leaves nothing behind. And no scratch directory outlives the process that made it (processScratch, and
+ * cachedScratch, which makes it in toolchain-test's cache), however that process ends: its scope closed, exited with
+ * the scope open, or killed, the maker a program of the package's checkout
  * (Checkout.dir, so a mutant of scratch.ts reaches it). Oracle: the specification, stated in each check.
  */
-import { Effect, Exit, FileSystem, Option, Scope } from "effect"
+import { Effect, Exit, FileSystem, Option, Scope, String as Str } from "effect"
 import { assert } from "#assert.ts"
 import { array, int } from "#gen.ts"
 import { Checkout } from "#mutate/checkout.ts"
 import { property } from "#property.ts"
-import { ENDINGS, madeAndEnded, madeGen } from "#resources/scratch.fixtures.ts"
+import { ENDINGS, madeAndEnded, madeGen, PLACES } from "#resources/scratch.fixtures.ts"
 import { Scratch } from "#resources/scratch.ts"
+import { toolchainTestCache } from "#runner/cache-home.ts"
 import { moduleClosureAt } from "#runner/module-closure.ts"
 import { ModuleClosure, WorkerIndex } from "#runner/services.ts"
 
@@ -60,18 +62,23 @@ export const scratchOwn = property.explore(array(int(0, 3), { min: 0, max: 4 }),
 
 export const scratchOutlivesNoProcess = property.explore(madeGen, {
 	needs: { checkout: Checkout.dir },
-	situations: ENDINGS,
+	situations: [...ENDINGS, ...PLACES],
 	check:
 		({ checkout }, c) =>
 		(made) =>
 			Effect.gen(function* () {
 				c.note(made.ending)
+				c.note(made.place)
 				const dir = yield* checkout
 				const { directory, removers } = yield* madeAndEnded(dir, made)
 				const fs = yield* FileSystem.FileSystem
 				const left = yield* fs.exists(directory)
 				yield* fs.remove(directory, { recursive: true, force: true })
-				assert.deepEqual({ removers, left }, { removers: 1, left: false })
+				const cached = Str.startsWith(`${yield* toolchainTestCache}/scratch/`)(directory)
+				assert.deepEqual(
+					{ removers, left, cached },
+					{ removers: 1, left: false, cached: made.place === "in toolchain-test's cache" }
+				)
 			}),
 	oracle: {
 		kind: "specification",
@@ -84,6 +91,12 @@ export const scratchOutlivesNoProcess = property.explore(madeGen, {
 			original: "const REMOVER = 'while read -r _; do :; done; exec rm -rf -- \"$1\"'",
 			replacement: "const REMOVER = 'while read -r _; do :; done; exit 0'",
 			why: "The directory outlives the process that made it, as /tmp's toolchain-trees-* did past every killed run; the property fails."
+		},
+		{
+			file: "packages/testing/src/resources/scratch.ts",
+			original: "return yield* processScratch({ prefix, directory })",
+			replacement: "return yield* processScratch({ prefix })",
+			why: "A cached scratch directory is made in the run's temporary directory, a tmpfs here, where an install copies every file of a store on disk; the property fails."
 		}
 	]
 })
