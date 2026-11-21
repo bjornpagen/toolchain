@@ -118,6 +118,27 @@ export const forcedChooser = (values: Float64Array, length: number): Chooser => 
 	draw: (_lo, _hi, at) => values[at] ?? 0
 })
 
+/**
+ * Exactly the first `length` of these values, written before a weighted decision recorded its option (toolchain
+ * 71eb30f), read as they were meant: every decision takes its value as it is, but a weighted one, whose old value is a
+ * unit of its total, takes the option that owns that unit (optionAt), and a unit past the total is no value of the
+ * decision (lo - 1, so the case overruns). Drawn on such a token's values, a case records the token's values as they are
+ * now (`toolchain-test kept migrate`, runner/search.ts translate). One old value a decision: a weighted decision of one
+ * option recorded a unit before and records nothing now, so a token that holds one misaligns, overruns or is not run
+ * exactly, and is left for a person.
+ */
+export const translatedChooser = (values: Float64Array, length: number): Chooser => ({
+	exhausted: (at) => at >= length,
+	draw: (lo, _hi, at, spread) => {
+		const old = values[at] ?? 0
+		if (spread.kind !== "weighted") {
+			return old
+		}
+		const unit = old - lo
+		return unit >= 0 && unit < spread.total ? lo + optionAt(spread, unit) : lo - 1
+	}
+})
+
 /** The first `length` of these values, then whatever `then` chooses: a mutation's prefix, or an enumeration's branch. */
 export const prefixChooser = (values: Float64Array, length: number, then: Chooser): Chooser => ({
 	exhausted: (at) => at >= length && then.exhausted(at),

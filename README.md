@@ -14,6 +14,25 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: kept tokens migrate to options (2026-11-21)
+
+Since toolchain 71eb30f a weighted decision (gen.ts `weighted`, `option`, `production`, `oneOf`, `proportional`;
+commands.ts's pick of a command and its stop; swarm.ts's gates and choices) records the option it took, where it
+recorded a unit of its options' total. A kept token written before it names another case, or none, wherever its weighted
+decision took a unit past an option's first: grizzle found 74 of its 164 unit and type tokens stale.
+
+- At the bump past 71eb30f, run `pnpm exec toolchain-test kept migrate` from each package with kept tokens (or
+  `kept migrate <paths | property ids>`), then commit the rewritten modules. Each kept token's case runs on its values
+  read as they were meant (a weighted decision's unit as the option that owns it, a pick among commands over their
+  weights' greatest common divisor, every other value as it is), its new tape is the token as written now, and the new
+  token must replay as it says before its literal is rewritten. It prints each token `moved`, `unchanged` or `UNMOVED`
+  with why, and exits 1 on any unmoved: a token whose case fails or runs other than exactly its values (one with a
+  weighted decision of a single option of weight above one, which recorded a unit then and records nothing now), which
+  `toolchain-test keep` keeps again from its value.
+- Run it once. A token carries no format, so it reads every token as written before 71eb30f: run again, it would read a
+  migrated token's options as units.
+- A change to what a token records ships with its migration in the same commit, as this one does (replay.ts).
+
 ## Consumer migration: every need states its budget; run needs (2026-11-21)
 
 A need's open was held to one runner-wide bound, `needOpenMillis` (300 s), on both legs of its guard: the CPU it may

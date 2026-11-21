@@ -167,16 +167,25 @@ const claimedAfter = <M, V extends string>(before: M, verdict: Verdict<M, V>): M
 }
 
 /** The greatest common divisor of two whole numbers. */
+const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b))
+
 /**
  * One of weighted commands, drawn in proportion to their weights, in the order given: one weighted decision
  * (Source.weigh), which an enumeration meets once a command, so no two of its values name the same command. One
- * command with weight is no choice and draws nothing.
+ * command with weight is no choice and draws nothing. The weights are taken over their greatest common divisor, the
+ * same shares: before a weighted decision recorded its option (toolchain 71eb30f), a pick recorded a unit of the
+ * divided total, which a kept token's migration reads against these weights (source.ts translatedChooser).
  */
 const pickOf = <K>(
 	source: Source,
 	weighted: Arr.NonEmptyReadonlyArray<readonly [name: K, weight: number]>
-): K =>
-	Arr.getUnsafe(weighted, source.weigh(weightsOf(Arr.map(weighted, ([, weight]) => weight))))[0]
+): K => {
+	const common = Arr.reduce(weighted, 0, (divisor, [, weight]) => gcd(weight, divisor))
+	return Arr.getUnsafe(
+		weighted,
+		source.weigh(weightsOf(Arr.map(weighted, ([, weight]) => weight / common)))
+	)[0]
+}
 
 /**
  * Programs of between `size.min` and `size.max` steps over the commands `drawn` turns on, each as often as its weight

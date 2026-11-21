@@ -114,8 +114,9 @@ export const tapeReplaysItsCase = property.explore(seeds, {
 	kills: [
 		{
 			file: "packages/testing/src/source.ts",
-			original: "\texhausted: (at) => at >= length,",
-			replacement: "\texhausted: (at) => at >= length - 1,",
+			original: "\texhausted: (at) => at >= length,\n\tdraw: (_lo, _hi, at) => values[at] ?? 0",
+			replacement:
+				"\texhausted: (at) => at >= length - 1,\n\tdraw: (_lo, _hi, at) => values[at] ?? 0",
 			why: "A forced replay counts its last value as past its end, so a case's last decision replays at its simplest; the tape replay property fails."
 		}
 	]

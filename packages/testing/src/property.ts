@@ -39,7 +39,9 @@ import {
 	exploreSearch,
 	oneByOne,
 	replay,
-	type Searched
+	type Searched,
+	type Translation,
+	translate
 } from "#runner/search.ts"
 import { type ModuleClosure, NeedFailed, RunValues, type WorkerIndex } from "#runner/services.ts"
 
@@ -377,6 +379,7 @@ type Made = Readonly<{
 	kills: ReadonlyArray<Kill>
 	search: (run: SearchRun) => Effect.Effect<Verdict>
 	replay: (run: SearchRun, token: string) => Effect.Effect<Verdict>
+	translate: (run: SearchRun, token: string) => Effect.Effect<Translation>
 	keep: (target: unknown) => Keeping
 	ready: Readying
 }>
@@ -398,6 +401,7 @@ export class Property {
 	readonly kills: ReadonlyArray<Kill>
 	readonly search: Made["search"]
 	readonly replay: Made["replay"]
+	readonly translate: Made["translate"]
 	readonly keep: Made["keep"]
 	readonly ready: Made["ready"]
 
@@ -410,6 +414,7 @@ export class Property {
 		this.kills = made.kills
 		this.search = made.search
 		this.replay = made.replay
+		this.translate = made.translate
 		this.keep = made.keep
 		this.ready = made.ready
 	}
@@ -483,7 +488,7 @@ const exploredAs =
 			oracle: spec.oracle,
 			kept: spec.kept,
 			kills: spec.kills,
-			...boundedBy(spec, exploreSearch(searched, oneByOne), replay(searched)),
+			...boundedBy(spec, exploreSearch(searched, oneByOne), searched),
 			keep: keepingOf(drawing, aimPlacesOf(spec.space, spec.situations)),
 			ready: casesReadied(drawing, spec.needs, spec.check)
 		})
@@ -506,16 +511,17 @@ const citedIn =
 		}
 	})
 
-/** A property's search and replay, each run under the limits it cites. */
+/** A property's search, replay and kept tokens' migration, each run under the limits it cites. */
 const boundedBy = (
 	cited: Cited,
 	search: Made["search"],
-	replaying: Made["replay"]
-): Pick<Made, "search" | "replay"> => {
+	searched: Searched
+): Pick<Made, "search" | "replay" | "translate"> => {
 	const under = citedIn(cited)
 	return {
 		search: (run) => search(under(run)),
-		replay: (run, token) => replaying(under(run), token)
+		replay: (run, token) => replay(searched)(under(run), token),
+		translate: (run, token) => translate(searched)(under(run), token)
 	}
 }
 
@@ -550,7 +556,7 @@ export const property = {
 			oracle: spec.oracle,
 			kept: spec.kept,
 			kills: spec.kills,
-			...boundedBy(spec, exhaustSearch(searched, spec.box, 1), replay(searched)),
+			...boundedBy(spec, exhaustSearch(searched, spec.box, 1), searched),
 			keep: keepingOf(drawing, []),
 			ready: casesReadied(drawing, spec.needs, spec.check)
 		})
@@ -574,7 +580,7 @@ export const property = {
 			oracle: spec.oracle,
 			kept: spec.kept,
 			kills: spec.kills,
-			...boundedBy(spec, exploreSearch(searched, batchingOf(spec)), replay(searched)),
+			...boundedBy(spec, exploreSearch(searched, batchingOf(spec)), searched),
 			keep: keepingOf(drawing, aimPlacesOf(space, spec.situations)),
 			ready: batchesReadied(drawing, spec.needs, checkAll)
 		})
@@ -602,11 +608,7 @@ export const property = {
 			oracle: spec.oracle,
 			kept: spec.kept,
 			kills: spec.kills,
-			...boundedBy(
-				spec,
-				exhaustSearch(searched, spec.box, batchingOf(spec).group),
-				replay(searched)
-			),
+			...boundedBy(spec, exhaustSearch(searched, spec.box, batchingOf(spec).group), searched),
 			keep: keepingOf(drawing, []),
 			ready: batchesReadied(drawing, spec.needs, checkAll)
 		})

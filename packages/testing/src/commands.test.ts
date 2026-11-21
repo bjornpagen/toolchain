@@ -275,7 +275,7 @@ export const commandWeights = property.explore(
 		kills: [
 			{
 				file: "packages/testing/src/commands.ts",
-				original: "source.weigh(weightsOf(Arr.map(weighted, ([, weight]) => weight)))",
+				original: "source.weigh(weightsOf(Arr.map(weighted, ([, weight]) => weight / common)))",
 				replacement: "source.weigh(weightsOf(Arr.map(weighted, () => 1)))",
 				why: "Every command is drawn equally often whatever its weight, so commands are drawn off their weights."
 			}

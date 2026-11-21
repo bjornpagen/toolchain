@@ -8,7 +8,8 @@ import {
 	forcedChooser,
 	prefixChooser,
 	randomChooser,
-	simplestChooser
+	simplestChooser,
+	translatedChooser
 } from "#source.ts"
 
 /**
@@ -25,18 +26,21 @@ const Int32s = Schema.declare((input): input is Int32Array => input instanceof I
 /**
  * How a case's decisions are chosen, as data a process rebuilds its chooser from: a random stream (a case seed, after
  * `skip` words its search already drew from it, as a mutation draws its edits first), exactly given values (a replay,
- * a shrink candidate), given values and then the `rest` chooser (a mutant, an enumeration's branch), or every decision
- * at its simplest.
+ * a shrink candidate), given values written before a weighted decision recorded its option, read as they were meant (a
+ * kept token's migration, source.ts translatedChooser), given values and then the `rest` chooser (a mutant, an
+ * enumeration's branch), or every decision at its simplest.
  */
 export type ChooserSpec =
 	| Readonly<{ kind: "random"; seed: number; skip: number }>
 	| Readonly<{ kind: "forced"; values: Float64Array }>
+	| Readonly<{ kind: "translated"; values: Float64Array }>
 	| Readonly<{ kind: "prefix"; values: Float64Array; rest: ChooserSpec }>
 	| Readonly<{ kind: "simplest" }>
 
 const ChooserSpec: Schema.Codec<ChooserSpec> = Schema.Union([
 	Schema.Struct({ kind: Schema.Literal("random"), seed: Schema.Finite, skip: Schema.Finite }),
 	Schema.Struct({ kind: Schema.Literal("forced"), values: Float64s }),
+	Schema.Struct({ kind: Schema.Literal("translated"), values: Float64s }),
 	Schema.Struct({
 		kind: Schema.Literal("prefix"),
 		values: Float64s,
@@ -57,6 +61,8 @@ export const chooserOf = (spec: ChooserSpec): Chooser => {
 		}
 		case "forced":
 			return forcedChooser(spec.values, spec.values.length)
+		case "translated":
+			return translatedChooser(spec.values, spec.values.length)
 		case "prefix":
 			return prefixChooser(spec.values, spec.values.length, chooserOf(spec.rest))
 		case "simplest":

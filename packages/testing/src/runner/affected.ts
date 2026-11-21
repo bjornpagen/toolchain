@@ -494,6 +494,7 @@ export const withKills = (property: Property, kills: ReadonlyArray<Kill>): Prope
 		kills,
 		search: property.search,
 		replay: property.replay,
+		translate: property.translate,
 		keep: property.keep,
 		ready: property.ready
 	})

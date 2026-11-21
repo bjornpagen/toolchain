@@ -74,6 +74,8 @@ export const foreignSubject = (module: string): Subject => ({
 		keep: () => ({ kind: "unfound", why: "a foreign module keeps nothing" }),
 		replay: () =>
 			Effect.succeed({ kind: "exhausted", cases: 1, box: "the module's run", measures: [] }),
+		translate: () =>
+			Effect.succeed({ kind: "untranslated", why: "a foreign module keeps no token" }),
 		ready: Effect.succeed({
 			cases: () => Effect.succeed([]),
 			series: () =>

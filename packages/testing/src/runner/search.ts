@@ -522,6 +522,82 @@ export const replay =
 			}
 		})
 
+/**
+ * What a kept token's migration came to (translate): the case it names with its values as a case records them now, or
+ * why it is left as it is.
+ */
+export type Translation =
+	| Readonly<{ kind: "translated"; replayed: ReplayCase }>
+	| Readonly<{ kind: "untranslated"; why: string }>
+
+/** Why a token's case, run on its values read as they were meant, gave no migration of them. */
+const untranslatedBy = (result: CaseResult, given: number): string => {
+	const outcome = result.outcome
+	switch (outcome.kind) {
+		case "passed":
+			return outcome.kept.kind === "tape"
+				? drewInstead(result, given)
+				: "its case passed and kept no tape"
+		case "failed":
+		case "misused":
+		case "hung":
+		case "lost":
+		case "unopened":
+			return `its case, on its values read as they were meant, ended ${outcome.kind}`
+	}
+}
+
+/**
+ * Migrates a kept token written before a weighted decision recorded its option (toolchain 71eb30f), as `toolchain-test
+ * kept migrate` asks: the case it names runs on its values read as they were meant (source.ts translatedChooser) and
+ * keeps its tape, whose values are the token's as they are written now, when it passes having run exactly its values;
+ * else why not (a token of another property, a requirement no longer declared, a case that fails or runs other than
+ * exactly its values, as one of a weighted decision of one option does, whose old unit no decision reads now).
+ */
+export const translate =
+	(searched: Searched) =>
+	(run: SearchRun, token: string): Effect.Effect<Translation> =>
+		Effect.matchEffect(tokenCaseOf(run, searched, token), {
+			onFailure: (why) => Effect.succeed<Translation>({ kind: "untranslated", why }),
+			onSuccess: (replayed) =>
+				Effect.map(
+					run.evaluator.evaluate(
+						[
+							[
+								{
+									...tokenOrderOf(run, replayed),
+									chooser: { kind: "translated", values: Float64Array.from(replayed.values) },
+									keep: "tape"
+								}
+							]
+						],
+						stops
+					),
+					(batches): Translation =>
+						Option.match(Arr.head(Arr.flatten(batches)), {
+							onNone: () => ({ kind: "untranslated", why: "its case came back with no result" }),
+							onSome: (result) =>
+								result.outcome.kind === "passed" &&
+								result.outcome.kept.kind === "tape" &&
+								ranExactly(result, replayed.values.length)
+									? {
+											kind: "translated",
+											replayed: {
+												drawn: replayed.drawn,
+												values: Arr.take(
+													Arr.fromIterable(result.outcome.kept.tape.values),
+													result.outcome.kept.tape.length
+												)
+											}
+										}
+									: {
+											kind: "untranslated",
+											why: untranslatedBy(result, replayed.values.length)
+										}
+						})
+				)
+		})
+
 /** The places, in declared order, of the required situations no case of these tallies reached. */
 const pendingOf = (
 	situations: ReadonlyArray<string>,

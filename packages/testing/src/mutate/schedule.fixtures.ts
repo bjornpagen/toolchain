@@ -74,6 +74,8 @@ export const fakeProperty = (seen: Ref.Ref<Seen>, guide: Sense): Property =>
 			}),
 		replay: () =>
 			Effect.succeed({ kind: "exhausted", cases: 1, box: "one fake case", measures: [] }),
+		translate: () =>
+			Effect.succeed({ kind: "untranslated", why: "a fake property keeps no token" }),
 		ready: Effect.succeed({
 			cases: () => Effect.succeed([]),
 			series: () =>

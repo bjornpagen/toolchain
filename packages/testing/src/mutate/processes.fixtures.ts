@@ -59,6 +59,8 @@ export const checkProperty = (kills: ReadonlyArray<Kill>, kept: ReadonlyArray<Ke
 			),
 		keep: () => ({ kind: "unfound", why: "a fixture keeps nothing" }),
 		replay: () => Effect.succeed({ kind: "exhausted", cases: 1, box: "the check", measures: [] }),
+		translate: () =>
+			Effect.succeed({ kind: "untranslated", why: "a planted property keeps no token" }),
 		ready: Effect.succeed({
 			cases: () => Effect.succeed([]),
 			series: () =>

@@ -12,7 +12,8 @@ import {
 	Predicate,
 	Record as Rec,
 	Result,
-	Schema
+	Schema,
+	String as Str
 } from "effect"
 import { replayOf, replayTokenOf } from "#replay.ts"
 import { toolchainTestCache } from "#runner/cache-home.ts"
@@ -20,7 +21,7 @@ import { fuzz } from "#runner/fuzz.ts"
 import { keptValuesAt, requiredFlagsAt } from "#runner/load.ts"
 import { type LoadKeying, loadCommand } from "#runner/loads.ts"
 import { failureLines, lineOf } from "#runner/report.ts"
-import { loadPackage, replayToken, runPackage, runSeedLogged } from "#runner/run.ts"
+import { loadPackage, replayToken, runPackage, runSeedLogged, translateToken } from "#runner/run.ts"
 import { affectedModule, settledRun } from "#runner/settle.ts"
 import { reportOf, type UsageReport, usageJson, usageLines } from "#runner/usage.ts"
 
@@ -41,6 +42,8 @@ import { reportOf, type UsageReport, usageJson, usageLines } from "#runner/usage
  *                                               property the landing touched carries a green verdict at its closure
  *   toolchain-test fuzz <fuzztime> [paths | ids] the scheduled fuzz budget: fresh seeds round after round
  *   toolchain-test keep <id> <value file>       kept values as replay tokens, to paste into the property's kept
+ *   toolchain-test kept migrate [paths | ids]   kept tokens written before a weighted decision recorded its option
+ *                                               (71eb30f), rewritten in their modules as they are written now, once
  *
  * A run prints its seed first (TEST_SEED reproduces the run), then one line per property, then each failure: the case
  * as it ran, its failure and its replay token. Every process of the run, this one and its workers, runs under the
@@ -213,6 +216,119 @@ const keep = (args: ReadonlyArray<string>) =>
 		return Arr.some(tokens, ({ keeping }) => keeping.kind === "unfound") ? 1 : 0
 	})
 
+/** What `kept migrate` did with one kept token: moved it to `to`, left it as it is, or could not move it, and why. */
+type Migrated =
+	| Readonly<{ kind: "moved"; module: string; from: string; to: string }>
+	| Readonly<{ kind: "unchanged"; token: string }>
+	| Readonly<{ kind: "unmoved"; token: string; why: string }>
+
+/**
+ * One kept token of a property of `module` migrated (run.ts translateToken): its case run on its values read as they
+ * were meant, kept as recorded now, and that new token replayed, which must pass as its token says; a token the
+ * migration leaves as it is is unchanged.
+ */
+const migratedToken = (module: string, token: string) =>
+	Effect.gen(function* () {
+		const named = yield* Effect.mapError(replayOf(token), (unreadable) => unreadable.message)
+		const translation = yield* translateToken(root, named.suite, token)
+		if (translation.kind === "untranslated") {
+			return { kind: "unmoved", token, why: translation.why } satisfies Migrated
+		}
+		const moved = replayTokenOf(named.suite, translation.replayed)
+		if (moved === token) {
+			return { kind: "unchanged", token } satisfies Migrated
+		}
+		const replayed = yield* replayToken(root, named.suite, moved)
+		return replayed.verdict.kind === "replayed"
+			? ({ kind: "moved", module, from: token, to: moved } satisfies Migrated)
+			: ({
+					kind: "unmoved",
+					token,
+					why: `its migrated token ${moved} does not replay as it says: ${Arr.join(failureLines(replayed.verdict), " ")}`
+				} satisfies Migrated)
+	})
+
+/**
+ * `kept migrate [paths | property ids]`: every kept token of the properties named (every property of the package with
+ * none named), written before a weighted decision recorded its option (toolchain 71eb30f), migrated (migratedToken)
+ * and rewritten in its module where it moved, the literal's text replaced where the module holds it once. Each token is
+ * printed moved, unchanged or unmoved with why; 1 when any is unmoved. A token is read as written before 71eb30f
+ * whatever it is, so the command runs once, at the bump past it: run again, it would read a migrated token's options as
+ * units.
+ */
+const kept = (args: ReadonlyArray<string>) =>
+	Effect.scoped(
+		Effect.gen(function* () {
+			const [verb, ...selected] = args
+			if (verb !== "migrate") {
+				return yield* CommandFailed.make({
+					message: "kept takes migrate: toolchain-test kept migrate [paths | property ids]"
+				})
+			}
+			const fs = yield* FileSystem.FileSystem
+			const { discovered } = yield* loadPackage(root, selected)
+			const migrated = yield* Effect.forEach(
+				Arr.flatMap(discovered, (one) =>
+					Arr.map(one.property.kept, (entry) => ({ module: one.module, token: entry.token }))
+				),
+				({ module, token }) => migratedToken(module, token),
+				{ concurrency: "unbounded" }
+			)
+			const moves = Arr.filter(
+				migrated,
+				(one): one is Extract<Migrated, { kind: "moved" }> => one.kind === "moved"
+			)
+			const written = yield* Effect.forEach(
+				Arr.dedupe(Arr.map(moves, (move) => move.module)),
+				(module) =>
+					Effect.gen(function* () {
+						const path = `${root}/${module}`
+						const text = yield* fs.readFileString(path)
+						const ofModule = Arr.filter(moves, (move) => move.module === module)
+						const once = Arr.filter(
+							ofModule,
+							(move) => Str.split(`"${move.from}"`)(text).length === 2
+						)
+						yield* fs.writeFileString(
+							path,
+							Arr.reduce(once, text, (rewritten, move) =>
+								Str.replace(`"${move.from}"`, `"${move.to}"`)(rewritten)
+							)
+						)
+						return Arr.map(ofModule, (move): Migrated =>
+							Arr.contains(once, move)
+								? move
+								: {
+										kind: "unmoved",
+										token: move.from,
+										why: `${module} does not hold its literal "${move.from}" once`
+									}
+						)
+					})
+			)
+			const outcomes = [
+				...Arr.filter(migrated, (one) => one.kind !== "moved"),
+				...Arr.flatten(written)
+			]
+			yield* Console.log(
+				Arr.join(
+					Arr.map(outcomes, (one) => {
+						switch (one.kind) {
+							case "moved":
+								return `moved ${one.from} -> ${one.to}`
+							case "unchanged":
+								return `unchanged ${one.token}`
+							case "unmoved":
+								return `UNMOVED ${one.token}: ${one.why}`
+						}
+					}),
+					"\n"
+				)
+			)
+			return Arr.some(outcomes, (one) => one.kind === "unmoved") ? 1 : 0
+		})
+	)
+
 /**
  * `load`: every test module the runner config includes loaded apart, but those whose closure loaded before
  * (loads.ts loadCommand), keyed by the repository's load cache (affected.ts loadKeyingAt) where the closure hasher
@@ -261,7 +377,8 @@ const commands: Readonly<Record<string, Command>> = {
 		),
 	fuzz: (args) => failing(fuzz(root, args)),
 	load: (args) => failing(load(args)),
-	keep: (args) => failing(keep(args))
+	keep: (args) => failing(keep(args)),
+	kept: (args) => failing(kept(args))
 }
 
 /**

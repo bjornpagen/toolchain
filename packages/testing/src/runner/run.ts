@@ -17,7 +17,13 @@ import {
 import type { Oracle } from "#explore.ts"
 import { failureText } from "#failure.ts"
 import { liveMillis } from "#live.ts"
-import { type Kill, type PropertyId, type PropertyKind, runNeedsOf } from "#property.ts"
+import {
+	type Kill,
+	type Property,
+	type PropertyId,
+	type PropertyKind,
+	runNeedsOf
+} from "#property.ts"
 import { PgCluster } from "#resources/cluster.ts"
 import { collect, templatesOf } from "#resources/collect.ts"
 import type { DatabaseTemplate } from "#resources/template.ts"
@@ -35,8 +41,9 @@ import {
 } from "#runner/load.ts"
 import { moduleClosureAt } from "#runner/module-closure.ts"
 import { type Pool, PoolFailed, placesOf, placesShared, poolOf } from "#runner/pool.ts"
-import type { Reach, Verdict } from "#runner/protocol.ts"
+import type { Reach, SearchRun, Verdict } from "#runner/protocol.ts"
 import { openedRuns } from "#runner/runs.ts"
+import type { Translation } from "#runner/search.ts"
 import { ModuleClosure, WorkerIndex } from "#runner/services.ts"
 import { labelOf, runOfLabel, type Stack } from "#runner/stack.ts"
 import type { RunUsage } from "#runner/usage.ts"
@@ -509,13 +516,18 @@ export const runPackage = (
 		)
 	})
 
-/** Replays one token on a pool of one worker: the case it names, as it ran, under the run's flags and services. */
-export const replayToken = (
+/**
+ * The property a token's id names, loaded from its module under `root`, and a run of it on a pool of one worker under
+ * the run's flags and services; none, with the module, when the module holds no such property.
+ */
+const tokenPropertyOf = (
 	root: string,
-	id: string,
-	token: string
+	id: string
 ): Effect.Effect<
-	Readonly<{ id: string; oracle: Oracle; verdict: Verdict }>,
+	Readonly<{
+		module: string
+		found: Option.Option<Readonly<{ property: Property; run: SearchRun }>>
+	}>,
 	LoadFailed | PoolFailed,
 	Scope.Scope | NodeServices
 > =>
@@ -543,7 +555,33 @@ export const replayToken = (
 			runs: values,
 			stall: needStallMillis
 		})
-		return yield* Option.match(Arr.head(found), {
+		return {
+			module,
+			found: Option.map(Arr.head(found), (discovered) => ({
+				property: discovered.property,
+				run: {
+					id,
+					seed: 0,
+					limits: runnerLimits,
+					evaluator: pool.evaluator,
+					reach: "full"
+				} as const
+			}))
+		}
+	})
+
+/** Replays one token on a pool of one worker: the case it names, as it ran, under the run's flags and services. */
+export const replayToken = (
+	root: string,
+	id: string,
+	token: string
+): Effect.Effect<
+	Readonly<{ id: string; oracle: Oracle; verdict: Verdict }>,
+	LoadFailed | PoolFailed,
+	Scope.Scope | NodeServices
+> =>
+	Effect.flatMap(tokenPropertyOf(root, id), ({ module, found }) =>
+		Option.match(found, {
 			onNone: () =>
 				Effect.succeed({
 					id,
@@ -558,13 +596,31 @@ export const replayToken = (
 						}
 					} as const
 				}),
-			onSome: (discovered) =>
-				Effect.map(
-					discovered.property.replay(
-						{ id, seed: 0, limits: runnerLimits, evaluator: pool.evaluator, reach: "full" },
-						token
-					),
-					(verdict) => ({ id, oracle: discovered.property.oracle, verdict })
-				)
+			onSome: ({ property, run }) =>
+				Effect.map(property.replay(run, token), (verdict) => ({
+					id,
+					oracle: property.oracle,
+					verdict
+				}))
 		})
-	})
+	)
+
+/**
+ * Migrates one kept token on a pool of one worker (search.ts translate): the case it names, run on its values written
+ * before a weighted decision recorded its option, read as they were meant, kept as a case records them now.
+ */
+export const translateToken = (
+	root: string,
+	id: string,
+	token: string
+): Effect.Effect<Translation, LoadFailed | PoolFailed, Scope.Scope | NodeServices> =>
+	Effect.flatMap(tokenPropertyOf(root, id), ({ module, found }) =>
+		Option.match(found, {
+			onNone: () =>
+				Effect.succeed<Translation>({
+					kind: "untranslated",
+					why: `${id} names no property of ${module}`
+				}),
+			onSome: ({ property, run }) => property.translate(run, token)
+		})
+	)

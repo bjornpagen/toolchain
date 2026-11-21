@@ -22,6 +22,14 @@ export const ReplayCase = Schema.Struct({ drawn: Drawn, values: Schema.Array(Sch
 
 export type ReplayCase = typeof ReplayCase.Type
 
+/**
+ * A token is `<suite>:<steering>:<tape>`, the tape the values every decision recorded (tape.ts tokenOf), and a kept token
+ * is a literal in a consumer's test module, so a change to what a decision records (a decision added, dropped or read
+ * otherwise) changes the case every kept token names. Such a change ships with its migration in the same commit: a
+ * chooser that reads the old values as they were meant (source.ts translatedChooser, for 71eb30f's weighted decisions),
+ * run by `toolchain-test kept migrate` (runner/search.ts translate), and a consumer line saying to run it.
+ */
+
 /** A replay request: the suite whose streams give way to one case, and that case. */
 export type Replay = Readonly<{ suite: string; replayed: ReplayCase }>
 

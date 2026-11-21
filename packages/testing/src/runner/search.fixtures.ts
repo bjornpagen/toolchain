@@ -40,6 +40,7 @@ import {
 	type Verdict,
 	workOf
 } from "#runner/protocol.ts"
+import type { Translation } from "#runner/search.ts"
 import type { ModuleClosure, RunValues, WorkerIndex } from "#runner/services.ts"
 import { sample } from "#source.ts"
 
@@ -227,6 +228,19 @@ export const replayedAt = (
 ): Effect.Effect<Verdict, never, InProcess> =>
 	Effect.flatMap(widthEvaluator(inner, run.width, run.stall), (evaluator) =>
 		inner.replay(
+			{ id: run.id, seed: run.seed, reach: run.reach, limits: run.limits, evaluator },
+			token
+		)
+	)
+
+/** A kept token migrated, as `toolchain-test kept migrate` migrates it (search.ts translate), on an evaluator of the run's width. */
+export const translatedAt = (
+	inner: Property,
+	run: InnerRun,
+	token: string
+): Effect.Effect<Translation, never, InProcess> =>
+	Effect.flatMap(widthEvaluator(inner, run.width, run.stall), (evaluator) =>
+		inner.translate(
 			{ id: run.id, seed: run.seed, reach: run.reach, limits: run.limits, evaluator },
 			token
 		)
