@@ -1,4 +1,4 @@
-import { Duration, Effect, String as Str } from "effect"
+import { Config, Duration, Effect, FileSystem, String as Str } from "effect"
 import { element, type Gen, int, map } from "#gen.ts"
 import { liveMillis, liveSleep, waitingOn } from "#live.ts"
 import { type Property, property } from "#property.ts"
@@ -195,6 +195,63 @@ export const waitingCase = (shape: Deadlock): Property =>
 		kills: []
 	})
 
+/**
+ * The program of a child that wakes on a timer and does nothing else, as an idle worker or a server does: it says so on
+ * its stdout once its timer is set, then each wake-up spends a little CPU and waits a little to run, until its stdin
+ * closes.
+ */
+const WAKING_PROGRAM = `const timer = setInterval(() => undefined, 50)
+process.stdout.write("waking\\n")
+process.stdin.resume()
+process.stdin.on("end", () => clearInterval(timer))`
+
+/** The waking child's process, its stdin and stdout piped. */
+const spawnWaking = () =>
+	process
+		.getBuiltinModule("node:child_process")
+		.spawn(process.execPath, ["-e", WAKING_PROGRAM], { stdio: ["pipe", "pipe", "ignore"] })
+
+/**
+ * A child that wakes on a timer (WAKING_PROGRAM), started and waited on until it says it is waking, so its start's CPU
+ * is spent before the wait that follows; it is ended with SIGKILL as the enclosing scope closes, however the case ends.
+ */
+const wakingChild = Effect.acquireRelease(
+	Effect.callback<ReturnType<typeof spawnWaking>>((resume) => {
+		const child = spawnWaking()
+		let said = ""
+		child.stdout.on("data", (chunk: Buffer) => {
+			said += chunk.toString("utf8")
+			if (Str.includes("\n")(said)) {
+				resume(Effect.succeed(child))
+			}
+		})
+		return Effect.sync(() => {
+			child.kill("SIGKILL")
+		})
+	}),
+	(child) =>
+		Effect.sync(() => {
+			child.kill("SIGKILL")
+		})
+)
+
+/**
+ * An inner search whose one case starts a child that wakes on a timer (wakingChild), then waits on the live clock for
+ * many deadlines, spending nothing itself, and passes.
+ */
+export const wakingCase = (shape: Deadlock): Property =>
+	property.explore(int(0, 9), {
+		needs: {},
+		situations: [],
+		check: () => () =>
+			Effect.scoped(
+				Effect.andThen(wakingChild, liveSleep(Duration.millis(shape.deadline * shape.deadlines)))
+			),
+		oracle: planted,
+		kept: [],
+		kills: []
+	})
+
 /** The seed every inner search runs at: its cases' values decide nothing of what they do. */
 export const INNER_SEED = 1
 
@@ -205,18 +262,34 @@ export const innerRun = (id: string, seed: number, deadline: number): InnerRun =
 }
 
 /**
- * Which of the processes a guard counts beside its own moved in a window (runner/work.ts othersMoved): none, so the
- * window is stalled; or one of them, the window then working: a child of the work's process waited to run or did
- * storage work.
+ * What the processes a guard counts beside its own did in a window (runner/work.ts queuedBetween, storedBetween):
+ * nothing, so the window is stalled; a child woke and waited to run a little, by the least a counter moves, a stall
+ * still; a child waited to run for the window's whole progress, the machine keeping it from running, so the window is
+ * working; or a child did the least storage work, working too.
  */
-export type OtherMove = "none" | "a child waited to run" | "a child stored"
+export type OtherMove =
+	| "none"
+	| "a child woke and waited a little"
+	| "a child waited to run for progress"
+	| "a child stored"
 
 /** Every move, one case each. */
 export const otherMoves: Gen<OtherMove> = (source) =>
-	source.draw(element(["none", "a child waited to run", "a child stored"] as const))
+	source.draw(
+		element([
+			"none",
+			"a child woke and waited a little",
+			"a child waited to run for progress",
+			"a child stored"
+		] as const)
+	)
 
-/** The deadline of the drawn windows, in milliseconds, and the amount each move moves by: one, the least a counter moves. */
+/**
+ * The deadline of the drawn windows, in milliseconds, and its progress (work.ts progressOver: a clock tick, which is more
+ * than a thousandth of the deadline); the least a counter moves is one.
+ */
 const WINDOW_DEADLINE = 1000
+const WINDOW_PROGRESS = 10
 
 /**
  * A whole window of a work whose own process spent no CPU, its two readings, `move` the one thing that moved between
@@ -227,16 +300,21 @@ export const windowOf = (
 ): Readonly<{ window: Reading; now: Reading; deadline: number }> => {
 	const quiet: Stir = { queued: 10, stored: 10 }
 	const window: Reading = { wall: 0, cpu: 5, waited: 0, stir: quiet }
-	const moved = (stir: Stir, by: "queued" | "stored"): Stir =>
-		by === "queued" ? { ...stir, queued: stir.queued + 1 } : { ...stir, stored: stir.stored + 1 }
 	const later: Reading = { ...window, wall: WINDOW_DEADLINE }
+	const stirred = (stir: Stir): Readonly<{ window: Reading; now: Reading; deadline: number }> => ({
+		window,
+		now: { ...later, stir },
+		deadline: WINDOW_DEADLINE
+	})
 	switch (move) {
 		case "none":
-			return { window, now: later, deadline: WINDOW_DEADLINE }
-		case "a child waited to run":
-			return { window, now: { ...later, stir: moved(quiet, "queued") }, deadline: WINDOW_DEADLINE }
+			return stirred(quiet)
+		case "a child woke and waited a little":
+			return stirred({ ...quiet, queued: quiet.queued + 1 })
+		case "a child waited to run for progress":
+			return stirred({ ...quiet, queued: quiet.queued + WINDOW_PROGRESS })
 		case "a child stored":
-			return { window, now: { ...later, stir: moved(quiet, "stored") }, deadline: WINDOW_DEADLINE }
+			return stirred({ ...quiet, stored: quiet.stored + 1 })
 	}
 }
 
@@ -255,6 +333,23 @@ process.stdin.on("end", () => process.exit(0))`
 
 /** How many bytes the storing child writes and syncs: a quarter of a mebibyte or a whole one. */
 export const storedSizes: Gen<number> = map(int(0, 1), (step) => (1 << 18) << (2 * step))
+
+/**
+ * A directory of its own on storage, removed as the enclosing scope closes: under the account's cache
+ * (`$XDG_CACHE_HOME`, else ~/.cache), never the system's temporary directory, which is a tmpfs on Ubuntu 26.04
+ * (cassowary's /tmp, where the scratch resource makes its directories): what a child writes and syncs there reaches no
+ * storage, and /proc/<pid>/io counts none of it, so othersStirRead read no storage work of a child that did its part.
+ */
+export const storageDirectory = Effect.gen(function* () {
+	const fs = yield* FileSystem.FileSystem
+	const home = yield* Effect.orDie(Config.String("HOME"))
+	const cache = yield* Effect.orDie(
+		Config.withDefault(Config.String("XDG_CACHE_HOME"), `${home}/.cache`)
+	)
+	const parent = `${cache}/toolchain-test`
+	yield* Effect.orDie(fs.makeDirectory(parent, { recursive: true }))
+	return yield* Effect.orDie(fs.makeTempDirectoryScoped({ directory: parent, prefix: "stir-" }))
+})
 
 /**
  * Starts a child that stores `bytes` in a file under `directory` and syncs them, and once it says so, while it is alive,
