@@ -14,7 +14,7 @@ import { waitingFor } from "#live.ts"
 const HOLDER = `${import.meta.dirname}/../../scripts/hold.pl`
 
 /** A hold could not be taken: its holder ended before it held, saying why. */
-class HoldFailed extends Schema.TaggedError<HoldFailed, { readonly brand: unique symbol }>()(
+export class HoldFailed extends Schema.TaggedError<HoldFailed, { readonly brand: unique symbol }>()(
 	"HoldFailed",
 	{ message: Schema.String }
 ) {}

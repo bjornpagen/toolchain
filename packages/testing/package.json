@@ -26,6 +26,7 @@
 		"./inline": "./src/runner/inline.ts",
 		"./interleave": "./src/interleave.ts",
 		"./live": "./src/live.ts",
+		"./lock": "./src/lock.ts",
 		"./mutate": "./src/mutate.ts",
 		"./mutants": "./src/mutants.ts",
 		"./lsw": "./src/lsw.ts",
