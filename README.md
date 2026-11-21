@@ -55,6 +55,15 @@ wider than one member's share was. Before you move `vendor/toolchain` past this 
    run's `Placement`, the member index of each worker's slot, where they answered nothing. `PgCluster.memberOf(worker)`
    answers the member of that worker's slot.
 
+## Consumer migration: turbo's tasks keep Node's compile cache on disk (2026-11-21)
+
+`toolchain-turbo` hands every task NODE_COMPILE_CACHE, the toolchain's compile cache under toolchain-test's cache on
+disk, shared by every checkout. A tool a task runs that enables Node's compile cache naming no directory (vite's,
+rolldown's, jiti's and alchemy's commands) takes it before os.tmpdir(), where it kept a file a module in a tmpfs of
+bounded inodes (cassowary's /tmp ran out, 435,000 of its inodes node-compile-cache entries). Before you move
+`vendor/toolchain` past this section, add `"NODE_COMPILE_CACHE"` to turbo.json's `globalPassThroughEnv`, which turbo's
+strict environment otherwise drops; the workspace gate's turbo-compile-cache refuses a turbo.json without it.
+
 ## Consumer migration: each tool of the gate takes its task's share (2026-11-20)
 
 The gate's tools sized their thread pools to the whole machine under a turbo of many tasks (each oxlint task "using 64

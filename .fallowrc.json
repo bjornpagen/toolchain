@@ -53,6 +53,15 @@
 				"name": "width",
 				"patterns": ["packages/testing/src/workers.ts"]
 			},
+			// The toolchain's caches on disk (toolchain-test's cache and Node's compile cache under it), one definition the
+			// testing library's runner and the dev tools' toolchain-turbo read, so a zone of its own too.
+			{
+				"name": "caches",
+				"patterns": [
+					"packages/testing/src/runner/cache-home.ts",
+					"packages/testing/src/runner/compile-cache.ts"
+				]
+			},
 			{
 				"name": "devtools-suites",
 				"patterns": [
@@ -81,11 +90,11 @@
 			},
 			{
 				"from": "testing",
-				"allow": ["scope", "width"]
+				"allow": ["scope", "width", "caches"]
 			},
 			{
 				"from": "devtools",
-				"allow": ["scope", "width"]
+				"allow": ["scope", "width", "caches"]
 			},
 			{
 				"from": "configs",

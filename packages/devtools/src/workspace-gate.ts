@@ -16,6 +16,7 @@ import { gitFilesUnder } from "#shared/git.ts"
 import { relativeTo, Repository } from "#shared/repository.ts"
 import { runDevtool } from "#shared/run.ts"
 import { bannedPackageFindings, LOCKFILE, WORKSPACE_MANIFEST } from "#workspace/banned-packages.ts"
+import { compileCacheFindings } from "#workspace/compile-cache.ts"
 import { deadPathFindings } from "#workspace/dead-paths.ts"
 import { tsOnlyExtensionFindings } from "#workspace/extensions.ts"
 import { parentSnapshot } from "#workspace/parent.ts"
@@ -33,7 +34,8 @@ import { tsconfigFindings, workspaceFixtureMismatches } from "#workspace/tsconfi
  * plugin block every package inherits (effect-plugin-block), each Effect-free package's tsconfig and manifest to
  * carrying no Effect (effect-free-packages), every file git shows to a TypeScript extension (ts-only-extensions), every
  * oxlint override glob and exception path to naming a file (dead-paths), every root script named as a generic turbo
- * task to a root task turbo.json registers, so no `turbo run` passes over the root's own files (root-tasks), every
+ * task to a root task turbo.json registers, so no `turbo run` passes over the root's own files (root-tasks), turbo.json
+ * to passing NODE_COMPILE_CACHE to every task, so no task keeps Node's compile cache in a tmpfs (turbo-compile-cache), every
  * TypeScript file under no workspace package to a path the root tsconfig's include names, which the root's typecheck
  * and its lint (`toolchain-oxlint-root`) both read, and the root's oxlint script to that lint (root-files), and the
  * test system's gates (workspace/test-system.ts): no worker flag in a script, and, in a repository that runs the
@@ -157,6 +159,7 @@ const checkRepository = Effect.gen(function* () {
 		.pipe(Effect.mapError(failureFrom(`${TURBO_CONFIG} could not be read`)))
 	const turbo = turboPresent ? yield* Effect.asSome(read(TURBO_CONFIG)) : Option.none<string>()
 	const rootTasks = yield* rootTaskFindings({ root, manifest, turbo })
+	const compileCache = yield* compileCacheFindings({ root, turbo })
 	const rootTsconfig = yield* rootIncludeOf(root)
 	const rootFiles = yield* rootFileFindings({
 		root,
@@ -187,7 +190,15 @@ const checkRepository = Effect.gen(function* () {
 	})
 	const findings = [
 		...Arr.filter(
-			[...tsconfigs, ...extensions, ...testSystem, ...deadPaths, ...rootTasks, ...rootFiles],
+			[
+				...tsconfigs,
+				...extensions,
+				...testSystem,
+				...deadPaths,
+				...rootTasks,
+				...compileCache,
+				...rootFiles
+			],
 			(finding) => !isExcepted(config.exceptions, root, finding)
 		),
 		...bannedPackages
