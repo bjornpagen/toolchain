@@ -1,5 +1,17 @@
 import { regex } from "arkregex"
-import { Array as Arr, Effect, FileSystem, Schema, type Scope, String as Str } from "effect"
+import {
+	Array as Arr,
+	Config,
+	ConfigProvider,
+	Effect,
+	FileSystem,
+	Option,
+	Record as Rec,
+	Schema,
+	type Scope,
+	Semaphore,
+	String as Str
+} from "effect"
 import type { ChildProcessSpawner } from "effect/process"
 import { type Lease, leaseClaim, leaseHeld, type Slot } from "#pg/hold.ts"
 
@@ -206,4 +218,93 @@ export const reserved = (
 			leaseHeld(leaseOf(reservation), reservationFiles(reservation)),
 			failedWith
 		)
+	})
+
+/**
+ * The variable that holds the leases a process, or one it descends from, holds: each family's key (familyOf) and where
+ * its lease put its run's workers (Placement), as JSON. A run writes its family's lease there once it holds it
+ * (leasedRun), and a worker once its run's lease is answered (runner/leases.ts), so every process either starts
+ * thereafter inherits it: a run a case starts in its own process, a child program a case starts.
+ */
+export const LEASED = "TOOLCHAIN_TEST_LEASED"
+
+/** The leases LEASED holds, as its JSON. */
+const LeasedJson = Schema.fromJsonString(Schema.Record(Schema.String, Placement))
+
+/**
+ * LEASED as this process's environment holds it now, read from the environment as it is, not as it was when the
+ * process first read its configuration: the process writes it as it takes and lets go of leases.
+ */
+export const leasedText: Effect.Effect<Option.Option<string>> = Effect.suspend(() =>
+	Effect.provideService(
+		Effect.orDie(Config.option(Config.String(LEASED))),
+		ConfigProvider.ConfigProvider,
+		ConfigProvider.fromEnv()
+	)
+)
+
+/** The leases this process's environment says it, or a process it descends from, holds (LEASED). */
+const leasedNow: Effect.Effect<Readonly<Record<string, Placement>>> = Effect.flatMap(
+	leasedText,
+	Option.match({
+		onNone: () => Effect.succeed({}),
+		onSome: (text) => Effect.orDie(Schema.decodeEffect(LeasedJson)(text))
+	})
+)
+
+/** The one change of LEASED at a time in this process, so no two changes read it before either writes it. */
+const leasedChanges = Semaphore.makeUnsafe(1)
+
+/** This process's environment's leases (LEASED) changed by `change`. */
+const leasedWith = (
+	change: (leases: Readonly<Record<string, Placement>>) => Readonly<Record<string, Placement>>
+): Effect.Effect<void> =>
+	leasedChanges.withPermit(
+		Effect.flatMap(leasedNow, (leases) =>
+			Effect.flatMap(Effect.orDie(Schema.encodeEffect(LeasedJson)(change(leases))), (text) =>
+				Effect.sync(() => {
+					Object.assign(process.env, { [LEASED]: text })
+				})
+			)
+		)
+	)
+
+/**
+ * Writes into this process's environment that it holds `family`'s lease, its run's workers where `placement` puts them,
+ * for every process it starts thereafter: a worker once its run's lease is answered, which holds it for its life.
+ */
+export const markedLeased = (family: string, placement: Placement): Effect.Effect<void> =>
+	leasedWith(Rec.set(family, placement))
+
+/**
+ * The lease of a run of its own on `reservation`'s family, for the enclosing scope, the run's (runner/leases.ts
+ * runLeasesIn): when the process descends from a run that holds the family's lease (LEASED: the run is one a case starts,
+ * in the case's process or as a child program), where that lease put its run's workers, at once and whatever holds or
+ * waits for the family's slots, its workers taking its members in turn (resources/cluster.ts memberOf), as a run a case
+ * starts in a pool draws on its enclosing run's lease (runner/leases.ts drawnLease); else the lease reserved, and its
+ * process's environment says so for every process it starts while it holds it. So a run inside one that holds a lease
+ * never asks for more of its family's slots, and its answer is the same however many of them others hold or wait for:
+ * asking, it waited in the family's queue, whose head may wait for the very slots its enclosing run holds (metis's 5451,
+ * 2026-11-20: a land train's gate held 56 slots and the queue, whose head waited for a hand run's last 8, whose worker
+ * waited behind it).
+ */
+export const leasedRun = (
+	reservation: Reservation
+): Effect.Effect<
+	Placement,
+	LeaseFailed,
+	Scope.Scope | FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner
+> =>
+	Effect.gen(function* () {
+		const family = familyOf(reservation)
+		const leases = yield* leasedNow
+		const enclosing = Rec.get(leases, family)
+		if (Option.isSome(enclosing)) {
+			return enclosing.value
+		}
+		const placement = yield* reserved(reservation)
+		yield* Effect.acquireRelease(markedLeased(family, placement), () =>
+			leasedWith(Rec.remove(family))
+		)
+		return placement
 	})

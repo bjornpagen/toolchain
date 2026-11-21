@@ -8,7 +8,7 @@
  * run holds or waits in the kernel (lease.fixtures.ts blockedOn), so the runs overlap as far as the lease lets them.
  * Oracle: the specification, stated in the check.
  */
-import { Array as Arr, Deferred, Effect, FileSystem, Option, Ref } from "effect"
+import { Array as Arr, Deferred, Effect, Exit, FileSystem, Option, Ref, Scope } from "effect"
 import { assert } from "#assert.ts"
 import { awaitFact } from "#fact.ts"
 import { int } from "#gen.ts"
@@ -19,6 +19,7 @@ import {
 	familyIn,
 	heldUntil,
 	holderOf,
+	leasedKept,
 	SPREAD_MEMBERS,
 	shieldIn,
 	shieldsIn,
@@ -26,10 +27,18 @@ import {
 	spreadFamily,
 	stopped
 } from "#pg/lease.fixtures.ts"
-import { type LeaseFailed, type Placement, reservationOf, reserved } from "#pg/lease.ts"
+import {
+	familyOf,
+	type LeaseFailed,
+	leasedRun,
+	type Placement,
+	reservationOf,
+	reserved
+} from "#pg/lease.ts"
 import { spawnedBy } from "#pg/make.fixtures.ts"
 import { property } from "#property.ts"
 import { Scratch } from "#resources/scratch.ts"
+import { askedLeasesOf } from "#runner/leases.ts"
 import { runWorkers } from "#workers.ts"
 
 export const runsWaitInLine = property.explore(
@@ -584,6 +593,151 @@ export const headHoldsItsNeed = property.explore(
 				original: "\tif (@mine >= $lease->{need}) {\n",
 				replacement: "\tif (0) {\n",
 				why: "The queue's holder keeps every slot its children took, past its need, and sits on slots it will not use while runs of one slot wait for them; the property fails."
+			}
+		]
+	}
+)
+
+export const nestedNeverQueues = property.explore(
+	(source) => {
+		const slots = source.draw(int(1, 3))
+		return { slots, head: source.draw(int(1, slots)), more: source.draw(int(1, slots)) }
+	},
+	{
+		needs: { dir: Scratch.dir, checkout: Checkout.dir },
+		situations: [],
+		check:
+			({ dir }) =>
+			({ slots, head, more }) =>
+				Effect.scoped(
+					Effect.gen(function* () {
+						const scratch = yield* dir
+						const family = yield* familyIn(scratch, 1, slots)
+						const lease = Arr.headNonEmpty(family).lease
+						const of = (workers: number) =>
+							reservationOf(1, family, { perLessee: 1, outside: 0 }, workers)
+						const whole = yield* of(slots)
+						const holding = yield* Scope.make()
+						const enclosing = yield* Scope.provide(leasedRun(whole), holding)
+						const never = yield* Deferred.make<void>()
+						const headRun = yield* of(head)
+						const headHeld = yield* heldUntil(headRun, never)
+						yield* awaitFact(
+							Effect.map(shieldsIn(lease), (shields) =>
+								shields.length > 0 ? Option.some(true) : Option.none()
+							)
+						)
+						const before = yield* blockedOnFile(lease, "gate.lock")
+						const nested = yield* of(more)
+						const asked = yield* Deferred.make<Placement, LeaseFailed>()
+						yield* Effect.forkScoped(Deferred.into(Effect.scoped(leasedRun(nested)), asked))
+						const answer = yield* awaitFact(
+							Effect.map(
+								Effect.all([Deferred.isDone(asked), blockedOnFile(lease, "gate.lock")]),
+								([done, queued]) =>
+									done
+										? Option.some("answered")
+										: Arr.some(queued, (pid) => !Arr.contains(before, pid))
+											? Option.some("queued behind the head")
+											: Option.none()
+							)
+						)
+						const drawn =
+							answer === "answered" ? yield* Effect.asSome(Deferred.await(asked)) : Option.none()
+						yield* Scope.close(holding, Exit.void)
+						const placement = yield* Deferred.await(headHeld)
+						assert.deepEqual(
+							{ answer, drawn, headHolds: placement.length },
+							{ answer: "answered", drawn: Option.some(enclosing), headHolds: head }
+						)
+					})
+				),
+		oracle: {
+			kind: "specification",
+			name: "a run of its own inside one that holds its family's lease, while the family's queue's head waits for that lease's slots, is answered at once with where the enclosing lease put its workers, never queued behind the head, and the head holds once the enclosing run lets go"
+		},
+		kept: [],
+		kills: [
+			{
+				file: "packages/testing/src/pg/lease.ts",
+				original: "\t\tconst enclosing = Rec.get(leases, family)\n",
+				replacement: "\t\tconst enclosing = Option.none<Placement>()\n",
+				why: "A run inside a run that holds the family's lease asks for more of its slots and queues behind the family's head, which waits for the enclosing run's own slots: neither moves (metis's 5451, 2026-11-20: a land train's gate held 56 slots and the queue, whose head waited for a hand run's last 8, whose worker waited behind it); the property fails, the ask queued behind the head."
+			}
+		]
+	}
+)
+
+export const nestedSameUnderLoad = property.explore(
+	(source) => {
+		const slots = source.draw(int(1, 3))
+		const first = source.draw(int(0, 1))
+		const rest = Array.from({ length: source.draw(int(0, 2 * slots - 1)) }, () =>
+			source.draw(int(0, 1))
+		)
+		return { slots, answered: [first, ...rest] as const, workers: source.draw(int(1, 2 * slots)) }
+	},
+	{
+		needs: { dir: Scratch.dir, checkout: Checkout.dir },
+		situations: [],
+		check:
+			({ dir }) =>
+			({ slots, answered, workers }) =>
+				Effect.scoped(
+					Effect.gen(function* () {
+						const scratch = yield* dir
+						yield* leasedKept
+						const family = yield* familyIn(scratch, 2, slots)
+						const of = (count: number) =>
+							reservationOf(1, family, { perLessee: 1, outside: 0 }, count)
+						const asking = askedLeasesOf((reservation): Effect.Effect<void> =>
+							asking.answered(familyOf(reservation), { kind: "leased", members: answered })
+						)
+						const run = yield* of(answered.length)
+						yield* asking.service.reserve(run)
+						const nested = yield* of(workers)
+						const idle = yield* Effect.scoped(leasedRun(nested))
+						const whole = yield* of(2 * slots)
+						const never = yield* Deferred.make<void>()
+						const wholeHeld = yield* heldUntil(whole, never)
+						yield* Deferred.await(wholeHeld)
+						const asked = yield* Deferred.make<Placement, LeaseFailed>()
+						yield* Effect.forkScoped(Deferred.into(Effect.scoped(leasedRun(nested)), asked))
+						const waiting = Effect.map(
+							Effect.forEach(family, (member) => blockedOn(member.lease)),
+							(blocked): Option.Option<Placement | "waits"> =>
+								Arr.some(blocked, (count) => count > 0) ? Option.some("waits") : Option.none()
+						)
+						const saturated = yield* awaitFact(
+							Effect.flatMap(
+								Deferred.isDone(asked),
+								(
+									done
+								): Effect.Effect<
+									Option.Option<Placement | "waits">,
+									LeaseFailed,
+									FileSystem.FileSystem
+								> => (done ? Effect.asSome(Deferred.await(asked)) : waiting)
+							)
+						)
+						assert.deepEqual(
+							{ idle, saturated },
+							{ idle: answered, saturated: answered },
+							"a run inside one whose lease is answered is answered alike on an idle family and on one whose every slot another run holds"
+						)
+					})
+				),
+		oracle: {
+			kind: "specification",
+			name: "a run of its own inside a worker whose run's lease is answered is answered with where that lease put the run's workers, whatever its width, alike when the family's slots are free and when another run holds every one"
+		},
+		kept: [],
+		kills: [
+			{
+				file: "packages/testing/src/runner/leases.ts",
+				original: "\t\t\t\t\t\t\tmarkedLeased(family, answer.members),\n",
+				replacement: "\t\t\t\t\t\t\tEffect.void,\n",
+				why: "A worker whose run's lease is answered says nothing of it to the processes it starts, so a run one of its cases starts reserves the family's slots again: on an idle family it holds slots of its own, wherever they fall, and on a saturated one it waits for slots another run holds; the property fails, the two answers unlike."
 			}
 		]
 	}

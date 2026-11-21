@@ -1,5 +1,12 @@
 import { Array as Arr, Deferred, Effect, FileSystem, Option, Result, String as Str } from "effect"
-import { type LeaseFailed, type Placement, type Reservation, reserved } from "#pg/lease.ts"
+import {
+	LEASED,
+	type LeaseFailed,
+	leasedText,
+	type Placement,
+	type Reservation,
+	reserved
+} from "#pg/lease.ts"
 
 /**
  * The lease properties (lease.test.ts) hold each run's reservation until every run either holds or waits in the kernel,
@@ -216,3 +223,17 @@ export const stopped = (
 		)
 		return Option.contains(state, "T") ? Option.some(true as const) : Option.none()
 	})
+
+/**
+ * This process's environment's leases (lease.ts LEASED) as they are now, put back as the enclosing scope closes: a
+ * worker's answered lease writes its family there for the worker's life (runner/leases.ts), which a case's own family
+ * would outlive the case.
+ */
+export const leasedKept = Effect.acquireRelease(leasedText, (was) =>
+	Effect.sync(() => {
+		Option.match(was, {
+			onNone: () => Reflect.deleteProperty(process.env, LEASED),
+			onSome: (text) => Object.assign(process.env, { [LEASED]: text })
+		})
+	})
+)

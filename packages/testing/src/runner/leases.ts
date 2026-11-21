@@ -3,10 +3,11 @@ import type { ChildProcessSpawner } from "effect/process"
 import { waitingFor } from "#live.ts"
 import {
 	familyOf,
+	leasedRun,
+	markedLeased,
 	type Placement,
 	type Reservation,
-	reservationFiles,
-	reserved
+	reservationFiles
 } from "#pg/lease.ts"
 import { NeedFailed, RunLease } from "#runner/services.ts"
 
@@ -47,7 +48,8 @@ const refusedLease = (message: string): NeedFailed =>
 
 /**
  * The RunLease of a run that holds its reservations itself, in `scope`, the run's: the run's parent, which answers its
- * workers with it, and an inline run.
+ * workers with it, and an inline run. A run of its own a case starts, in the case's process or as a child program, holds
+ * none: it draws on the lease of the run it descends from (pg/lease.ts leasedRun).
  */
 export const runLeasesIn = (
 	scope: Scope.Scope,
@@ -61,7 +63,7 @@ export const runLeasesIn = (
 				reservation,
 				Effect.flatMap(
 					Effect.result(
-						Scope.provide(Effect.provideContext(reserved(reservation), platform), scope)
+						Scope.provide(Effect.provideContext(leasedRun(reservation), platform), scope)
 					),
 					(held) =>
 						Effect.suspend(() => {
@@ -136,7 +138,10 @@ export const askedLeasesOf = (
 				}
 				switch (answer.kind) {
 					case "leased":
-						return Effect.asVoid(Deferred.succeed(held, answer.members))
+						return Effect.andThen(
+							markedLeased(family, answer.members),
+							Effect.asVoid(Deferred.succeed(held, answer.members))
+						)
 					case "refused":
 						return Effect.asVoid(Deferred.fail(held, refusedLease(answer.message)))
 				}
