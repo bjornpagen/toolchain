@@ -11,6 +11,8 @@ import {
 	Array as Arr,
 	Cause,
 	Context,
+	Deferred,
+	Duration,
 	Effect,
 	Exit,
 	Layer,
@@ -24,7 +26,7 @@ import { assert } from "#assert.ts"
 import { awaitFact } from "#fact.ts"
 import type { Reached } from "#features.ts"
 import { array, boolean, finite, int } from "#gen.ts"
-import { liveSleep } from "#live.ts"
+import { liveMillis, liveSleep, overrun } from "#live.ts"
 import { Checkout } from "#mutate/checkout.ts"
 import { type Case, property } from "#property.ts"
 import { PgCluster, quoteIdent, run as runIn, single } from "#resources/cluster.ts"
@@ -62,6 +64,8 @@ import type { DatabaseTemplate } from "#resources/template.ts"
 import { defineRunner, noMutation } from "#runner/config.ts"
 import { collectedAround } from "#runner/run.ts"
 import { ModuleClosure, WorkerIndex } from "#runner/services.ts"
+import { deadlocks } from "#runner/work.fixtures.ts"
+import { overrunText, ownCpu, ownWork, waitedOnNow } from "#runner/work.ts"
 
 export const freshIsolation = property.explore(array(int(-5, 5), { min: 0, max: 6 }), {
 	needs: { db: Database.fresh(marksTemplate), services },
@@ -138,8 +142,8 @@ export const freshIsolation = property.explore(array(int(-5, 5), { min: 0, max: 
 		},
 		{
 			file: "packages/testing/src/resources/template.ts",
-			original: "replay(quoteIdent(made)),",
-			replacement: "[],",
+			original: "yield* replayedOn(cluster, member, owner.session, replay(quoteIdent(made)))",
+			replacement: "yield* Effect.void",
 			why: "A clone is not given its template's settings and privileges, which CREATE DATABASE does not copy, so it serializes nothing by default and PUBLIC may create temporary tables in it; the property fails."
 		},
 		{
@@ -1168,4 +1172,171 @@ export const freshInItsLocale = property.explore(localeCases, {
 	},
 	kept: [],
 	kills: []
+})
+
+export const cloneDropWaitIsDeclared = property.exhaust(finite(deadlocks), {
+	box: "a clone's drop held for six deadlines by a lock its case's own session holds on the clone, under a deadline of 150 or 300 ms",
+	needs: { services },
+	situations: [],
+	check:
+		({ services: context }) =>
+		(shape) =>
+			Effect.flatMap(context, (ctx) =>
+				Effect.provideContext(
+					Effect.scoped(
+						Effect.gen(function* () {
+							const cluster = yield* PgCluster
+							const opened = yield* marksTemplate.open
+							const outer = yield* Effect.scope
+							const holding = yield* Scope.make()
+							const named = yield* Deferred.make<string>()
+							const seen =
+								yield* Deferred.make<Readonly<{ open: ReadonlyArray<string>; survived: boolean }>>()
+							const held = Duration.millis(shape.deadline * shape.deadlines)
+							const dropped = Effect.scoped(
+								Effect.gen(function* () {
+									const clone = yield* opened.clone
+									yield* Deferred.succeed(named, clone.name)
+									const session = yield* Scope.provide(
+										cluster.connect(clone.member, clone.name),
+										holding
+									)
+									yield* runIn(session, "BEGIN", [])
+									yield* runIn(
+										session,
+										`COMMENT ON DATABASE ${quoteIdent(clone.name)} IS 'held'`,
+										[]
+									)
+									const released = Effect.gen(function* () {
+										yield* liveSleep(held)
+										const open = waitedOnNow()
+										yield* runIn(session, "COMMIT", [])
+										const survived = yield* Effect.isSuccess(
+											runIn(session, "SELECT pg_catalog.pg_backend_pid()::text", [])
+										)
+										yield* Deferred.succeed(seen, { open, survived })
+										yield* Scope.close(holding, Exit.void)
+									})
+									yield* Effect.forkIn(Effect.orDie(released), outer)
+								})
+							)
+							const wall = yield* liveMillis
+							const verdict = yield* Effect.raceFirst(
+								Effect.as(dropped, "passed"),
+								Effect.map(overrun(ownWork(wall, ownCpu()), shape.deadline), overrunText)
+							)
+							const clone = yield* Deferred.await(named)
+							const after = yield* Deferred.await(seen)
+							assert.deepEqual(
+								{
+									verdict,
+									named: Arr.contains(after.open, `DROP DATABASE IF EXISTS ${quoteIdent(clone)}`),
+									survived: after.survived
+								},
+								{ verdict: "passed", named: true, survived: true }
+							)
+						})
+					),
+					ctx
+				)
+			),
+	oracle: {
+		kind: "specification",
+		name: "a clone's drop that waits on the member past its case's deadline, behind a lock its case's own session holds on the clone, is a declared wait named by its statement: the case's guard judges none of it, this process's open waits name it while it waits, and it ends no session of the case's"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/resources/cluster.ts",
+			original:
+				"\twaitingOn(sql)(Effect.flatMap(session.query(sql, params), (rows) => textRows(sql, rows)))\n",
+			replacement: "\tEffect.flatMap(session.query(sql, params), (rows) => textRows(sql, rows))\n",
+			why: "The library's statements are no declared waits, as its clone DDL was: a clone's drop behind the member's work is the case's silence, and its guard judges it hung (metis's 5451, 2026-11-20: hung at 22 ms of CPU over 60 s inside a clone's DROP DATABASE); the property fails, the drop judged."
+		},
+		{
+			file: "packages/testing/src/runner/work.ts",
+			original: "\tledger.on = [...ledger.on, on]\n",
+			replacement: "\tledger.on = ledger.on\n",
+			why: "A declared wait names nothing, so a verdict on a case inside one says only that it waited, not on what; the property fails, the drop's wait unnamed."
+		},
+		{
+			file: "packages/testing/src/resources/template.ts",
+			original: `run(owner.session, \`DROP DATABASE IF EXISTS \${quoteIdent(made)}\`, [])`,
+			replacement: `run(owner.session, \`DROP DATABASE IF EXISTS \${quoteIdent(made)} WITH (FORCE)\`, [])`,
+			why: "A clone's drop ends the sessions still in it, as it did, so a session of the case's dies under the client that holds it once the drop has its lock, where only the run's collection should end one; the property fails, the session ended."
+		}
+	]
+})
+
+export const roleSettingCloned = property.explore(int(0, 3), {
+	needs: { services },
+	situations: [],
+	check:
+		({ services: context }) =>
+		() =>
+			Effect.flatMap(context, (ctx) =>
+				Effect.provideContext(
+					Effect.gen(function* () {
+						const cluster = yield* PgCluster
+						const member = yield* Effect.map(cluster.members, Arr.headNonEmpty)
+						const token = yield* Effect.scoped(
+							Effect.flatMap(cluster.connect(member, cluster.maintenance), (session) =>
+								single(
+									session,
+									"SELECT pg_catalog.substr(pg_catalog.md5(pg_catalog.gen_random_uuid()::text), 1, 12)",
+									[]
+								)
+							)
+						)
+						const login = `tcl_${token ?? ""}`
+						const asSuperuser = (statements: ReadonlyArray<string>) =>
+							Effect.scoped(
+								Effect.flatMap(cluster.superuser(member, cluster.maintenance), (superuser) =>
+									Effect.forEach(statements, (statement) => runIn(superuser, statement, []), {
+										discard: true
+									})
+								)
+							)
+						const template = tokenTemplate(`role setting ${login}`, (target) =>
+							asSuperuser([
+								`CREATE ROLE ${quoteIdent(login)} LOGIN`,
+								`ALTER ROLE ${quoteIdent(login)} IN DATABASE ${quoteIdent(target.name)} SET search_path = ${quoteIdent(login)}, public`
+							])
+						)
+						const read = yield* Effect.ensuring(
+							Effect.scoped(
+								Effect.gen(function* () {
+									const opened = yield* template.open
+									const clone = yield* opened.clone
+									const session = yield* cluster.connect(clone.member, cluster.maintenance)
+									const set = yield* single(
+										session,
+										"SELECT pg_catalog.array_to_string(s.setconfig, ',') FROM pg_catalog.pg_db_role_setting AS s JOIN pg_catalog.pg_database AS d ON d.oid = s.setdatabase WHERE d.datname = $1::name AND s.setrole = $2::regrole",
+										[clone.name, login]
+									)
+									return { set, template: clone.template }
+								})
+							),
+							Effect.ignore(asSuperuser([`DROP ROLE IF EXISTS ${quoteIdent(login)}`]))
+						)
+						yield* dropTemplate({ member, name: read.template })
+						assert.equal(read.set, `search_path=${login}, public`)
+					}),
+					ctx
+				)
+			),
+	oracle: {
+		kind: "specification",
+		name: "a template whose build sets a role's setting in it, on a login the bootstrap superuser made, clones with the setting in place"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/resources/template.ts",
+			original:
+				"\t\t\t\t\tEffect.flatMap(cluster.superuser(member, cluster.maintenance), (superuser) =>\n",
+			replacement: "\t\t\t\t\tEffect.flatMap(Effect.succeed(session), (superuser) =>\n",
+			why: "A clone's role settings are made again on the owner's session, as they were: a role the build's superuser made is none the owner holds the ADMIN option on, and the server refuses its setting, so every clone of the template fails (5442, 2026-11-20: grizzle's laws/families and laws/projections, 42501); the property fails."
+		}
+	]
 })

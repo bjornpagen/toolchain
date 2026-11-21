@@ -95,7 +95,7 @@ export const contendedLeaseWaits = property.exhaust(holders, {
 			original:
 				"\t\t\tEffect.sync(() => enterLockWait(files)),\n\t\t\t() => effect,\n\t\t\t() => Effect.sync(() => leaveLockWait(files))",
 			replacement:
-				"\t\t\tEffect.flatMap(liveMillis, (wall) => Effect.sync(() => enterWait(wall))),\n\t\t\t() => effect,\n\t\t\t() => Effect.flatMap(liveMillis, (wall) => Effect.sync(() => leaveWait(wall)))",
+				"\t\t\tEffect.flatMap(liveMillis, (wall) => Effect.sync(() => enterWait(wall, files[0]))),\n\t\t\t() => effect,\n\t\t\t() => Effect.flatMap(liveMillis, (wall) => Effect.sync(() => leaveWait(wall, files[0])))",
 			why: "A lock wait is a wait on work whose wall time no stall counts (TOOLCHAIN5's e094331), so a worker behind a holder that has stopped waits as long as the hold lasts and passes, where it waits on nothing that will come; the property fails behind the holder that stops."
 		}
 	]

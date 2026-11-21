@@ -180,8 +180,8 @@ export const declaredWaitIsNoStall = property.exhaust(finite(deadlocks), {
 		{
 			file: "packages/testing/src/live.ts",
 			original:
-				"\t\tEffect.flatMap(liveMillis, (wall) => Effect.sync(() => enterWait(wall))),\n\t\t() => effect,\n\t\t() => Effect.flatMap(liveMillis, (wall) => Effect.sync(() => leaveWait(wall)))",
-			replacement: "\t\tEffect.void,\n\t\t() => effect,\n\t\t() => Effect.void",
+				"\t\t\tEffect.flatMap(liveMillis, (wall) => Effect.sync(() => enterWait(wall, on))),\n\t\t\t() => effect,\n\t\t\t() => Effect.flatMap(liveMillis, (wall) => Effect.sync(() => leaveWait(wall, on)))",
+			replacement: "\t\t\tEffect.void,\n\t\t\t() => effect,\n\t\t\t() => Effect.void",
 			why: "waitingOn declares nothing, so a declared wait's wall time is a stall after all; the property fails."
 		}
 	]

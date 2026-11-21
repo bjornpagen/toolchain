@@ -260,11 +260,13 @@ export type WaitChange =
 	| Readonly<{ kind: "locks"; files: ReadonlyArray<string> }>
 
 /**
- * A process's declared waits, and where it reports each change of them: to its pool, in a worker (runner/worker.ts),
- * since the pool watches the worker from outside it; nowhere in a process no pool watches.
+ * A process's declared waits, what each open wait on work waits on (`on`, its name: the statement a member runs for
+ * it, a template's build), and where it reports each change of them: to its pool, in a worker (runner/worker.ts), since
+ * the pool watches the worker from outside it; nowhere in a process no pool watches.
  */
 type ProcessWaits = {
 	waits: Waits
+	on: ReadonlyArray<string>
 	locks: LockWaits
 	report: Option.Option<(change: WaitChange) => void>
 }
@@ -275,7 +277,12 @@ declare global {
 
 /** This process's declared waits: one ledger a process, as its waits are its own whatever run or case opened them. */
 const processWaits = (): ProcessWaits => {
-	globalThis.bjornpagenTestingWaits ??= { waits: noWaits, locks: [], report: Option.none() }
+	globalThis.bjornpagenTestingWaits ??= {
+		waits: noWaits,
+		on: [],
+		locks: [],
+		report: Option.none()
+	}
 	return globalThis.bjornpagenTestingWaits
 }
 
@@ -284,23 +291,40 @@ export const reportWaitsTo = (report: (change: WaitChange) => void): void => {
 	processWaits().report = Option.some(report)
 }
 
-/** One of this process's declared waits opens at `wall` (live.ts waitingOn), reported when it is the first open. */
-export const enterWait = (wall: number): void => {
+/**
+ * One of this process's declared waits opens at `wall`, waiting on `on` (live.ts waitingOn), reported when it is the
+ * first open.
+ */
+export const enterWait = (wall: number, on: string): void => {
 	const ledger = processWaits()
 	ledger.waits = waitEntered(ledger.waits, wall)
+	ledger.on = [...ledger.on, on]
 	if (ledger.waits.open === 1) {
 		Option.map(ledger.report, (report) => report({ kind: "waiting" }))
 	}
 }
 
-/** One of this process's declared waits closes at `wall`, reported when it was the last open. */
-export const leaveWait = (wall: number): void => {
+/** The declared wait on `on` closes at `wall`, reported when it was the last open. */
+export const leaveWait = (wall: number, on: string): void => {
 	const ledger = processWaits()
 	ledger.waits = waitLeft(ledger.waits, wall)
+	ledger.on = Option.match(
+		Arr.findFirstIndex(ledger.on, (open) => open === on),
+		{
+			onNone: () => ledger.on,
+			onSome: (at) => Arr.remove(ledger.on, at)
+		}
+	)
 	if (ledger.waits.open === 0) {
 		Option.map(ledger.report, (report) => report({ kind: "waited" }))
 	}
 }
+
+/** What this process's open declared waits on work wait on, in the order they opened: what a verdict's report names. */
+export const waitedOnNow = (): ReadonlyArray<string> => processWaits().on
+
+/** The files each of this process's open lock waits waits to lock, in the order they opened. */
+export const lockWaitsNow = (): LockWaits => processWaits().locks
 
 /** This process's lock waits became `locks`: the ledger holds them, and the files they wait to lock are reported. */
 const locksBecame = (locks: LockWaits): void => {

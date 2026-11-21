@@ -108,7 +108,7 @@ export const hangsOnTheLiveClock = property.explore(
 		kills: [
 			{
 				file: "packages/testing/src/runner/case.ts",
-				original: "leg: overrunText(settled.overrun),",
+				original: `leg: \`\${overrunText(settled.overrun)}\${waitedOnText(settled.waitedOn)}\`,`,
 				replacement: 'leg: "",',
 				why: "A hung case is reported without the leg its guard read, so a hang under load says neither whether the case spent its CPU nor whether it waited on something no one declared (CONFINE's inductive control run, hung at case 0)."
 			},

@@ -4,7 +4,7 @@ import { ChildProcess } from "effect/process"
 import { boolean, characterOf, type Gen, int, string } from "#gen.ts"
 import testingCluster from "#pg.config.ts"
 import { machineBin } from "#pg/make.fixtures.ts"
-import { pgOwnerSession } from "#pg/session.ts"
+import { pgOwnerSession, pgSuperuserSession } from "#pg/session.ts"
 import type { Need } from "#property.ts"
 import {
 	DatabasePrefix,
@@ -27,12 +27,13 @@ const databaseNameOf = Brand.nominal<DatabaseName>()
 /**
  * The cluster the library's own resource properties run against: the testing package's local cluster (its
  * pg.config.ts), which the layer makes and starts the first time a need reaches it, databases under `tc_`, every
- * session the owner's over node-postgres (pg/session.ts).
+ * session the owner's or the bootstrap superuser's over node-postgres (pg/session.ts).
  */
 const fixtureCluster: PgClusterSpec = {
 	prefix: DatabasePrefix("tc_"),
 	cluster: testingCluster,
-	connect: pgOwnerSession("toolchain fixtures")
+	connect: pgOwnerSession("toolchain fixtures"),
+	superuser: pgSuperuserSession("toolchain fixtures superuser")
 }
 
 /** The fixture's runner services: the testing package's cluster; the runner gives the closure hashes. */
@@ -307,8 +308,8 @@ export const countedConnections = (
 /**
  * A session of the member's bootstrap superuser in `database`, over the member's socket by peer authentication (psql,
  * its standard input held open), for the enclosing scope: a session the owner cannot end, which pg_signal_backend never
- * lets it terminate, so the owner's DROP DATABASE ... WITH (FORCE) of the database is refused while it lasts, as a drop
- * is refused when a session it signals has not left in time (an autovacuum worker under load).
+ * lets it terminate, so the owner's DROP DATABASE of the database is refused while it lasts, the collection's WITH
+ * (FORCE) too, as a drop is refused when a session it waits for has not left in time (an autovacuum worker under load).
  */
 export const superuserSessionIn = (database: TemplateDatabase) =>
 	Effect.gen(function* () {

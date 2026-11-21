@@ -282,7 +282,8 @@ export const waitsDeclared = property.exhaust(finite(int(0, 1)), {
 	box: "two values",
 	needs: {},
 	situations: [],
-	check: () => () => DECLARED_WAIT.pipe(liveSleep, waitingOn),
+	check: () => () =>
+		DECLARED_WAIT.pipe(liveSleep, waitingOn("pool.fixtures.ts waitsDeclared's sleep")),
 	oracle: {
 		kind: "specification",
 		name: "a property planted to wait, declared, past its deadline and its pool's bound and grace"

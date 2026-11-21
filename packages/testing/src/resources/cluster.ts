@@ -12,6 +12,7 @@ import {
 	Scope,
 	String as Str
 } from "effect"
+import { waitingOn } from "#live.ts"
 import { reservationOf } from "#pg/lease.ts"
 import { clusterUp, type PgMember, type Platform } from "#pg/make.ts"
 import type { LeasedSizing, LocalCluster } from "#pg/spec.ts"
@@ -63,13 +64,19 @@ export type DatabaseName = string & Brand.Brand<"DatabaseName">
  * run's workers spread over (each worker on the member its run's lease put it on), whose template every template built
  * from the cluster
  * itself copies (IS_TEMPLATE, never connected to), and in whose owner's own database this library's sessions and
- * advisory locks live; and how to open a session as the owner on a member in a database, over the repository's own
- * client, from the member's facts (its port, CA and owner's password).
+ * advisory locks live; and how to open a session on a member in a database, over the repository's own client, from the
+ * member's facts: as the owner (`connect`, its port, CA and password), and as the member's bootstrap superuser
+ * (`superuser`, over its socket by peer authentication), which remakes in a clone what only a superuser may be sure to
+ * make, a role's setting in the database (template.ts replayOf).
  */
 export type PgClusterSpec = Readonly<{
 	prefix: DatabasePrefix
 	cluster: LocalCluster<LeasedSizing>
 	connect: (member: PgMember, database: string) => Effect.Effect<PgSession, NeedFailed, Scope.Scope>
+	superuser: (
+		member: PgMember,
+		database: string
+	) => Effect.Effect<PgSession, NeedFailed, Scope.Scope>
 }>
 
 /**
@@ -97,6 +104,7 @@ export type PgClusterShape = Readonly<{
 	base: string
 	maintenance: string
 	connect: PgClusterSpec["connect"]
+	superuser: PgClusterSpec["superuser"]
 	/** The cluster's members, made and started when they are not (pg/make.ts clusterUp) and read once, the first time a need asks. */
 	members: Effect.Effect<Arr.NonEmptyReadonlyArray<PgMember>, NeedFailed>
 	/**
@@ -131,13 +139,21 @@ const textRows = (
 				})
 			)
 
-/** One statement on `session`, its rows decoded as text. */
+/**
+ * One statement on `session`, its rows decoded as text, as a declared wait of this process named by the statement
+ * (live.ts waitingOn): every statement this library sends waits on the member's work, which no guard of the sender's
+ * counts as its stall however long the member takes, and which PostgreSQL guards in turn. A clone's CREATE DATABASE
+ * waits on the checkpoints its strategy forces and on the template's other users, a DROP DATABASE on every backend of
+ * the member taking in its barrier and on the clone's last sessions leaving, an advisory lock on the builder or the
+ * collector that holds it (metis's 5451, 2026-11-20: a case hung at 22 ms of CPU over 60 s, its worker in a clone's
+ * DROP DATABASE behind the member's ProcSignalBarrier while other clones' FILE_COPY checkpoints ran).
+ */
 export const run = (
 	session: PgSession,
 	sql: string,
 	params: ReadonlyArray<string>
 ): Effect.Effect<TextRows, NeedFailed> =>
-	Effect.flatMap(session.query(sql, params), (rows) => textRows(sql, rows))
+	waitingOn(sql)(Effect.flatMap(session.query(sql, params), (rows) => textRows(sql, rows)))
 
 /** The first column of the first row of `sql`'s answer, or NeedFailed when it has none. */
 export const single = (
@@ -244,6 +260,7 @@ export class PgCluster extends Context.Service<PgCluster, PgClusterShape>()(
 					base: spec.cluster.template,
 					maintenance: spec.cluster.owner,
 					connect: spec.connect,
+					superuser: spec.superuser,
 					members,
 					memberOf: (worker) =>
 						Effect.zipWith(members, leased, (all, placement) =>

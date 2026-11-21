@@ -1,5 +1,5 @@
 import testingCluster from "#pg.config.ts"
-import { pgOwnerSession } from "#pg/session.ts"
+import { pgOwnerSession, pgSuperuserSession } from "#pg/session.ts"
 import { localCluster } from "#pg/spec.ts"
 import { DatabasePrefix, PgCluster } from "#resources/cluster.ts"
 
@@ -10,6 +10,8 @@ import { DatabasePrefix, PgCluster } from "#resources/cluster.ts"
  * test runs. The layers are values, never built.
  */
 const connect = pgOwnerSession("cluster types")
+
+const superuser = pgSuperuserSession("cluster types superuser")
 
 const prefix = DatabasePrefix("tc_types")
 
@@ -32,7 +34,7 @@ const sessionsCluster = localCluster({
 })
 
 export const accepted = Object.freeze([
-	PgCluster.layer({ prefix, cluster: testingCluster, connect }),
+	PgCluster.layer({ prefix, cluster: testingCluster, connect, superuser }),
 	PgCluster.layer({
 		prefix,
 		cluster: localCluster({
@@ -46,7 +48,8 @@ export const accepted = Object.freeze([
 				locks: { kind: "default" }
 			}
 		}),
-		connect
+		connect,
+		superuser
 	})
 ])
 
@@ -55,6 +58,7 @@ export const refused = Object.freeze([
 		prefix,
 		// @ts-expect-error -- a cluster sized by its sessions is leased by no run: a runner's layer takes a leased one
 		cluster: sessionsCluster,
-		connect
+		connect,
+		superuser
 	})
 ])

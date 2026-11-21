@@ -7,13 +7,13 @@ import {
 	type Scope,
 	String as Str
 } from "effect"
-import { waitingOn } from "#live.ts"
 import type { NeedContext } from "#property.ts"
 import {
 	type Owner,
 	PgCluster,
 	type PgClusterShape,
 	type PgMember,
+	type PgSession,
 	type DatabaseName,
 	lockKey,
 	quoteIdent,
@@ -189,10 +189,18 @@ const listQuoted: ReadonlySet<string> = new Set([
 /**
  * What CREATE DATABASE does not copy from a template, which every clone gets again: the database's privileges (its
  * datacl, which a clone starts without, dbcommands.c createdb) and its settings, database-wide and per role
- * (pg_db_role_setting, keyed by the database). Read from the built template once per opening, as statements over the
- * clone's quoted name.
+ * (pg_db_role_setting, keyed by the database), each made by the identity that may make it. The database's privileges
+ * and its own settings are its owner's to make (`owner`), as the owner made the template's in its build; a role's
+ * setting in it is the bootstrap superuser's (`superuser`): making one takes the ADMIN option on the role, which only
+ * the role's maker and a superuser hold, and a role the build's own superuser made (grizzle's owner login, made by its
+ * substrate as the superuser) is no role of the owner's (5442, 2026-11-20 17:51 to 17:55Z: every clone of such a
+ * template refused, 42501 "Only roles with CREATEROLE and ADMIN option"). Read from the built template once per
+ * opening, as statements over the clone's quoted name.
  */
-type Replay = (clone: string) => ReadonlyArray<string>
+type Replay = (clone: string) => Replayed
+
+/** A replay's statements on one database, by the identity that makes them. */
+type Replayed = Readonly<{ owner: ReadonlyArray<string>; superuser: ReadonlyArray<string> }>
 
 const aclQuery = `SELECT a.privilege_type::text,
 	CASE WHEN a.grantee = 0::oid THEN 'PUBLIC' ELSE pg_catalog.quote_ident(pg_catalog.pg_get_userbyid(a.grantee)) END,
@@ -215,6 +223,13 @@ SELECT ((SELECT datacl::text FROM pg_catalog.pg_database WHERE datname = $1::nam
 		IS NOT DISTINCT FROM (SELECT datacl::text FROM pg_catalog.pg_database WHERE datname = $2::name)
 	AND (SELECT settings FROM s WHERE datname = $1::name) = (SELECT settings FROM s WHERE datname = $2::name))::text`
 
+/** `ALTER target SET` of a stored setting, its value written as it is stored where the setting is a list of names. */
+const settingOf = (target: string, setting: string | null, value: string | null): string => {
+	const name = setting ?? ""
+	const stored = value ?? ""
+	return `ALTER ${target} SET ${name} = ${listQuoted.has(name) ? stored : quoteLiteral(stored)}`
+}
+
 /**
  * The replay of a template's privileges and settings, read on the owner's session: for its clones, and for a template
  * built from it.
@@ -230,27 +245,57 @@ const replayOf = (owner: Owner, template: DatabaseName): Effect.Effect<Replay, N
 				[template]
 			)
 		])
-		return (clone) => [
-			...(unset === "true"
-				? []
-				: [
-						`REVOKE ALL ON DATABASE ${clone} FROM PUBLIC`,
-						`REVOKE ALL ON DATABASE ${clone} FROM CURRENT_USER`,
-						...Arr.map(
-							acl,
-							([privilege, grantee, grantable]) =>
-								`GRANT ${privilege ?? ""} ON DATABASE ${clone} TO ${grantee ?? ""}${grantable === "true" ? " WITH GRANT OPTION" : ""}`
-						)
-					]),
-			...Arr.map(settings, ([role, setting, value]) => {
-				const target =
-					role === "" || role === null ? `DATABASE ${clone}` : `ROLE ${role} IN DATABASE ${clone}`
-				const name = setting ?? ""
-				const stored = value ?? ""
-				return `ALTER ${target} SET ${name} = ${listQuoted.has(name) ? stored : quoteLiteral(stored)}`
-			})
-		]
+		return (clone) => ({
+			owner: [
+				...(unset === "true"
+					? []
+					: [
+							`REVOKE ALL ON DATABASE ${clone} FROM PUBLIC`,
+							`REVOKE ALL ON DATABASE ${clone} FROM CURRENT_USER`,
+							...Arr.map(
+								acl,
+								([privilege, grantee, grantable]) =>
+									`GRANT ${privilege ?? ""} ON DATABASE ${clone} TO ${grantee ?? ""}${grantable === "true" ? " WITH GRANT OPTION" : ""}`
+							)
+						]),
+				...Arr.flatMap(settings, ([role, setting, value]) =>
+					role === "" || role === null
+						? [settingOf(`DATABASE ${clone}`, setting ?? null, value ?? null)]
+						: []
+				)
+			],
+			superuser: Arr.flatMap(settings, ([role, setting, value]) =>
+				role === "" || role === null
+					? []
+					: [settingOf(`ROLE ${role} IN DATABASE ${clone}`, setting ?? null, value ?? null)]
+			)
+		})
 	})
+
+/**
+ * `replayed` made on `member`: the owner's statements on `session`, the owner's, and the superuser's on a session of
+ * the member's bootstrap superuser in the owner's database, opened for them alone and only when there are any.
+ */
+const replayedOn = (
+	cluster: PgClusterShape,
+	member: PgMember,
+	session: PgSession,
+	replayed: Replayed
+): Effect.Effect<void, NeedFailed> =>
+	Effect.andThen(
+		Effect.forEach(replayed.owner, (statement) => run(session, statement, []), { discard: true }),
+		Arr.match(replayed.superuser, {
+			onEmpty: () => Effect.void,
+			onNonEmpty: (statements) =>
+				Effect.scoped(
+					Effect.flatMap(cluster.superuser(member, cluster.maintenance), (superuser) =>
+						Effect.forEach(statements, (statement) => run(superuser, statement, []), {
+							discard: true
+						})
+					)
+				)
+		})
+	)
 
 /**
  * The state of `name` on the member, as text: 'ready' (a template that refuses connections, and valid: not a database
@@ -331,18 +376,6 @@ export const identify = (
 	})
 
 /**
- * `statement`, a session-level advisory lock the session waits in the server for while another process holds it, as a
- * declared wait (live.ts waitingOn): the one place a template's build or use waits on another process, a builder or a
- * collector, a guarded worker of this run or another, or a session PostgreSQL ends once its client is gone, so no
- * guard counts the wait as its case's stall.
- */
-const awaitAdvisory = (
-	session: Parameters<typeof run>[0],
-	statement: string,
-	params: Parameters<typeof run>[2]
-): ReturnType<typeof run> => waitingOn(run(session, statement, params))
-
-/**
  * A libc locale name as glibc matches one: case aside, and its separators (`-`, `_`, `.`) dropped, so `en_US.UTF-8`
  * names the locale initdb imported as `en_US.utf8`.
  */
@@ -384,9 +417,10 @@ const createdFresh = (
  * Makes sure the identified template is built on `member`. A built template (a template refusing connections) is
  * taken as it is. Otherwise the builder waits in the server for the session-level advisory lock of the template's
  * digest, in the owner's database, on a session of its own: the one gate, so concurrent builders of one template on one
- * member, in any worker of any run, build it once and the rest find it built once the lock is theirs (awaitAdvisory).
- * Holding the lock, a database of the template's name that is not a built template, and the template's build database
- * (names.ts buildName), are a builder's that ended mid-build, and are dropped.
+ * member, in any worker of any run, build it once and the rest find it built once the lock is theirs (a declared wait,
+ * as every statement is: cluster.ts run). Holding the lock, a database of the template's name that is not a built
+ * template, and the template's build database (names.ts buildName), are a builder's that ended mid-build, and are
+ * dropped.
  *
  * The build runs in the build database, a copy of the origin (built first, the same way) given the origin's settings and
  * privileges, which CREATE DATABASE does not copy (replayOf, as a clone is given its template's), so a template built
@@ -422,7 +456,7 @@ const ensureBuilt = (
 		yield* Effect.scoped(
 			Effect.gen(function* () {
 				const gate = yield* cluster.connect(member, cluster.maintenance)
-				yield* awaitAdvisory(gate, `SELECT pg_catalog.pg_advisory_lock(${lockKey("$1")})::text`, [
+				yield* run(gate, `SELECT pg_catalog.pg_advisory_lock(${lockKey("$1")})::text`, [
 					Str.slice(0, 16)(digest)
 				])
 				const state = yield* single(gate, stateQuery, [name])
@@ -452,9 +486,7 @@ const ensureBuilt = (
 				})
 				const replayed = (from: DatabaseName, onto: DatabaseName) =>
 					Effect.flatMap(replayOf(owner, from), (inherited) =>
-						Effect.forEach(inherited(quoteIdent(onto)), (statement) => run(gate, statement, []), {
-							discard: true
-						})
+						replayedOn(cluster, member, gate, inherited(quoteIdent(onto)))
 					)
 				yield* Option.match(identified.origin, {
 					onNone: () => Effect.void,
@@ -486,7 +518,7 @@ const ensureBuilt = (
  * live worker opened, which the worker clones (and builds from) for as long as it runs, whichever run collects: a
  * concurrent run of other properties, or of other code, a kill trial's mutant included. Taken before the template is
  * built, so a collection that held a key first has dropped the template before the opener finds it absent and builds it
- * again, waiting on a collection that holds the key exclusively (awaitAdvisory).
+ * again, waiting on a collection that holds the key exclusively (a declared wait: cluster.ts run).
  */
 const holdInUse = (owner: Owner, identified: Identified): Effect.Effect<void, NeedFailed> =>
 	Effect.andThen(
@@ -494,11 +526,9 @@ const holdInUse = (owner: Owner, identified: Identified): Effect.Effect<void, Ne
 			onNone: () => Effect.void,
 			onSome: (origin) => holdInUse(owner, origin)
 		}),
-		awaitAdvisory(
-			owner.session,
-			`SELECT pg_catalog.pg_advisory_lock_shared(${useKey("$1")})::text`,
-			[Str.slice(0, 16)(identified.digest)]
-		)
+		run(owner.session, `SELECT pg_catalog.pg_advisory_lock_shared(${useKey("$1")})::text`, [
+			Str.slice(0, 16)(identified.digest)
+		])
 	)
 
 /** A database template opened on the worker's member: its name there, how a clone of it is made, and what a clone gets again. */
@@ -513,10 +543,13 @@ type BuiltTemplate = Readonly<{
  * Opens `template` on the worker's member: the cluster and the closure hashes from the run, the member the worker
  * reaches, the template held in use for the worker's life (holdInUse) and built there once (ensureBuilt), the strategy
  * the member clones with, and what each clone gets again. A clone is created in the caller's scope, which drops it when
- * it closes (DROP DATABASE ... WITH (FORCE)), then given its template's privileges and settings, and refused unless they
- * are the template's. A drop the server refuses (a session still in the clone past the drop's wait, an autovacuum
- * worker held up under load) never fails the case, whose verdict its teardown is not: the clone is its worker's, by its
- * owner key, and the run's collection drops it once the worker has ended (runner/run.ts collected).
+ * it closes, then given its template's privileges and settings, and refused unless they are the template's. The drop
+ * ends no session: the case's own sessions in the clone were closed before it, so it waits only for their backends to
+ * leave (dbcommands.c dropdb, CountOtherDBBackends, five seconds at most), and a session the case leaked is the case's
+ * to end, not the drop's, whose ending it would fail mid-run in the client that holds it; only the run's collection
+ * ends sessions (collect.ts). A drop the server refuses (a session still in the clone past the drop's wait, an
+ * autovacuum worker held up under load) never fails the case, whose verdict its teardown is not: the clone is its
+ * worker's, by its owner key, and the run's collection drops it once the worker has ended (runner/run.ts collected).
  */
 const openDatabaseTemplate = (
 	template: DatabaseTemplate
@@ -546,18 +579,9 @@ const openDatabaseTemplate = (
 					`CREATE DATABASE ${quoteIdent(made)} TEMPLATE ${quoteIdent(name)} STRATEGY ${strategy}`,
 					[]
 				),
-				() =>
-					Effect.ignore(
-						run(owner.session, `DROP DATABASE IF EXISTS ${quoteIdent(made)} WITH (FORCE)`, [])
-					)
+				() => Effect.ignore(run(owner.session, `DROP DATABASE IF EXISTS ${quoteIdent(made)}`, []))
 			)
-			yield* Effect.forEach(
-				replay(quoteIdent(made)),
-				(statement) => run(owner.session, statement, []),
-				{
-					discard: true
-				}
-			)
+			yield* replayedOn(cluster, member, owner.session, replay(quoteIdent(made)))
 			if ((yield* single(owner.session, replayedQuery, [made, name])) !== "true") {
 				return yield* NeedFailed.make({
 					need: template.key,

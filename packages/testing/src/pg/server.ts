@@ -225,6 +225,13 @@ export const stop = (bin: string, member: MemberState, mode: "fast" | "immediate
 	)
 
 /**
+ * The member's bootstrap superuser, the role initdb makes (its `-U`), which signs in over the member's socket by peer
+ * authentication mapped from this user (make.ts's hba): the identity of the cluster's making, its doctor's reads and a
+ * clone's replayed role settings (resources/template.ts replayOf).
+ */
+export const BOOTSTRAP_SUPERUSER = "postgres"
+
+/**
  * The rows of `statements`, run one after another as the bootstrap superuser in `database` on `member`, over its socket:
  * each statement its own query (psql's -c), so CREATE DATABASE runs outside a transaction block, the first failing one
  * ending the run; each row one line, its columns separated by `|`.
@@ -254,7 +261,7 @@ export const adminSql = (
 					"-p",
 					`${member.port}`,
 					"-U",
-					"postgres",
+					BOOTSTRAP_SUPERUSER,
 					"-d",
 					database,
 					...Arr.flatMap(statements, (statement) => ["-c", statement])

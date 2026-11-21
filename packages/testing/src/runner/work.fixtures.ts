@@ -185,7 +185,11 @@ export const waitingCase = (shape: Deadlock): Property =>
 	property.explore(int(0, 9), {
 		needs: {},
 		situations: [],
-		check: () => () => Duration.millis(shape.deadline * shape.deadlines).pipe(liveSleep, waitingOn),
+		check: () => () =>
+			Duration.millis(shape.deadline * shape.deadlines).pipe(
+				liveSleep,
+				waitingOn("work.fixtures.ts waitingCase's sleep")
+			),
 		oracle: planted,
 		kept: [],
 		kills: []

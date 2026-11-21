@@ -513,16 +513,19 @@ export const liveNanos = Clock.currentTimeNanos.pipe(
 )
 
 /**
- * `effect` as a declared wait of this process on work other processes do (runner/work.ts Waits): a wait whose doers
- * name no holder this process can read (a template's build lock, PostgreSQL's work), and whose wall time no guard's
- * stall leg counts, from before it starts to after it ends, however it ends.
+ * `effect` as a declared wait of this process on work other processes do, named by what it waits on, `on` (runner/work.ts
+ * Waits): a wait whose doers name no holder this process can read (a template's build lock, PostgreSQL's work behind a
+ * statement), and whose wall time no guard's stall leg counts, from before it starts to after it ends, however it ends;
+ * a verdict on the case while it is open names it (runner/work.ts waitedOnNow).
  */
-export const waitingOn = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
-	Effect.acquireUseRelease(
-		Effect.flatMap(liveMillis, (wall) => Effect.sync(() => enterWait(wall))),
-		() => effect,
-		() => Effect.flatMap(liveMillis, (wall) => Effect.sync(() => leaveWait(wall)))
-	)
+export const waitingOn =
+	(on: string) =>
+	<A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+		Effect.acquireUseRelease(
+			Effect.flatMap(liveMillis, (wall) => Effect.sync(() => enterWait(wall, on))),
+			() => effect,
+			() => Effect.flatMap(liveMillis, (wall) => Effect.sync(() => leaveWait(wall, on)))
+		)
 
 /**
  * `effect` as a declared wait of this process for kernel locks on `files` (runner/work.ts LockWaits), from before it

@@ -370,12 +370,15 @@ there, its lock `<port>.lock` beside it; `TOOLCHAIN_PG_CLUSTER=<port>` names a p
    its workers. Each of `sizing`'s `connections`, `replication` and `sharedBuffers` is PostgreSQL's default
    (`{ kind: "default" }`) or what one worker holds at most and what is held outside any worker, each the repository's
    number with its evidence beside the spec.
-2. **The runner layer.** `PgCluster.layer({ prefix, cluster, connect })`, where it took `members`, `base` and
+2. **The runner layer.** `PgCluster.layer({ prefix, cluster, connect, superuser })`, where it took `members`, `base` and
    `maintenance`: the template is the spec's, the owner's database the owner's own. The layer needs the platform
    (`ChildProcessSpawner`, `FileSystem`), which the runner provides. `connect` opens the owner's session from the
    member's facts: `PgMember` is the library's, `{ name, port, socket, owner, password, passwordFile, ca, caFile,
-   wrongCa }`, and no longer augmented. A repository whose code reaches the cluster over node-postgres passes
-   `pgOwnerSession(applicationName)` (`@bjornpagen/testing/pg-session`).
+   wrongCa }`, and no longer augmented. `superuser` opens a session of the member's bootstrap superuser over its socket
+   by peer authentication, on which a clone's role settings are made again (a role's setting in a database takes the
+   ADMIN option on the role, which the owner may not hold). A repository whose code reaches the cluster over
+   node-postgres passes `pgOwnerSession(applicationName)` and `pgSuperuserSession(applicationName)`
+   (`@bjornpagen/testing/pg-session`).
 3. **The old maker goes.** Delete the repository's cluster scripts (`init.sh`, `ctl.sh`, `doctor.sh`, `pg.sh`, a
    lifecycle module) and its cluster glue; a script that brought the cluster up calls `clusterUp`, `stopCluster`,
    `destroyCluster` or `doctor`, or runs `toolchain-pg start | stop | status | doctor | psql | admin | reset | env |

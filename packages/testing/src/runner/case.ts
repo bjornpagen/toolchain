@@ -46,7 +46,7 @@ import {
 } from "#runner/protocol.ts"
 import { seriesRun } from "#runner/series.ts"
 import { NeedFailed, type RunLease } from "#runner/services.ts"
-import { type Overrun, overrunText, ownCpu, ownWork } from "#runner/work.ts"
+import { type Overrun, overrunText, ownCpu, ownWork, waitedOnNow } from "#runner/work.ts"
 import { type Observed, type Recording, recording, simplestChooser } from "#source.ts"
 
 /**
@@ -479,15 +479,23 @@ const printedOf = <S>(
 	draws: Arr.map(drew, (draw) => Formatter.format(draw))
 })
 
+/** What a hung case's report adds of the declared waits open at its verdict: what each waits on, or nothing. */
+const waitedOnText = (on: ReadonlyArray<string>): string =>
+	Arr.match(on, {
+		onEmpty: () => "",
+		onNonEmpty: (open) => `; its declared waits open then wait on ${Arr.join(open, "; ")}`
+	})
+
 /**
- * How a guarded effect ended: it passed, failed with its cause, ran past its deadline, or could not have a need's
- * resource (`unopened`: a NeedFailed in its error channel, a need's take that failed or a need the check opened itself),
- * which is no fact of its case's value, so no shrink ever sees it.
+ * How a guarded effect ended: it passed, failed with its cause, ran past its deadline (and what the declared waits open
+ * then waited on, runner/work.ts waitedOnNow), or could not have a need's resource (`unopened`: a NeedFailed in its error
+ * channel, a need's take that failed or a need the check opened itself), which is no fact of its case's value, so no
+ * shrink ever sees it.
  */
 type Settled =
 	| Readonly<{ kind: "passed" }>
 	| Readonly<{ kind: "failed"; cause: Cause.Cause<unknown> }>
-	| Readonly<{ kind: "hung"; overrun: Overrun }>
+	| Readonly<{ kind: "hung"; overrun: Overrun; waitedOn: ReadonlyArray<string> }>
 	| Readonly<{ kind: "unopened"; unopened: NeedFailed }>
 
 /**
@@ -570,7 +578,8 @@ const guarded = <E, R>(
 					Effect.map(Fiber.await(running), settledOf),
 					Effect.map(overrun(ownWork(wall, own), deadline), (ran): Settled => ({
 						kind: "hung",
-						overrun: ran
+						overrun: ran,
+						waitedOn: waitedOnNow()
 					}))
 				)
 			).pipe(
@@ -635,7 +644,7 @@ const outcomeOf = (
 		case "hung":
 			return {
 				kind: "hung",
-				leg: overrunText(settled.overrun),
+				leg: `${overrunText(settled.overrun)}${waitedOnText(settled.waitedOn)}`,
 				tape: recorded.tape(),
 				printed: printed()
 			}

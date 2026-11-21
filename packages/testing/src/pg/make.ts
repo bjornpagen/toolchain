@@ -14,6 +14,7 @@ import { lockHeld } from "#pg/hold.ts"
 import { capacityFile } from "#pg/lease.ts"
 import { freePort, portFree } from "#pg/ports.ts"
 import {
+	BOOTSTRAP_SUPERUSER,
 	adminSql,
 	type ClusterFailed,
 	failed,
@@ -351,7 +352,7 @@ const configured = (
 		const conf = `${member.data}/postgresql.conf`
 		const initial = yield* Effect.mapError(fs.readFileString(conf), filesFailed)
 		yield* written(step, conf, `${initial}${configuration}`, ownerOnly)
-		const peers = ["postgres", ...life.cluster.peerLogins]
+		const peers = [BOOTSTRAP_SUPERUSER, ...life.cluster.peerLogins]
 		yield* written(
 			step,
 			`${member.data}/pg_hba.conf`,
@@ -518,7 +519,7 @@ const makeMember = (
 					"-D",
 					member.data,
 					"-U",
-					"postgres",
+					BOOTSTRAP_SUPERUSER,
 					"-E",
 					"UTF8",
 					"--locale-provider=builtin",
