@@ -5,6 +5,7 @@ import {
 	Context,
 	Deferred,
 	Effect,
+	FileSystem,
 	Layer,
 	Option,
 	Predicate,
@@ -120,6 +121,12 @@ export type PgClusterShape = Readonly<{
 	) => Effect.Effect<PgMember, NeedFailed>
 	/** The worker's owner on `member`, opened once (Owner). */
 	owner: (member: PgMember) => Effect.Effect<Owner, NeedFailed>
+	/**
+	 * The real path of the directory the run runs from (its package root: a lane's workspace, trunk's worktree, a
+	 * mutant's worker tree), read once the first time a need asks: the checkout whose claims a template's use records
+	 * (template.ts claimed), which collection keeps the template for while the checkout exists (collect.ts).
+	 */
+	checkout: Effect.Effect<string, NeedFailed>
 }>
 
 /** The decode of a statement's rows: every column a string or null, or NeedFailed naming the statement. */
@@ -232,6 +239,19 @@ export class PgCluster extends Context.Service<PgCluster, PgClusterShape>()(
 					)
 				)
 				const owners = new Map<string, Deferred.Deferred<Owner, NeedFailed>>()
+				const checkout = yield* Effect.cached(
+					Effect.mapError(
+						Effect.provideContext(
+							Effect.flatMap(FileSystem.FileSystem, (fs) => fs.realPath(".")),
+							platform
+						),
+						(failure) =>
+							NeedFailed.make({
+								need: "the local cluster",
+								message: `the run's checkout: ${failure.message}`
+							})
+					)
+				)
 				return {
 					prefix: spec.prefix,
 					base: spec.cluster.template,
@@ -239,6 +259,7 @@ export class PgCluster extends Context.Service<PgCluster, PgClusterShape>()(
 					connect: spec.connect,
 					superuser: spec.superuser,
 					members,
+					checkout,
 					memberOf: (worker) =>
 						Effect.map(members, (all) => Arr.getUnsafe(all, worker.index % all.length)),
 					owner: (member) =>

@@ -320,12 +320,7 @@ const collected = (
 					yield* Option.match(Context.getOption(built, PgCluster), {
 						onNone: () => Effect.void,
 						onSome: (cluster) =>
-							Effect.asVoid(
-								collect(templates).pipe(
-									Effect.provideService(PgCluster, cluster),
-									Effect.provideService(ModuleClosure, closures)
-								)
-							)
+							Effect.asVoid(collect.pipe(Effect.provideService(PgCluster, cluster)))
 					})
 				}).pipe(
 					Effect.catchCause((cause) =>

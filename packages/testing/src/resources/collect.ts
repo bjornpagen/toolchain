@@ -1,4 +1,13 @@
-import { Array as Arr, Effect, Option, Predicate, Record as Rec, String as Str } from "effect"
+import {
+	Array as Arr,
+	Effect,
+	FileSystem,
+	Option,
+	Predicate,
+	Record as Rec,
+	String as Str
+} from "effect"
+import { templateClaimsTable } from "#pg/settle.ts"
 import type { Needs } from "#property.ts"
 import {
 	type DatabasePrefix,
@@ -12,8 +21,8 @@ import {
 	useKey
 } from "#resources/cluster.ts"
 import { type Named, namedOf } from "#resources/names.ts"
-import { DatabaseTemplate, type Identified, identify } from "#resources/template.ts"
-import { ModuleClosure, type NeedFailed } from "#runner/services.ts"
+import { DatabaseTemplate } from "#resources/template.ts"
+import type { NeedFailed } from "#runner/services.ts"
 
 /** The database templates a property's needs declare: each need over one (database.ts DatabaseNeed). */
 export const templatesOf = (needs: Needs): ReadonlyArray<DatabaseTemplate> =>
@@ -26,21 +35,15 @@ export const templatesOf = (needs: Needs): ReadonlyArray<DatabaseTemplate> =>
 /** What collection dropped on one member, by name. */
 export type Collected = Readonly<{ member: string; dropped: ReadonlyArray<string> }>
 
-/** Every name an identified template's chain holds: its own and its origins'. */
-const chainNames = (identified: Identified): ReadonlyArray<string> => [
-	identified.name,
-	...Option.match(identified.origin, { onNone: () => [], onSome: chainNames })
-]
-
 /**
  * A member's collection as it runs: its session in the owner's database, on which it tries every lock it reads (each
- * held until the collection ends, so a key it found free stays free while it drops), the cluster's prefix, and the name
- * of every template a declaration's chain holds.
+ * held until the collection ends, so a key it found free stays free while it drops), the cluster's prefix, and whether a
+ * checkout a claim names still exists on this machine.
  */
 export type Collector = Readonly<{
 	admin: PgSession
 	prefix: DatabasePrefix
-	declared: ReadonlySet<string>
+	exists: (checkout: string) => Effect.Effect<boolean>
 }>
 
 /** One step of a member's collection (collectionPhases): what it dropped, by name. */
@@ -81,53 +84,95 @@ const took = (
 	)
 
 /**
- * Drops every template no declared template's chain names (stale: its declaration, its content or its module's
- * closure changed), unless a builder holds its gate or a live worker holds it in use (template.ts holdInUse: another
- * run's, of other properties or other code, a kill trial's among them), and every template's build database
- * (names.ts buildName) unless a builder holds its gate: one outside its build is a builder's that ended mid-build. A
- * template is first made no template, which
- * DROP DATABASE requires; a database a drop left invalid (dbcommands.c dropdb, interrupted after it marked the
- * database) is no template, and PostgreSQL lets nothing but a drop touch it, so it is dropped as it is.
+ * The templates under the collector's prefix some existing checkout claims (template.ts claimed), once the claims of
+ * every checkout that no longer exists (a lane's workspace deleted, a worker tree removed) are dropped, of the
+ * collector's prefix alone, as it drops nothing of another's: a template is kept while any live checkout
+ * still uses that digest, whichever run collects, and a checkout's moving to another digest of the same logical
+ * template gave up its claim of this one when it claimed the other. A workspace parked but kept keeps its claims, one
+ * digest per logical template it used.
+ */
+const claimedNow = (collector: Collector): Effect.Effect<ReadonlySet<string>, NeedFailed> =>
+	Effect.gen(function* () {
+		const listedCheckouts = yield* run(
+			collector.admin,
+			`SELECT DISTINCT checkout FROM public.${templateClaimsTable} WHERE pg_catalog.starts_with(template, $1)`,
+			[collector.prefix]
+		)
+		const checkouts = Arr.getSomes(
+			Arr.map(listedCheckouts, ([checkout]) => Option.fromNullishOr(checkout))
+		)
+		const gone = yield* Effect.filter(checkouts, (checkout) =>
+			Effect.map(collector.exists(checkout), (present) => !present)
+		)
+		yield* Effect.forEach(
+			gone,
+			(checkout) =>
+				run(
+					collector.admin,
+					`DELETE FROM public.${templateClaimsTable} WHERE checkout = $1 AND pg_catalog.starts_with(template, $2)`,
+					[checkout, collector.prefix]
+				),
+			{ discard: true }
+		)
+		const claimed = yield* run(
+			collector.admin,
+			`SELECT DISTINCT template FROM public.${templateClaimsTable} WHERE pg_catalog.starts_with(template, $1)`,
+			[collector.prefix]
+		)
+		return new Set(Arr.getSomes(Arr.map(claimed, ([template]) => Option.fromNullishOr(template))))
+	})
+
+/**
+ * Drops every template no existing checkout claims (claimedNow), unless a builder holds its gate or a live worker holds
+ * it in use (template.ts holdInUse: another run's, of other properties or other code, a kill trial's among them), and
+ * every template's build database (names.ts buildName) unless a builder holds its gate: one outside its build is a
+ * builder's that ended mid-build. Where a template some other run's properties do not declare was dropped by that run,
+ * so a lane and trunk on one cluster, at two closures, each dropped the other's builds and paid them cold again
+ * (metis's SLOP-FIXER, 2026-11-21: "syzkaller metis world" built ten times over on metis-test-0, grizzle's base six
+ * times on grizzle-test-0, the disk 6 TB free), a template now goes once no checkout that exists claims it. A template
+ * is first made no template, which DROP DATABASE requires; a database a drop left invalid (dbcommands.c dropdb,
+ * interrupted after it marked the database) is no template, and PostgreSQL lets nothing but a drop touch it, so it is
+ * dropped as it is.
  */
 const templatesCollected: CollectionPhase = (collector) =>
-	Effect.map(
-		Effect.flatMap(listed(collector), (named) =>
-			Effect.forEach(named, ({ database, template }) =>
-				Effect.gen(function* () {
-					if (
-						database.kind === "clone" ||
-						(database.kind === "template" && collector.declared.has(database.name))
-					) {
-						return Option.none<string>()
-					}
-					const digest = Str.slice(
-						collector.prefix.length + 4,
-						collector.prefix.length + 20
-					)(database.name)
-					if (
-						!(yield* took(collector, lockKey("$1"), digest)) ||
-						(database.kind === "template" && !(yield* took(collector, useKey("$1"), digest)))
-					) {
-						return Option.none<string>()
-					}
-					if (template) {
-						yield* run(
-							collector.admin,
-							`ALTER DATABASE ${quoteIdent(database.name)} IS_TEMPLATE false`,
-							[]
-						)
-					}
+	Effect.gen(function* () {
+		const claimed = yield* claimedNow(collector)
+		const named = yield* listed(collector)
+		const dropped = yield* Effect.forEach(named, ({ database, template }) =>
+			Effect.gen(function* () {
+				if (
+					database.kind === "clone" ||
+					(database.kind === "template" && claimed.has(database.name))
+				) {
+					return Option.none<string>()
+				}
+				const digest = Str.slice(
+					collector.prefix.length + 4,
+					collector.prefix.length + 20
+				)(database.name)
+				if (
+					!(yield* took(collector, lockKey("$1"), digest)) ||
+					(database.kind === "template" && !(yield* took(collector, useKey("$1"), digest)))
+				) {
+					return Option.none<string>()
+				}
+				if (template) {
 					yield* run(
 						collector.admin,
-						`DROP DATABASE IF EXISTS ${quoteIdent(database.name)} WITH (FORCE)`,
+						`ALTER DATABASE ${quoteIdent(database.name)} IS_TEMPLATE false`,
 						[]
 					)
-					return Option.some<string>(database.name)
-				})
-			)
-		),
-		Arr.getSomes
-	)
+				}
+				yield* run(
+					collector.admin,
+					`DROP DATABASE IF EXISTS ${quoteIdent(database.name)} WITH (FORCE)`,
+					[]
+				)
+				return Option.some<string>(database.name)
+			})
+		)
+		return Arr.getSomes(dropped)
+	})
 
 /** Drops every clone whose owner's lock is free: its worker has ended (cluster.ts Owner), a crashed one's included. */
 const clonesCollected: CollectionPhase = (collector) =>
@@ -172,15 +217,17 @@ export const collectionPhases: ReadonlyArray<CollectionPhase> = [
 /** Drops, on one member, what no run may use again, by `phases` in order on one session (Collector). */
 export const collectMemberBy =
 	(phases: ReadonlyArray<CollectionPhase>) =>
-	(
-		member: PgMember,
-		declared: ReadonlySet<string>
-	): Effect.Effect<Collected, NeedFailed, PgCluster> =>
+	(member: PgMember): Effect.Effect<Collected, NeedFailed, PgCluster | FileSystem.FileSystem> =>
 		Effect.scoped(
 			Effect.gen(function* () {
 				const cluster = yield* PgCluster
+				const fs = yield* FileSystem.FileSystem
 				const admin = yield* cluster.connect(member, cluster.maintenance)
-				const collector: Collector = { admin, prefix: cluster.prefix, declared }
+				const collector: Collector = {
+					admin,
+					prefix: cluster.prefix,
+					exists: (checkout) => Effect.orElseSucceed(fs.exists(checkout), () => true)
+				}
 				const dropped = yield* Effect.forEach(phases, (phase) => phase(collector))
 				return { member: member.name, dropped: Arr.flatten(dropped) }
 			})
@@ -188,24 +235,15 @@ export const collectMemberBy =
 
 /**
  * Collection, on every member of the cluster: the clones of workers that have ended (a crashed worker's included) and
- * the templates no declared template names, which `toolchain-test` runs with every template its properties declare
- * (templatesOf over each property's needs). A template's name is computed, never built (template.ts identify), so
- * collecting builds nothing.
+ * the templates no existing checkout claims (templatesCollected), which `toolchain-test` runs before and after a run
+ * whose properties declare a template (runner/run.ts collected).
  */
-export const collect = (
-	declared: ReadonlyArray<DatabaseTemplate>
-): Effect.Effect<ReadonlyArray<Collected>, NeedFailed, PgCluster | ModuleClosure> =>
-	Effect.gen(function* () {
-		const cluster = yield* PgCluster
-		const closures = yield* ModuleClosure
-		const members = yield* cluster.members
-		const identified = yield* Effect.scoped(
-			Effect.flatMap(cluster.connect(Arr.headNonEmpty(members), cluster.maintenance), (session) =>
-				Effect.forEach(declared, (template) => identify(cluster, closures, session, template))
-			)
-		)
-		const names = new Set(Arr.flatMap(identified, chainNames))
-		return yield* Effect.forEach(members, (member) =>
-			collectMemberBy(collectionPhases)(member, names)
-		)
-	})
+export const collect: Effect.Effect<
+	ReadonlyArray<Collected>,
+	NeedFailed,
+	PgCluster | FileSystem.FileSystem
+> = Effect.gen(function* () {
+	const cluster = yield* PgCluster
+	const members = yield* cluster.members
+	return yield* Effect.forEach(members, (member) => collectMemberBy(collectionPhases)(member))
+})

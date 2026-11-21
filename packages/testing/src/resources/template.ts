@@ -7,6 +7,7 @@ import {
 	type Scope,
 	String as Str
 } from "effect"
+import { templateClaimsTable } from "#pg/settle.ts"
 import type { NeedContext } from "#property.ts"
 import {
 	type Owner,
@@ -347,7 +348,7 @@ const identityOf = (
 	)
 
 /** A template's identity on a cluster: its name there, its digest, its module's closure hash and its origin's identity. */
-export type Identified = Readonly<{
+type Identified = Readonly<{
 	template: DatabaseTemplate
 	name: DatabaseName
 	digest: string
@@ -358,9 +359,9 @@ export type Identified = Readonly<{
 /**
  * A template's identity on `cluster`, computed without building anything: its origin's first, then the digest of its
  * name, its content's canonical text, its declaring module's closure hash and its origin's name (or the cluster's base),
- * which names it (names.ts templateName). Collection names the declared templates this way.
+ * which names it (names.ts templateName), and which a run claims for its checkout once it opens it (claimed).
  */
-export const identify = (
+const identify = (
 	cluster: PgClusterShape,
 	closures: ModuleClosure["Service"],
 	session: Owner["session"],
@@ -542,6 +543,39 @@ const holdInUse = (owner: Owner, identified: Identified): Effect.Effect<void, Ne
 		])
 	)
 
+/**
+ * The identified template and every origin it is built from claimed by `checkout` (pg/settle.ts templateClaimsTable),
+ * on the worker's owner session: a row of the template and the checkout, with the template's logical identity (its name
+ * and its declaring module), upserted in one statement that also drops the checkout's claims of every other digest of
+ * the same logical template. So a checkout that moves to a new closure gives up its old digest the moment it uses the
+ * new one, and only its own claim of it; collection keeps a template while any existing checkout claims it (collect.ts),
+ * whichever run collects. Made after the template is held in use (holdInUse) and built (ensureBuilt), so no collection
+ * finds it unclaimed and unheld between the two.
+ */
+const claimed = (
+	owner: Owner,
+	identified: Identified,
+	checkout: string
+): Effect.Effect<void, NeedFailed> =>
+	Effect.andThen(
+		Option.match(identified.origin, {
+			onNone: () => Effect.void,
+			onSome: (origin) => claimed(owner, origin, checkout)
+		}),
+		run(
+			owner.session,
+			`WITH superseded AS (DELETE FROM public.${templateClaimsTable} WHERE checkout = $1 AND logical = $2 AND template <> $3) INSERT INTO public.${templateClaimsTable} (template, checkout, logical) VALUES ($3, $1, $2) ON CONFLICT (template, checkout) DO UPDATE SET claimed = pg_catalog.clock_timestamp()`,
+			[
+				checkout,
+				canonicalText({
+					template: identified.template.name,
+					declaredIn: identified.template.declaredIn
+				}),
+				identified.name
+			]
+		)
+	)
+
 /** A database template opened on the worker's member: its name there, how a clone of it is made, and what a clone gets again. */
 type BuiltTemplate = Readonly<{
 	member: PgMember
@@ -579,6 +613,8 @@ const openDatabaseTemplate = (
 		const identified = yield* identify(cluster, closures, owner.session, template)
 		yield* holdInUse(owner, identified)
 		yield* ensureBuilt(cluster, identified, member, strategy)
+		const checkout = yield* cluster.checkout
+		yield* claimed(owner, identified, checkout)
 		const name = identified.name
 		const replay = yield* replayOf(owner, name)
 		const clone: Effect.Effect<Database, NeedFailed, Scope.Scope> = Effect.gen(function* () {

@@ -375,6 +375,13 @@ const readIfThere = (file: string) =>
  * member at `at`, as the bootstrap superuser makes them: each made where absent and given what every member's holds
  * where present (the role its attributes, password and grants, the template its owner and IS_TEMPLATE).
  */
+/**
+ * The table in the owner's database that records which checkout claims which template (resources/template.ts claim,
+ * resources/collect.ts): made by settle, the one writer of a cluster's structure, owned by the owner, whose sessions
+ * write it.
+ */
+export const templateClaimsTable = "toolchain_template_claims"
+
 const owned = (cluster: LocalCluster, bin: string, at: SocketAt, password: string, step: Step) =>
 	Effect.gen(function* () {
 		const owner = ident(cluster.owner)
@@ -436,6 +443,16 @@ const owned = (cluster: LocalCluster, bin: string, at: SocketAt, password: strin
 				`ALTER DATABASE ${template} ALLOW_CONNECTIONS false`
 			),
 			doing("its owner's database")
+		)
+		yield* adminSql(
+			bin,
+			at,
+			cluster.owner,
+			[
+				`CREATE TABLE IF NOT EXISTS public.${templateClaimsTable} (template text NOT NULL, checkout text NOT NULL, logical text NOT NULL, claimed timestamptz NOT NULL DEFAULT pg_catalog.clock_timestamp(), PRIMARY KEY (template, checkout))`,
+				`ALTER TABLE public.${templateClaimsTable} OWNER TO ${owner}`
+			],
+			doing("its template claims")
 		)
 	})
 
@@ -570,6 +587,21 @@ export const membersRead = (
 					)
 					if (Arr.isReadonlyArrayNonEmpty(differs)) {
 						return yield* unsettled(`${name} holds ${Arr.join(Arr.map(differs, driftText), ", ")}`)
+					}
+					const [claims = "f"] = yield* Effect.mapError(
+						adminSql(
+							bin,
+							socket,
+							cluster.owner,
+							[`SELECT pg_catalog.to_regclass('public.${templateClaimsTable}') IS NOT NULL`],
+							{ ...at, doing: `${at.doing}: reading its template claims table` }
+						),
+						(error) => unsettled(error.message)
+					)
+					if (claims !== "t") {
+						return yield* unsettled(
+							`${name} holds no template claims table (${templateClaimsTable})`
+						)
 					}
 					const member: PgMember = {
 						name,

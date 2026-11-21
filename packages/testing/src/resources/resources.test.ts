@@ -16,6 +16,7 @@ import {
 	Effect,
 	Exit,
 	Fiber,
+	FileSystem,
 	Layer,
 	Number as Num,
 	Option,
@@ -40,6 +41,8 @@ import {
 } from "#resources/collect.ts"
 import { Database } from "#resources/database.ts"
 import {
+	claimedBy,
+	claimsGone,
 	countedConnections,
 	derivedMarksTemplate,
 	derivedTemplate,
@@ -652,7 +655,7 @@ export const staleCollected = property.explore(int(1, 3), {
 							inLive(Effect.flatMap(template.open, (opened) => opened.clone)),
 							alive
 						)
-						const collected = yield* inLive(collect([template]))
+						const collected = yield* inLive(collect)
 						const gone = yield* inLive(
 							Effect.forEach(left, (database) => Effect.map(exists(database), (found) => !found))
 						)
@@ -660,7 +663,7 @@ export const staleCollected = property.explore(int(1, 3), {
 						yield* Scope.close(alive, Exit.void)
 						const after = yield* Layer.build(ownCluster(prefix))
 						yield* Effect.provideContext(
-							collect([]),
+							Effect.andThen(claimsGone(current.member, prefix), collect),
 							Context.merge(after, closure(import.meta.url))
 						)
 						return { collected, gone, kept }
@@ -672,10 +675,91 @@ export const staleCollected = property.explore(int(1, 3), {
 			}),
 	oracle: {
 		kind: "specification",
-		name: "collection drops the clones of an ended worker and the template no declaration names, and keeps the declared one"
+		name: "collection drops the clones of an ended worker and the template its checkout claims no longer, having claimed a new closure's, and keeps the claimed one"
 	},
 	kept: [],
-	kills: []
+	kills: [
+		{
+			file: "packages/testing/src/resources/template.ts",
+			original: `\t\t\t\`WITH superseded AS (DELETE FROM public.\${templateClaimsTable} WHERE checkout = $1 AND logical = $2 AND template <> $3) INSERT INTO public.\${templateClaimsTable} (template, checkout, logical) VALUES ($3, $1, $2) ON CONFLICT (template, checkout) DO UPDATE SET claimed = pg_catalog.clock_timestamp()\`,\n`,
+			replacement: `\t\t\t\`INSERT INTO public.\${templateClaimsTable} (template, checkout, logical) VALUES ($3, $1, $2) ON CONFLICT (template, checkout) DO UPDATE SET claimed = pg_catalog.clock_timestamp()\`,\n`,
+			why: "A checkout that claims a new closure's template keeps its claim of the old one, so a closure it moved past is never collected while the checkout exists, one more template every closure; the property fails, the stale template kept."
+		}
+	]
+})
+
+export const claimedTemplatesKept = property.exhaust(finite(boolean), {
+	box: "a template no live worker holds, claimed by another checkout that exists or was removed",
+	needs: { services },
+	situations: [],
+	check:
+		({ services: context }) =>
+		(removed) =>
+			Effect.gen(function* () {
+				const ctx = yield* context
+				const fs = yield* FileSystem.FileSystem
+				const runner = Context.make(ModuleClosure, Context.get(ctx, ModuleClosure)).pipe(
+					Context.add(WorkerIndex, Context.get(ctx, WorkerIndex)),
+					Context.add(RunValues, Context.get(ctx, RunValues))
+				)
+				const outcome = yield* Effect.scoped(
+					Effect.gen(function* () {
+						const cluster = Context.get(ctx, PgCluster)
+						const member = yield* Effect.map(cluster.members, Arr.headNonEmpty)
+						const prefixToken = yield* Effect.scoped(
+							Effect.flatMap(cluster.connect(member, cluster.maintenance), (session) =>
+								Effect.flatMap(single(session, freshHex, []), (drawn) =>
+									Effect.fromOption(Option.fromNullishOr(drawn))
+								)
+							)
+						)
+						const prefix = `tcs${prefixToken}_`
+						const template = tokenTemplate(prefix, () => Effect.void)
+						const opener = yield* Scope.make()
+						const openers = yield* Scope.provide(Layer.build(ownCluster(prefix)), opener)
+						const clone = yield* Effect.provideContext(
+							Effect.flatMap(template.open, (opened) => opened.clone),
+							Context.merge(openers, runner)
+						)
+						yield* Scope.close(opener, Exit.void)
+						const other = yield* fs.makeTempDirectoryScoped({ prefix: "toolchain-claims-" })
+						const collectingCluster = yield* Layer.build(ownCluster(prefix))
+						const collecting = Context.merge(collectingCluster, runner)
+						const built = { member: clone.member, name: clone.template }
+						yield* Effect.provideContext(claimedBy(clone.member, clone.template, other), collecting)
+						if (removed) {
+							yield* fs.remove(other, { recursive: true })
+						}
+						yield* Effect.provideContext(collect, collecting)
+						const kept = yield* Effect.provideContext(exists(built), collecting)
+						yield* Effect.provideContext(
+							Effect.andThen(claimsGone(clone.member, prefix), collect),
+							collecting
+						)
+						return { kept, left: yield* Effect.provideContext(exists(built), collecting) }
+					})
+				)
+				assert.deepEqual(outcome, { kept: !removed, left: false })
+			}),
+	oracle: {
+		kind: "specification",
+		name: "another run's collection keeps a template no live worker holds while a checkout that exists claims it, and drops it once that checkout is gone"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/resources/collect.ts",
+			original: '\t\t\t\t\t(database.kind === "template" && claimed.has(database.name))\n',
+			replacement: '\t\t\t\t\t(database.kind === "template" && false)\n',
+			why: "Collection keeps only what a live worker holds, whatever checkout claims a template, as it kept only what its own run declared: a lane's run drops trunk's builds and trunk the lane's, each paying them cold again (metis's SLOP-FIXER: ten digests of one template built over); the property fails, the claimed template dropped."
+		},
+		{
+			file: "packages/testing/src/resources/collect.ts",
+			original: "\t\t\tEffect.map(collector.exists(checkout), (present) => !present)\n",
+			replacement: "\t\t\tEffect.succeed(false)\n",
+			why: "A claim outlives its checkout, so a deleted lane's or a removed worker tree's templates stay on the cluster for good; the property fails, the template of a removed checkout kept."
+		}
+	]
 })
 
 export const inUseKept = property.exhaust(
@@ -735,10 +819,14 @@ export const inUseKept = property.exhaust(
 								yield* Scope.close(opener, Exit.void)
 							}
 							const collector = yield* Layer.build(ownCluster(prefix))
-							yield* Effect.provideContext(collect([]), Context.merge(collector, runner))
+							yield* Effect.provideContext(
+								claimsGone(member, prefix),
+								Context.merge(collector, runner)
+							)
+							yield* Effect.provideContext(collect, Context.merge(collector, runner))
 							const kept = yield* templates
 							yield* Scope.close(opener, Exit.void)
-							yield* Effect.provideContext(collect([]), Context.merge(collector, runner))
+							yield* Effect.provideContext(collect, Context.merge(collector, runner))
 							const left = yield* templates
 							return { built, kept, left }
 						})
@@ -761,8 +849,8 @@ export const inUseKept = property.exhaust(
 			{
 				file: "packages/testing/src/resources/collect.ts",
 				original:
-					'\t\t\t\t\t\t!(yield* took(collector, lockKey("$1"), digest)) ||\n\t\t\t\t\t\t(database.kind === "template" && !(yield* took(collector, useKey("$1"), digest)))',
-				replacement: '\t\t\t\t\t\t!(yield* took(collector, lockKey("$1"), digest))',
+					'\t\t\t\t\t!(yield* took(collector, lockKey("$1"), digest)) ||\n\t\t\t\t\t(database.kind === "template" && !(yield* took(collector, useKey("$1"), digest)))',
+				replacement: '\t\t\t\t\t!(yield* took(collector, lockKey("$1"), digest))',
 				why: "Collection drops a template whatever worker holds it in use; this property fails."
 			},
 			{
@@ -820,6 +908,10 @@ export const cloneOutlivesNoTemplate = property.exhaust(
 								Effect.flatMap(template.open, (opened) => opened.clone),
 								Context.merge(openers, runner)
 							)
+							yield* Effect.provideContext(
+								claimsGone(clone.member, prefix),
+								Context.merge(openers, runner)
+							)
 							const ending: CollectionPhase = () => Effect.as(Scope.close(opener, Exit.void), [])
 							const collecting = yield* Layer.build(ownCluster(prefix))
 							const collector = Context.merge(collecting, runner)
@@ -835,11 +927,11 @@ export const cloneOutlivesNoTemplate = property.exhaust(
 									...Arr.take(collectionPhases, at),
 									ending,
 									...Arr.drop(collectionPhases, at)
-								])(clone.member, new Set()),
+								])(clone.member),
 								collector
 							)
 							const after = yield* present
-							yield* Effect.provideContext(collect([]), collector)
+							yield* Effect.provideContext(collect, collector)
 							return { after, left: yield* present }
 						})
 					)

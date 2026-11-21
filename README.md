@@ -14,6 +14,21 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: a template is kept while a checkout claims it (2026-11-21)
+
+Collection dropped every template its own run's properties did not declare, so a lane and trunk on one cluster, at two
+closures, each dropped the other's builds and built them cold again (metis-test-0 held ten digests of one template).
+A template is now kept while any checkout that exists claims it.
+
+- A run claims each template it opens, by the real path of the package root it runs from (a lane's workspace, trunk's
+  worktree, a worker tree), in the owner database's `toolchain_template_claims`; claiming a new digest of a logical
+  template (its name and declaring module) drops that checkout's claim of the old one. Collection drops the claims of
+  checkouts that no longer exist, then a template no claim names, no builder holds and no live worker holds in use.
+  A parked but kept workspace keeps its claims: one digest per logical template it used.
+- Run `toolchain-pg settle` after the bump: settle makes the claims table (no setting changes, no restart), and a run
+  refuses a member without it, naming settle. Templates built before the bump carry no claim and are collected once.
+- `collect` takes no argument: what a run declares no longer decides what it collects.
+
 ## Consumer migration: a statement's wait is checked against its backend (2026-11-21)
 
 A statement the member holds up server-side (behind a lock, the SSI locks under SERIALIZABLE contention, a checkpoint)

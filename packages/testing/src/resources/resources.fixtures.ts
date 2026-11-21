@@ -6,6 +6,7 @@ import { boolean, characterOf, type Gen, int, string } from "#gen.ts"
 import testingCluster from "#pg.config.ts"
 import { bootstrapSuperuser, serverBin } from "#pg/server.ts"
 import { pgOwnerSession, pgSuperuserSession } from "#pg/session.ts"
+import { templateClaimsTable } from "#pg/settle.ts"
 import { plantedBudget } from "#planted.fixtures.ts"
 import type { Need } from "#property.ts"
 import {
@@ -129,6 +130,50 @@ export const undeclaredSession = (
 					catch: (cause) => (Error.isError(cause) ? cause.message : String(cause))
 				})
 			)
+	)
+
+/**
+ * Drops every claim of the templates under `prefix` on `member` (pg/settle.ts templateClaimsTable), as collection drops
+ * the claims of a checkout that no longer exists: a case's templates are then kept by their use alone, or dropped.
+ */
+export const claimsGone = (
+	member: PgMember,
+	prefix: string
+): Effect.Effect<void, NeedFailed, PgCluster> =>
+	Effect.scoped(
+		Effect.gen(function* () {
+			const cluster = yield* PgCluster
+			const session = yield* cluster.connect(member, cluster.maintenance)
+			yield* run(
+				session,
+				`DELETE FROM public.${templateClaimsTable} WHERE pg_catalog.starts_with(template, $1)`,
+				[`${prefix}tpl_`]
+			)
+		})
+	)
+
+/**
+ * `template` (a database name) claimed on `member` by `checkout` alone, as a run of that checkout claims what it opens:
+ * every other claim of it dropped, its own made.
+ */
+export const claimedBy = (
+	member: PgMember,
+	template: string,
+	checkout: string
+): Effect.Effect<void, NeedFailed, PgCluster> =>
+	Effect.scoped(
+		Effect.gen(function* () {
+			const cluster = yield* PgCluster
+			const session = yield* cluster.connect(member, cluster.maintenance)
+			yield* run(session, `DELETE FROM public.${templateClaimsTable} WHERE template = $1`, [
+				template
+			])
+			yield* run(
+				session,
+				`INSERT INTO public.${templateClaimsTable} (template, checkout, logical) VALUES ($1, $2, 'a checkout of its own')`,
+				[template, checkout]
+			)
+		})
 	)
 
 /** Drops a template the properties built for one case, as collection would: no longer a template, then gone. */
