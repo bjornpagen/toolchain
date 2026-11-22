@@ -247,8 +247,30 @@ const watchdogThread = (layout: Layout, judge: typeof hangOver): void => {
 			void Promise.resolve().then(then)
 		}
 	}
+	/**
+	 * How long this thread has waited to run, in milliseconds: the second number of its /proc/thread-self/schedstat
+	 * (the time it was runnable on a runqueue, in nanoseconds; work.ts SCHEDSTAT); none without /proc. A report states it,
+	 * so a late end under load can be told from a watchdog that waited too long of itself.
+	 */
+	const waitedToRun = (): number => {
+		const file = "/proc/thread-self/schedstat"
+		if (!existsSync(file)) {
+			return 0
+		}
+		const stat = readFileSync(file)
+		const first = stat.indexOf(0x20)
+		let nanos = 0
+		for (let at = first + 1; at < stat.length; at += 1) {
+			const byte = stat[at] ?? 0x20
+			if (byte < 0x30 || byte > 0x39) {
+				break
+			}
+			nanos = nanos * 10 + (byte - 0x30)
+		}
+		return nanos / 1_000_000
+	}
 	const end = (report: string): void => {
-		writeSync(2, `\n${report}\n`)
+		writeSync(2, `\n${report}\nits watchdog waited ${waitedToRun().toFixed(0)} ms to run\n`)
 		process.kill(process.pid, "SIGKILL")
 	}
 	const stillBlocked = (looked: number): boolean =>

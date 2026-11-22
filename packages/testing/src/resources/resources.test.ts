@@ -1258,6 +1258,13 @@ export const freshInItsLocale = property.explore(localeCases, {
 	kills: []
 })
 
+/**
+ * A clone's drop held behind a working holder is a declared wait the case's guard judges none of. The guard here reads
+ * the stall and waited legs alone, its CPU leg unbounded, as lockedStatementIsDeclared's is: this property's subject is
+ * how a wait is classed, a runaway is runawayIsHung's, and its stall and waited legs still end a case that classes
+ * wrongly; with its CPU leg at its 150 ms deadline, the clone, the sessions and the claim checks spent it under
+ * trunk@toolchain's load at 93f4cedc, a verdict on the case's CPU, never on its wait (2026-11-22).
+ */
 export const cloneDropWaitIsDeclared = property.exhaust(finite(deadlocks), {
 	box: "a clone's drop held for six deadlines by a lock a session in the clone holds while it works, under a deadline of 150 or 300 ms",
 	needs: { services },

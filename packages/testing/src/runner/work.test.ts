@@ -349,8 +349,8 @@ export const unansweredClaimIsJudged = property.exhaust(finite(deadlocks), {
 		},
 		{
 			file: "packages/testing/src/runner/work.ts",
-			original: "\t\t\t\tif (Option.getOrElse(answer, () => false)) {\n",
-			replacement: "\t\t\t\tif (Option.getOrElse(answer, () => true)) {\n",
+			original: "\t\t\t\tif (Option.getOrElse(asked.answer, () => false)) {\n",
+			replacement: "\t\t\t\tif (Option.getOrElse(asked.answer, () => true)) {\n",
 			why: "A claim not yet answered holds as work, so a member that never answers keeps the wait open and the case's stall unread; the property fails, never judged."
 		}
 	]

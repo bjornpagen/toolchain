@@ -5,7 +5,8 @@
  * it), started from the checkout (Checkout.dir, so a mutant of live.ts reaches it on disk), every other one
  * in the case's own process: a body that loops or backtracks forever from a drawn threshold must end its process with
  * the hang report, naming the first case at the threshold in a replay token, once its case deadline and the watchdog's
- * grace have passed and before a grace more, the latest bound that still tells a watchdog waiting twice its grace
+ * grace have passed and before a grace more of the time the watchdog's thread could run (its waits to run, which its
+ * report states, taken out), the latest bound that still tells a watchdog waiting twice its grace
  * apart (measured on cassowary, 2026-11-16, load average 300 to 400 on 64 cores: 64 runaways ended 41 to 5,248 ms past
  * their moment, median 156, 90th percentile 249), and a body that waits in Atomics.wait ends with its thread's answer
  * to the inspector, which no grace bounds (blocking.fixtures.ts gracesOfBody), judged by the CPU its case spent, the
@@ -94,7 +95,8 @@ export const watchdog = property.explore(aimed(settlingRuns, bodyAims), {
 						withinItsGraces: Option.map(ran.began, (began) =>
 							Option.match(gracesOfBody(planted.body), {
 								onNone: () => true,
-								onSome: (graces) => ran.ended - began <= moment + graces * watchdogGraceMillis
+								onSome: (graces) =>
+									ran.ended - began - ran.watchdogWaited <= moment + graces * watchdogGraceMillis
 							})
 						)
 					},
@@ -125,6 +127,12 @@ export const watchdog = property.explore(aimed(settlingRuns, bodyAims), {
 			token: ReplayToken("src/blocking.test.ts#watchdog:-:2.0.9.0.3clv2e"),
 			reason:
 				"a planted body that sleeps past its deadline, yielding, drawn with a deadline of 20 ms before planted deadlines started at 400: its case's 20 ms windows, less its main thread's waits to run under trunk@toolchain's load, never came whole before its 80 ms sleep ended, so it was exhausted where it is hung (rotating seed 0x344cae69, case 2, at e8b7ecec, 2026-11-22)",
+			since: "2026-11-22"
+		},
+		{
+			token: ReplayToken("src/blocking.test.ts#watchdog:7f.1:c.4.5.y3veec"),
+			reason:
+				"a planted backtracking runaway (threshold 4, deadline 412 ms, seed 2062353828) that ended past its moment and a grace of wall time at load 380, its watchdog's own waits to run counted as the watchdog's lateness, where a grace is judged in the time the watchdog could run (floor case 15 of seed 0xa5b59f36, 2026-11-22)",
 			since: "2026-11-22"
 		}
 	],

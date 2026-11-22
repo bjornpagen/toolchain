@@ -388,8 +388,8 @@ export const leaveWait = (wall: number, id: number): void => {
 
 /**
  * Each open checked wait's claim asked again at `wall` (a guard's reading, live.ts overrun), never waited for: a reading
- * takes the answer the last ask gave, if it has come, and asks again in a fiber of its own, so no guard blocks on its
- * own claim check (trunk@toolchain at e8b7ecec, 2026-11-22: a kill trial's guard waited 69 minutes on a check whose
+ * takes the answer the ask a reading before it made, if it has come, and asks again in a fiber of its own, so no guard
+ * blocks on its own claim check, and an ask is given a whole window to answer (trunk@toolchain at e8b7ecec, 2026-11-22: a kill trial's guard waited 69 minutes on a check whose
  * connect a busy member never answered, and judged nothing). A wait whose server has answered that it is not working on
  * it, or has not answered, at two readings in a row, a whole window apart, closes at the first of them, as if its work
  * had ended then, so the guard counts the wall time after it as the stall it is: the client awaits an answer no server
@@ -407,8 +407,7 @@ export const checkedClaims = (wall: number): Effect.Effect<void> => {
 		({ id, working }) =>
 			Effect.gen(function* () {
 				const asked = ledger.asking.get(id)
-				const answer = Option.flatMap(Option.fromUndefinedOr(asked), (slot) => slot.answer)
-				if (asked === undefined || Option.isSome(answer)) {
+				if (asked === undefined || Option.isSome(asked.answer)) {
 					const slot: { answer: Option.Option<boolean> } = { answer: Option.none() }
 					ledger.asking.set(id, slot)
 					yield* Effect.forkDetach(
@@ -417,8 +416,11 @@ export const checkedClaims = (wall: number): Effect.Effect<void> => {
 						})
 					)
 				}
+				if (asked === undefined) {
+					return
+				}
 				const since = ledger.idle.get(id)
-				if (Option.getOrElse(answer, () => false)) {
+				if (Option.getOrElse(asked.answer, () => false)) {
 					ledger.idle.delete(id)
 				} else if (since === undefined) {
 					ledger.idle.set(id, wall)

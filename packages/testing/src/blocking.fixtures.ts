@@ -376,6 +376,9 @@ const legOf = (line: string): "spent" | "stalled" => (line === " spent" ? "spent
 /** The line the program prints when its search ends: how it ended. */
 const ENDED_LINE = regex("^ended: (?<ending>\\S+)$", "m")
 
+/** How long the watchdog's thread waited to run before it ended the process, as its report states it (live.ts end). */
+const WAITED_LINE = regex("^its watchdog waited (?<millis>\\d+) ms to run$", "m")
+
 /** The line the program prints as its search begins: the moment, in milliseconds since the epoch. */
 const BEGAN_LINE = regex("^began: (?<moment>\\d+)$", "m")
 
@@ -420,6 +423,10 @@ export const programRun = (program: string, planted: Planted, seed: number) =>
 				ending: Option.fromNullishOr(ENDED_LINE.exec(stdout)?.groups.ending),
 				replay: Option.fromNullishOr(REPLAY_LINE.exec(stderr)?.groups.token),
 				leg: Option.map(Option.fromNullishOr(LEG_LINE.exec(stderr)?.groups.leg), legOf),
+				watchdogWaited: Option.getOrElse(
+					Option.map(Option.fromNullishOr(WAITED_LINE.exec(stderr)?.groups.millis), Number),
+					() => 0
+				),
 				exitCode: Exit.isSuccess(exit) ? Option.some(Number(exit.value)) : Option.none()
 			}
 		})
