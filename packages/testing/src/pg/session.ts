@@ -14,13 +14,43 @@ const sessionFailed = (member: PgMember, doing: string) => (cause: unknown) =>
 	})
 
 /**
+ * The statement backendWorking runs, `$1` the backend: true while it works on its client's statement. `blockers` is
+ * every backend that holds a lock it waits behind, at any remove (pg_blocking_pids, again for each holder found; a
+ * prepared transaction is pid 0, in no row of pg_stat_activity); a holder that works (active and behind no heavyweight
+ * lock) or sits between statements (idle, out of any transaction) carries the wait, and holders idle in a transaction,
+ * or prepared, alone do not. The CASE asks the lock graph only of a backend behind a heavyweight lock.
+ */
+const BACKEND_WORKING = `WITH RECURSIVE blockers (pid) AS (
+	SELECT pg_catalog.unnest(pg_catalog.pg_blocking_pids($1::int4))
+	UNION
+	SELECT pg_catalog.unnest(pg_catalog.pg_blocking_pids(blockers.pid)) FROM blockers
+)
+SELECT CASE
+	WHEN a.state IS DISTINCT FROM 'active' THEN false
+	WHEN a.wait_event_type IS DISTINCT FROM 'Lock' THEN true
+	ELSE EXISTS (
+		SELECT FROM blockers JOIN pg_catalog.pg_stat_activity AS h USING (pid)
+		WHERE h.state = 'idle' OR (h.state = 'active' AND h.wait_event_type IS DISTINCT FROM 'Lock')
+	)
+END
+FROM pg_catalog.pg_stat_activity AS a WHERE a.pid = $1::int4`
+
+/**
  * Whether the backend `pid` of `member` works on what its client awaits, as the member says on a connection of its own,
  * the bootstrap superuser's over the member's socket (no secret, no TLS: a check costs its process a few milliseconds
- * of CPU, which a case's guard counts as the case's, where a TLS sign-in cost tens): it runs a statement
- * (pg_stat_activity's `active`, behind a lock, an LWLock, I/O or a checkpoint as much as on a CPU), where `idle`,
+ * of CPU, which a case's guard counts as the case's, where a TLS sign-in cost tens) (BACKEND_WORKING): it runs a
+ * statement (pg_stat_activity's `active`, behind an LWLock, I/O or a checkpoint as much as on a CPU), where `idle`,
  * `idle in transaction` or a backend gone means the member has answered, or never will, so its client awaits nothing
- * the member does. A member that cannot be asked (the connection fails) answers yes: the claim holds when it cannot be
- * checked.
+ * the member does. A backend behind a heavyweight lock works while something holding it, at any remove (a holder
+ * itself behind a lock passes the question on), works or is a session between statements, which holds only a
+ * session's lock (an advisory mutex whose holder's client works elsewhere, a template's build gate); one whose every
+ * holder sits idle in a transaction, or is a prepared transaction, waits on a client, not on the member: nothing moves
+ * until that client acts, and when the client is the waiter's own process, which awaits the statement, nothing ever
+ * will (grizzle's test/pg/substrate/budget.test.ts under its first kill, UNITREDS, 2026-11-22: the case failed with
+ * its holder idle in transaction on ACCESS EXCLUSIVE and two pool reads of its own behind it; its cleanup closed the
+ * pool before the holder, so it waited on the reads, the reads on the holder, and the reads' waits read active, 14 to
+ * 73 minutes and more with no verdict). A member
+ * that cannot be asked (the connection fails) answers yes: the claim holds when it cannot be checked.
  */
 export const backendWorking = (member: PgMember, pid: number): Effect.Effect<boolean> => {
 	const unasked = () => "unasked" as const
@@ -43,14 +73,14 @@ export const backendWorking = (member: PgMember, pid: number): Effect.Effect<boo
 				Effect.map(
 					Effect.tryPromise({
 						try: () =>
-							client.query<[string]>({
-								text: "SELECT state FROM pg_catalog.pg_stat_activity WHERE pid = $1",
+							client.query<[boolean]>({
+								text: BACKEND_WORKING,
 								values: [pid],
 								rowMode: "array"
 							}),
 						catch: unasked
 					}),
-					(result) => result.rows[0]?.[0] === "active"
+					(result) => result.rows[0]?.[0] === true
 				),
 			(client) => Effect.ignore(Effect.tryPromise({ try: () => client.end(), catch: unasked }))
 		),

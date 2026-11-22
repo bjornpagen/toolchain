@@ -15,6 +15,7 @@ import {
 	Duration,
 	Effect,
 	Exit,
+	Fiber,
 	Layer,
 	Number as Num,
 	Option,
@@ -60,6 +61,7 @@ import {
 	templateNameOf,
 	tokenTemplate,
 	UTF8_COLLATIONS,
+	undeclaredSession,
 	unpopulatedViewTemplate
 } from "#resources/resources.fixtures.ts"
 import type { DatabaseTemplate } from "#resources/template.ts"
@@ -1165,7 +1167,7 @@ export const freshInItsLocale = property.explore(localeCases, {
 })
 
 export const cloneDropWaitIsDeclared = property.exhaust(finite(deadlocks), {
-	box: "a clone's drop held for six deadlines by a lock its case's own session holds on the clone, under a deadline of 150 or 300 ms",
+	box: "a clone's drop held for six deadlines by a lock a session in the clone holds while it works, under a deadline of 150 or 300 ms",
 	needs: { services },
 	situations: [],
 	check:
@@ -1175,7 +1177,6 @@ export const cloneDropWaitIsDeclared = property.exhaust(finite(deadlocks), {
 				Effect.provideContext(
 					Effect.scoped(
 						Effect.gen(function* () {
-							const cluster = yield* PgCluster
 							const opened = yield* marksTemplate.open
 							const outer = yield* Effect.scope
 							const holding = yield* Scope.make()
@@ -1187,23 +1188,17 @@ export const cloneDropWaitIsDeclared = property.exhaust(finite(deadlocks), {
 								Effect.gen(function* () {
 									const clone = yield* opened.clone
 									yield* Deferred.succeed(named, clone.name)
-									const session = yield* Scope.provide(
-										cluster.connect(clone.member, clone.name),
+									const holder = yield* Scope.provide(
+										undeclaredSession(clone.member, clone.name),
 										holding
 									)
-									yield* runIn(session, "BEGIN", [])
-									yield* runIn(
-										session,
-										`COMMENT ON DATABASE ${quoteIdent(clone.name)} IS 'held'`,
-										[]
-									)
+									yield* holder("BEGIN")
+									yield* holder(`COMMENT ON DATABASE ${quoteIdent(clone.name)} IS 'held'`)
 									const released = Effect.gen(function* () {
-										yield* liveSleep(held)
+										yield* holder(`SELECT pg_catalog.pg_sleep(${Duration.toSeconds(held)})`)
 										const open = waitedOnNow()
-										yield* runIn(session, "COMMIT", [])
-										const survived = yield* Effect.isSuccess(
-											runIn(session, "SELECT pg_catalog.pg_backend_pid()::text", [])
-										)
+										yield* holder("COMMIT")
+										const survived = yield* Effect.isSuccess(holder("SELECT 1"))
 										yield* Deferred.succeed(seen, { open, survived })
 										yield* Scope.close(holding, Exit.void)
 									})
@@ -1238,7 +1233,7 @@ export const cloneDropWaitIsDeclared = property.exhaust(finite(deadlocks), {
 			),
 	oracle: {
 		kind: "specification",
-		name: "a clone's drop that waits on the member past its case's deadline, behind a lock its case's own session holds on the clone, is a declared wait named by its statement: the case's guard judges none of it, this process's open waits name it while it waits, and it ends no session of the case's"
+		name: "a clone's drop that waits on the member past its case's deadline, behind a lock a session in the clone holds while it works, is a declared wait named by its statement: the case's guard judges none of it, this process's open waits name it while it waits, and it ends no session in the clone"
 	},
 	kept: [],
 	kills: [
@@ -1365,7 +1360,7 @@ export const unansweredStatementIsHung = property.exhaust(finite(deadlocks), {
 })
 
 export const lockedStatementIsDeclared = property.exhaust(finite(deadlocks), {
-	box: "a statement of a case's session behind a lock another session holds for six deadlines, under a deadline of 150 or 300 ms",
+	box: "a statement of a case's session behind a lock another process's session holds while it works for six deadlines, under a deadline of 150 or 300 ms",
 	needs: { services },
 	situations: [],
 	check:
@@ -1378,23 +1373,14 @@ export const lockedStatementIsDeclared = property.exhaust(finite(deadlocks), {
 							const cluster = yield* PgCluster
 							const opened = yield* marksTemplate.open
 							const clone = yield* opened.clone
-							const holder = yield* cluster.connect(clone.member, clone.name)
+							const holder = yield* undeclaredSession(clone.member, clone.name)
 							const waiter = yield* cluster.connect(clone.member, clone.name)
-							yield* runIn(holder, "CREATE TABLE held (x int)", [])
-							yield* runIn(holder, "BEGIN", [])
-							yield* runIn(holder, "LOCK TABLE held IN ACCESS EXCLUSIVE MODE", [])
-							const released = yield* Deferred.make<void>()
-							const committed = Effect.andThen(
-								runIn(holder, "COMMIT", []),
-								Deferred.succeed(released, undefined)
-							)
-							yield* Effect.forkScoped(
-								Effect.orDie(
-									Effect.andThen(
-										liveSleep(Duration.millis(shape.deadline * shape.deadlines)),
-										committed
-									)
-								)
+							yield* runIn(waiter, "CREATE TABLE held (x int)", [])
+							yield* holder("BEGIN")
+							yield* holder("LOCK TABLE held IN ACCESS EXCLUSIVE MODE")
+							const seconds = (shape.deadline * shape.deadlines) / 1000
+							const holding = yield* Effect.forkScoped(
+								Effect.andThen(holder(`SELECT pg_catalog.pg_sleep(${seconds})`), holder("COMMIT"))
 							)
 							const wall = yield* liveMillis
 							const verdict = yield* Effect.raceFirst(
@@ -1403,15 +1389,7 @@ export const lockedStatementIsDeclared = property.exhaust(finite(deadlocks), {
 									overrun(ownWork(wall, ownCpu()), deadlineBound(shape.deadline)),
 									overrunText
 								)
-							).pipe(
-								Effect.ensuring(
-									Effect.orDie(
-										Effect.flatMap(Deferred.isDone(released), (done) =>
-											done ? Effect.void : committed
-										)
-									)
-								)
-							)
+							).pipe(Effect.ensuring(Effect.orDie(Fiber.join(holding))))
 							assert.equal(verdict, "passed")
 						})
 					),
@@ -1420,15 +1398,68 @@ export const lockedStatementIsDeclared = property.exhaust(finite(deadlocks), {
 			),
 	oracle: {
 		kind: "specification",
-		name: "a statement the member holds behind another session's lock is its backend's work, checked as working, and the case's guard judges none of it"
+		name: "a statement the member holds behind a lock whose holder works is its backend's work, checked as working, and the case's guard judges none of it"
 	},
 	kept: [],
 	kills: [
 		{
 			file: "packages/testing/src/pg/session.ts",
-			original: '\t\t\t\t\t(result) => result.rows[0]?.[0] === "active"\n',
-			replacement: '\t\t\t\t\t(result) => result.rows[0]?.[0] === "idle"\n',
-			why: "A backend that waits behind a lock reads as idle, so a statement the member holds up (a lock, the SSI locks under SERIALIZABLE contention) lapses at the guard's first reading and its live case is judged hung; the property fails, the locked read judged."
+			original:
+				"\t\tWHERE h.state = 'idle' OR (h.state = 'active' AND h.wait_event_type IS DISTINCT FROM 'Lock')\n",
+			replacement: "\t\tWHERE false\n",
+			why: "A backend behind a heavyweight lock reads as working on nothing whoever holds the lock, so a statement the member holds up behind another session's work lapses at the guard's first reading and its live case is judged hung; the property fails, the locked read judged."
+		}
+	]
+})
+
+export const lockedByItsClientIsHung = property.exhaust(finite(deadlocks), {
+	box: "a statement of a case's session behind a lock a session holds idle in its transaction, under a deadline of 150 or 300 ms",
+	needs: { services },
+	situations: [],
+	check:
+		({ services: context }) =>
+		(shape) =>
+			Effect.flatMap(context, (ctx) =>
+				Effect.provideContext(
+					Effect.scoped(
+						Effect.gen(function* () {
+							const cluster = yield* PgCluster
+							const opened = yield* marksTemplate.open
+							const clone = yield* opened.clone
+							const holder = yield* undeclaredSession(clone.member, clone.name)
+							const waiter = yield* cluster.connect(clone.member, clone.name)
+							yield* runIn(waiter, "CREATE TABLE held (x int)", [])
+							yield* holder("BEGIN")
+							yield* holder("LOCK TABLE held IN ACCESS EXCLUSIVE MODE")
+							const wall = yield* liveMillis
+							const verdict = yield* Effect.raceAll([
+								Effect.as(waiter.query("SELECT count(*)::text FROM held", []), "answered"),
+								Effect.map(
+									overrun(ownWork(wall, ownCpu()), deadlineBound(shape.deadline)),
+									(judged) => judged.kind
+								),
+								// Room for two claim checks a window apart and a whole window after them, each check a connect
+								// and a statement on a member that load 600 slowed to hundreds of milliseconds (case 0 at 10
+								// deadlines, 2026-11-22: never judged).
+								Effect.as(liveSleep(Duration.millis(shape.deadline * 40)), "never judged")
+							]).pipe(Effect.ensuring(Effect.orDie(holder("ROLLBACK"))))
+							assert.equal(verdict, "stalled")
+						})
+					),
+					ctx
+				)
+			),
+	oracle: {
+		kind: "specification",
+		name: "a declared wait on a statement behind a lock that only a session idle in its transaction holds waits on a client, not on the member: it is judged, the stall leg counting it from the reading that found it so"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/pg/session.ts",
+			original: "\tWHEN a.wait_event_type IS DISTINCT FROM 'Lock' THEN true\n",
+			replacement: "\tWHEN true THEN true\n",
+			why: "A backend behind a heavyweight lock works whoever holds it, so a case whose own session holds the lock idle in its transaction while its client awaits the statement behind it is never judged (grizzle's budget.test.ts under its first kill, 2026-11-22: its cleanup closed a pool before the holder, the pool's reads behind the holder, 14 to 73 minutes and more with no verdict); the property fails, never judged."
 		}
 	]
 })

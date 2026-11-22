@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices"
 import { Array as Arr, Brand, Context, Effect, Layer, Option, Ref, type Scope } from "effect"
 import { ChildProcess } from "effect/process"
+import pg from "pg"
 import { boolean, characterOf, type Gen, int, string } from "#gen.ts"
 import testingCluster from "#pg.config.ts"
 import { bootstrapSuperuser, serverBin } from "#pg/server.ts"
@@ -11,6 +12,7 @@ import {
 	DatabasePrefix,
 	PgCluster,
 	type PgClusterSpec,
+	type PgMember,
 	quoteIdent,
 	required,
 	run,
@@ -91,6 +93,42 @@ export const exists = (database: TemplateDatabase): Effect.Effect<boolean, NeedF
 			)
 			return found === "1"
 		})
+	)
+
+/**
+ * A session of the bootstrap superuser in `database` on `member` over its socket that is no declared wait of this
+ * process (a node-postgres client of the fixture's own, outside pg/session.ts): what it runs stands for another
+ * process's work, of which this process's guard knows nothing. Each statement runs to its answer, or fails with what the
+ * server said; the session ends with the scope.
+ */
+export const undeclaredSession = (
+	member: PgMember,
+	database: string
+): Effect.Effect<(sql: string) => Effect.Effect<void, string>, never, Scope.Scope> =>
+	Effect.map(
+		Effect.acquireRelease(
+			Effect.tap(
+				Effect.sync(
+					() =>
+						new pg.Client({
+							host: member.socket,
+							port: member.port,
+							user: bootstrapSuperuser(),
+							database,
+							application_name: "toolchain undeclared session"
+						})
+				),
+				(client) => Effect.promise(() => client.connect())
+			),
+			(client) => Effect.promise(() => client.end())
+		),
+		(client) => (sql: string) =>
+			Effect.asVoid(
+				Effect.tryPromise({
+					try: () => client.query(sql),
+					catch: (cause) => (Error.isError(cause) ? cause.message : String(cause))
+				})
+			)
 	)
 
 /** Drops a template the properties built for one case, as collection would: no longer a template, then gone. */
