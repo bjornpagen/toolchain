@@ -1,0 +1,4 @@
+/* The sprocket theme's route sheet: the app's layer order, the library's base sheet, then the theme's entry. */
+@layer theme, base, module, sprocket, cog, components, utilities;
+@import "sprocket-kit/base.css" layer(sprocket);
+@import "../library/routed/entry.css" layer(sprocket);

@@ -1,0 +1,12 @@
+@layer theme, base, module, sprocket, cog, components, utilities;
+@import "tailwindcss";
+@import "../../library/routed/clean.css" layer(sprocket);
+@import "../../library/cogs/violating.css" layer(cog);
+
+:root {
+	--paper: oklch(0.99 0.01 100);
+}
+
+@theme inline {
+	--color-paper: var(--paper);
+}

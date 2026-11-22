@@ -1,0 +1,11 @@
+/* The cog theme's route sheet never imports its entry in the one form, which the top reports. // violation */
+@import "../library/cogs/entry.css" layer(cog); /* // violation */
+@layer theme, base, module, sprocket, cog, components, utilities;
+@import "../library/cogs/entry.css"; /* // violation */
+@import "../library/cogs/./entry.css" layer(cog); /* // violation */
+@import "../library/routed/entry.css" layer(sprocket); /* // violation */
+@layer cog { /* // violation */
+	[data-part="cog-wheel"] {
+		gap: 0;
+	}
+}

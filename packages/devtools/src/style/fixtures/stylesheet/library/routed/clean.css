@@ -1,0 +1,20 @@
+/* The sprocket theme's tokens part, which the app's stylesheet loads on every page: only :root rules of its tokens,
+   conditioned as the theme needs. */
+
+@layer sprocket {
+	:root {
+		--sprocket-ink: oklch(0.2 0 0);
+	}
+
+	@supports (corner-shape: superellipse(1.4)) {
+		:where(:root) {
+			--sprocket-corner: superellipse(1.4);
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		:where(:root) {
+			--sprocket-duration: 0s;
+		}
+	}
+}

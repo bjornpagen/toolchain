@@ -12,6 +12,8 @@ import {
 	FIXTURE_OPTIONS,
 	LIBRARY_FIXTURE_OPTIONS,
 	libraryEntryOf,
+	ROUTE_FIXTURE_OPTIONS,
+	routeOf,
 	type RuleOptions,
 	RUNTIME_FIXTURE_OPTIONS,
 	stylesheetPathsOf
@@ -24,7 +26,7 @@ import type {
 	SourceReader
 } from "#style/own.ts"
 import { isNamedBy, isNamedByAny, moduleOf } from "#style/paths.ts"
-import type { LibraryTheme } from "#style/rules/library-theme.ts"
+import type { LibraryTheme, Route } from "#style/rules/library-theme.ts"
 import {
 	SECOND_STYLESHEET,
 	type SheetRole,
@@ -76,31 +78,52 @@ const fileFinding =
 	(rule: SheetRule, message: string) =>
 	(file: string): Finding => ({ file, line: 1, column: 1, rule, message })
 
+/** The one file the run knows that a path the options name for a library theme names. */
+const themeFileOf = (
+	run: StyleRun,
+	path: string,
+	what: string
+): Effect.Effect<string, DevtoolFailure> => {
+	const [file, ...others] = Arr.filter(run.known, isNamedBy(path))
+	return file === undefined || Arr.isReadonlyArrayNonEmpty(others)
+		? Effect.fail(
+				DevtoolFailure.make({
+					detail: `The style options name ${path} as ${what}, which ${file === undefined ? "no file the style linter reads" : "more than one file"} matches`
+				})
+			)
+		: Effect.succeed(file)
+}
+
 /** The library themes the options name, as the run finds them: each one's entry, the one file the run knows that its
- * path names, and its parts, every other stylesheet the run knows under the entry's directory. */
+ * path names, its parts, every other stylesheet the run knows under the entry's directory, and its route sheet and
+ * tokens part where it has a route sheet, the tokens part one of its parts. */
 const libraryThemesOf = (
 	run: StyleRun
 ): Effect.Effect<ReadonlyArray<LibraryTheme>, DevtoolFailure> =>
-	Effect.forEach(run.options.stylesheet.libraryThemes, (option) => {
-		const path = libraryEntryOf(option)
-		const [entry, ...others] = Arr.filter(run.known, isNamedBy(path))
-		if (entry === undefined || Arr.isReadonlyArrayNonEmpty(others)) {
-			return Effect.fail(
-				DevtoolFailure.make({
-					detail: `The style options name ${path} as a library theme's entry, which ${entry === undefined ? "no file the style linter reads" : "more than one file"} matches`
-				})
-			)
-		}
-		const directory = Str.slice(0, entry.length - option.entry.length)(entry)
-		return Effect.succeed({
-			option,
-			entry,
-			parts: Arr.filter(
+	Effect.forEach(run.options.stylesheet.libraryThemes, (option) =>
+		Effect.gen(function* () {
+			const entry = yield* themeFileOf(run, libraryEntryOf(option), "a library theme's entry")
+			const directory = Str.slice(0, entry.length - option.entry.length)(entry)
+			const parts = Arr.filter(
 				run.known,
 				(file) => isStylesheetPath(file) && Str.startsWith(directory)(file) && file !== entry
 			)
+			const route = yield* Effect.transposeOption(
+				Option.map(routeOf(option), (named) =>
+					Effect.gen(function* () {
+						const sheet = yield* themeFileOf(run, named.sheet.path, "a library theme's route sheet")
+						const tokens = `${directory}${named.sheet.tokens}`
+						return Arr.contains(parts, tokens)
+							? ({ sheet, tokens, base: named.sheet.base } satisfies Route)
+							: yield* DevtoolFailure.make({
+									detail: `The style options name ${named.tokens} as the tokens part of library theme ${option.directory}, which is none of its parts`
+								})
+					})
+				)
+			)
+			return { option, entry, parts, route } satisfies LibraryTheme
 		})
-	})
+	)
 
 /** A stylesheet with the one role the options give it, none when they name it nowhere. A sheet they give two roles
  * is a failure, never a guess. */
@@ -219,7 +242,8 @@ const styleFindingsOf = Effect.fn("styleFindingsOf")(function* (run: StyleRun) {
 
 /** An app's options as the engine may run them: the repository's own rules report under ids no shared rule and no
  * other of the app's own rule sets uses, every exception names a rule the app runs, the style linter's, oxlint's or
- * its own, and the layered imports list each library theme's entry, relative to the app's stylesheet, with its layer. */
+ * its own, and the layered imports list each library theme's entry, relative to the app's stylesheet, with its layer,
+ * or its tokens part in its place where the theme has a route sheet. */
 const checkedOptions = (
 	input: Readonly<{ app: string; options: AppStyleOptions }>
 ): Effect.Effect<AppStyleOptions, DevtoolFailure> => {
@@ -252,7 +276,13 @@ const checkedOptions = (
 	}
 	const { stylesheet: sheet, entryPoint } = input.options
 	const unlisted = Arr.filterMap(sheet.libraryThemes, (theme) => {
-		const module = moduleOf({ file: entryPoint, target: libraryEntryOf(theme) })
+		const module = moduleOf({
+			file: entryPoint,
+			target: Option.match(routeOf(theme), {
+				onNone: () => libraryEntryOf(theme),
+				onSome: (route) => route.tokens
+			})
+		})
 		return Arr.some(
 			sheet.layeredImports,
 			(imported) => imported.module === module && imported.layer === theme.layer
@@ -396,6 +426,21 @@ const LIBRARY_SUITE: FixtureSuite = {
 	)
 }
 
+/** The stylesheet rule over library themes with route sheets: the app sheets that import their tokens parts, the route
+ * sheets, and each theme's tokens part beside another part. It reads the shared fixtures' tree, so its cases are the
+ * only directories it judges. */
+const ROUTE_SUITE: FixtureSuite = {
+	name: "style, route sheets",
+	root: FIXTURES_ROOT,
+	sheets: isSharedSheet,
+	options: ROUTE_FIXTURE_OPTIONS,
+	own: [],
+	cases: Arr.map(
+		["app/route", "route", "library/routed", "library/cogs"],
+		(directory): FixtureCase => ({ directory: `stylesheet/${directory}`, rule: "stylesheet" })
+	)
+}
+
 /** An own rule set's suite: a case for each id it reports under, in the id's directory, and the set's other cases.
  * It reads every stylesheet outside support/. */
 const ownSuiteOf = (rules: OwnStyleRules): FixtureSuite => ({
@@ -462,15 +507,15 @@ const suiteMismatchesOf = Effect.fn("suiteMismatchesOf")(function* (suite: Fixtu
 	)
 })
 
-/** The fixture suites to run, all at once: the stylesheet rule's (and its runs under a runtime layer and over library
- * themes) when the dev tools run as the repository's own package, and each own rule set's; each with its name, its
+/** The fixture suites to run, all at once: the stylesheet rule's (and its runs under a runtime layer, over library
+ * themes and over their route sheets) when the dev tools run as the repository's own package, and each own rule set's; each with its name, its
  * root, how many rules it proves and its mismatches. */
 export const fixtureRuns = (
 	input: Readonly<{ shared: boolean; own: ReadonlyArray<OwnStyleRules> }>
 ) =>
 	Effect.forEach(
 		[
-			...(input.shared ? [SHARED_SUITE, RUNTIME_SUITE, LIBRARY_SUITE] : []),
+			...(input.shared ? [SHARED_SUITE, RUNTIME_SUITE, LIBRARY_SUITE, ROUTE_SUITE] : []),
 			...Arr.map(input.own, ownSuiteOf)
 		],
 		(suite) =>

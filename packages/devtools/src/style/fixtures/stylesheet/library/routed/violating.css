@@ -1,0 +1,11 @@
+/* A part of the sprocket theme beside its tokens part: its anchored rules stand, as any part's do. */
+
+@layer sprocket {
+	[data-slot="sprocket-card"] {
+		color: var(--sprocket-ink);
+	}
+
+	.card { /* // violation */
+		color: red;
+	}
+}

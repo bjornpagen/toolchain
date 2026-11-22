@@ -1,0 +1,7 @@
+/* A part of the cog theme beside its tokens part, which only the cog's route sheet loads. */
+
+@layer cog {
+	[data-part="cog-wheel"] {
+		gap: var(--cog-gap);
+	}
+}

@@ -1,0 +1,16 @@
+/* The cog theme's tokens part never enters as its layered import, which the top reports. // violation */
+@layer theme, base, module, sprocket, cog, components, utilities;
+@import "tailwindcss";
+@import "../../library/routed/clean.css" layer(sprocket);
+@import "../../library/routed/clean.css" layer(sprocket); /* // violation */
+@import "../../library/routed/entry.css" layer(sprocket); /* // violation */
+@import "sprocket-kit/base.css" layer(sprocket); /* // violation */
+@import "../../library/cogs/violating.css"; /* // violation */
+
+:root {
+	--paper: oklch(0.99 0.01 100);
+}
+
+@theme inline {
+	--color-paper: var(--paper);
+}

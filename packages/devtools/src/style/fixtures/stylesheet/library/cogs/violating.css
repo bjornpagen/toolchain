@@ -1,0 +1,17 @@
+/* The cog theme's tokens part, which every page loads, so it holds no rule but its :root ones. */
+
+@layer cog {
+	:root {
+		--cog-gap: 1rem;
+	}
+
+	[data-part="cog-wheel"] { /* // violation */
+		gap: var(--cog-gap);
+	}
+
+	@media (width > 40rem) {
+		[data-part="cog-wheel"] { /* // violation */
+			gap: 2rem;
+		}
+	}
+}

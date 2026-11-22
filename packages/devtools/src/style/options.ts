@@ -1,4 +1,4 @@
-import { Array as Arr, Schema, String as Str } from "effect"
+import { Array as Arr, Option, Schema, String as Str } from "effect"
 import { OwnStyleRules } from "#style/own.ts"
 
 /** A file or directory the options name, repository-relative, as `#style/paths.ts` matches it. */
@@ -37,6 +37,27 @@ const ScopedSheet = Schema.Struct({
 })
 
 /**
+ * A library theme's route sheet: the one sheet the modules that render the library import, so only their routes load
+ * the theme's rules, while every page keeps the tokens the app's own classes read. The app's stylesheet imports the
+ * theme's tokens part alone, exactly once, as its layered import into the theme's layer; the tokens part holds only
+ * `:root` rules of the theme's tokens, and the entry still imports it with every other part. The route sheet holds
+ * only comments, the app's stylesheet's `@layer` statement, the same layers in the same order, so the order holds
+ * whichever sheet a page meets first, and then, in this order, the layered imports of the library's own base sheets
+ * and of the theme's entry, each into the theme's layer. On a route that loads it the theme's layer reads as it would
+ * from the app's stylesheet: the base sheets, the tokens over theirs of the same name, then the parts. Which modules
+ * may import the route sheet is the app's own import rule's to say.
+ */
+const RouteSheet = Schema.Struct({
+	/** The route sheet, repository-relative. */
+	path: RepositoryPath,
+	/** The tokens part's file name in the theme's directory, such as "tokens.css". */
+	tokens: Schema.NonEmptyString,
+	/** The modules the route sheet imports into the theme's layer before the entry, as written between the quotes,
+	 * such as "@qti-pie/plate/styles/base.css": the library's own sheets, which the theme styles over. */
+	base: Schema.Array(Schema.NonEmptyString)
+})
+
+/**
  * A library theme: the stylesheets in one directory of the app that draw one library's markup, which the app renders
  * and does not write (a library's server-rendered parts, whose elements carry the library's hooks and never the app's
  * classes), so no utility reaches it. Every stylesheet under the directory is the theme's: the entry, which holds only
@@ -52,6 +73,9 @@ const ScopedSheet = Schema.Struct({
  * shared tokens, `--color-*` and Tailwind's theme namespaces stay the app's stylesheet's, as do fonts, animations,
  * `@theme` and utilities. Its values are free, `!important` among them: a library such as UI SDK writes inline styles
  * that a theme must sometimes override.
+ *
+ * A theme with a route sheet (`RouteSheet`) is loaded only on the routes that render its library: the app's stylesheet
+ * imports its tokens part alone, and the route sheet the rest.
  */
 const LibraryTheme = Schema.Struct({
 	/** The theme's directory: every stylesheet under it is the theme's. */
@@ -64,7 +88,10 @@ const LibraryTheme = Schema.Struct({
 	 * such as `data-slot` and "plate-". */
 	anchor: Schema.Struct({ attribute: Schema.NonEmptyString, prefix: Schema.NonEmptyString }),
 	/** The prefixes of the custom properties the theme declares, such as "--plate-". */
-	tokens: Schema.Array(Schema.NonEmptyString)
+	tokens: Schema.Array(Schema.NonEmptyString),
+	/** The sheet the routes that render the library load, where the theme has one; without one, the app's stylesheet
+	 * imports the entry and every page holds the whole theme. */
+	routeSheet: Schema.optionalKey(RouteSheet)
 })
 
 /** The stylesheet contract: what the app's stylesheet (components.json's tailwind.css) and the scoped sheets may
@@ -194,6 +221,8 @@ export type ScopedSheetOption = (typeof ScopedSheet)["Type"]
 
 export type LibraryThemeOption = (typeof LibraryTheme)["Type"]
 
+export type RouteSheetOption = (typeof RouteSheet)["Type"]
+
 export type MarkupOption = (typeof MarkupOptions)["Type"]
 
 export type OperandOption = (typeof Operand)["Type"]
@@ -202,6 +231,15 @@ export type OperandOption = (typeof Operand)["Type"]
 export const libraryEntryOf = (theme: LibraryThemeOption): string =>
 	`${theme.directory}${theme.entry}`
 
+/** A library theme's route sheet, if it has one, with its tokens part by its repository-relative path. */
+export const routeOf = (
+	theme: LibraryThemeOption
+): Option.Option<Readonly<{ sheet: RouteSheetOption; tokens: string }>> =>
+	Option.map(Option.fromUndefinedOr(theme.routeSheet), (sheet) => ({
+		sheet,
+		tokens: `${theme.directory}${sheet.tokens}`
+	}))
+
 /** Every path the stylesheet contract names, for the check that each names a file the run knows: a library theme's
  * directory, and its entry, among them. */
 export const stylesheetPathsOf = (options: RuleOptions): ReadonlyArray<string> => [
@@ -209,7 +247,11 @@ export const stylesheetPathsOf = (options: RuleOptions): ReadonlyArray<string> =
 	...Arr.map(options.stylesheet.passthrough, (sheet) => sheet.path),
 	...Arr.flatMap(options.stylesheet.libraryThemes, (theme) => [
 		theme.directory,
-		libraryEntryOf(theme)
+		libraryEntryOf(theme),
+		...Option.match(routeOf(theme), {
+			onNone: () => [],
+			onSome: (route) => [route.sheet.path, route.tokens]
+		})
 	])
 ]
 
@@ -336,6 +378,51 @@ export const LIBRARY_FIXTURE_OPTIONS: RuleOptions = {
 				layer: "gadget",
 				anchor: { attribute: "data-part", prefix: "gadget-" },
 				tokens: ["--gadget-", "--color-gadget-", "--spacing-gadget-"]
+			}
+		]
+	}
+}
+
+/**
+ * The fixtures' options with two library themes that each have a route sheet, each theme in the directory of one case:
+ * stylesheet/library/routed/ is the sprocket theme, whose tokens part is its clean fixture and whose violating fixture
+ * is a part beside it, and stylesheet/library/cogs/ is the cog theme, whose tokens part is its violating fixture and
+ * whose clean fixture is a part beside it. Their route sheets are the two fixtures under stylesheet/route/, the
+ * sprocket's the clean one, which imports one base sheet, and the cog's the violating one, which imports none. The
+ * app sheets under stylesheet/app/route/ import both tokens parts.
+ */
+export const ROUTE_FIXTURE_OPTIONS: RuleOptions = {
+	stylesheet: {
+		...FIXTURE_OPTIONS.stylesheet,
+		layeredImports: [
+			...FIXTURE_OPTIONS.stylesheet.layeredImports,
+			{ module: "../../library/routed/clean.css", layer: "sprocket" },
+			{ module: "../../library/cogs/violating.css", layer: "cog" }
+		],
+		libraryThemes: [
+			{
+				directory: `${LIBRARY}/routed/`,
+				entry: "entry.css",
+				layer: "sprocket",
+				anchor: { attribute: "data-slot", prefix: "sprocket-" },
+				tokens: ["--sprocket-"],
+				routeSheet: {
+					path: `${FIXTURES}/stylesheet/route/clean.css`,
+					tokens: "clean.css",
+					base: ["sprocket-kit/base.css"]
+				}
+			},
+			{
+				directory: `${LIBRARY}/cogs/`,
+				entry: "entry.css",
+				layer: "cog",
+				anchor: { attribute: "data-part", prefix: "cog-" },
+				tokens: ["--cog-"],
+				routeSheet: {
+					path: `${FIXTURES}/stylesheet/route/violating.css`,
+					tokens: "violating.css",
+					base: []
+				}
 			}
 		]
 	}

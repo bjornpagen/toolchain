@@ -16,7 +16,9 @@ import {
 	isThemeSheet,
 	type LibraryTheme,
 	libraryOwnerOf,
+	type Route,
 	partReports,
+	routeSheetReports,
 	strayImportReports
 } from "#style/rules/library-theme.ts"
 
@@ -46,14 +48,16 @@ const THEME_NAMESPACES: ReadonlyArray<string> = [
 ]
 
 /** The role the options give one stylesheet: the app's own, the home of the shared tokens and the one sheet that
- * imports; a scoped sheet, the home of its scope's tokens; a passthrough, which holds exactly its text; or a library
- * theme's entry or one of its parts, which draw one library's markup through its hooks alone. */
+ * imports; a scoped sheet, the home of its scope's tokens; a passthrough, which holds exactly its text; a library
+ * theme's entry or one of its parts, which draw one library's markup through its hooks alone; or a library theme's
+ * route sheet, which the routes that render the library load. */
 export type SheetRole =
 	| Readonly<{ kind: "app" }>
 	| Readonly<{ kind: "scoped"; sheet: ScopedSheetOption }>
 	| Readonly<{ kind: "passthrough"; text: string }>
 	| Readonly<{ kind: "library-entry"; theme: LibraryTheme }>
 	| Readonly<{ kind: "library-part"; theme: LibraryTheme }>
+	| Readonly<{ kind: "library-route"; theme: LibraryTheme; route: Route }>
 
 /** One maintained stylesheet as the contract reads it: the scope whose tokens it owns, none for the app's own
  * stylesheet, and the utilities and pages it alone may declare. */
@@ -195,25 +199,27 @@ type AtRuleCheck = (
 	place: Readonly<{ context: Context; rule: AtRule; ancestors: ReadonlyArray<CssNode> }>
 ) => boolean
 
-/** The one `@layer` statement the app's stylesheet may hold: the runtime layers first, then Tailwind's layers, with
- * each layered import's layer between base and components in the options' order; none when the options name neither a
- * runtime layer nor a layered import. */
-const layerOrderOf = (context: Context): Option.Option<string> =>
-	Arr.isReadonlyArrayNonEmpty(context.options.layeredImports) ||
-	Arr.isReadonlyArrayNonEmpty(context.options.runtimeLayers)
-		? Option.some(
-				Arr.join(
-					[
-						...context.options.runtimeLayers,
-						"theme",
-						"base",
-						...Arr.map(context.options.layeredImports, ({ layer }) => layer),
-						"components",
-						"utilities"
-					],
-					", "
-				)
-			)
+/** The layer order the options give: the runtime layers first, then Tailwind's layers, with each layered import's
+ * layer between base and components in the options' order. A library theme's route sheet states it. */
+const layerOrderTextOf = (options: StylesheetOption): string =>
+	Arr.join(
+		[
+			...options.runtimeLayers,
+			"theme",
+			"base",
+			...Arr.map(options.layeredImports, ({ layer }) => layer),
+			"components",
+			"utilities"
+		],
+		", "
+	)
+
+/** The one `@layer` statement the app's stylesheet may hold, the options' layer order; none when the options name
+ * neither a runtime layer nor a layered import. */
+const layerOrderOf = (options: StylesheetOption): Option.Option<string> =>
+	Arr.isReadonlyArrayNonEmpty(options.layeredImports) ||
+	Arr.isReadonlyArrayNonEmpty(options.runtimeLayers)
+		? Option.some(layerOrderTextOf(options))
 		: Option.none()
 
 const isImport = (node: CssNode): boolean => node.kind === "at-rule" && node.name === "import"
@@ -223,7 +229,7 @@ const isImport = (node: CssNode): boolean => node.kind === "at-rule" && node.nam
 const isLayerOrder = (context: Context, rule: AtRule): boolean =>
 	Option.isNone(context.sheet.scope) &&
 	rule.nodes.length === 0 &&
-	Option.contains(layerOrderOf(context), rule.params) &&
+	Option.contains(layerOrderOf(context.options), rule.params) &&
 	!Arr.some(
 		Arr.takeWhile(context.nodes, (node) => node !== rule),
 		isImport
@@ -502,7 +508,16 @@ export const sheetRolesOf = (
 					? { kind: "library-entry", theme }
 					: { kind: "library-part", theme }
 			)
-		})
+		}),
+		...Arr.filterMap(input.libraries, (theme): Result.Result<SheetRole, void> =>
+			Option.match(
+				Option.filter(theme.route, (route) => route.sheet === input.file),
+				{
+					onNone: () => Result.failVoid,
+					onSome: (route) => Result.succeed({ kind: "library-route", theme, route })
+				}
+			)
+		)
 	]
 }
 
@@ -579,7 +594,8 @@ const extensionReports = (
  * options admit; the app's stylesheet alone imports (its layered imports after the one layer order, each library
  * theme's entry among them, once), and a scoped sheet alone declares its utilities and pages. A passthrough holds
  * exactly its text, which imports no library theme. A library theme's sheets draw markup the app renders and does not
- * write, through the library's hooks alone, in the library's layer (`#style/rules/library-theme.ts`). The repository's
+ * write, through the library's hooks alone, in the library's layer (`#style/rules/library-theme.ts`), and its route
+ * sheet, where it has one, imports them on the routes that render the library. The repository's
  * own rules extend the contract of the sheets they name: `extensions.sheets` are this sheet's. `file` is the sheet's
  * path as the run holds it, which its imports are read beside.
  */
@@ -634,7 +650,18 @@ export const stylesheet = (
 			return [...entryReports({ theme: role.theme, nodes }), ...extensionReports(nodes, extensions)]
 		case "library-part":
 			return [
-				...partReports({ theme: role.theme, namespaces: namespacesOf(extensions), nodes }),
+				...partReports({ file, theme: role.theme, namespaces: namespacesOf(extensions), nodes }),
+				...extensionReports(nodes, extensions)
+			]
+		case "library-route":
+			return [
+				...routeSheetReports({
+					file,
+					nodes,
+					theme: role.theme,
+					route: role.route,
+					order: layerOrderTextOf(options)
+				}),
 				...extensionReports(nodes, extensions)
 			]
 	}

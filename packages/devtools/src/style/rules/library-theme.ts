@@ -15,16 +15,22 @@ import { importedFile, moduleOf } from "#style/paths.ts"
 /**
  * The contract of a library theme's sheets: an entry that imports its parts and nothing else, and parts that draw the
  * library's markup through its hooks alone, in its layer. The app's stylesheet alone imports the entry, once, into that
- * layer. What the contract checks is the option's doc (`LibraryTheme` in `#style/options.ts`); each check reports in
- * the theme's name.
+ * layer; or, for a theme with a route sheet, the app's stylesheet imports its tokens part alone and the route sheet the
+ * entry. What the contract checks is the option's doc (`LibraryTheme` and `RouteSheet` in `#style/options.ts`); each
+ * check reports in the theme's name.
  */
 
-/** A library theme as the run finds it: its options, its entry, and its parts, every other stylesheet under its
- * directory, each as the run holds it. */
+/** A theme's route sheet as the run finds it: the route sheet and the tokens part, each as the run holds it, and the
+ * base sheets the route sheet imports before the entry. */
+export type Route = Readonly<{ sheet: string; tokens: string; base: ReadonlyArray<string> }>
+
+/** A library theme as the run finds it: its options, its entry, its parts, every other stylesheet under its directory,
+ * and its route sheet, if it has one, each as the run holds it. */
 export type LibraryTheme = Readonly<{
 	option: LibraryThemeOption
 	entry: string
 	parts: ReadonlyArray<string>
+	route: Option.Option<Route>
 }>
 
 const TOP: CssPosition = { line: 1, column: 1 }
@@ -56,24 +62,50 @@ const importedModuleOf = (params: string): Option.Option<string> => {
 		: quoted
 }
 
-/** Whether an `@import` names a library theme's entry: its module, beside the importing file, is the entry. */
-const importsEntry =
+/** The files a sheet enters a library theme by: its entry, and its tokens part where it has a route sheet. */
+const doorsOf = (theme: LibraryTheme): ReadonlyArray<string> => [
+	theme.entry,
+	...Option.match(theme.route, { onNone: () => [], onSome: (route) => [route.tokens] })
+]
+
+/** Whether an `@import` enters a library theme: its module, beside the importing file, is the theme's entry or its
+ * tokens part. */
+const importsTheme =
 	(file: string, theme: LibraryTheme) =>
 	(node: AtRule): boolean =>
 		Option.exists(
 			Option.flatMap(importedModuleOf(node.params), (module) => importedFile({ file, module })),
-			(imported) => imported === theme.entry
+			(imported) => Arr.contains(doorsOf(theme), imported)
 		)
 
-/** The import the app's stylesheet enters a library theme by: its entry, beside the app's stylesheet, into its layer. */
+/** The layered import of a file into a library theme's layer, beside the importing file. */
+const layeredImportOf = (file: string, theme: LibraryTheme, target: string): string =>
+	`"${moduleOf({ file, target })}" layer(${theme.option.layer})`
+
+/** The import the app's stylesheet enters a library theme by: its entry, beside the app's stylesheet, into its layer;
+ * its tokens part instead, where the theme has a route sheet. */
 const enteringImportOf = (file: string, theme: LibraryTheme): string =>
-	`"${moduleOf({ file, target: theme.entry })}" layer(${theme.option.layer})`
+	layeredImportOf(
+		file,
+		theme,
+		Option.match(theme.route, { onNone: () => theme.entry, onSome: (route) => route.tokens })
+	)
+
+/** What the app's stylesheet is told for a theme: the one import it enters the theme by. */
+const enteringMessageOf = (theme: LibraryTheme, entering: string): string =>
+	Option.match(theme.route, {
+		onNone: () =>
+			`${nameOf(theme)} enters once, through the app's stylesheet alone: @import ${entering};`,
+		onSome: (route) =>
+			`${nameOf(theme)} enters the app's stylesheet once, by its tokens part alone: @import ${entering}; its route sheet ${route.sheet} imports the rest.`
+	})
 
 /**
  * What the contract says about the app's stylesheet for each library theme: it imports the entry exactly once, as the
- * layered import into the theme's layer (which its layered imports list, in their layer order), and in no other way.
- * A second import, or one in another form or layer, is reported where it stands; no import in the one form is reported
- * at the top.
+ * layered import into the theme's layer (which its layered imports list, in their layer order), and in no other way;
+ * for a theme with a route sheet, its tokens part so, and never the entry. A second import, one in another form or
+ * layer, or one of the entry of a theme with a route sheet, is reported where it stands; no import in the one form is
+ * reported at the top.
  */
 export const appImportReports = (
 	input: Readonly<{
@@ -84,9 +116,9 @@ export const appImportReports = (
 ): ReadonlyArray<SheetReport> =>
 	Arr.flatMap(input.themes, (theme) => {
 		const entering = enteringImportOf(input.file, theme)
-		const imports = Arr.filter(Arr.filter(input.nodes, isImport), importsEntry(input.file, theme))
+		const imports = Arr.filter(Arr.filter(input.nodes, isImport), importsTheme(input.file, theme))
 		const first = Arr.findFirst(imports, (node) => node.params === entering)
-		const message = `${nameOf(theme)} enters once, through the app's stylesheet alone: @import ${entering};`
+		const message = enteringMessageOf(theme, entering)
 		const strays = Arr.filterMap(imports, (node) =>
 			Option.contains(first, node) ? Result.failVoid : Result.succeed({ at: node.at, message })
 		)
@@ -94,7 +126,7 @@ export const appImportReports = (
 	})
 
 /** What the contract says about a sheet that is neither the app's stylesheet nor a library theme's: it imports no
- * library theme's entry. */
+ * library theme's entry, nor the tokens part of one with a route sheet. */
 export const strayImportReports = (
 	input: Readonly<{
 		file: string
@@ -104,13 +136,70 @@ export const strayImportReports = (
 ): ReadonlyArray<SheetReport> =>
 	Arr.flatMap(input.themes, (theme) =>
 		Arr.map(
-			Arr.filter(Arr.filter(input.nodes, isImport), importsEntry(input.file, theme)),
+			Arr.filter(Arr.filter(input.nodes, isImport), importsTheme(input.file, theme)),
 			(node) => ({
 				at: node.at,
-				message: `${nameOf(theme)} enters only through the app's stylesheet, never through another sheet.`
+				message: Option.match(theme.route, {
+					onNone: () =>
+						`${nameOf(theme)} enters only through the app's stylesheet, never through another sheet.`,
+					onSome: (route) =>
+						`${nameOf(theme)} enters only through the app's stylesheet and its route sheet ${route.sheet}, never through another sheet.`
+				})
 			})
 		)
 	)
+
+/**
+ * A route sheet's contract: comments, then exactly the app's stylesheet's `@layer` statement (`order`), the layered
+ * imports of the library's base sheets in the options' order, and the layered import of the theme's entry, each into
+ * the theme's layer; nothing else. A node out of that sequence is reported where it stands; a missing one, at the top,
+ * with the whole sequence.
+ */
+export const routeSheetReports = (
+	input: Readonly<{
+		file: string
+		nodes: ReadonlyArray<CssNode>
+		theme: LibraryTheme
+		route: Route
+		order: string
+	}>
+): ReadonlyArray<SheetReport> => {
+	const { file, theme, route } = input
+	const expected: ReadonlyArray<Readonly<{ name: string; params: string }>> = [
+		{ name: "layer", params: input.order },
+		...Arr.map(route.base, (module) => ({
+			name: "import",
+			params: `"${module}" layer(${theme.option.layer})`
+		})),
+		{ name: "import", params: layeredImportOf(file, theme, theme.entry) }
+	]
+	const sequence = Arr.join(
+		Arr.map(expected, ({ name, params }) => `@${name} ${params};`),
+		" "
+	)
+	const message = `${nameOf(theme)}'s route sheet holds only comments and, in this order: ${sequence}`
+	const walked = Arr.reduce(
+		input.nodes,
+		{ matched: 0, reports: Arr.empty<SheetReport>() },
+		(state, node) => {
+			const next = Arr.get(expected, state.matched)
+			const matches = Option.exists(
+				next,
+				(step) =>
+					node.kind === "at-rule" &&
+					node.name === step.name &&
+					node.params === step.params &&
+					!Arr.isReadonlyArrayNonEmpty(node.nodes)
+			)
+			return matches
+				? { matched: state.matched + 1, reports: state.reports }
+				: { matched: state.matched, reports: [...state.reports, { at: node.at, message }] }
+		}
+	)
+	return walked.matched === expected.length
+		? walked.reports
+		: [{ at: TOP, message }, ...walked.reports]
+}
 
 /** The module the entry imports a part by, when the part lies in the entry's directory itself: `./<part>.css`. */
 const partModuleOf = (theme: LibraryTheme, part: string): Option.Option<string> => {
@@ -248,8 +337,13 @@ const CONDITIONS: ReadonlyArray<string> = ["media", "supports", "container"]
 
 const isCustomProperty = (property: string): boolean => Str.startsWith("--")(property)
 
-/** What a part's checks read: the theme, and the theme namespaces the app's stylesheet owns. */
-type PartContext = Readonly<{ theme: LibraryTheme; namespaces: ReadonlyArray<string> }>
+/** What a part's checks read: the theme, the theme namespaces the app's stylesheet owns, and whether the part is the
+ * tokens part of a theme with a route sheet, which every page loads and so holds only `:root` rules. */
+type PartContext = Readonly<{
+	theme: LibraryTheme
+	namespaces: ReadonlyArray<string>
+	tokensOnly: boolean
+}>
 
 /** Where a node stands in the layer: in the style rule nearest it, if any. */
 type Place = Readonly<{ rule: Option.Option<Rule> }>
@@ -339,6 +433,14 @@ const layerReports = (
 						(selector) => !isAnchoredSelector(theme, selector, { nested, implicit: nested })
 					)
 			const reports: ReadonlyArray<SheetReport> = [
+				...(context.tokensOnly && !nested && !root
+					? [
+							{
+								at: node.at,
+								message: `${nameOf(theme)}'s tokens part holds only :root rules of its tokens: the app's stylesheet loads it on every page.`
+							}
+						]
+					: []),
 				...(inRoot
 					? [
 							{
@@ -370,17 +472,23 @@ const layerReports = (
  * A part's contract: its top level holds only comments and `@layer <layer> { … }` blocks in the theme's layer, and the
  * layer holds style rules, conditioned by `@media`, `@supports` and `@container` and nested as needed, whose selectors
  * draw the library's markup alone; the theme's tokens alone stand in a `:root` rule. Every other at-rule is refused, in
- * the layer and outside it: fonts, animations, the theme and utilities are the app's stylesheet's. A refused node is
+ * the layer and outside it: fonts, animations, the theme and utilities are the app's stylesheet's. The tokens part of a
+ * theme with a route sheet (`file` is the part as the run holds it) holds only `:root` rules. A refused node is
  * reported where it stands, and not looked into.
  */
 export const partReports = (
 	input: Readonly<{
+		file: string
 		theme: LibraryTheme
 		namespaces: ReadonlyArray<string>
 		nodes: ReadonlyArray<CssNode>
 	}>
 ): ReadonlyArray<SheetReport> => {
-	const context: PartContext = { theme: input.theme, namespaces: input.namespaces }
+	const context: PartContext = {
+		theme: input.theme,
+		namespaces: input.namespaces,
+		tokensOnly: Option.exists(input.theme.route, (route) => route.tokens === input.file)
+	}
 	const { layer } = input.theme.option
 	return Arr.flatMap(input.nodes, (node) =>
 		node.kind === "at-rule" &&
