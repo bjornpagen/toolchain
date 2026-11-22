@@ -1,5 +1,5 @@
-import { Config, Duration, Effect, FileSystem, String as Str } from "effect"
-import { element, type Gen, int, map } from "#gen.ts"
+import { Array as Arr, Config, Duration, Effect, FileSystem, String as Str } from "effect"
+import { array, element, type Gen, int, map } from "#gen.ts"
 import { liveMillis, liveSleep, waitingOn } from "#live.ts"
 import { type Property, property } from "#property.ts"
 import { type Limits, runnerLimits } from "#runner/limits.ts"
@@ -389,4 +389,70 @@ export const childStir = (directory: string, bytes: number): Effect.Effect<Stir>
 				child.kill("SIGKILL")
 			})
 		})
+	)
+
+/**
+ * A tree's processes over a few readings of it: each its own key, the reading it is first seen at (`start`), the reading
+ * it is gone by (`end`, past the last for one alive at it), and what its stir gains at each reading it is alive for.
+ */
+export type Lives = Readonly<{
+	readings: number
+	processes: ReadonlyArray<Readonly<{ start: number; end: number; gains: ReadonlyArray<Stir> }>>
+}>
+
+/** A process's gain at one reading: a few milliseconds of runqueue wait and a little storage work, or none. */
+const gainGen: Gen<Stir> = (source) => ({
+	queued: source.draw(int(0, 3)),
+	stored: source.draw(int(0, 2))
+})
+
+/** Two to five readings of one to four processes, each seen from some reading and gone by a later one or never. */
+export const livesGen: Gen<Lives> = (source) => {
+	const readings = source.draw(int(2, 5))
+	return {
+		readings,
+		processes: source.draw(
+			array(
+				(each) => {
+					const start = each.draw(int(0, readings - 1))
+					return {
+						start,
+						end: each.draw(int(start + 1, readings)),
+						gains: each.draw(array(gainGen, { min: readings, max: readings }))
+					}
+				},
+				{ min: 1, max: 4 }
+			)
+		)
+	}
+}
+
+/** A process's stir at reading `at`, its gains summed from its start: what /proc shows of it while it lives. */
+const stirAt = (process: Lives["processes"][number], at: number): Stir =>
+	Arr.reduce(
+		Arr.take(Arr.drop(process.gains, process.start), at - process.start + 1),
+		{ queued: 0, stored: 0 },
+		(total, gain) => ({
+			queued: total.queued + gain.queued,
+			stored: total.stored + gain.stored
+		})
+	)
+
+/** The processes alive at reading `at`, each by its key with its stir then: what a reading of the tree reads. */
+export const liveAt = (lives: Lives, at: number): ReadonlyArray<readonly [string, Stir]> =>
+	Arr.flatMap(lives.processes, (process, index) =>
+		process.start <= at && at < process.end
+			? [[`p${String(index)}`, stirAt(process, at)] as const]
+			: []
+	)
+
+/** Every process seen by reading `at`, its stir at the last reading it was alive for, summed: the tree's whole stir. */
+export const lastSeenAt = (lives: Lives, at: number): Stir =>
+	Arr.reduce(
+		Arr.filter(lives.processes, (process) => process.start <= at),
+		{ queued: 0, stored: 0 },
+		(total, process) => {
+			const last = stirAt(process, Math.min(at, process.end - 1))
+			return { queued: total.queued + last.queued, stored: total.stored + last.stored }
+		}
 	)

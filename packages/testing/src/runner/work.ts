@@ -101,7 +101,7 @@ const descendantsOf = (pid: string, since: number): ReadonlyArray<string> =>
  * What a process tree has done that a guard counts beside its CPU: `queued`, the milliseconds its processes waited on a
  * runqueue while runnable, the machine's delay of work that wants to run; and `stored`, its storage work, the bytes it
  * read from and wrote to storage and the pages it faulted in, a process blocked on storage or swap doing its work. Both
- * only grow; a process blocked on something that does not come (a lock, a pipe, a stop) moves `stored` not at all and
+ * only grow, a tree's as its ledger keeps them (StirLedger); a process blocked on something that does not come (a lock, a pipe, a stop) moves `stored` not at all and
  * `queued` by its wake-ups' little waits alone (queuedBetween).
  */
 export type Stir = Readonly<{ queued: number; stored: number }>
@@ -137,36 +137,34 @@ const noEffort: Effort = { cpu: 0, stir: noStir }
  * (/proc/<pid>/schedstat, its first thread's), and its storage work, the bytes it read from and wrote to storage and the
  * pages it faulted in (/proc/<pid>/io, its stat's major faults); none for a process gone or a system without /proc.
  */
+const effortOfFields = (pid: string, field: (field: number) => number): Effort => {
+	const queued = Option.match(
+		Option.flatMap(textOf(`/proc/${pid}/schedstat`), (text) =>
+			Arr.get(Str.split(" ")(Str.trim(text)), SCHEDSTAT.waited)
+		),
+		{ onNone: () => 0, onSome: (nanos) => Number(nanos) / SCHEDSTAT.nanosPerMilli }
+	)
+	const io = Option.match(textOf(`/proc/${pid}/io`), {
+		onNone: () => 0,
+		onSome: (text) =>
+			Arr.reduce(Str.split("\n")(text), 0, (total, line) => {
+				const [name, value] = Str.split(":")(line)
+				return name === SCHEDSTAT.read || name === SCHEDSTAT.written ? total + Number(value) : total
+			})
+	})
+	const ticks = (at: number) => (field(at) * millisPerSecond) / PROC.ticksPerSecond
+	return {
+		cpu:
+			ticks(PROC.user) + ticks(PROC.system) + ticks(PROC.childrenUser) + ticks(PROC.childrenSystem),
+		stir: { queued, stored: io + field(PROC.majorFaults) }
+	}
+}
+
+/** A process's effort read from its stat (effortOfFields); none for a process gone or a system without /proc. */
 const effortOfProcess = (pid: string): Effort =>
 	Option.match(fieldsOf(pid), {
 		onNone: () => noEffort,
-		onSome: (field) => {
-			const queued = Option.match(
-				Option.flatMap(textOf(`/proc/${pid}/schedstat`), (text) =>
-					Arr.get(Str.split(" ")(Str.trim(text)), SCHEDSTAT.waited)
-				),
-				{ onNone: () => 0, onSome: (nanos) => Number(nanos) / SCHEDSTAT.nanosPerMilli }
-			)
-			const io = Option.match(textOf(`/proc/${pid}/io`), {
-				onNone: () => 0,
-				onSome: (text) =>
-					Arr.reduce(Str.split("\n")(text), 0, (total, line) => {
-						const [name, value] = Str.split(":")(line)
-						return name === SCHEDSTAT.read || name === SCHEDSTAT.written
-							? total + Number(value)
-							: total
-					})
-			})
-			const ticks = (at: number) => (field(at) * millisPerSecond) / PROC.ticksPerSecond
-			return {
-				cpu:
-					ticks(PROC.user) +
-					ticks(PROC.system) +
-					ticks(PROC.childrenUser) +
-					ticks(PROC.childrenSystem),
-				stir: { queued, stored: io + field(PROC.majorFaults) }
-			}
-		}
+		onSome: (field) => effortOfFields(pid, field)
 	})
 
 /** Two stirs summed. */
@@ -175,12 +173,65 @@ const stirPlus = (one: Stir, other: Stir): Stir => ({
 	stored: one.stored + other.stored
 })
 
-/** The effort of processes, each one's summed. */
-const effortOfAll = (pids: ReadonlyArray<string>): Effort =>
-	Arr.reduce(pids, noEffort, (total, pid) => {
-		const one = effortOfProcess(pid)
-		return { cpu: total.cpu + one.cpu, stir: stirPlus(total.stir, one.stir) }
-	})
+/**
+ * A tree's stir as its processes end: `last`, each live process's latest stir by its pid and its start (a pid the kernel
+ * hands out again is another process), and `gone`, the stir its ended processes had at their last reading. A process's
+ * runqueue wait and storage work leave /proc with it, so a tree summed over its live processes alone read less once a
+ * child ended, and a window in which a busy child ended read a negative wait that cancelled its tree's CPU: metis's
+ * level-template opens, whose `grizzle generate` and `grizzle migrate` children end inside a window, were judged stalled
+ * having moved 40 and 68 s of CPU in it, their other processes having "waited -416238.3 ms" and "-216388.2 ms"
+ * (trunk@metis at a53810cd, 2026-11-22).
+ */
+export type StirLedger = Readonly<{ last: ReadonlyMap<string, Stir>; gone: Stir }>
+
+/** A tree's ledger before its first reading. */
+export const noStirLedger: StirLedger = { last: new Map(), gone: noStir }
+
+/** The ledger after a reading of a tree's live processes, by key: an ended process's last stir passes into `gone`. */
+export const stirLedgerAfter = (
+	ledger: StirLedger,
+	live: ReadonlyArray<readonly [string, Stir]>
+): StirLedger => {
+	const now = new Map(live)
+	return {
+		last: now,
+		gone: Arr.reduce(
+			Arr.filter(Arr.fromIterable(ledger.last), ([key]) => !now.has(key)),
+			ledger.gone,
+			(total, [, stir]) => stirPlus(total, stir)
+		)
+	}
+}
+
+/** A tree's stir as its ledger keeps it: its live processes' and its ended ones' last, so it only grows. */
+export const stirOfLedger = (ledger: StirLedger): Stir =>
+	Arr.reduce(Arr.fromIterable(ledger.last.values()), ledger.gone, stirPlus)
+
+/**
+ * The effort of a tree's processes as a work reads them again and again (selfWork, processWork): their CPU summed, and
+ * their stir kept by a ledger (StirLedger), so an ended process's stays in it.
+ */
+const keptEffort = (): ((pids: ReadonlyArray<string>) => Effort) => {
+	let ledger = noStirLedger
+	return (pids) => {
+		const read = Arr.flatMap(pids, (pid) =>
+			Option.match(fieldsOf(pid), {
+				onNone: () => [],
+				onSome: (field) => [
+					[`${pid}@${String(field(PROC.started))}`, effortOfFields(pid, field)] as const
+				]
+			})
+		)
+		ledger = stirLedgerAfter(
+			ledger,
+			Arr.map(read, ([key, effort]) => [key, effort.stir] as const)
+		)
+		return {
+			cpu: Arr.reduce(read, 0, (total, [, effort]) => total + effort.cpu),
+			stir: stirOfLedger(ledger)
+		}
+	}
+}
 
 /** This process's own CPU so far, every thread's, in milliseconds: process.cpuUsage, a system call and no file. */
 export const ownCpu = (): number => {
@@ -383,6 +434,7 @@ const selfWork = (wall: number, own: number, stirOwn: () => Stir): TreeWork => {
 	const since = sinceBootAt(self, wall)
 	const reaped = (stat: Option.Option<(field: number) => number>) =>
 		Option.match(stat, { onNone: () => 0, onSome: reapedOf })
+	const kept = keptEffort()
 	return {
 		began: {
 			wall,
@@ -392,7 +444,7 @@ const selfWork = (wall: number, own: number, stirOwn: () => Stir): TreeWork => {
 		},
 		waited: ownWaited,
 		effort: () => {
-			const descendants = effortOfAll(
+			const descendants = kept(
 				Option.match(since, { onNone: () => [], onSome: (at) => descendantsOf("self", at) })
 			)
 			return {
@@ -430,8 +482,9 @@ export const processWork = (
 				onSome: allOf
 			}
 		)
+	const kept = keptEffort()
 	const descendants = (): Effort =>
-		effortOfAll(
+		kept(
 			Option.getOrElse(
 				Option.zipWith(pid, since, (id, at) => descendantsOf(String(id), at)),
 				(): ReadonlyArray<string> => []

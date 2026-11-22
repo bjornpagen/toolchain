@@ -23,8 +23,9 @@
  *
  * Oracles are stated per property.
  */
-import { Effect } from "effect"
+import { Array as Arr, Effect } from "effect"
 import { assert } from "#assert.ts"
+import type { Reached } from "#features.ts"
 import { finite } from "#gen.ts"
 import { property } from "#property.ts"
 import { searchedAt, verdictKind } from "#runner/search.fixtures.ts"
@@ -37,6 +38,9 @@ import {
 	deadlocks,
 	INNER_SEED,
 	innerRun,
+	lastSeenAt,
+	liveAt,
+	livesGen,
 	otherMoves,
 	runawayCase,
 	runaways,
@@ -49,7 +53,13 @@ import {
 	wakingCase,
 	windowOf
 } from "#runner/work.fixtures.ts"
-import { standingOf } from "#runner/work.ts"
+import {
+	noStirLedger,
+	type StirLedger,
+	standingOf,
+	stirLedgerAfter,
+	stirOfLedger
+} from "#runner/work.ts"
 
 export const slowIsNotHung = property.exhaust(finite(slowShapes), {
 	box: "a slow case's bursts of CPU and stalls on the live clock, three shapes past a 3,000 ms deadline in wall time",
@@ -283,9 +293,55 @@ export const othersStirRead = property.exhaust(finite(storedSizes), {
 	kills: [
 		{
 			file: "packages/testing/src/runner/work.ts",
-			original: "\t\t\t\t\t\treturn name === SCHEDSTAT.read || name === SCHEDSTAT.written\n",
-			replacement: "\t\t\t\t\t\treturn false\n",
+			original:
+				"\t\t\t\treturn name === SCHEDSTAT.read || name === SCHEDSTAT.written ? total + Number(value) : total\n",
+			replacement: "\t\t\t\treturn total\n",
 			why: "A process's storage work is read as none, so a child or holder blocked on storage or swap is no move, and a wait behind it is stalled; the property fails."
+		}
+	]
+})
+
+type LedgerFeature = "a process ended between readings" | "a process started between readings"
+
+export const treeStirOnlyGrows = property.explore(livesGen, {
+	needs: {},
+	situations: [
+		"a process ended between readings",
+		"a process started between readings"
+	] satisfies ReadonlyArray<Reached<LedgerFeature>>,
+	check: (_, c) => (lives) =>
+		Effect.sync(() => {
+			if (Arr.some(lives.processes, (process) => process.end < lives.readings)) {
+				c.note("a process ended between readings")
+			}
+			if (Arr.some(lives.processes, (process) => process.start > 0)) {
+				c.note("a process started between readings")
+			}
+			Arr.reduce(
+				Array.from({ length: lives.readings }, (_slot, at) => at),
+				noStirLedger,
+				(ledger: StirLedger, at) => {
+					const after = stirLedgerAfter(ledger, liveAt(lives, at))
+					assert.deepEqual(
+						stirOfLedger(after),
+						lastSeenAt(lives, at),
+						`the tree's stir at reading ${String(at)} is every process's last seen, ended ones' included`
+					)
+					return after
+				}
+			)
+		}),
+	oracle: {
+		kind: "specification",
+		name: "a tree's runqueue wait and storage work are each process's at its last reading, summed, whether it still lives or has ended, so they only grow as /proc forgets an ended process (trunk@metis at a53810cd, 2026-11-22: level-template opens judged stalled with 40 and 68 s of CPU moved, their trees' waits read as -416 s and -216 s)"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/runner/work.ts",
+			original: "\t\t\t(total, [, stir]) => stirPlus(total, stir)\n",
+			replacement: "\t\t\t(total) => total\n",
+			why: "An ended process's stir leaves its tree's with it, as it did: a window in which a busy child ends reads a negative runqueue wait, which cancels its tree's CPU, so a need whose child ends inside its window is judged stalled though it worked (trunk@metis at a53810cd, 2026-11-22); the property fails."
 		}
 	]
 })
