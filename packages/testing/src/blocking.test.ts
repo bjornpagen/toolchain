@@ -7,7 +7,9 @@
  * the hang report, naming the first case at the threshold in a replay token, once its case deadline and the watchdog's
  * grace have passed and before a grace more, the latest bound that still tells a watchdog waiting twice its grace
  * apart (measured on cassowary, 2026-11-16, load average 300 to 400 on 64 cores: 64 runaways ended 41 to 5,248 ms past
- * their moment, median 156, 90th percentile 249); a body that returns, pauses past its deadline short of the grace, or
+ * their moment, median 156, 90th percentile 249), and a body that waits in Atomics.wait ends with its thread's answer
+ * to the inspector, which no grace bounds (blocking.fixtures.ts gracesOfBody); a body that returns, pauses past its
+ * deadline short of the grace, or
  * sleeps past it, yielding, must end its search in the program by the guard's verdict. A runaway costs its deadline and
  * the grace, so the space draws settling bodies and an aim draws each body once its situation is pending. Oracle:
  * stated in the property.
@@ -84,10 +86,11 @@ export const watchdog = property.explore(aimed(settlingRuns, bodyAims), {
 							([began, wakes]) => wakes > began + moment
 						),
 						pastItsMoment: Option.map(ran.began, (began) => ran.ended - began >= moment),
-						withinItsGraces: Option.map(
-							ran.began,
-							(began) =>
-								ran.ended - began <= moment + gracesOfBody(planted.body) * watchdogGraceMillis
+						withinItsGraces: Option.map(ran.began, (began) =>
+							Option.match(gracesOfBody(planted.body), {
+								onNone: () => true,
+								onSome: (graces) => ran.ended - began <= moment + graces * watchdogGraceMillis
+							})
 						)
 					},
 					{

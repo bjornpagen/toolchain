@@ -486,11 +486,14 @@ export const legOfBody = (body: Body): "spent" | "stalled" =>
 
 /**
  * How many of the watchdog's graces a runaway's thread may hold past its moment before its process ends: one for a
- * body the inspector interrupts (a loop, a match), whose thread answers it; two for the body that waits, held in
- * Atomics.wait outside JavaScript, whose thread answers neither the ping nor the inspector, so the watchdog waits out
- * the inspector's grace too (live.ts).
+ * body the inspector interrupts at once (a loop, a match), whose thread answers it within a grace; none for the body
+ * that waits, held in Atomics.wait outside JavaScript, whose thread answers the inspector only as one of its waits ends
+ * and the machine runs it, so its process ends with that answer, however late the machine makes it (live.ts: a silent
+ * thread that spends nothing is waited for, never ended; trunk@toolchain at 7d78e06c, its full run's load: past two
+ * graces).
  */
-export const gracesOfBody = (body: Body): number => (body === "waits" ? 2 : 1)
+export const gracesOfBody = (body: Body): Option.Option<number> =>
+	body === "waits" ? Option.none() : Option.some(1)
 
 /**
  * The cases in flight as the watchdog watches them at `now`: one past its moment passed it `by` milliseconds before

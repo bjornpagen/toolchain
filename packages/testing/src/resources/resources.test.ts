@@ -1306,7 +1306,10 @@ export const cloneDropWaitIsDeclared = property.exhaust(finite(deadlocks), {
 							const verdict = yield* Effect.raceFirst(
 								Effect.as(dropped, "passed"),
 								Effect.map(
-									overrun(ownWork(wall, ownCpu()), deadlineBound(shape.deadline)),
+									overrun(ownWork(wall, ownCpu()), {
+										...deadlineBound(shape.deadline),
+										waited: Number.POSITIVE_INFINITY
+									}),
 									overrunText
 								)
 							)
@@ -1483,7 +1486,10 @@ export const pollLoopIsHung = property.exhaust(finite(deadlocks), {
 									"ended"
 								),
 								Effect.map(
-									overrun(ownWork(wall, ownCpu()), deadlineBound(shape.deadline)),
+									overrun(ownWork(wall, ownCpu()), {
+										...deadlineBound(shape.deadline),
+										cpu: Number.POSITIVE_INFINITY
+									}),
 									(judged) => judged.kind
 								),
 								Effect.as(liveSleep(Duration.millis(shape.deadline * 60)), "never judged")
