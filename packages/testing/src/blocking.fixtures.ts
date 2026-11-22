@@ -12,7 +12,7 @@ import {
 } from "effect"
 import { ChildProcess } from "effect/process"
 import { array, element, finite, type Gen, int } from "#gen.ts"
-import { liveMillis, liveSleep, watchdogGraceMillis, watchdogWakes } from "#live.ts"
+import { liveMillis, liveSleep, type Silence, watchdogGraceMillis, watchdogWakes } from "#live.ts"
 import type { CheckoutDir } from "#mutate/checkout.ts"
 import { type Property, property } from "#property.ts"
 import { HARDENED_FLAGS } from "#runner/config.ts"
@@ -507,3 +507,31 @@ export const watchedAt = (inFlight: ReadonlyArray<InFlight>, now: number) =>
 		report: () => reportAt(index),
 		judged: () => (one.over ? Option.some(legAt(index)) : Option.none<string>())
 	}))
+
+/** A main thread's silence over one grace, by what kept it: each a few times the progress mark of 10 ms, or none. */
+const SILENCES = [
+	"a loop that runs JavaScript",
+	"a loop that runs JavaScript under memory pressure",
+	"a thread memory.high throttles",
+	"a loop in the kernel with no memory stall",
+	"a thread that spends nothing"
+] as const
+
+/** What each silence spent and its cgroup stalled, in milliseconds, against a progress mark of 10. */
+export const silenceOf = (shape: (typeof SILENCES)[number]): Silence => {
+	switch (shape) {
+		case "a loop that runs JavaScript":
+			return { cpu: 40, user: 38, stall: 0 }
+		case "a loop that runs JavaScript under memory pressure":
+			return { cpu: 40, user: 30, stall: 400 }
+		case "a thread memory.high throttles":
+			return { cpu: 40, user: 0, stall: 400 }
+		case "a loop in the kernel with no memory stall":
+			return { cpu: 40, user: 2, stall: 0 }
+		case "a thread that spends nothing":
+			return { cpu: 0, user: 0, stall: 400 }
+	}
+}
+
+/** Every silence, one at a time. */
+export const silences: Gen<(typeof SILENCES)[number]> = (source) => source.draw(element(SILENCES))

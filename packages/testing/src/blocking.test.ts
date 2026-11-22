@@ -33,10 +33,12 @@ import {
 	settledHere,
 	settlingRuns,
 	values,
+	silenceOf,
+	silences,
 	watchedAt
 } from "#blocking.fixtures.ts"
-import { aimed } from "#gen.ts"
-import { answerOf, watchdogGraceMillis } from "#live.ts"
+import { aimed, finite } from "#gen.ts"
+import { answerOf, hangOver, watchdogGraceMillis } from "#live.ts"
 import { Checkout } from "#mutate/checkout.ts"
 import { property } from "#property.ts"
 import { replayOf } from "#replay.ts"
@@ -113,7 +115,7 @@ export const watchdog = property.explore(aimed(settlingRuns, bodyAims), {
 	kills: [
 		{
 			file: "packages/testing/src/live.ts",
-			original: "\t\t\t\tif (burned(spent, graceMillis)) {\n",
+			original: "\t\t\t\tif (burned(since, graceMillis)) {\n",
 			replacement: "\t\t\t\tif (true) {\n",
 			why: "A main thread that does not answer the inspector within the grace is ended, whatever its CPU, as it was: a live case whose thread the machine pages out or starves is killed for its silence (REDFIX2's two @small-stack deaths under 63 to 74% memory pressure, 2026-11-20); the property fails on the body that blocks."
 		},
@@ -234,6 +236,33 @@ export const answersBlockedPastAMoment = property.explore(inFlights, {
 			original: `\t\t\tonSome: (leg) => \`\${watched.report()}\\nits guard read: \${leg}\`\n`,
 			replacement: "\t\t\tonSome: () => watched.report()\n",
 			why: "A blocked answer names no leg, as it did: a hang under load says neither whether its case spent its deadline nor whether it stood still (UNITREDS' bound-identity, 2026-11-21); the property fails, the legs unnamed."
+		}
+	]
+})
+
+export const throttledThreadIsNoHang = property.exhaust(finite(silences), {
+	box: "a main thread's silence over one grace: a loop running JavaScript with and without its cgroup stalling on memory, a thread memory.high throttles, a loop in the kernel with no memory stall, and one that spends nothing",
+	needs: {},
+	situations: [],
+	check: () => (shape) =>
+		Effect.sync(() => {
+			assert.equal(
+				hangOver(silenceOf(shape), 10),
+				shape !== "a thread memory.high throttles" && shape !== "a thread that spends nothing",
+				shape
+			)
+		}),
+	oracle: {
+		kind: "specification",
+		name: "a silent main thread is a hang when it spent past progress running: its user CPU where its cgroup stalled on memory, since a task memory.high throttles or makes reclaim in place spends system time running no JavaScript (trunk@metis at d07c3409, 2026-11-22: two workers ended as hangs under metis.slice's memory.high, whose cases pass by their seeds below it), its whole CPU where it did not"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/live.ts",
+			original: "(silence.stall >= progress ? silence.user : silence.cpu) >= progress",
+			replacement: "silence.cpu >= progress",
+			why: "A silent thread's system time counts as running whatever its cgroup's memory stall, as it did: a thread memory.high throttles reads as a hang, and the watchdog ends a case that was only waiting on the machine; the property fails."
 		}
 	]
 })

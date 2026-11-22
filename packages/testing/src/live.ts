@@ -159,6 +159,26 @@ type Layout = typeof LAYOUT
 type Answer = Readonly<{ kind: "blocked"; report: string }> | Readonly<{ kind: "running" }>
 
 /**
+ * What a main thread did over one grace of the watchdog's while it answered nothing: the CPU it spent, user and system
+ * (`cpu`), its user CPU alone (`user`), and how long its cgroup's tasks stalled on memory meanwhile (`stall`, its
+ * memory.pressure's `some` total, the share of the window in which at least one of them waited on memory), each in
+ * milliseconds.
+ */
+export type Silence = Readonly<{ cpu: number; user: number; stall: number }>
+
+/**
+ * Whether a main thread that answered nothing over a window spent past `progress` in it, a hang (the watchdog's
+ * `burned`): its CPU, where its cgroup did not stall on memory for `progress` of the window; its user CPU alone where it
+ * did, since a task memory.high throttles, or makes reclaim in place, spends system time while it runs no JavaScript and
+ * cannot answer, which read as a thread running without yielding. trunk@metis at d07c3409 (2026-11-22) lost two workers
+ * so, ended as hangs 71 and 76 s into their cases with metis.slice at 78.7 of its 80 GiB memory.high, 192,570 times
+ * throttled; both cases pass by their seeds once the slice was under its line. Its source is the watchdog's thread's
+ * argument (watchdogThread), so it reads nothing but its arguments.
+ */
+export const hangOver = (silence: Silence, progress: number): boolean =>
+	(silence.stall >= progress ? silence.user : silence.cpu) >= progress
+
+/**
  * The watchdog's thread, evaluated from its source text in a worker of its own, so it reads no module of the library
  * and none a transform could rewrite, only Node's built-ins. It sleeps until the earliest moment a case in flight
  * passes the moment its guard would stop it; then it notes the main thread's progress, pings it by a message, and waits
@@ -180,7 +200,7 @@ type Answer = Readonly<{ kind: "blocked"; report: string }> | Readonly<{ kind: "
  * Its open port keeps it alive; the main thread unrefs it. Its layout is its argument, written into its source text,
  * since the thread shares no module with the main thread.
  */
-const watchdogThread = (layout: Layout): void => {
+const watchdogThread = (layout: Layout, judge: typeof hangOver): void => {
 	const threads = process.getBuiltinModule("node:worker_threads")
 	const { Session } = process.getBuiltinModule("node:inspector")
 	const { existsSync, readFileSync, writeSync } = process.getBuiltinModule("node:fs")
@@ -219,12 +239,13 @@ const watchdogThread = (layout: Layout): void => {
 		Atomics.load(counters, layout.progress) === looked && earliestMoment() <= nowMillis()
 	/**
 	 * The CPU the main thread has spent, in milliseconds, by its own /proc stat (its task's utime and stime, the 12th
-	 * and 13th fields after its command's closing parenthesis, in clock ticks); none without /proc.
+	 * and 13th fields after its command's closing parenthesis, in clock ticks), and its user CPU alone; none without
+	 * /proc.
 	 */
-	const mainCpu = (): number => {
+	const mainTimes = (): Readonly<{ cpu: number; user: number }> => {
 		const file = `/proc/self/task/${process.pid}/stat`
 		if (!existsSync(file)) {
-			return Number.NaN
+			return { cpu: Number.NaN, user: Number.NaN }
 		}
 		const stat = readFileSync(file)
 		const fields: Array<number> = []
@@ -238,11 +259,58 @@ const watchdogThread = (layout: Layout): void => {
 				field = field * 10 + (byte - 0x30)
 			}
 		}
-		return ((fields[11] ?? 0) + (fields[12] ?? 0)) * layout.tickMillis
+		const user = (fields[11] ?? 0) * layout.tickMillis
+		return { cpu: user + (fields[12] ?? 0) * layout.tickMillis, user }
 	}
-	/** Whether the main thread spent past progress over a window of `windowMillis` since it read `spent` (work.ts progressOver). */
-	const burned = (spent: number, windowMillis: number): boolean =>
-		mainCpu() - spent >= Math.max(windowMillis * layout.stalledShare, layout.tickMillis)
+	/**
+	 * How long this process's cgroup's tasks have stalled on memory, in milliseconds: the `some` line's total (in
+	 * microseconds) of the memory.pressure file of the cgroup /proc/self/cgroup names (cgroup v2's one line, `0::<path>`);
+	 * none read as no stall, where the cgroup or pressure stall information is absent.
+	 */
+	const memoryStall = (): number => {
+		const membership = "/proc/self/cgroup"
+		if (!existsSync(membership)) {
+			return 0
+		}
+		const cgroups = readFileSync(membership)
+		const at = cgroups.indexOf("0::")
+		if (at < 0) {
+			return 0
+		}
+		const lineEnd = cgroups.indexOf(0x0a, at)
+		const pressure = `/sys/fs/cgroup${cgroups.toString("utf8", at + 3, lineEnd < 0 ? cgroups.length : lineEnd)}/memory.pressure`
+		if (!existsSync(pressure)) {
+			return 0
+		}
+		const stalls = readFileSync(pressure)
+		const some = stalls.indexOf("some ")
+		const total = some < 0 ? -1 : stalls.indexOf("total=", some)
+		if (total < 0) {
+			return 0
+		}
+		let micros = 0
+		for (let index = total + 6; index < stalls.length; index += 1) {
+			const byte = stalls[index] ?? 0x20
+			if (byte < 0x30 || byte > 0x39) {
+				break
+			}
+			micros = micros * 10 + (byte - 0x30)
+		}
+		return micros / 1000
+	}
+	/** The main thread's CPU and its cgroup's memory stall now, a silence's start. */
+	const reading = (): Silence => ({ ...mainTimes(), stall: memoryStall() })
+	/**
+	 * Whether the main thread spent past progress over a window of `windowMillis` since `since` (work.ts progressOver),
+	 * as hangOver judges it beside its cgroup's memory stall.
+	 */
+	const burned = (since: Silence, windowMillis: number): boolean => {
+		const now = reading()
+		return judge(
+			{ cpu: now.cpu - since.cpu, user: now.user - since.user, stall: now.stall - since.stall },
+			Math.max(windowMillis * layout.stalledShare, layout.tickMillis)
+		)
+	}
 	const unanswered =
 		"@bjornpagen/testing: a case held its process's main thread without yielding past the moment its guard would stop it, and the thread's inspector did not answer for its report; the watchdog ended the process: a hang"
 	const blocked = (looked: number, graceMillis: number): void => {
@@ -276,7 +344,7 @@ const watchdogThread = (layout: Layout): void => {
 				})
 			}
 		)
-		const silent = (spent: number): void =>
+		const silent = (since: Silence): void =>
 			after(Atomics.waitAsync(counters, layout.timer, 0, graceMillis), () => {
 				if (!pending) {
 					return
@@ -288,13 +356,13 @@ const watchdogThread = (layout: Layout): void => {
 					})
 					return
 				}
-				if (burned(spent, graceMillis)) {
+				if (burned(since, graceMillis)) {
 					settle(() => end(unanswered))
 					return
 				}
-				silent(mainCpu())
+				silent(reading())
 			})
-		silent(mainCpu())
+		silent(reading())
 	}
 	const watch = (): void => {
 		const looked = Atomics.load(counters, layout.progress)
@@ -417,7 +485,7 @@ const startedWatchdog = (): Watchdog => {
 		Arr.map(Rec.toEntries(LAYOUT), ([name, at]) => `${name}: ${at}`),
 		", "
 	)} }`
-	const worker = new Worker(`(${watchdogThread.toString()})(${layout})`, {
+	const worker = new Worker(`(${watchdogThread.toString()})(${layout}, ${hangOver.toString()})`, {
 		eval: true,
 		workerData: shared
 	})
