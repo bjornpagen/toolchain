@@ -184,6 +184,46 @@ export const needStallMillis = 300_000
  */
 export const stalledShareOfCpu = 0.001
 
+/**
+ * How many stall windows of wall time a piece of work may spend in declared waits on work, in all (runner/work.ts
+ * boundOver): past it, it is over its bound however its waits are answered. A declared wait's wall time counts none of
+ * the stall window, so a loop of waits one after another, each answered (a poll of a statement with nothing between,
+ * the server active on each), never makes a window whole, and its CPU, the server's, never reaches its budget: such a
+ * case was never judged (trunk@grizzle's pg tier at f1bf91a2f, 2026-11-22: three hours in
+ * test/pg/substrate/budget.test.ts, its barrier polling pg_stat_activity with nothing between its statements, 6 s of
+ * CPU on its worker, until a person ended it).
+ *
+ * @limitKind measured
+ * @owner the testing library's runner (runner/work.ts boundOver, standingOf)
+ * @unit stall windows of wall time spent in declared waits on work
+ * @scope every case of every property, each need's open and each worker phase the pool watches, on every process
+ * @evidence ~/Documents/toolchain/packages/testing/out/waited-measure/20261122T095912/ (lane TOOLCHAIN6), the
+ *   uncommitted record: instrument.patch (each case's guard appends its wall, declared-wait and CPU milliseconds, its
+ *   deadline, its outcome and its worker's directory to cases.jsonl as it ends), run.sh (the commands), run-*.log,
+ *   cases.jsonl, summary.txt, environment.txt
+ * @observed 2026-11-22 09:29:24 to 09:59:04 UTC
+ * @environment cassowary, Ubuntu 26.04 (Linux 7.0.0-1018-aws) on an AWS Graviton3 (arm64) instance with 64 logical
+ *   CPUs and 247 GiB, Node 26.13.1, PostgreSQL 19 on the workbench's grizzle-test and metis-test members; load average
+ *   450 to 600 from the pin batch's other runs; toolchain b15c24f2 vendored by grizzle (hub main, 2026-11-22 ~03:20 CST)
+ *   and metis (hub main 64ae5dd3)
+ * @workload grizzle's heaviest pg modules by path, three runs at once (test/pg/write/compound-key and
+ *   laws/rule-commit; laws/rule-whole and write/replace-cost; migrate/generated-fill-memory, closed/migrations and
+ *   substrate/budget), and metis's packages/database integration/installation.test.ts (its whole installation),
+ *   every case under the runner's 60 s deadline
+ * @result 440 cases of the checkouts (kill trials' cases in worker trees left out), 438 passed and 2 failed: declared
+ *   waits per case p50 21.9 s, p90 72.5 s, p99 271.3 s, slowest 439.3 s (444.2 s of wall, 4.7 s of CPU). Not measured:
+ *   den's suites (its hub's vendored toolchain predates statements as declared waits), the grizzle runs' kill phases
+ *   (stopped once their properties' cases were in), loads past 600
+ * @decision 30 windows, 30 minutes at the 60 s deadline: 4.1 times the slowest case measured, and 2.7 times
+ *   compound-key's 676 s of wall in all, waits and the rest, the slowest legitimate case known; at the worst load seen
+ *   (1,127, about twice this run's) the slowest would wait about 880 s, half the bound. A bound too short fails a slow
+ *   legitimate case; one too long only delays the verdict on a loop that never ends, so the headroom is wide. A
+ *   property whose cases wait longer cites a deadline of its own, which scales the bound with it
+ * @revalidate a case reported over its waited bound that was only slow, a suite whose cases wait past a quarter of the
+ *   bound under ordinary load, another machine, a PostgreSQL repin
+ */
+export const waitedWindows = 30
+
 /** The budgets one search runs under, and the bound its cases' orders carry: a case's deadline. */
 export type Limits = Readonly<{
 	runs: number

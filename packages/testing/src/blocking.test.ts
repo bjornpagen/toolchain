@@ -21,6 +21,7 @@ import {
 	idOf,
 	inFlights,
 	legAt,
+	gracesOfBody,
 	legOfBody,
 	programIn,
 	programRun,
@@ -83,9 +84,10 @@ export const watchdog = property.explore(aimed(settlingRuns, bodyAims), {
 							([began, wakes]) => wakes > began + moment
 						),
 						pastItsMoment: Option.map(ran.began, (began) => ran.ended - began >= moment),
-						withinAGraceMore: Option.map(
+						withinItsGraces: Option.map(
 							ran.began,
-							(began) => ran.ended - began <= moment + watchdogGraceMillis
+							(began) =>
+								ran.ended - began <= moment + gracesOfBody(planted.body) * watchdogGraceMillis
 						)
 					},
 					{
@@ -96,7 +98,7 @@ export const watchdog = property.explore(aimed(settlingRuns, bodyAims), {
 						replayed: planted.threshold,
 						dueBeforeTheThreadWakes: Option.some(true),
 						pastItsMoment: Option.some(true),
-						withinAGraceMore: Option.some(true)
+						withinItsGraces: Option.some(true)
 					}
 				)
 			}),

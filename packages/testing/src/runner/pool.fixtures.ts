@@ -265,8 +265,11 @@ export const blocksItsWorker = property.exhaust(finite(int(0, 1)), {
 /** The identity of the planted property whose case waits, declared, past its deadline and the pool's silence grace. */
 export const WAITS_DECLARED = "src/runner/pool.fixtures.ts#waitsDeclared"
 
-/** The deadlines its case runs under, in milliseconds, each with the pool's bound and grace well within its wait. */
-export const declaredWaitDeadlines: Gen<number> = map(boolean, (longer) => (longer ? 2000 : 1000))
+/**
+ * The deadlines its case runs under, in milliseconds, each with the pool's bound and grace well within its wait, and its
+ * wait within the wall time a case's declared waits may hold it (runner/limits.ts waitedWindows of its deadline).
+ */
+export const declaredWaitDeadlines: Gen<number> = map(boolean, (longer) => (longer ? 3000 : 2000))
 
 /**
  * Two of the pool's whole windows (the longer of declaredWaitDeadlines and the silence grace) and more: the case's own

@@ -40,8 +40,8 @@ export const groupsByTheirBudgets = property.exhaust(groups, {
 	kills: [
 		{
 			file: "packages/testing/src/runner/opening.ts",
-			original: "\t\tconst bound: Bound = { cpu: budgetOf(members), stall }\n",
-			replacement: "\t\tconst bound: Bound = { cpu: 300_000, stall }\n",
+			original: "\t\tconst bound = boundOver(budgetOf(members), stall)\n",
+			replacement: "\t\tconst bound = boundOver(300_000, stall)\n",
 			why: "Every open is held to the runner-wide open bound, 300 s of CPU (needOpenMillis), as before each need stated its budget: a group spending twice its budgets opens; the property fails."
 		},
 		{

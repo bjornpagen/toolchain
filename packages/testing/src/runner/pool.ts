@@ -57,6 +57,7 @@ import {
 import type { ChildrenStated, PoolUsage, PropertyUsage } from "#runner/usage.ts"
 import {
 	type Bound,
+	boundOver,
 	deadlineBound,
 	noWaits,
 	type Overrun,
@@ -360,7 +361,7 @@ const SILENCE_GRACE_MILLIS = 2 * watchdogGraceMillis + Duration.toMillis(HUNG_CL
  *   held to what it was
  * @from runner/limits.ts needStallMillis
  */
-const loadBoundOf = (stall: number): Bound => ({ cpu: stall, stall })
+const loadBoundOf = (stall: number): Bound => boundOver(stall, stall)
 
 /**
  * A phase's bound for a unit, under the stall window `stall`: importing, a load's (loadBoundOf); opening, the budgets of
@@ -372,7 +373,7 @@ const boundOf = (unit: Unit, phase: Phase, stall: number): Bound => {
 		case "importing":
 			return loadBoundOf(stall)
 		case "opening":
-			return { cpu: phase.budget, stall }
+			return boundOver(phase.budget, stall)
 		case "evaluating":
 			return deadlineBound(deadlinesOf(unit.work))
 	}
@@ -381,7 +382,8 @@ const boundOf = (unit: Unit, phase: Phase, stall: number): Bound => {
 /** A bound with the silence grace on each leg: past it, the worker's own guards have failed. */
 const graced = (bound: Bound): Bound => ({
 	cpu: bound.cpu + SILENCE_GRACE_MILLIS,
-	stall: bound.stall + SILENCE_GRACE_MILLIS
+	stall: bound.stall + SILENCE_GRACE_MILLIS,
+	waited: bound.waited + SILENCE_GRACE_MILLIS
 })
 
 /**

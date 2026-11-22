@@ -1,7 +1,7 @@
 import { Array as Arr, Duration, Effect, Fiber } from "effect"
 import { liveMillis, overrun } from "#live.ts"
 import { NeedFailed } from "#runner/services.ts"
-import { type Bound, type Overrun, overrunText, ownCpu, ownWork } from "#runner/work.ts"
+import { type Bound, boundOver, type Overrun, overrunText, ownCpu, ownWork } from "#runner/work.ts"
 
 /**
  * How a process judges the opens it begins at once (runner/case.ts NeedCache, runner/runs.ts): as one piece of work,
@@ -61,7 +61,7 @@ export const judgedGroup = (
 	stall: number
 ): Effect.Effect<Judged> =>
 	Effect.gen(function* () {
-		const bound: Bound = { cpu: budgetOf(members), stall }
+		const bound = boundOver(budgetOf(members), stall)
 		const judge = yield* Effect.forkDetach(
 			Effect.flatMap(liveMillis, (wall) => overrun(ownWork(wall, ownCpu()), bound)),
 			{ startImmediately: true }

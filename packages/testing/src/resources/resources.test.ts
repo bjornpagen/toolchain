@@ -28,7 +28,7 @@ import { assert } from "#assert.ts"
 import { awaitFact } from "#fact.ts"
 import type { Reached } from "#features.ts"
 import { array, boolean, finite, int } from "#gen.ts"
-import { liveMillis, liveSleep, overrun, waitingOnWork } from "#live.ts"
+import { liveMillis, liveSleep, overrun, waitingOn, waitingOnWork } from "#live.ts"
 import { Checkout } from "#mutate/checkout.ts"
 import { backendWorking } from "#pg/session.ts"
 import { type Case, property } from "#property.ts"
@@ -1280,12 +1280,17 @@ export const cloneDropWaitIsDeclared = property.exhaust(finite(deadlocks), {
 								Effect.gen(function* () {
 									const clone = yield* opened.clone
 									yield* Deferred.succeed(named, clone.name)
-									const holder = yield* Scope.provide(
-										undeclaredSession(clone.member, clone.name),
-										holding
+									const holder = yield* waitingOn("the holder's sign-in and its lock")(
+										Effect.gen(function* () {
+											const signedIn = yield* Scope.provide(
+												undeclaredSession(clone.member, clone.name),
+												holding
+											)
+											yield* signedIn("BEGIN")
+											yield* signedIn(`COMMENT ON DATABASE ${quoteIdent(clone.name)} IS 'held'`)
+											return signedIn
+										})
 									)
-									yield* holder("BEGIN")
-									yield* holder(`COMMENT ON DATABASE ${quoteIdent(clone.name)} IS 'held'`)
 									const released = Effect.gen(function* () {
 										yield* holder(`SELECT pg_catalog.pg_sleep(${Duration.toSeconds(held)})`)
 										const open = waitedOnNow()
@@ -1428,7 +1433,7 @@ export const unansweredStatementIsHung = property.exhaust(finite(deadlocks), {
 									overrun(ownWork(wall, ownCpu()), deadlineBound(shape.deadline)),
 									(judged) => judged.kind
 								),
-								Effect.as(liveSleep(Duration.millis(shape.deadline * 10)), "never judged")
+								Effect.as(liveSleep(Duration.millis(shape.deadline * 40)), "never judged")
 							])
 							assert.equal(verdict, "stalled")
 						})
@@ -1447,6 +1452,59 @@ export const unansweredStatementIsHung = property.exhaust(finite(deadlocks), {
 			original: "\t\t\t\t\t\t\tleaveWait(since, open.id)\n",
 			replacement: "\t\t\t\t\t\t\tledger.idle.set(open.id, since)\n",
 			why: "A declared wait's claim is never held against its server, as every wait was a claim alone: a statement whose answer never comes, its backend idle (a promise node-postgres never settles, a backend gone), keeps its case's guard blind for good, and the run waits with nothing reported (JUDGEWRITE's 19 rule-* modules, 2026-11-21: 30 minutes flat, its backends idle in ClientRead); the property fails, never judged."
+		}
+	]
+})
+
+export const pollLoopIsHung = property.exhaust(finite(deadlocks), {
+	box: "a case that polls a statement of its own session one after another for good, each answered, under a deadline of 150 or 300 ms",
+	needs: { services },
+	situations: [],
+	check:
+		({ services: context }) =>
+		(shape) =>
+			Effect.flatMap(context, (ctx) =>
+				Effect.provideContext(
+					Effect.scoped(
+						Effect.gen(function* () {
+							const cluster = yield* PgCluster
+							const opened = yield* marksTemplate.open
+							const clone = yield* opened.clone
+							const session = yield* cluster.connect(clone.member, clone.name)
+							const wall = yield* liveMillis
+							const verdict = yield* Effect.raceAll([
+								Effect.as(
+									Effect.forever(
+										Effect.andThen(
+											session.query("SELECT pg_catalog.pg_sleep(0.05)", []),
+											Effect.yieldNow
+										)
+									),
+									"ended"
+								),
+								Effect.map(
+									overrun(ownWork(wall, ownCpu()), deadlineBound(shape.deadline)),
+									(judged) => judged.kind
+								),
+								Effect.as(liveSleep(Duration.millis(shape.deadline * 60)), "never judged")
+							])
+							assert.equal(verdict, "waited")
+						})
+					),
+					ctx
+				)
+			),
+	oracle: {
+		kind: "specification",
+		name: "a case whose declared waits follow one another for good, each answered by a backend that works on it, is judged once they have held it its bound's waited wall time in all, its leg the waits"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/runner/work.ts",
+			original: "\tif (waitedAll >= bound.waited) {\n",
+			replacement: "\tif (waitedAll < 0) {\n",
+			why: "Declared waits hold a case for as long as they follow one another, so a poll of statements with nothing between them, each answered, never makes a stall window whole and never spends the case's CPU, and the case is never judged (trunk@grizzle's pg tier at f1bf91a2f, 2026-11-22: three hours in budget.test.ts's barrier, ended by hand); the property fails, never judged."
 		}
 	]
 })
