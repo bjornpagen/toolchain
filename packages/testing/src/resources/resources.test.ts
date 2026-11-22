@@ -1438,9 +1438,6 @@ export const lockedByItsClientIsHung = property.exhaust(finite(deadlocks), {
 									overrun(ownWork(wall, ownCpu()), deadlineBound(shape.deadline)),
 									(judged) => judged.kind
 								),
-								// Room for two claim checks a window apart and a whole window after them, each check a connect
-								// and a statement on a member that load 600 slowed to hundreds of milliseconds (case 0 at 10
-								// deadlines, 2026-11-22: never judged).
 								Effect.as(liveSleep(Duration.millis(shape.deadline * 40)), "never judged")
 							]).pipe(Effect.ensuring(Effect.orDie(holder("ROLLBACK"))))
 							assert.equal(verdict, "stalled")
