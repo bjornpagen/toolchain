@@ -1,5 +1,5 @@
 import { Array as Arr, String as Str } from "effect"
-import type { Durability, LocalCluster, SessionLocks, Sizing } from "#pg/spec.ts"
+import type { Durability, LocalCluster, PredicateRoom, SessionLocks, Sizing } from "#pg/spec.ts"
 
 /**
  * How long a backend runs a statement between two polls of its client's socket, PostgreSQL's
@@ -46,8 +46,8 @@ export const clientCheckInterval = 1000
 
 /**
  * The predicate locks PostgreSQL's table holds for each connection a member admits, max_pred_locks_per_transaction:
- * grizzle's recommendation to an operator, which production holds, so a test's SERIALIZABLE transactions promote and
- * run out of room where production's would.
+ * grizzle's recommendation to an operator, which production holds. A member whose room is `perBackend` (spec.ts
+ * PredicateRoom) holds it; every member's relation promotion is derived from it (relationPromotion).
  *
  * @limitKind published
  * @owner grizzle, the operator's PostgreSQL settings its README recommends
@@ -60,6 +60,54 @@ export const clientCheckInterval = 1000
  * @verified 2026-11-18
  */
 const predicateLocksPerTransaction = 2048
+
+/**
+ * PostgreSQL's default max_pred_locks_per_relation: negative, so a relation's page and tuple locks promote to one
+ * relation lock past max_pred_locks_per_transaction over its magnitude, less one (predicate.c MaxPredicateChildLocks,
+ * https://github.com/postgres/postgres/blob/REL_19_0/src/backend/storage/lmgr/predicate.c#L2223).
+ *
+ * @limitKind published
+ * @owner PostgreSQL 19.0
+ * @unit a divisor of max_pred_locks_per_transaction, negated
+ * @scope the relation promotion production holds at grizzle's recommendation (relationPromotion)
+ * @constraint configurable default
+ * @source https://github.com/postgres/postgres/blob/REL_19_0/src/backend/utils/misc/guc_parameters.dat#L2094
+ * @quote boot_val => '-2',
+ * @verified 2026-11-22
+ */
+const defaultRelationPromotion = -2
+
+/**
+ * The page and tuple locks of one relation a SERIALIZABLE transaction holds before PostgreSQL promotes them to one lock
+ * of the relation, max_pred_locks_per_relation, which every member holds: production's, what PostgreSQL's default
+ * derives from grizzle's recommended max_pred_locks_per_transaction, stated so it no longer moves with a member's
+ * max_pred_locks_per_transaction, which its room sizes (sizedSettings). Every member promotes as production does, and
+ * as every member did when each held 2048.
+ *
+ * @limitKind derived
+ * @owner the toolchain's local clusters (pg/settings.ts), after PostgreSQL 19.0's promotion
+ * @unit page and tuple locks of one relation
+ * @scope max_pred_locks_per_relation of every member of every local cluster
+ * @derivation predicate.c#L2223 (REL_19_0, verified 2026-11-22): `max_predicate_locks_per_xact /
+ *   (-max_predicate_locks_per_relation) - 1`, in C's integer division, at grizzle's 2048 and PostgreSQL's default -2:
+ *   1023
+ * @from {@link predicateLocksPerTransaction}, {@link defaultRelationPromotion}
+ */
+const relationPromotion = Math.trunc(predicateLocksPerTransaction / -defaultRelationPromotion) - 1
+
+/**
+ * The least max_pred_locks_per_transaction PostgreSQL accepts, which a member whose room needs fewer a backend holds.
+ *
+ * @limitKind published
+ * @owner PostgreSQL 19.0
+ * @unit predicate locks per server process or prepared transaction
+ * @scope a perWorker member's max_pred_locks_per_transaction (predicateLocksFor)
+ * @constraint hard quota
+ * @source https://github.com/postgres/postgres/blob/REL_19_0/src/backend/utils/misc/guc_parameters.dat#L2104
+ * @quote min => '10',
+ * @verified 2026-11-22
+ */
+const minimumPredicateLocks = 10
 
 /**
  * The connections PostgreSQL keeps for superusers alone, at its default, which a member leaves as it is.
@@ -241,16 +289,14 @@ export type Setting = readonly [name: string, value: string]
  *
  * - client_connection_check_interval: a running statement polls its client's socket, so a backend whose client died
  *   mid-statement ends at its next poll and lets go of its transaction id (clientCheckInterval).
- * - max_pred_locks_per_transaction: production's predicate locks, whose relation promotion PostgreSQL's default
- *   max_pred_locks_per_relation of -2 derives from it as production's does (2048 / 2 - 1, predicate.c
- *   MaxPredicateChildLocks).
+ * - max_pred_locks_per_relation: production's relation promotion (relationPromotion), whatever the member's room.
  * - track_io_timing: a plan's buffers come with their read times, as the benchmarks read them.
  * - timezone and log_timezone UTC: the machine's time zone never reaches a member, which initdb would take it from.
  * - password_encryption and ssl_min_protocol_version: SCRAM, and TLS 1.3, as every client signs in over TLS (settle.ts's hba).
  */
 const everyMember: Arr.NonEmptyReadonlyArray<Setting> = [
 	["client_connection_check_interval", `${clientCheckInterval}`],
-	["max_pred_locks_per_transaction", `${predicateLocksPerTransaction}`],
+	["max_pred_locks_per_relation", `${relationPromotion}`],
 	["track_io_timing", "on"],
 	["TimeZone", "UTC"],
 	["log_timezone", "UTC"],
@@ -330,19 +376,30 @@ const locksForDemand = (demand: number, connections: number, walSenders: number)
 ]
 
 /**
+ * The most predicate locks a member's table holds for each of its backends, whatever their count: a `perBackend`
+ * member's 2048; a `perWorker` member's room is its own, the same at any count, so past the backends that share it a
+ * backend's is the least PostgreSQL accepts (predicateLocksFor).
+ */
+const locksPerBackendOf = (room: PredicateRoom): number =>
+	room.kind === "perBackend" ? predicateLocksPerTransaction : minimumPredicateLocks
+
+/**
  * The most connections a member can admit and still answer pg_locks in every state of its predicate lock table: the
  * table holds predicateLocksPerTarget times max_pred_locks_per_transaction entries for each of its backends and prepared
  * transactions (predicate.c NPREDICATELOCKTARGETENTS, MaxBackends + max_prepared_xacts; MaxBackends max_connections +
  * autovacuum_worker_slots + max_worker_processes + max_wal_senders + its special workers), and a read of pg_locks copies
  * a SERIALIZABLEXACT for each entry in one allocation (serializableXactBytes), which must stay within MaxAllocSize
- * (maxAllocBytes). `sendersPerConnection` is 1 where every connection is also a WAL sender (replication sized as a
- * capacity) and 0 where the member keeps PostgreSQL's default senders. At grizzle's 2048 predicate locks a member holds
- * 1,560 backends at most: 765 connections with a sender each, 1,521 without. A cluster sized by its sessions states
- * its own few (a developer's), which this bound leaves as they are.
+ * (maxAllocBytes); `locksPerBackend` is the most a backend's share of the table is (locksPerBackendOf).
+ * `sendersPerConnection` is 1 where every connection is also a WAL sender (replication sized as a capacity) and 0 where
+ * the member keeps PostgreSQL's default senders. At grizzle's 2048 predicate locks a member holds 1,560 backends at
+ * most: 765 connections with a sender each, 1,521 without; at a room's 10 a backend, 319,566, which no memory's capacity
+ * reaches. A room's own targets stay within what a read copies while 2 times them, times 168 bytes, is under 1 GB: 3.19
+ * million targets. A cluster sized by its sessions states its own few (a developer's), which this bound leaves as they
+ * are.
  */
-const lockStatusConnections = (sendersPerConnection: 0 | 1): number => {
+const lockStatusConnections = (locksPerBackend: number, sendersPerConnection: 0 | 1): number => {
 	const backends = Math.floor(
-		maxAllocBytes / (predicateLocksPerTarget * predicateLocksPerTransaction * serializableXactBytes)
+		maxAllocBytes / (predicateLocksPerTarget * locksPerBackend * serializableXactBytes)
 	)
 	const others =
 		superuserReservedConnections +
@@ -358,30 +415,47 @@ const lockStatusConnections = (sendersPerConnection: 0 | 1): number => {
 /**
  * The connections a member admits as a capacity of the machine (spec.ts Capacity): the machine's memory, `machineBytes`,
  * over a busy backend's, `backendBytes`, shared among the cluster's `members`, rounded down, one at least, and never more
- * than a read of pg_locks can hold (lockStatusConnections), `sendersPerConnection` saying whether each is a WAL sender
- * too.
+ * than a read of pg_locks can hold at the member's room (lockStatusConnections), `sendersPerConnection` saying whether
+ * each is a WAL sender too.
  */
 const capacityOf = (
 	machineBytes: number,
 	backendBytes: number,
 	members: number,
+	room: PredicateRoom,
 	sendersPerConnection: 0 | 1
 ): number =>
 	Math.min(
-		lockStatusConnections(sendersPerConnection),
+		lockStatusConnections(locksPerBackendOf(room), sendersPerConnection),
 		Math.max(1, Math.floor(machineBytes / (backendBytes * members)))
 	)
+
+/**
+ * max_pred_locks_per_transaction of a member of `room` serving `share` workers and sizing its predicate lock table for
+ * `backends` backends and prepared transactions (PostgreSQL sizes it at max_pred_locks_per_transaction targets for each,
+ * predicate.c NPREDICATELOCKTARGETENTS): a `perBackend` member's 2048; a `perWorker` member's, the least count whose table
+ * holds its room, `share` times the room a worker, and never fewer than PostgreSQL accepts.
+ */
+const predicateLocksFor = (room: PredicateRoom, share: number, backends: number): Setting => [
+	"max_pred_locks_per_transaction",
+	`${
+		room.kind === "perBackend"
+			? predicateLocksPerTransaction
+			: Math.max(minimumPredicateLocks, Math.ceil((share * room.targets) / backends))
+	}`
+]
 
 /**
  * The settings that size a member of `cluster`, one of `members`, on a machine of `machineBytes` of memory and a server
  * of `blockSize` bytes a page. A member sized for workers admits connections up to its capacity (capacityOf), every
  * one of them also a replication slot and a WAL sender where its replication is a capacity, and never more than a read
- * of pg_locks holds (lockStatusConnections); holds shared_buffers in
- * pages for every page a run's workers on it read, `share` workers (shareOf); and holds max_locks_per_transaction at
- * the most one transaction takes, never fewer than PostgreSQL's default, since its table holds that many for every
- * backend at once. A count the repository states no evidence for stays PostgreSQL's default. A member sized by its
- * sessions holds max_connections for them alone, a lock table for the locks they hold at once, and the rest at
- * PostgreSQL's defaults.
+ * of pg_locks holds (lockStatusConnections); holds a predicate lock table of its room (predicateLocksFor) for the
+ * backends its connections and senders make; holds shared_buffers in pages for every page a run's workers on it read,
+ * `share` workers (shareOf); and holds max_locks_per_transaction at the most one transaction takes, never fewer than
+ * PostgreSQL's default, since its table holds that many for every backend at once. A count the repository states no
+ * evidence for stays PostgreSQL's default. A member sized by its sessions holds max_connections for them alone,
+ * production's predicate locks for each, a lock table for the locks they hold at once, and the rest at PostgreSQL's
+ * defaults.
  */
 export const sizedSettings = (
 	cluster: LocalCluster,
@@ -394,20 +468,30 @@ export const sizedSettings = (
 	if (sizing.kind === "sessions") {
 		return [
 			maxConnections(sizing.sessions),
+			["max_pred_locks_per_transaction", `${predicateLocksPerTransaction}`],
 			...Arr.map(heldCount(sizing.locks), (demand) =>
 				locksForDemand(demand, connectionsFor(sizing.sessions), defaultWalSenders)
 			)
 		]
 	}
-	const { connections, replication, sharedBuffers, locks } = sizing
+	const { connections, replication, sharedBuffers, locks, predicateLocks } = sizing
 	const admitted = capacityOf(
 		machineBytes,
 		connections.backendBytes,
 		members,
+		predicateLocks,
 		replication.kind === "capacity" ? 1 : 0
 	)
+	const backends =
+		connectionsFor(admitted) +
+		autovacuumWorkerSlots +
+		workerProcesses +
+		(replication.kind === "capacity" ? admitted : defaultWalSenders) +
+		specialWorkerProcesses +
+		preparedTransactions
 	return [
 		maxConnections(admitted),
+		predicateLocksFor(predicateLocks, share, backends),
 		...(replication.kind === "capacity"
 			? ([
 					["max_replication_slots", `${admitted}`],

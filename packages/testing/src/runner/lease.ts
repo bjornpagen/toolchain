@@ -1,6 +1,7 @@
 import type { NodeServices } from "@effect/platform-node/NodeServices"
 import { Array as Arr, Effect, Semaphore } from "effect"
 import { type MutantPool, rebasedTo, type Serves, type WorkerImage } from "#mutate/pool.ts"
+import { checkoutHere, checkoutVariable } from "#pg/family.ts"
 import { needStallMillis } from "#runner/limits.ts"
 import { type PoolFailed, poolOf } from "#runner/pool.ts"
 import { WORKER_ENTRY } from "#runner/run.ts"
@@ -45,11 +46,14 @@ export const placesLeased = (width: number) => {
  * is the checkout itself in a repository whose package is its root) is taken in the image's root instead (rebasedTo),
  * so a worker tree's workers load the tree's modules and its test.config.ts, and run in the tree's package directory;
  * its workers take this process's flags and serve the image's mutant (PoolSpec served), and its environment adds to
- * this process's; the run needs its properties read (`runs`) open here once, in the image's package directory, before
- * its workers start (runner/runs.ts), so a mutant reaches them on disk. Its pool bounds each unit per case
- * (runner/pool.ts Bounding): a mutant may disable the guard that would end its case, so the parent ends a worker silent
- * past that case's own deadline and the grace, never past every case's of its unit. A worker killed past its case
- * deadline is forked again from the same image; closing the lease's
+ * this process's, naming this process's own checkout as theirs (pg/family.ts checkoutHere, read once as the pool is
+ * made: the package root it runs from, or the checkout it was itself given in a tree), so a worker in a tree, and a
+ * worker of a lease made inside a tree, reaches that checkout's cluster family, never one of a tree's own; the run
+ * needs its properties read (`runs`) open here once, in the image's package directory, before its workers start
+ * (runner/runs.ts), so a mutant reaches them on disk. Its pool bounds each unit per case (runner/pool.ts Bounding): a
+ * mutant may disable the guard that would end its case, so the parent ends a worker silent past that case's own
+ * deadline and the grace, never past every case's of its unit. A worker killed past its case deadline is forked again
+ * from the same image; closing the lease's
  * scope disconnects every worker and waits for it to exit on its own, so a coverage pass's dumps are written before the
  * scope closes.
  *
@@ -65,7 +69,9 @@ export const mutantPoolOf = (
 	checkout: string,
 	packageRoot: string
 ): Effect.Effect<MutantPool<PoolFailed>, never, NodeServices> =>
-	Effect.map(Effect.context<NodeServices>(), (platform) => {
+	Effect.gen(function* () {
+		const platform = yield* Effect.context<NodeServices>()
+		const origin = yield* Effect.orDie(checkoutHere)
 		const { placesFor } = placesLeased(testWorkers)
 		return {
 			width: testWorkers,
@@ -82,7 +88,7 @@ export const mutantPoolOf = (
 						entry: rebased(WORKER_ENTRY),
 						root,
 						cwd: root,
-						env: image.env,
+						env: { ...image.env, [checkoutVariable]: origin },
 						compile: image.compile,
 						places: { at: taken, of: testWorkers },
 						execArgv: process.execArgv,

@@ -23,14 +23,25 @@ import { localCluster } from "#pg/pg.ts"
 const busyBackendBytes = 37_301_248
 
 /**
- * The testing package's own local cluster, which its resource properties clone from (resources.fixtures.ts): the unit
- * postgres@toolchain-test-0, reached over verify-full TLS at localhost:5441, owned by toolchain_dev, its template
- * carrying no extension, throwaway, one member, its connections a capacity of the machine and the rest at PostgreSQL's
- * defaults. `toolchain-pg settle` from this directory gives it this spec; a run only reads it.
+ * The first port the package's families claim their members' from (@bjornpagen/testing/pg family.ts portsClaimed),
+ * each the lowest from it that no family claims and nothing listens at: above every fixed port of the clusters made
+ * before families (5432 to 5999 on cassowary, 2026-11-22), so a family never takes one a cluster of before was given
+ * and is down, and below the kernel's ephemeral range (from 32768, /proc/sys/net/ipv4/ip_local_port_range), whose
+ * ports an outgoing connection takes unasked.
+ */
+const firstPort = 20_000
+
+/**
+ * The testing package's own local cluster, which its resource properties clone from (resources.fixtures.ts): at each
+ * checkout, its family's one member, the unit postgres@toolchain-test-<key>-0, reached over verify-full TLS at
+ * localhost at a port it claims from firstPort, owned by toolchain_dev, its template carrying no extension, throwaway,
+ * its connections a capacity of the machine, production's predicate locks for each backend until the package measures
+ * its room (CONTRIBUTING.md, "A family's predicate lock room"), and the rest at PostgreSQL's defaults. `toolchain-pg
+ * settle` from this directory gives the checkout's family this spec; a run only reads it.
  */
 export default localCluster({
 	unit: "toolchain-test",
-	network: { kind: "tls", port: 5441 },
+	network: { kind: "tls", from: firstPort },
 	owner: "toolchain_dev",
 	template: "toolchain_template",
 	extensions: [],
@@ -42,6 +53,7 @@ export default localCluster({
 		connections: { kind: "capacity", backendBytes: busyBackendBytes },
 		replication: { kind: "default" },
 		sharedBuffers: { kind: "default" },
-		locks: { kind: "default" }
+		locks: { kind: "default" },
+		predicateLocks: { kind: "perBackend" }
 	}
 })

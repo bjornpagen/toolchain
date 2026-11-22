@@ -14,6 +14,13 @@ import {
 } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { failureText } from "#failure.ts"
+import {
+	type CheckoutFamily,
+	checkoutHere,
+	checkoutVariable,
+	familyOf,
+	homesHere
+} from "#pg/family.ts"
 import { bootstrapSuperuser, type ClusterFailed, psql, serverBin } from "#pg/server.ts"
 import { membersRead, type PgMember, settled } from "#pg/settle.ts"
 import { LocalCluster } from "#pg/spec.ts"
@@ -62,15 +69,15 @@ const envLines = (member: PgMember, template: string): ReadonlyArray<string> => 
 	`TOOLCHAIN_PG_PASSWORD_FILE=${member.passwordFile}`
 ]
 
-/** The first of a cluster's members, as a run reads it. */
-const firstMember = (cluster: LocalCluster) => Effect.map(membersRead(cluster), Arr.headNonEmpty)
+/** The first of a family's members, as a run reads it. */
+const firstMember = (family: CheckoutFamily) => Effect.map(membersRead(family), Arr.headNonEmpty)
 
 /** psql on the first member with this terminal's stdin, stdout and stderr, its exit status this command's. */
-const interactive = (cluster: LocalCluster, as: "owner" | "admin", args: ReadonlyArray<string>) =>
+const interactive = (family: CheckoutFamily, as: "owner" | "admin", args: ReadonlyArray<string>) =>
 	Effect.gen(function* () {
 		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-		const member = yield* firstMember(cluster)
-		const bin = yield* serverBin({ cluster: cluster.unit, doing: "running psql" })
+		const member = yield* firstMember(family)
+		const bin = yield* serverBin({ cluster: family.name, doing: "running psql" })
 		const [database, ...rest] = args
 		const stdio = { stdin: "inherit", stdout: "inherit", stderr: "inherit" } as const
 		const command =
@@ -107,22 +114,26 @@ const interactive = (cluster: LocalCluster, as: "owner" | "admin", args: Readonl
 
 /**
  * The variable a settle's own unit runs it with: present, the command settles here; absent, it starts its unit
- * (settleUnit) and waits on it, so every settle of a cluster runs as the one unit its name gives.
+ * (settleUnit) and waits on it, so every settle of a family runs as the one unit its name gives.
  */
 const settlingVariable = "TOOLCHAIN_PG_SETTLING"
 
-/** The unit a cluster's settle runs as, and its repository's slice: the cluster's unit name's first word. */
-const settleUnit = (cluster: LocalCluster) => ({
-	unit: `${cluster.unit}-settle`,
-	slice: `${Option.getOrElse(Arr.head(Str.split(cluster.unit, "-")), () => cluster.unit)}.slice`
+/**
+ * The unit a family's settle runs as, `<family>-settle`, and its repository's slice: its cluster's unit name's first
+ * word.
+ */
+const settleUnit = (family: CheckoutFamily) => ({
+	unit: `${family.name}-settle`,
+	slice: `${Option.getOrElse(Arr.head(Str.split(family.cluster.unit, "-")), () => family.cluster.unit)}.slice`
 })
 
 /** The usage this command prints for anything else. */
 const usage = Arr.join(
 	[
-		"usage: toolchain-pg <command>, for the cluster the working directory's pg.config.ts states",
-		"  settle                             start each member's unit (postgres@<unit>-<i>) and give it its spec,",
-		"                                     as the unit <unit>-settle: a second settle of the cluster is refused",
+		"usage: toolchain-pg <command>, for this checkout's family of the cluster the working directory's pg.config.ts states",
+		"  settle                             remove the cluster's families whose checkout is gone, then start each member's unit",
+		"                                     (postgres@<family>-<i>) and give it its spec, as the unit <family>-settle:",
+		"                                     a second settle of the family is refused",
 		"  check                              read every member, as a run reads it, writing nothing",
 		"  psql [database] [psql args...]     the owner, on the first member",
 		"  admin [database] [psql args...]    the bootstrap superuser (this account) over the socket, on the first member",
@@ -132,14 +143,15 @@ const usage = Arr.join(
 )
 
 /**
- * `settle` as the cluster's settle unit: run with this process's own program and flags in the working directory,
+ * `settle` as the family's settle unit: run with this process's own program and flags in the working directory,
  * `systemd-run --wait --pipe`, which answers the unit's exit status and is refused at once when the unit already runs,
- * so two settles of one cluster never run together and none waits its turn.
+ * so two settles of one family never run together and none waits its turn. The unit is given the checkout, so it
+ * settles this one's family wherever systemd starts it.
  */
-const settleAsUnit = (cluster: LocalCluster) =>
+const settleAsUnit = (family: CheckoutFamily) =>
 	Effect.gen(function* () {
 		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-		const { unit, slice } = settleUnit(cluster)
+		const { unit, slice } = settleUnit(family)
 		return yield* spawner.exitCode(
 			ChildProcess.make(
 				"systemd-run",
@@ -154,6 +166,8 @@ const settleAsUnit = (cluster: LocalCluster) =>
 					"--collect",
 					"-E",
 					`${settlingVariable}=1`,
+					"-E",
+					`${checkoutVariable}=${family.checkout}`,
 					"--",
 					process.execPath,
 					...process.execArgv,
@@ -165,9 +179,9 @@ const settleAsUnit = (cluster: LocalCluster) =>
 		)
 	})
 
-/** The commands, by name, each from its arguments to its exit status. */
+/** The commands, by name, each from its arguments to its exit status, over this checkout's family. */
 const commands = (
-	cluster: LocalCluster
+	family: CheckoutFamily
 ): Readonly<
 	Record<
 		string,
@@ -191,9 +205,9 @@ const commands = (
 				NodeServices.NodeServices
 			> =>
 				Option.isNone(settling)
-					? Effect.map(settleAsUnit(cluster), (status): number => Number(status))
+					? Effect.map(settleAsUnit(family), (status): number => Number(status))
 					: Effect.as(
-							Effect.flatMap(settled(cluster), (members) =>
+							Effect.flatMap(settled(family), (members) =>
 								Console.log(
 									`settled: ${Arr.join(
 										Arr.map(members, (member) => `${member.name} (port ${member.port})`),
@@ -206,7 +220,7 @@ const commands = (
 		),
 	check: () =>
 		Effect.as(
-			Effect.flatMap(membersRead(cluster), (members) =>
+			Effect.flatMap(membersRead(family), (members) =>
 				Console.log(
 					`as its spec states: ${Arr.join(
 						Arr.map(members, (member) => member.name),
@@ -216,12 +230,12 @@ const commands = (
 			),
 			0
 		),
-	psql: (args) => interactive(cluster, "owner", args),
-	admin: (args) => interactive(cluster, "admin", args),
+	psql: (args) => interactive(family, "owner", args),
+	admin: (args) => interactive(family, "admin", args),
 	env: () =>
-		Effect.flatMap(firstMember(cluster), (member) =>
+		Effect.flatMap(firstMember(family), (member) =>
 			Effect.as(
-				Effect.forEach(envLines(member, cluster.template), (line) => Console.log(line), {
+				Effect.forEach(envLines(member, family.cluster.template), (line) => Console.log(line), {
 					discard: true
 				}),
 				0
@@ -229,11 +243,16 @@ const commands = (
 		)
 })
 
-/** Runs the command its arguments name over the working directory's cluster, its exit status this process's. */
+/**
+ * Runs the command its arguments name over the working directory's cluster at this process's checkout and in its
+ * account's homes (family.ts checkoutHere and homesHere, read here once), its exit status this process's.
+ */
 const main = Effect.gen(function* () {
 	const [name, ...args] = Arr.drop(process.argv, 2)
 	const cluster = yield* specOf
-	const all = commands(cluster)
+	const checkout = yield* checkoutHere
+	const homes = yield* homesHere
+	const all = commands(familyOf(cluster, checkout, homes))
 	return yield* Option.match(
 		Option.flatMap(Option.fromUndefinedOr(name), (named) => Option.fromUndefinedOr(all[named])),
 		{

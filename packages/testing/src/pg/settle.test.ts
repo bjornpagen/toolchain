@@ -1,22 +1,26 @@
 /**
- * A cluster as units of the workbench's PostgreSQL (pg/settle.ts): `settled` starts each member's unit and gives it what
- * its spec states, and `membersRead`, what a run reads, then answers every member, over its socket or over TLS at its
- * port; a member a setting of which was changed behind the spec's back, or that ALTER SYSTEM gave a setting the spec
- * does not state, is refused, naming `toolchain-pg settle`, and settled again, the unstated setting reset; a settled
- * member's predicate lock table stays one a read of pg_locks can copy (settings.ts lockStatusConnections); and a run
- * that reads a cluster never settled is refused at once, starting no unit and writing no state; and a case cluster the
- * process that drew it left as it ended is removed as the next case draws its own, where one a live case holds is kept.
- * Each case's cluster is a unit name of its own, its units stopped and its data removed when the case ends. Oracle: the
- * specification, stated in the checks.
+ * A cluster's family at a checkout as units of the workbench's PostgreSQL (pg/settle.ts): `settled` starts each
+ * member's unit and gives it what its spec states, and `membersRead`, what a run reads, then answers every member, over
+ * its socket or over TLS at a port its family claims; a member a setting of which was changed behind the spec's back,
+ * or that ALTER SYSTEM gave a setting the spec does not state, is refused, naming `toolchain-pg settle`, and settled
+ * again, the unstated setting reset; a settled member promotes a relation's predicate locks where production does,
+ * whatever its room, and its predicate lock table stays one a read of pg_locks can copy (settings.ts
+ * lockStatusConnections); and a run that reads a family never settled is refused at once, starting no unit and writing
+ * no state; and a case cluster the process that drew it left as it ended is removed as the next case draws its own,
+ * where one a live case holds is kept. Each case's cluster is a unit name of its own, its family at a checkout of the
+ * case's own, its units stopped and its data, claims and state removed when the case ends. Oracle: the specification,
+ * stated in the checks.
  */
 import { Array as Arr, Effect, FileSystem, Option } from "effect"
 import { assert } from "#assert.ts"
 import { finite } from "#gen.ts"
+import { portsHeld } from "#pg/family.ts"
 import { adminSql, serverBin } from "#pg/server.ts"
 import {
 	clusterOf,
 	dataOf,
 	failedOf,
+	familyIn,
 	holdTaken,
 	leftCluster,
 	lefts,
@@ -29,7 +33,7 @@ import { memberNames, membersRead, settled } from "#pg/settle.ts"
 import { property } from "#property.ts"
 
 export const settledAsItsSpec = property.exhaust(finite(shapes), {
-	box: "a cluster over its socket or over TLS, of one member or two",
+	box: "a cluster's family over its socket or over TLS, of one member or two, its predicate room production's a backend or its workers'",
 	needs: {},
 	situations: [],
 	check: () => (shape) =>
@@ -37,10 +41,12 @@ export const settledAsItsSpec = property.exhaust(finite(shapes), {
 			Effect.gen(function* () {
 				const cluster = yield* clusterOf(shape)
 				yield* removedAtEnd(cluster)
-				const members = yield* settled(cluster)
-				const read = yield* membersRead(cluster)
+				const family = yield* familyIn(cluster)
+				const members = yield* settled(family)
+				const read = yield* membersRead(family)
+				const claims = yield* portsHeld(family)
 				const first = Arr.headNonEmpty(read)
-				const bin = yield* serverBin({ cluster: cluster.unit, doing: "the property" })
+				const bin = yield* serverBin({ cluster: family.name, doing: "the property" })
 				yield* adminSql(
 					bin,
 					{ socket: first.socket, port: first.port },
@@ -49,17 +55,17 @@ export const settledAsItsSpec = property.exhaust(finite(shapes), {
 						"ALTER SYSTEM SET client_connection_check_interval = '2000'",
 						"SELECT pg_catalog.pg_reload_conf()"
 					],
-					{ cluster: cluster.unit, doing: "changing a setting behind the spec's back" }
+					{ cluster: family.name, doing: "changing a setting behind the spec's back" }
 				)
-				const refusedAfterChange = yield* failedOf(membersRead(cluster))
-				yield* settled(cluster)
-				const readAgain = yield* membersRead(cluster)
+				const refusedAfterChange = yield* failedOf(membersRead(family))
+				yield* settled(family)
+				const readAgain = yield* membersRead(family)
 				yield* adminSql(
 					bin,
 					{ socket: first.socket, port: first.port },
 					"postgres",
 					["ALTER SYSTEM SET work_mem = '7MB'", "SELECT pg_catalog.pg_reload_conf()"],
-					{ cluster: cluster.unit, doing: "writing a setting its spec does not state" }
+					{ cluster: family.name, doing: "writing a setting its spec does not state" }
 				)
 				const [lockStatus = ""] = yield* adminSql(
 					bin,
@@ -68,10 +74,19 @@ export const settledAsItsSpec = property.exhaust(finite(shapes), {
 					[
 						"SELECT 2 * current_setting('max_pred_locks_per_transaction')::bigint * (current_setting('max_connections')::bigint + current_setting('autovacuum_worker_slots')::bigint + current_setting('max_worker_processes')::bigint + current_setting('max_wal_senders')::bigint + 2 + current_setting('max_prepared_transactions')::bigint) * 168 <= 1073741823"
 					],
-					{ cluster: cluster.unit, doing: "reading its predicate lock table's size" }
+					{ cluster: family.name, doing: "reading its predicate lock table's size" }
 				)
-				const refusedAfterUnstated = yield* failedOf(membersRead(cluster))
-				yield* settled(cluster)
+				const [promotion = ""] = yield* adminSql(
+					bin,
+					{ socket: first.socket, port: first.port },
+					"postgres",
+					[
+						"SELECT CASE WHEN current_setting('max_pred_locks_per_relation')::int >= 0 THEN current_setting('max_pred_locks_per_relation')::int ELSE current_setting('max_pred_locks_per_transaction')::int / -current_setting('max_pred_locks_per_relation')::int - 1 END"
+					],
+					{ cluster: family.name, doing: "reading its relation promotion" }
+				)
+				const refusedAfterUnstated = yield* failedOf(membersRead(family))
+				yield* settled(family)
 				const unstatedLeft = yield* adminSql(
 					bin,
 					{ socket: first.socket, port: first.port },
@@ -79,36 +94,57 @@ export const settledAsItsSpec = property.exhaust(finite(shapes), {
 					[
 						"SELECT name FROM pg_catalog.pg_file_settings WHERE sourcefile = pg_catalog.current_setting('data_directory') || '/postgresql.auto.conf' AND name = 'work_mem'"
 					],
-					{ cluster: cluster.unit, doing: "reading what ALTER SYSTEM holds" }
+					{ cluster: family.name, doing: "reading what ALTER SYSTEM holds" }
+				)
+				const { network } = cluster
+				const ports = Arr.map(memberNames(family), (_, index) =>
+					network.kind === "tls" ? Arr.get(claims, index) : Option.some(5432)
 				)
 				assert.deepEqual(
 					{
-						settled: Arr.map(members, (member) => [member.name, member.port, member.tls.kind]),
-						read: Arr.map(read, (member) => [member.name, member.port, member.tls.kind]),
-						names: memberNames(cluster).length,
+						settled: Arr.map(members, (member) => [
+							member.name,
+							Option.some(member.port),
+							member.tls.kind
+						]),
+						read: Arr.map(read, (member) => [
+							member.name,
+							Option.some(member.port),
+							member.tls.kind
+						]),
+						claims: claims.length,
+						claimedFromItsFirst: Arr.every(
+							claims,
+							(port) => network.kind === "tls" && port >= network.from
+						),
+						names: memberNames(family).length,
 						refusedAfterChange,
 						readAgain: readAgain.length,
 						refusedAfterUnstated,
 						unstatedLeft,
-						lockStatusFits: lockStatus
+						lockStatusFits: lockStatus,
+						promotion
 					},
 					{
-						settled: Arr.map(memberNames(cluster), (name, index) => [
+						settled: Arr.map(memberNames(family), (name, index) => [
 							name,
-							cluster.network.kind === "tls" ? cluster.network.port + index : 5432,
-							cluster.network.kind
+							Arr.getUnsafe(ports, index),
+							network.kind
 						]),
-						read: Arr.map(memberNames(cluster), (name, index) => [
+						read: Arr.map(memberNames(family), (name, index) => [
 							name,
-							cluster.network.kind === "tls" ? cluster.network.port + index : 5432,
-							cluster.network.kind
+							Arr.getUnsafe(ports, index),
+							network.kind
 						]),
+						claims: network.kind === "tls" ? memberNames(family).length : 0,
+						claimedFromItsFirst: true,
 						names: shape.spread ? 2 : 1,
 						refusedAfterChange: true,
 						readAgain: shape.spread ? 2 : 1,
 						refusedAfterUnstated: true,
 						unstatedLeft: [],
-						lockStatusFits: "t"
+						lockStatusFits: "t",
+						promotion: "1023"
 					}
 				)
 			})
@@ -140,7 +176,7 @@ export const settledAsItsSpec = property.exhaust(finite(shapes), {
 		},
 		{
 			file: "packages/testing/src/pg/settings.ts",
-			original: "\t\tlockStatusConnections(sendersPerConnection),\n",
+			original: "\t\tlockStatusConnections(locksPerBackendOf(room), sendersPerConnection),\n",
 			replacement: "\t\tNumber.POSITIVE_INFINITY,\n",
 			why: "A member admits as many connections as the machine's memory holds, as it did: the test cluster's member, at thousands of connections, holds a predicate lock table a read of pg_locks cannot copy in one allocation (the shared server at 10,000 refused pg_locks, 2026-11-21: 168 bytes times 9,097,351 predicate locks); the property fails."
 		}
@@ -148,7 +184,7 @@ export const settledAsItsSpec = property.exhaust(finite(shapes), {
 })
 
 export const unsettledStartsNothing = property.exhaust(finite(shapes), {
-	box: "a cluster never settled, over its socket or over TLS, of one member or two",
+	box: "a cluster's family never settled, over its socket or over TLS, of one member or two",
 	needs: {},
 	situations: [],
 	check: () => (shape) =>
@@ -157,24 +193,25 @@ export const unsettledStartsNothing = property.exhaust(finite(shapes), {
 				const fs = yield* FileSystem.FileSystem
 				const cluster = yield* clusterOf(shape)
 				yield* removedAtEnd(cluster)
-				const refused = yield* failedOf(membersRead(cluster))
-				const active = yield* Effect.forEach(memberNames(cluster), unitActive)
-				const data = yield* Effect.forEach(memberNames(cluster), (name) =>
+				const family = yield* familyIn(cluster)
+				const refused = yield* failedOf(membersRead(family))
+				const active = yield* Effect.forEach(memberNames(family), unitActive)
+				const data = yield* Effect.forEach(memberNames(family), (name) =>
 					Effect.flatMap(dataOf(name), (directory) => fs.exists(directory))
 				)
 				assert.deepEqual(
 					{ refused, active, data },
 					{
 						refused: true,
-						active: Arr.map(memberNames(cluster), () => false),
-						data: Arr.map(memberNames(cluster), () => false)
+						active: Arr.map(memberNames(family), () => false),
+						data: Arr.map(memberNames(family), () => false)
 					}
 				)
 			})
 		),
 	oracle: {
 		kind: "specification",
-		name: "a run that reads a cluster never settled is refused, and no member's unit is started or made"
+		name: "a run that reads a family never settled is refused, and no member's unit is started or made"
 	},
 	kept: [],
 	kills: [
@@ -182,7 +219,7 @@ export const unsettledStartsNothing = property.exhaust(finite(shapes), {
 			file: "packages/testing/src/pg/settle.ts",
 			original: "\t\tconst keptPassword = yield* readIfThere(files.password)\n",
 			replacement:
-				'\t\tyield* Effect.forEach(memberNames(cluster), (name) => systemctl("start", name, step), { discard: true })\n\t\tconst keptPassword = yield* readIfThere(files.password)\n',
+				'\t\tyield* Effect.forEach(memberNames(family), (name) => systemctl("start", name, step), { discard: true })\n\t\tconst keptPassword = yield* readIfThere(files.password)\n',
 			why: "A run's read starts each member's unit, as the old harness's need made and started its cluster, so a run changes a server every run shares; the property fails, the units started."
 		}
 	]
@@ -195,11 +232,11 @@ export const leftClustersSwept = property.exhaust(finite(lefts), {
 	check: () => (left) =>
 		Effect.scoped(
 			Effect.gen(function* () {
-				const cluster = yield* leftCluster(left)
-				yield* clusterOf({ tls: false, spread: left.spread })
-				const hold = yield* holdTaken(cluster.unit)
+				const family = yield* leftCluster(left)
+				yield* clusterOf({ tls: false, spread: left.spread, room: true })
+				const hold = yield* holdTaken(family.cluster.unit)
 				const claimed = Option.isNone(hold)
-				const present = yield* presenceOf(cluster)
+				const present = yield* presenceOf(family)
 				assert.deepEqual(
 					{
 						leftUnheld: Arr.some(present, Boolean) && !claimed,
@@ -211,7 +248,7 @@ export const leftClustersSwept = property.exhaust(finite(lefts), {
 		),
 	oracle: {
 		kind: "specification",
-		name: "once the next case draws its cluster, no case cluster is left that no process holds (gone, or held by a sweep still removing it), and one its live case holds is kept whole: each member's unit active and its data there, and the cluster's state"
+		name: "once the next case draws its cluster, no case cluster is left that no process holds (gone, or held by a sweep still removing it), and one its live case holds is kept whole: each member's unit active and its data there"
 	},
 	kept: [],
 	kills: [

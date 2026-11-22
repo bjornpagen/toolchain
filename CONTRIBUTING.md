@@ -174,16 +174,72 @@ of the file it mutates, and the kill gate's seed policy. A kill that turned its 
 
 The testing library's database resources (`@bjornpagen/testing/resources`) are proven against a real PostgreSQL:
 `packages/testing/test.config.ts`'s layer provides their cluster (`resources.fixtures.ts`), the testing package's own
-local cluster (`packages/testing/pg.config.ts`: port 5441, the server the `pg_config` on PATH names), which the layer
-makes and starts the first time a case opens a need, as every repository's cluster is made (`src/pg`). No environment
-is needed: a push whose change reaches `src/resources/resources.test.ts`'s closure brings the cluster up itself. From
-`packages/testing`, `pnpm pg <command>` runs its life by hand (`pnpm pg doctor`, `pnpm pg destroy`).
+local cluster (`packages/testing/pg.config.ts`), as units of the workbench's PostgreSQL (`src/pg`). A run only reads
+it: from `packages/testing`, `pnpm exec toolchain-pg settle` (it runs as a unit of its own) gives this checkout's
+family its spec first, and `pnpm pg check` reads it as a run does.
 
 The properties make databases only under the prefix `tc_` (templates `tc_tpl_<digest>`, clones `tc_c_<owner>_<n>`)
 and, for the property about collection, a prefix of each case's own (`tcs<hex>_`); each case drops what it made, and
 `collect` (`resources/collect.ts`) drops what an ended or killed run left under `tc_`. A run killed in the collection
 property can leave `tcs<hex>_` databases, which go by hand (`DROP DATABASE ... WITH (FORCE)`, after `ALTER DATABASE ...
 IS_TEMPLATE false` for a template).
+
+### A cluster's families
+
+A repository's cluster (its `pg.config.ts`, `localCluster`) is one family of members at each checkout: `<unit>-<key>`,
+the key the first 8 hex digits of the SHA-256 of the checkout's real path (`src/pg/family.ts`), its members
+`postgres@<unit>-<key>-<i>`. Every run, command and script of a checkout reaches its own family and no other's, so
+trunk's worktree and each lane's workspace never share a member and never wait on each other's SSI LWLocks (on
+2026-11-22 trunk's 32-worker pg tier and every lane's run shared grizzle's one family: 54 to 75% of its busy backends
+waited on them). The checkout is the real path of the working directory, or `TOOLCHAIN_PG_CHECKOUT` where a worker runs
+elsewhere (the mutator's worker trees). A family's size is derived per machine: `ceil(testWorkers / workersPerMember)`
+members, `workersPerMember` the repository's measured number.
+
+- `toolchain-pg settle` settles the working directory's family, as the unit `<family>-settle`. A fresh family takes
+  about 10 to 40 s (initdb, its owner, template and extensions); a settled one, a second. Trunk's script and a lane run
+  it before any pg run.
+- Over TLS a family's members claim their ports: the lowest from the spec's `from` that no family claims and nothing
+  listens at, each claim a file `~/.local/state/toolchain-pg/ports/<port>` naming its family, created with O_EXCL, so two
+  families settling at once take different ports. Nothing waits on a claim.
+- Every settle first collects its cluster's families whose checkout is gone: the folder deleted, or a workspace
+  forgotten whose folder lingers (its `.git` file names a git directory that `jj workspace forget` or `git worktree
+  prune` removed). Their units are stopped, and their data, claims and state removed. It reads only its own cluster's
+  families (`<unit>-<8 hex digits>`) and never a cluster made before families. A live checkout's family stays running
+  between runs, its templates kept.
+- A test of settling or collection runs in homes of its own (`Homes`, a scratch directory), never the account's
+  `~/.local/state/toolchain-pg` or another cluster's units. On 2026-11-22 a kill trial of the collection property ran
+  against the account's homes and removed den's, five lanes' and trunk's clusters.
+
+### A family's predicate lock room
+
+Every non-concurrent `DROP INDEX` in a member (each index of a `DROP TABLE` or `DROP SCHEMA ... CASCADE` among them)
+walks the member's whole predicate lock target table while it holds every SSI LWLock exclusive, whenever any
+SERIALIZABLE transaction of the member is open (PostgreSQL 19.0 `predicate.c` `DropAllPredicateLocksFromTable`). The
+table holds `max_pred_locks_per_transaction` targets for every backend. At 2048 a backend and grizzle's 1,559 backends
+(768 connections, 765 WAL senders) that is 3.19 million targets, 681 MB of shared memory a member, and 5.6 ms of every
+SSI LWLock a drop, against 0.3 ms at 100,000 targets. So a cluster sized for workers states its room
+(`sizing.predicateLocks`):
+
+- `{ kind: "perBackend" }`: production's 2048 for every backend. This is the costly default for a repository that has
+  not measured.
+- `{ kind: "perWorker", targets: n }`: `n` targets for each worker a member serves. A member then holds the least
+  `max_pred_locks_per_transaction` whose table holds `share x n`, and never fewer than PostgreSQL's 10.
+
+Whatever the room, every member promotes a relation's page and tuple locks to one relation lock past 1023
+(`max_pred_locks_per_relation`), production's at 2048. A room too small fails earlier, never later: a transaction
+past it fails with "out of shared memory" (53200), which is a finding to measure again.
+
+To measure `n`:
+
+1. Settle a family of the repository's spec, with `predicateLocks` left at `perBackend`, so nothing clips the peak.
+2. Run the repository's heaviest SERIALIZABLE tier on it (grizzle's network tier, or its laws), under trunk's seed.
+3. While it runs, read each member's SIREAD locks every second as the bootstrap superuser, from a transient timer
+   unit: `select count(*), count(distinct (database, relation, page, tuple)) from pg_locks where mode = 'SIReadLock'`.
+   One read takes tens of milliseconds at a small table and about half a second at 3 million targets.
+4. A member's room is the larger of its peak targets and half its peak locks, since the table holds two locks a target.
+   `n` is that room over the workers the member served, at its largest across members.
+5. Write `n` as `@limitKind measured` beside the spec (its evidence, the run, the peak, the decision), and run the tier
+   on `perWorker` once more. A 53200 says measure again.
 
 `toolchain-test fuzz <fuzztime>` runs each round at reach `rotating`: a property's rotating stream alone, under a fresh
 seed, since its kept tokens, floor and steered phase are the same on every seed and every run and push checks them.

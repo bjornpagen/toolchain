@@ -151,6 +151,12 @@ export const trialTemplatesApart = property.exhaust(runPairs, {
 			original: "served: image.served,",
 			replacement: "served: Option.none(),",
 			why: "A lease drops its image's mutant: its workers load the file as it is, so a mutant's run reads the unmutated mark; this property fails."
+		},
+		{
+			file: "packages/testing/src/runner/lease.ts",
+			original: "env: { ...image.env, [checkoutVariable]: origin },",
+			replacement: "env: { ...image.env, [checkoutVariable]: packageRoot },",
+			why: "A lease names the package root it was made from as its workers' checkout, so a lease made inside a worker tree (a kill trial's run of this property) sends its workers to the tree's own cluster family, which no settle made, and every need on the cluster fails unopened (PGFAMILY, 2026-11-22); this property fails."
 		}
 	]
 })

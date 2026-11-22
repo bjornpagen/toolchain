@@ -5,7 +5,6 @@ import {
 	Context,
 	Deferred,
 	Effect,
-	FileSystem,
 	Layer,
 	Option,
 	Predicate,
@@ -13,6 +12,7 @@ import {
 	Scope,
 	String as Str
 } from "effect"
+import { checkoutHere, familyOf, homesHere } from "#pg/family.ts"
 import { membersRead, type PgMember, type Platform } from "#pg/settle.ts"
 import type { LocalCluster, WorkerSizing } from "#pg/spec.ts"
 import { NeedFailed, WorkerIndex } from "#runner/services.ts"
@@ -122,9 +122,10 @@ export type PgClusterShape = Readonly<{
 	/** The worker's owner on `member`, opened once (Owner). */
 	owner: (member: PgMember) => Effect.Effect<Owner, NeedFailed>
 	/**
-	 * The real path of the directory the run runs from (its package root: a lane's workspace, trunk's worktree, a
-	 * mutant's worker tree), read once the first time a need asks: the checkout whose claims a template's use records
-	 * (template.ts claimed), which collection keeps the template for while the checkout exists (collect.ts).
+	 * The run's checkout (pg/family.ts checkoutHere: its package root, a lane's workspace or trunk's worktree, which a
+	 * mutant's worker tree is given), read once the first time a need asks: the checkout whose family the run reaches,
+	 * and whose claims a template's use records (template.ts claimed), which collection keeps the template for while the
+	 * checkout exists (collect.ts).
 	 */
 	checkout: Effect.Effect<string, NeedFailed>
 }>
@@ -220,10 +221,12 @@ export class PgCluster extends Context.Service<PgCluster, PgClusterShape>()(
 ) {
 	/**
 	 * The service a repository's runner config provides (its `layer`), built once per worker the first time a case
-	 * there opens a need: it reads nothing then, so a worker whose needs use no database never reaches the cluster; its
-	 * members are read the first time a need asks (pg/settle.ts membersRead, which refuses a member not as its spec
-	 * states, naming `toolchain-pg settle`), and an owner per member opened when the worker first reaches it, held until
-	 * the worker ends. Nothing admits a worker or makes it wait: a member past its capacity refuses a connection.
+	 * there opens a need: it reads nothing then, so a worker whose needs use no database never reaches the cluster; the
+	 * run's checkout and the account's homes are read once the first time a need asks (pg/family.ts checkoutHere,
+	 * homesHere), and its family's members
+	 * (pg/settle.ts membersRead, which refuses a member not as its spec states, naming `toolchain-pg settle`), and an
+	 * owner per member opened when the worker first reaches it, held until the worker ends. Nothing admits a worker or
+	 * makes it wait: a member past its capacity refuses a connection.
 	 */
 	static readonly layer = (
 		spec: PgClusterSpec
@@ -233,25 +236,25 @@ export class PgCluster extends Context.Service<PgCluster, PgClusterShape>()(
 			Effect.gen(function* () {
 				const scope = yield* Effect.scope
 				const platform = yield* Effect.context<Platform>()
-				const members = yield* Effect.cached(
-					Effect.mapError(Effect.provideContext(membersRead(spec.cluster), platform), (failure) =>
+				const checkout = yield* Effect.cached(
+					Effect.mapError(Effect.provideContext(checkoutHere, platform), (failure) =>
 						NeedFailed.make({ need: "the local cluster", message: failure.message })
 					)
 				)
-				const owners = new Map<string, Deferred.Deferred<Owner, NeedFailed>>()
-				const checkout = yield* Effect.cached(
-					Effect.mapError(
-						Effect.provideContext(
-							Effect.flatMap(FileSystem.FileSystem, (fs) => fs.realPath(".")),
-							platform
-						),
-						(failure) =>
-							NeedFailed.make({
-								need: "the local cluster",
-								message: `the run's checkout: ${failure.message}`
-							})
+				const members = yield* Effect.cached(
+					Effect.flatMap(checkout, (at) =>
+						Effect.mapError(
+							Effect.provideContext(
+								Effect.flatMap(homesHere, (homes) =>
+									membersRead(familyOf(spec.cluster, at, homes))
+								),
+								platform
+							),
+							(failure) => NeedFailed.make({ need: "the local cluster", message: failure.message })
+						)
 					)
 				)
+				const owners = new Map<string, Deferred.Deferred<Owner, NeedFailed>>()
 				return {
 					prefix: spec.prefix,
 					base: spec.cluster.template,

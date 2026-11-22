@@ -18,7 +18,7 @@ const prefix = DatabasePrefix("tc_types")
 /** A cluster's fields but its sizing, as the testing package's own states them (pg.config.ts). */
 const fields = {
 	unit: "toolchain-test",
-	network: { kind: "tls", port: 5441 },
+	network: { kind: "tls", from: 20_000 },
 	owner: "toolchain_dev",
 	template: "toolchain_template",
 	extensions: [],
@@ -44,7 +44,8 @@ export const accepted = Object.freeze([
 				connections: { kind: "capacity", backendBytes: 1 },
 				replication: { kind: "capacity" },
 				sharedBuffers: { kind: "default" },
-				locks: { kind: "perTransaction", locks: 1 }
+				locks: { kind: "perTransaction", locks: 1 },
+				predicateLocks: { kind: "perWorker", targets: 1 }
 			}
 		}),
 		connect,

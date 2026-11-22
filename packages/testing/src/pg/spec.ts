@@ -2,17 +2,35 @@ import { regex } from "arkregex"
 import { Brand } from "effect"
 
 /**
- * A cluster's name: the PostgreSQL units its members run as, `postgres@<unit>-<i>` (the workbench's `postgres@`
- * template, ~/Documents/beefy-workspace/workbench/parts/postgres), whose data and socket the unit owns. A unit name is
- * a systemd instance name a slice and a journal read back: lowercase letters, digits and hyphens, a letter first.
+ * A cluster's name, the first part of its families' (family.ts familyOf, `<unit>-<key>`), and so of the PostgreSQL units
+ * their members run as, `postgres@<unit>-<key>-<i>` (the workbench's `postgres@` template,
+ * ~/Documents/beefy-workspace/workbench/parts/postgres), whose data and socket the unit owns. A unit name is a systemd
+ * instance name a slice and a journal read back: lowercase letters, digits and hyphens, a letter first.
  */
 export type UnitName = string & Brand.Brand<"UnitName">
 
-/** A unit name's text: what systemd keeps of an instance name as it is, with room for a member's suffix. */
+/**
+ * A unit name's text: what systemd keeps of an instance name as it is.
+ *
+ * @formatConstant at most 48 characters, so a member's unit instance, its family's name and `-<i>` after it, names its
+ * socket's directory (`$XDG_RUNTIME_DIR/postgresql-<member>/.s.PGSQL.<port>`) well within a Unix socket's 107 bytes
+ */
 const unitPattern = regex("^[a-z][a-z0-9-]{0,47}$")
 
 /** A unit name: a lowercase letter, then lowercase letters, digits and hyphens, at most 48 characters (UnitName). */
 export const UnitName = Brand.make<UnitName>((name) => unitPattern.test(name))
+
+/**
+ * A spec's unit name, which a family's key and a member's index follow (family.ts familyOf): at most 36 characters, so
+ * a member's name, `<unit>-<8 hex digits>-<index>`, stays a UnitName.
+ *
+ * @formatConstant a unit name's 48 characters (unitPattern) less a family's `-<8 hex digits>` and a member's `-<index>`
+ * of two digits
+ */
+const specUnitPattern = regex("^[a-z][a-z0-9-]{0,35}$")
+
+/** A spec's unit name (specUnitPattern), a UnitName its families' names extend. */
+const SpecUnitName = Brand.make<UnitName>((name) => specUnitPattern.test(name))
 
 /**
  * A TCP port a member listens on at localhost.
@@ -29,10 +47,11 @@ export const ClusterPort = Brand.make<ClusterPort>(
 /**
  * How a cluster's clients reach its members: `socket`, over each member's Unix socket alone (the unit's own, which
  * only this account reaches), for a repository whose clients need nothing else; or `tls`, over verify-full TLS at
- * localhost too, member i on `port` + i, with the server certificate the workbench's PostgreSQL part installs, for a
- * repository whose client refuses anything else (grizzle's).
+ * localhost too, with the server certificate the workbench's PostgreSQL part installs, for a repository whose client
+ * refuses anything else (grizzle's), each member at a port its family claims (family.ts portsClaimed), the lowest
+ * from `from` that no family claims and nothing listens at.
  */
-export type Network = Readonly<{ kind: "socket" }> | Readonly<{ kind: "tls"; port: ClusterPort }>
+export type Network = Readonly<{ kind: "socket" }> | Readonly<{ kind: "tls"; from: ClusterPort }>
 
 /**
  * An extension the template database carries, created by the bootstrap superuser in a schema the owner owns, so a
@@ -89,10 +108,26 @@ export type TransactionLocks =
 	| Readonly<{ kind: "perTransaction"; locks: number }>
 
 /**
+ * The room a member's predicate lock table holds for the SIREAD locks its SERIALIZABLE transactions take, committed ones
+ * PostgreSQL keeps among them: `perBackend`, max_pred_locks_per_transaction at grizzle's recommendation to production
+ * (2048, settings.ts) for every backend the member admits, a table that grows with its connections and WAL senders; or
+ * `perWorker`, `targets` for each worker of a run the member serves, the repository's measured peak, its evidence beside
+ * its spec (how to measure it: CONTRIBUTING.md, "A family's predicate lock room"). Every non-concurrent DROP INDEX in a
+ * member, each index of a DROP TABLE or DROP SCHEMA CASCADE among them, while any SERIALIZABLE transaction of the member
+ * runs, walks the whole target table under every SSI LWLock held exclusive (PostgreSQL 19.0 predicate.c
+ * DropAllPredicateLocksFromTable), so its size is a cost every SERIALIZABLE transaction of the member waits on: 5.6 ms a
+ * drop at grizzle's 3.19 million targets, 0.3 ms at 100,000 (2026-11-22). A smaller room only fails earlier ("out of
+ * shared memory", 53200), never passes where a larger fails; the relation promotion is the same at every room.
+ */
+export type PredicateRoom =
+	| Readonly<{ kind: "perBackend" }>
+	| Readonly<{ kind: "perWorker"; targets: number }>
+
+/**
  * A cluster a run's workers reach (resources/cluster.ts PgCluster.layer), nothing admitting or queueing them: its
- * family, the members its workers spread over, worker i on member i mod their count; its connections, a capacity of
- * the machine (Capacity); its replication; its shared buffers, every page a run's workers on a member read held at
- * once; and its lock table (TransactionLocks).
+ * family's members, which its workers spread over, worker i on member i mod their count; its connections, a capacity
+ * of the machine (Capacity); its replication; its shared buffers, every page a run's workers on a member read held at
+ * once; its lock table (TransactionLocks); and its predicate lock table's room (PredicateRoom).
  */
 export type WorkerSizing = Readonly<{
 	kind: "workers"
@@ -101,6 +136,7 @@ export type WorkerSizing = Readonly<{
 	replication: Replication
 	sharedBuffers: SizedBuffers
 	locks: TransactionLocks
+	predicateLocks: PredicateRoom
 }>
 
 /**
@@ -145,10 +181,10 @@ export class LocalCluster<S extends Sizing = Sizing> {
 	readonly sizing: S
 
 	constructor(fields: LocalClusterFields<S>) {
-		this.unit = UnitName(fields.unit)
+		this.unit = SpecUnitName(fields.unit)
 		this.network =
 			fields.network.kind === "tls"
-				? { kind: "tls", port: ClusterPort(fields.network.port) }
+				? { kind: "tls", from: ClusterPort(fields.network.from) }
 				: { kind: "socket" }
 		this.owner = fields.owner
 		this.template = fields.template
@@ -159,10 +195,10 @@ export class LocalCluster<S extends Sizing = Sizing> {
 	}
 }
 
-/** What a repository writes of its cluster (LocalCluster), its unit name and port as plain values. */
+/** What a repository writes of its cluster (LocalCluster), its unit name and first port as plain values. */
 export type LocalClusterFields<S extends Sizing = Sizing> = Readonly<{
 	unit: string
-	network: Readonly<{ kind: "socket" }> | Readonly<{ kind: "tls"; port: number }>
+	network: Readonly<{ kind: "socket" }> | Readonly<{ kind: "tls"; from: number }>
 	owner: string
 	template: string
 	extensions: ReadonlyArray<TemplateExtension>
