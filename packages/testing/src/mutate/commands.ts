@@ -20,7 +20,7 @@ import { type Catch, type Counted, censusOf, type Reading, type Standing } from 
 import { loadingOf } from "#mutate/checkout.ts"
 import { foreignPool, foreignSubject } from "#mutate/foreign.ts"
 import { imagesOf } from "#mutate/image.ts"
-import { type Judged, killsOf, redText } from "#mutate/kills.ts"
+import { type Judged, killsOf, unjudgedText } from "#mutate/kills.ts"
 import { mutatorPool } from "#mutate/lease.ts"
 import { realPathOf } from "#mutate/mutated.ts"
 import { type Choice, type MutantJudged, mutationOf } from "#mutate/operators.ts"
@@ -85,7 +85,7 @@ export const judgedLine = (judged: Judged): string => {
 		case "stale":
 			return `${property}: STALE: ${verdict.stale.message}`
 		case "unjudged":
-			return `${property}: UNJUDGED: ${kill.why}, since the property goes red with no mutant (${redText(verdict.red)})`
+			return `${property}: UNJUDGED: ${kill.why}, since ${unjudgedText(verdict.why, verdict.red)}`
 	}
 }
 
@@ -107,7 +107,7 @@ const failingLine = (judged: Judged): ReadonlyArray<string> => {
 		case "unjudged":
 			return [
 				`  UNJUDGED ${kill.file}: ${kill.why}`,
-				`    the property goes red with no mutant: ${redText(verdict.red)}`
+				`    ${unjudgedText(verdict.why, verdict.red)}`
 			]
 	}
 }

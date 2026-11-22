@@ -6,11 +6,14 @@
  * is killed, whether the check runs the file in its own process or, from a tree, in a child; a
  * kill it misses survives, its probe saying whether the property's process loaded the mutant at all, which a check
  * that runs the file in a child without a tree never does. The check starts processes that load the hook (hook.ts),
- * so the property needs Checkout.dir.
+ * so the property needs Checkout.dir. And on leases of the mutator's own pool (runner/lease.ts), a kill that freezes its
+ * case, its guard with it, has its worker ended by the pool within that case's deadline and the grace, never every
+ * case's of its unit, and is killed when the overrun is its own, unjudged when its subject's baseline, run again at
+ * once, overruns too.
  */
 import { Array as Arr, Effect } from "effect"
 import { assert } from "#assert.ts"
-import { array, element } from "#gen.ts"
+import { array, element, finite } from "#gen.ts"
 import { Checkout } from "#mutate/checkout.ts"
 import { imagesOf } from "#mutate/image.ts"
 import {
@@ -20,13 +23,23 @@ import {
 	type Gate,
 	KILL_NAMES,
 	KILLS,
-	reportOf
+	OVERRUN_DEADLINE,
+	OVERRUN_KILLS,
+	overranExpected,
+	overranOf,
+	reportOf,
+	withEnv
 } from "#mutate/kills.fixtures.ts"
 import { killsOf } from "#mutate/kills.ts"
+import { realPathOf } from "#mutate/mutated.ts"
+import { LOAD_FILE, OVERRUNS, overrunSpace, overruns } from "#mutate/overrun.fixtures.ts"
 import { checkProperty, processPool } from "#mutate/processes.fixtures.ts"
 import type { Subject } from "#mutate/schedule.ts"
 import { treesOf } from "#mutate/tree.ts"
 import { property, PropertyId } from "#property.ts"
+import { Scratch } from "#resources/scratch.ts"
+import { withKills } from "#runner/affected.ts"
+import { mutantPoolOf } from "#runner/lease.ts"
 import { runnerLimits } from "#runner/limits.ts"
 
 export const killGate = property.explore(
@@ -97,3 +110,65 @@ export const killGate = property.explore(
 		]
 	}
 )
+
+export const killOverran = property.exhaust(finite(overrunSpace), {
+	box: "a kill that freezes its subject's case for ever, its overrun its own or the machine's",
+	needs: { checkout: Checkout.dir, directory: Scratch.dir },
+	situations: [],
+	check:
+		({ checkout, directory }) =>
+		(whose) =>
+			Effect.gen(function* () {
+				const dir = yield* checkout
+				const root = yield* realPathOf(dir)
+				const scratch = yield* directory
+				const trees = yield* treesOf(root)
+				const images = yield* imagesOf(root, trees)
+				const leased = yield* mutantPoolOf(root, root)
+				const pool = withEnv(leased, { [LOAD_FILE]: `${scratch}/load` })
+				const subject: Subject = {
+					id: PropertyId(OVERRUNS),
+					property: withKills(overruns, [OVERRUN_KILLS[whose]]),
+					loading: "in-process"
+				}
+				const judged = yield* killsOf(
+					pool,
+					{ seed: 1, limits: { ...runnerLimits, deadline: OVERRUN_DEADLINE } },
+					root,
+					images,
+					[subject]
+				)
+				assert.deepEqual(Arr.map(judged, overranOf), [overranExpected(whose)])
+			}),
+	oracle: {
+		kind: "specification",
+		name: "a kill that freezes its case is ended by its lease's pool past a stall window of one case's deadline and the grace, killed when its subject's baseline, run again at once, passes, and unjudged when the baseline overruns too"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/runner/lease.ts",
+			original: 'bounding: "per case"',
+			replacement: 'bounding: "summed"',
+			why: "A lease's pool bounds a unit by every case's deadline added up, as a run's does: a mutant that disables its case's guard holds its trial past every case of its unit, thirty times that in the waits it reports (a kill of work.ts held a trial 69 minutes on trunk@toolchain); the frozen case's stall window is its unit's two deadlines, and this property fails."
+		},
+		{
+			file: "packages/testing/src/runner/pool.ts",
+			original: "return boundOver(deadlinesOf(work), longestDeadlineOf(work))",
+			replacement: "return deadlineBound(deadlinesOf(work))",
+			why: "A unit bounded per case is bounded by its cases' deadlines added up after all; the frozen case's stall window is its unit's two deadlines, and this property fails."
+		},
+		{
+			file: "packages/testing/src/runner/pool.ts",
+			original: 'return { kind: "bound", overrun: ending.overrun }',
+			replacement: "return lostOtherwise",
+			why: "A unit lost with a worker the pool ended past its bound reads as any other loss, so a kill the machine's load overran is killed with no second look at its baseline; this property fails."
+		},
+		{
+			file: "packages/testing/src/mutate/kills.ts",
+			original: "\toverran(red)\n\t\t? Effect.map(",
+			replacement: "\tfalse\n\t\t? Effect.map(",
+			why: "A kill whose worker the pool ended past its bound is killed without its baseline run again, so an overrun the machine's load brought about, which the baseline shares, reads as the mutant's; this property fails."
+		}
+	]
+})

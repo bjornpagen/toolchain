@@ -4,7 +4,7 @@ import type { MutantPool, Serves, WorkerImage } from "#mutate/pool.ts"
 import { lost, oneCase, passed } from "#mutate/processes.fixtures.ts"
 import { SHARINGS, type Sharing, type TrialVerdict } from "#mutate/schedule.ts"
 import { Property, PropertyId } from "#property.ts"
-import type { Batch, Reach, Sense } from "#runner/protocol.ts"
+import { type Batch, lostOtherwise, type Reach, type Sense } from "#runner/protocol.ts"
 
 /** The properties a stage's draw names. */
 const NAMES = ["p0", "p1", "p2", "p3"] as const
@@ -68,7 +68,13 @@ export const fakeProperty = (seen: Ref.Ref<Seen>, guide: Sense): Property =>
 				return Arr.some(Arr.flatten(results), (result) => result.outcome.kind !== "passed")
 					? {
 							kind: "failed",
-							finding: { kind: "lost", phase: "floor", where: run.id, report: "red on this image" }
+							finding: {
+								kind: "lost",
+								phase: "floor",
+								where: run.id,
+								by: lostOtherwise,
+								report: "red on this image"
+							}
 						}
 					: { kind: "exhausted", cases: 1, box: "one fake case", measures: [] }
 			}),
@@ -156,7 +162,13 @@ export const expectedOf = (stages: ReadonlyArray<DrawnStage>): TrialVerdict<numb
 					property: PropertyId(p.name),
 					red: {
 						kind: "found",
-						finding: { kind: "lost", phase: "floor", where: p.name, report: "red on this image" }
+						finding: {
+							kind: "lost",
+							phase: "floor",
+							where: p.name,
+							by: lostOtherwise,
+							report: "red on this image"
+						}
 					}
 				}
 			}

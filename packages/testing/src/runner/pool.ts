@@ -32,6 +32,9 @@ import {
 	doneWith,
 	type Evaluator,
 	FromWorker,
+	longestDeadlineOf,
+	type LostBy,
+	lostOtherwise,
 	lostResult,
 	type ChildrenCpu,
 	type Printed,
@@ -235,7 +238,8 @@ export const placesOf = (workers: number): Places => ({
  * any unit. A worker the parent kills is forked again from the same spec, in the same place. `stall` is the stall window
  * the pool watches its workers' loads and opens under (runner/limits.ts needStallMillis; a meta-test's own, shorter):
  * within a load's bound (loadBoundOf) and the silence grace a worker must be ready (its runner config loaded, its
- * services declared), or it is ended as one that cannot start.
+ * services declared), or it is ended as one that cannot start. `bounding` is how it bounds a unit's evaluation
+ * (Bounding): summed for a run's pool, per case for the mutator's leases.
  */
 export type PoolSpec = Readonly<{
 	entry: string
@@ -249,7 +253,21 @@ export type PoolSpec = Readonly<{
 	guide: "notes" | "blocks"
 	runs: ReadonlyArray<RunValue>
 	stall: number
+	bounding: Bounding
 }>
+
+/**
+ * How a pool bounds a unit's evaluation, the cases it runs (boundOf). `summed`, a run's: each leg by its cases'
+ * deadlines added up, a backstop behind each case's own guard in its worker, which ends the case within its deadline.
+ * `per case`, the mutator's leases': a mutant may disable the very guard that would end its case, so the parent ends
+ * the case within one case's deadline: its CPU the deadlines added up, as a run's, its stall window its longest case's
+ * deadline, its declared waits waitedWindows of that window (runner/work.ts boundOver). Summed, the parent waited out
+ * every case's deadline of a trial's unit, and thirty times that in the waits its mutated worker reported: a kill of
+ * work.ts that left a wait open in its worker's ledger held a trial 69 minutes, its case under a planted PostgreSQL
+ * holder idle in a transaction, which the mutated guard never ended (trunk@toolchain, 2026-11-22); a kill of pool.ts
+ * that forked workers undetached held one 25 minutes and more (lane SLOP-FIXER-2, the same day).
+ */
+export type Bounding = "summed" | "per case"
 
 /**
  * The pool as a run uses it: the evaluator every search shares; `retire`, which tells every worker a property's search
@@ -344,7 +362,7 @@ type Event =
  * twice (its ping's, then its inspector's, should the main thread be blocked), and the cleanup grace a hung case's
  * guard waits; past that the worker's own guards have failed.
  */
-const SILENCE_GRACE_MILLIS = 2 * watchdogGraceMillis + Duration.toMillis(HUNG_CLEANUP_GRACE)
+export const SILENCE_GRACE_MILLIS = 2 * watchdogGraceMillis + Duration.toMillis(HUNG_CLEANUP_GRACE)
 
 /**
  * How much work a load the parent watches may do before its worker is ended, under the stall window `stall`: a
@@ -363,19 +381,29 @@ const SILENCE_GRACE_MILLIS = 2 * watchdogGraceMillis + Duration.toMillis(HUNG_CL
  */
 const loadBoundOf = (stall: number): Bound => boundOver(stall, stall)
 
+/** A unit's evaluation's bound, as `bounding` bounds it (Bounding). */
+const evaluationBound = (work: Work, bounding: Bounding): Bound => {
+	switch (bounding) {
+		case "summed":
+			return deadlineBound(deadlinesOf(work))
+		case "per case":
+			return boundOver(deadlinesOf(work), longestDeadlineOf(work))
+	}
+}
+
 /**
  * A phase's bound for a unit, under the stall window `stall`: importing, a load's (loadBoundOf); opening, the budgets of
- * the needs the worker opens at once, summed, as it stated them, and the stall window; evaluating, each case's
- * deadline, added up.
+ * the needs the worker opens at once, summed, as it stated them, and the stall window; evaluating, its cases' deadlines,
+ * as `bounding` bounds them (evaluationBound).
  */
-const boundOf = (unit: Unit, phase: Phase, stall: number): Bound => {
+const boundOf = (unit: Unit, phase: Phase, stall: number, bounding: Bounding): Bound => {
 	switch (phase.kind) {
 		case "importing":
 			return loadBoundOf(stall)
 		case "opening":
 			return boundOver(phase.budget, stall)
 		case "evaluating":
-			return deadlineBound(deadlinesOf(unit.work))
+			return evaluationBound(unit.work, bounding)
 	}
 }
 
@@ -400,6 +428,24 @@ const endedBy = (ended: Option.Option<Ending>): string =>
 					return `by the pool, past its bound and the grace: ${overrunText(ending.overrun)}`
 				case "unread":
 					return `by the pool, for a message it sent that the pool's protocol does not read: ${ending.message}`
+			}
+		}
+	})
+
+/**
+ * Who ended a worker whose unit is lost, as the unit's result records it (protocol.ts LostBy): the pool past the
+ * phase's bound and the grace, with the leg of its watch that fired; or anything else, the pool ending it for a message
+ * its protocol does not read among them.
+ */
+const lostByOf = (ended: Option.Option<Ending>): LostBy =>
+	Option.match(ended, {
+		onNone: () => lostOtherwise,
+		onSome: (ending): LostBy => {
+			switch (ending.kind) {
+				case "silent":
+					return { kind: "bound", overrun: ending.overrun }
+				case "unread":
+					return lostOtherwise
 			}
 		}
 	})
@@ -749,7 +795,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 							processWork(Option.fromUndefinedOr(worker.child.pid), began, (wall) =>
 								waitedBy(worker.waits, wall)
 							),
-							graced(boundOf(unit.value, phase, spec.stall))
+							graced(boundOf(unit.value, phase, spec.stall, spec.bounding))
 						),
 						(verdict) =>
 							Queue.offer(events, { kind: "silent", worker, unit: id, phase, overrun: verdict })
@@ -775,7 +821,10 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 					other.sent = []
 				}
 				for (const unit of stranded) {
-					Deferred.doneUnsafe(unit.done, Effect.succeed(doneWith(unit.work, lostResult(report))))
+					Deferred.doneUnsafe(
+						unit.done,
+						Effect.succeed(doneWith(unit.work, lostResult(report, lostOtherwise)))
+					)
 				}
 			})
 
@@ -837,7 +886,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 						Option.map(lost, ({ unit, phase }) => {
 							const how = event.signal ?? `exit ${event.code}`
 							const report = `${lostIn(phase, spec.stall)} ended (${how}) ${endedBy(worker.ended)}; ${heardText(worker.heard, now)}; what it last wrote:\n${worker.output}`
-							finish(worker, unit, doneWith(unit.work, lostResult(report)))
+							finish(worker, unit, doneWith(unit.work, lostResult(report, lostByOf(worker.ended))))
 						})
 						handBack(worker, [])
 						scheduler.requeue(requeued)
@@ -1106,7 +1155,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 					ranInOrder([{ kind: "count", count: order }], countAnswerOf, () => false),
 					(given): CountAnswer =>
 						Option.match(Arr.head(given), {
-							onNone: () => ({ kind: "stopped", result: lostResult(uncounted) }),
+							onNone: () => ({ kind: "stopped", result: lostResult(uncounted, lostOtherwise) }),
 							onSome: ([, answer]) => answer
 						})
 				),

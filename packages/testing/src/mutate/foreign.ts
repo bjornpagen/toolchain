@@ -4,7 +4,7 @@ import type { MutantPool } from "#mutate/pool.ts"
 import type { Subject } from "#mutate/schedule.ts"
 import { Property, PropertyId } from "#property.ts"
 import { runnerLimits } from "#runner/limits.ts"
-import type { Batch, CaseResult } from "#runner/protocol.ts"
+import { type Batch, type CaseResult, lostOtherwise } from "#runner/protocol.ts"
 import { testWorkers } from "#workers.ts"
 
 /**
@@ -28,7 +28,7 @@ const answered = (green: boolean, report: string): CaseResult => ({
 	trace: [],
 	outcome: green
 		? { kind: "passed", kept: { kind: "nothing" }, shown: { kind: "unshown" } }
-		: { kind: "lost", report },
+		: { kind: "lost", by: lostOtherwise, report },
 	millis: 0,
 	cpu: 0
 })
@@ -68,7 +68,13 @@ export const foreignSubject = (module: string): Subject => ({
 						? { kind: "exhausted", cases: 1, box: "the module's run", measures: [] }
 						: {
 								kind: "failed",
-								finding: { kind: "lost", phase: "floor", where: run.id, report: "red" }
+								finding: {
+									kind: "lost",
+									phase: "floor",
+									where: run.id,
+									by: lostOtherwise,
+									report: "red"
+								}
 							}
 			),
 		keep: () => ({ kind: "unfound", why: "a foreign module keeps nothing" }),

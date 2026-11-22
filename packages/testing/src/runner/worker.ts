@@ -29,7 +29,14 @@ import { askedClosuresOf } from "#runner/closure-requests.ts"
 import { needStallMillis } from "#runner/limits.ts"
 import { configOf, propertyAt } from "#runner/load.ts"
 import { Perception, perceptionOf } from "#runner/perceive.ts"
-import { FromWorker, lostResult, ToWorker, type Work, workOf } from "#runner/protocol.ts"
+import {
+	FromWorker,
+	lostOtherwise,
+	lostResult,
+	ToWorker,
+	type Work,
+	workOf
+} from "#runner/protocol.ts"
 import { runValuesOf } from "#runner/runs.ts"
 import { ModuleClosure, RunValues, WorkerIndex } from "#runner/services.ts"
 import { runOfLabel } from "#runner/stack.ts"
@@ -195,7 +202,10 @@ const main = Effect.gen(function* () {
 			)
 			const imported = Duration.toMillis(importing)
 			if (Result.isFailure(loaded)) {
-				const refused: Readied = { kind: "refused", result: lostResult(loaded.failure.message) }
+				const refused: Readied = {
+					kind: "refused",
+					result: lostResult(loaded.failure.message, lostOtherwise)
+				}
 				return { readied: refused, imported }
 			}
 			holdings.readied(label, needKeysOf(loaded.success.needs))

@@ -92,7 +92,8 @@ export const fuzz = (root: string, args: ReadonlyArray<string>) =>
 					root,
 					needStallMillis
 				),
-				stall: needStallMillis
+				stall: needStallMillis,
+				bounding: "summed"
 			})
 			const began = yield* liveMillis
 			let rounds = 0

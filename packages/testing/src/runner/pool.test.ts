@@ -80,7 +80,8 @@ export const workersLeaveNoChild = property.exhaust(finite(leavings), {
 							served: Option.none(),
 							guide: "notes",
 							runs: [],
-							stall: needStallMillis
+							stall: needStallMillis,
+							bounding: "summed"
 						})
 						const results = yield* pool.evaluator.evaluate(
 							[plantedCase(leaving, runnerLimits.deadline)],
@@ -168,7 +169,8 @@ export const loadsNever = property.exhaust(finite(boolean), {
 							served: Option.none(),
 							guide: "notes",
 							runs: [],
-							stall: 1000
+							stall: 1000,
+							bounding: "summed"
 						}),
 						(pool) => pool.evaluator.evaluate([shortCase(loopingProperty(needs), 100)], () => true)
 					)
@@ -220,7 +222,8 @@ export const slowWorkerKept = property.exhaust(finite(boolean), {
 							served: Option.none(),
 							guide: "notes",
 							runs: [],
-							stall: 1000
+							stall: 1000,
+							bounding: "summed"
 						})
 						const results = yield* pool.evaluator.evaluate(
 							[shortCase(slowlyWorkingProperty(inChild), SLOW_WORKER_DEADLINE)],
@@ -269,7 +272,8 @@ export const silentBeforeReadying = property.exhaust(finite(boolean), {
 							served: Option.none(),
 							guide: "notes",
 							runs: [],
-							stall: 1000
+							stall: 1000,
+							bounding: "summed"
 						})
 						const silenced = yield* pool.evaluator.evaluate(
 							[shortCase(planted.silences, runnerLimits.deadline)],
@@ -324,7 +328,8 @@ export const lostNamesItsLeg = property.exhaust(finite(silenceSpace), {
 							served: Option.none(),
 							guide: "notes",
 							runs: [],
-							stall: 1000
+							stall: 1000,
+							bounding: "summed"
 						})
 						const silencer = silencerOf(silence)
 						const silenced = yield* pool.evaluator.evaluate(
@@ -407,7 +412,8 @@ export const unreadMessageEndsItsWorker = property.exhaust(finite(boolean), {
 							served: Option.none(),
 							guide: "notes",
 							runs: [],
-							stall: 1000
+							stall: 1000,
+							bounding: "summed"
 						})
 						const evaluated = yield* pool.evaluator.evaluate(
 							[shortCase(speakerOf(unread), UNREAD_DEADLINE)],
@@ -470,7 +476,8 @@ export const declaredWaitKept = property.exhaust(finite(declaredWaitDeadlines), 
 							served: Option.none(),
 							guide: "notes",
 							runs: [],
-							stall: 1000
+							stall: 1000,
+							bounding: "summed"
 						})
 						const results = yield* pool.evaluator
 							.evaluate([shortCase(WAITS_DECLARED, deadline)], () => true)
@@ -542,7 +549,8 @@ export const countedOnAWorker = property.exhaust(finite(countsEvery), {
 							served: Option.none(),
 							guide: "notes",
 							runs: [],
-							stall: needStallMillis
+							stall: needStallMillis,
+							bounding: "summed"
 						}),
 						(pool) =>
 							pool.evaluator.count({
@@ -613,7 +621,8 @@ export const openDiesUnopened = property.exhaust(finite(boolean), {
 							served: Option.none(),
 							guide: "notes",
 							runs: [],
-							stall: needStallMillis
+							stall: needStallMillis,
+							bounding: "summed"
 						})
 						const dying = yield* pool.evaluator.evaluate(
 							[shortCase(dyingProperty(thrown), runnerLimits.deadline)],
@@ -717,7 +726,8 @@ export const workersTakeTheirPlaces = property.exhaust(
 								served: Option.none(),
 								guide: "notes",
 								runs: [],
-								stall: needStallMillis
+								stall: needStallMillis,
+								bounding: "summed"
 							}),
 							(pool) =>
 								pool.evaluator.evaluate([placedCase(at, of, runnerLimits.deadline)], () => false)
@@ -833,7 +843,8 @@ export const startsNever = property.exhaust(finite(boolean), {
 							served: Option.none(),
 							guide: "notes",
 							runs: [],
-							stall: 1000
+							stall: 1000,
+							bounding: "summed"
 						}),
 						(pool) => pool.evaluator.evaluate([shortCase(loopingProperty(needs), 100)], () => true)
 					)

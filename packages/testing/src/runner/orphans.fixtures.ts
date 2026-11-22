@@ -48,7 +48,8 @@ const heldAsProgram = (root: string, held: string, pidFile: string, childFile: s
 				served: Option.none(),
 				guide: "notes",
 				runs: [],
-				stall: 3_600_000
+				stall: 3_600_000,
+				bounding: "summed"
 			})
 			yield* Effect.forkScoped(
 				pool.evaluator.evaluate(

@@ -3,6 +3,7 @@ import type { Residual } from "#features.ts"
 import { wordsOf } from "#random.ts"
 import { ClosureAnswer } from "#runner/closure-hash.ts"
 import type { Limits } from "#runner/limits.ts"
+import { Overrun } from "#runner/work.ts"
 import {
 	type Chooser,
 	forcedChooser,
@@ -142,13 +143,31 @@ const Printed = Schema.Union([
 export type Printed = typeof Printed.Type
 
 /**
+ * Who ended the process of a case lost with it: its pool, past the bound it watched the case's phase under and the
+ * grace, by the leg of its watch that fired (`bound`, runner/pool.ts, with what that leg measured), which a case that
+ * never ends reaches, and so may a machine loaded past telling a case's progress from none; or anything else
+ * (`other`): a crash, a signal its pool did not send (its own watchdog's), a message its pool's protocol does not read,
+ * a worker that could not start or answered amiss. The mutator tells a mutant's overrun from the machine's load by the
+ * first alone (mutate/kills.ts).
+ */
+const LostBy = Schema.Union([
+	Schema.Struct({ kind: Schema.Literal("bound"), overrun: Overrun }),
+	Schema.Struct({ kind: Schema.Literal("other") })
+])
+
+export type LostBy = typeof LostBy.Type
+
+/** A loss its pool's bound did not bring about. */
+export const lostOtherwise: LostBy = { kind: "other" }
+
+/**
  * How a case ended: it passed, keeping its tape and its printed form as its order asked; it passed but used its case
  * after the case ended (`misused`); its check failed, with the failure as its report states it; it ran past its
- * deadline (`hung`); its process ended while it ran (`lost`: a blocked event loop its watchdog ended, a crash), which
- * the parent reports with what the process last wrote; or it could not have its resources, because a need of its
- * property did not open on its process or failed the case (its check failed with a NeedFailed: a take of a need, or a
- * need the check opened itself), `unopened`, which is no fact of the case's value. A failed or hung case carries its
- * tape and its printed form.
+ * deadline (`hung`); its process ended while it ran (`lost`: a blocked event loop its watchdog ended, a crash, its pool
+ * past its bound, LostBy), which the parent reports with what the process last wrote; or it could not have its
+ * resources, because a need of its property did not open on its process or failed the case (its check failed with a
+ * NeedFailed: a take of a need, or a need the check opened itself), `unopened`, which is no fact of the case's value. A
+ * failed or hung case carries its tape and its printed form.
  */
 const CaseOutcome = Schema.Union([
 	Schema.Struct({
@@ -170,7 +189,7 @@ const CaseOutcome = Schema.Union([
 		printed: Printed
 	}),
 	Schema.Struct({ kind: Schema.Literal("hung"), leg: Schema.String, tape: Tape, printed: Printed }),
-	Schema.Struct({ kind: Schema.Literal("lost"), report: Schema.String }),
+	Schema.Struct({ kind: Schema.Literal("lost"), by: LostBy, report: Schema.String }),
 	Schema.Struct({ kind: Schema.Literal("unopened"), need: Schema.String, message: Schema.String })
 ])
 
@@ -377,6 +396,21 @@ export const deadlinesOf = (work: Work): number => {
 	}
 }
 
+/**
+ * The longest deadline of one case of a unit: the longest of a batch's orders' deadlines, a series' one deadline a case,
+ * a count's CPU.
+ */
+export const longestDeadlineOf = (work: Work): number => {
+	switch (work.kind) {
+		case "cases":
+			return Arr.reduce(work.batch, 0, (longest, order) => Math.max(longest, order.deadline))
+		case "series":
+			return work.series.deadline
+		case "count":
+			return work.count.cpu
+	}
+}
+
 /** How many cases a unit's answer says its worker ran, and their milliseconds and CPU. */
 export const ranOf = (done: Done): Readonly<{ cases: number; millis: number; cpu: number }> => {
 	switch (done.kind) {
@@ -403,7 +437,7 @@ export const resultsOf = (done: Done): ReadonlyArray<CaseResult> => {
 			return done.results
 		case "series":
 		case "count":
-			return [lostResult(misanswered)]
+			return [lostResult(misanswered, lostOtherwise)]
 	}
 }
 
@@ -421,7 +455,7 @@ export const seriesRanOf = (done: Done): SeriesRan => {
 				measures: [],
 				millis: 0,
 				cpu: 0,
-				stopped: { kind: "stopped", result: lostResult(misanswered) }
+				stopped: { kind: "stopped", result: lostResult(misanswered, lostOtherwise) }
 			}
 	}
 }
@@ -433,7 +467,7 @@ export const countAnswerOf = (done: Done): CountAnswer => {
 			return done.answer
 		case "cases":
 		case "series":
-			return { kind: "stopped", result: lostResult(misanswered) }
+			return { kind: "stopped", result: lostResult(misanswered, lostOtherwise) }
 	}
 }
 
@@ -450,8 +484,12 @@ export const judgedLate = (result: CaseResult, late: Option.Option<Printed>): Ca
 				: result
 	})
 
-/** A result no process gave: the case's process ended while it ran, with what the process last wrote. */
-export const lostResult = (report: string): CaseResult => unranResult({ kind: "lost", report })
+/**
+ * A result no process gave: the case's process ended while it ran, by `by` (LostBy), with what the process last
+ * wrote.
+ */
+export const lostResult = (report: string, by: LostBy): CaseResult =>
+	unranResult({ kind: "lost", by, report })
 
 /** What a unit no process could run gives back: each of its cases, or its series, ended as `result` says. */
 export const doneWith = (work: Work, result: CaseResult): Done => {
@@ -547,7 +585,7 @@ export type Witnessed =
 
 /**
  * Why a property failed: a case failed (shrunk as far as it went), hung, used its case after it ended, or was lost
- * with its process; a need of the property did not open on a process or failed a case there, so no case of it was
+ * with its process (by its pool's bound or otherwise, LostBy); a need of the property did not open on a process or failed a case there, so no case of it was
  * judged (`unopened`, borne by no case, printed once, never shrunk); a required situation no witness reached; a kept or replayed token that no longer runs as it
  * says (`stale`); or an exhaustion's space too large to count within the case deadline. Every case-borne finding names
  * where its case came from and prints it as it ran, with its replay token where it has one.
@@ -572,7 +610,7 @@ export type Finding =
 			token: string
 	  }>
 	| Readonly<{ kind: "misused"; phase: CasePhase; where: string; printed: Printed }>
-	| Readonly<{ kind: "lost"; phase: CasePhase; where: string; report: string }>
+	| Readonly<{ kind: "lost"; phase: CasePhase; where: string; by: LostBy; report: string }>
 	| Readonly<{ kind: "unopened"; need: string; message: string }>
 	| Readonly<{
 			kind: "unreached"

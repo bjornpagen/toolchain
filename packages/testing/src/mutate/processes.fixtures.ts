@@ -2,7 +2,7 @@ import { Array as Arr, Effect, Stream, String as Str } from "effect"
 import { ChildProcess, type ChildProcessSpawner } from "effect/process"
 import { type MutantPool, servedArgv } from "#mutate/pool.ts"
 import { type Kept, type Kill, Property } from "#property.ts"
-import type { Batch, CaseResult } from "#runner/protocol.ts"
+import { type Batch, type CaseResult, lostOtherwise } from "#runner/protocol.ts"
 
 /** A case that passed, as a worker answers it. */
 export const passed: CaseResult = {
@@ -18,7 +18,7 @@ export const passed: CaseResult = {
 /** A case whose worker answered it red, with what it printed. */
 export const lost = (report: string): CaseResult => ({
 	...passed,
-	outcome: { kind: "lost", report }
+	outcome: { kind: "lost", by: lostOtherwise, report }
 })
 
 /** One case of property `id`, as a search orders it. */
@@ -54,7 +54,13 @@ export const checkProperty = (kills: ReadonlyArray<Kill>, kept: ReadonlyArray<Ke
 						? { kind: "exhausted", cases: 1, box: "the check", measures: [] }
 						: {
 								kind: "failed",
-								finding: { kind: "lost", phase: "floor", where: run.id, report: "red" }
+								finding: {
+									kind: "lost",
+									phase: "floor",
+									where: run.id,
+									by: lostOtherwise,
+									report: "red"
+								}
 							}
 			),
 		keep: () => ({ kind: "unfound", why: "a fixture keeps nothing" }),

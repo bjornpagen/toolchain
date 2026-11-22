@@ -46,7 +46,10 @@ export const placesLeased = (width: number) => {
  * so a worker tree's workers load the tree's modules and its test.config.ts, and run in the tree's package directory;
  * its workers take this process's flags and serve the image's mutant (PoolSpec served), and its environment adds to
  * this process's; the run needs its properties read (`runs`) open here once, in the image's package directory, before
- * its workers start (runner/runs.ts), so a mutant reaches them on disk. A worker killed past its case deadline is forked again from the same image; closing the lease's
+ * its workers start (runner/runs.ts), so a mutant reaches them on disk. Its pool bounds each unit per case
+ * (runner/pool.ts Bounding): a mutant may disable the guard that would end its case, so the parent ends a worker silent
+ * past that case's own deadline and the grace, never past every case's of its unit. A worker killed past its case
+ * deadline is forked again from the same image; closing the lease's
  * scope disconnects every worker and waits for it to exit on its own, so a coverage pass's dumps are written before the
  * scope closes.
  *
@@ -86,7 +89,8 @@ export const mutantPoolOf = (
 						served: image.served,
 						guide: serves.guide,
 						runs,
-						stall: needStallMillis
+						stall: needStallMillis,
+						bounding: "per case"
 					})
 					return pool.evaluator
 				})

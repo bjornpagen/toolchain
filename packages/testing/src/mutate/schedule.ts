@@ -87,37 +87,57 @@ const servesOf = (properties: Arr.NonEmptyReadonlyArray<Subject>): Serves => {
 	}
 }
 
-/** A trial's stages run in order, each on `workers` fresh workers of its image, until one goes red. */
-const trialOn = <E, L>(
+/** One stage on `workers` fresh workers of its image, for the stage's scope: the first of its properties to go red. */
+const stageOn = <E, L>(
 	pool: MutantPool<E>,
 	run: WitnessRun,
 	workers: number,
+	stage: Stage<E, L>
+): Effect.Effect<TrialVerdict<L>, E> =>
+	Effect.scoped(
+		Effect.flatMap(stage.image, (image) =>
+			pool.lease(image, workers, servesOf(stage.properties)).pipe(
+				Effect.flatMap((evaluator) => firstRed(run, evaluator, stage.label, stage.properties)),
+				Effect.catchIf(Schema.is(Unstarted), (unstarted): Effect.Effect<TrialVerdict<L>> =>
+					Effect.succeed({
+						kind: "red",
+						stage: stage.label,
+						property: Arr.headNonEmpty(stage.properties).id,
+						red: { kind: "unstarted", message: unstarted.message }
+					})
+				)
+			)
+		)
+	)
+
+/** A trial's stages run in order by `staged`, until one goes red. */
+const trialOn = <E, L>(
+	staged: Staged<E, L>,
 	stages: ReadonlyArray<Stage<E, L>>
 ): Effect.Effect<TrialVerdict<L>, E> => {
 	const [stage, ...rest] = stages
 	return stage === undefined
 		? Effect.succeed({ kind: "green" })
-		: Effect.scoped(
-				Effect.flatMap(stage.image, (image) =>
-					pool.lease(image, workers, servesOf(stage.properties)).pipe(
-						Effect.flatMap((evaluator) => firstRed(run, evaluator, stage.label, stage.properties)),
-						Effect.catchIf(Schema.is(Unstarted), (unstarted): Effect.Effect<TrialVerdict<L>> =>
-							Effect.succeed({
-								kind: "red",
-								stage: stage.label,
-								property: Arr.headNonEmpty(stage.properties).id,
-								red: { kind: "unstarted", message: unstarted.message }
-							})
-						)
-					)
-				)
-			).pipe(
+		: staged(stage).pipe(
 				Effect.filterOrElse(
 					(verdict) => verdict.kind === "red",
-					() => trialOn(pool, run, workers, rest)
+					() => trialOn(staged, rest)
 				)
 			)
 }
+
+/**
+ * How a trial runs one of its stages: on fresh workers of the stage's image, a lease of the trial's own width for the
+ * stage's scope, which no other stage's case ever runs on, to the first of its properties to go red, or green.
+ */
+export type Staged<E, L> = (stage: Stage<E, L>) => Effect.Effect<TrialVerdict<L>, E>
+
+/**
+ * A trial that decides its own stages: given how it runs one (Staged), it runs the stages it decides, one after
+ * another, and gives what they found. A Trial is the plainest, its stages in order until one goes red; a kill's goes on
+ * from what its kill stage found (mutate/kills.ts).
+ */
+export type Judging<E, L, A> = (staged: Staged<E, L>) => Effect.Effect<A, E>
 
 /**
  * How many workers each trial of a run of `trials` trials leases from a pool `width` wide: the width split evenly among
@@ -155,9 +175,36 @@ export const trialsOn = <E, L>(
 	run: WitnessRun,
 	trials: ReadonlyArray<Trial<E, L>>,
 	sharing: Sharing
-): Effect.Effect<ReadonlyArray<TrialVerdict<L>>, E> => {
-	const workers = LEASED[sharing](pool.width, trials.length)
-	return Effect.forEach(trials, (stages) => trialOn(pool, run, workers, stages), {
-		concurrency: pool.width
-	})
+): Effect.Effect<ReadonlyArray<TrialVerdict<L>>, E> =>
+	judgingsOn(
+		pool,
+		run,
+		Arr.map(
+			trials,
+			(stages): Judging<E, L, TrialVerdict<L>> =>
+				(staged) =>
+					trialOn(staged, stages)
+		),
+		sharing
+	)
+
+/**
+ * What `judgings` found on `pool`, in their order, each run as trialsOn runs a trial: its stages' properties searched
+ * under their witnesses alone, each stage on workers of the judging's own, as many as `sharing` gives it, started fresh
+ * from the stage's image; never more workers leased at once than the pool's width.
+ */
+export const judgingsOn = <E, L, A>(
+	pool: MutantPool<E>,
+	run: WitnessRun,
+	judgings: ReadonlyArray<Judging<E, L, A>>,
+	sharing: Sharing
+): Effect.Effect<ReadonlyArray<A>, E> => {
+	const workers = LEASED[sharing](pool.width, judgings.length)
+	return Effect.forEach(
+		judgings,
+		(judging) => judging((stage) => stageOn(pool, run, workers, stage)),
+		{
+			concurrency: pool.width
+		}
+	)
 }

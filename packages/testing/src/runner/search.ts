@@ -243,7 +243,13 @@ const findingOf = (
 		case "misused":
 			return Effect.succeedSome({ kind: "misused", phase, where, printed: outcome.printed })
 		case "lost":
-			return Effect.succeedSome({ kind: "lost", phase, where, report: outcome.report })
+			return Effect.succeedSome({
+				kind: "lost",
+				phase,
+				where,
+				by: outcome.by,
+				report: outcome.report
+			})
 		case "unopened":
 			return Effect.succeedSome({ kind: "unopened", need: outcome.need, message: outcome.message })
 		case "hung":

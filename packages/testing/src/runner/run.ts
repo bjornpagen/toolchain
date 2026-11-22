@@ -441,7 +441,8 @@ export const runPackage = (
 							served: Option.none(),
 							guide,
 							runs: values,
-							stall: needStallMillis
+							stall: needStallMillis,
+							bounding: "summed"
 						})
 						pools.set(label, pool)
 					}
@@ -548,7 +549,8 @@ const tokenPropertyOf = (
 			served: Option.none(),
 			guide: "notes",
 			runs: values,
-			stall: needStallMillis
+			stall: needStallMillis,
+			bounding: "summed"
 		})
 		return {
 			module,

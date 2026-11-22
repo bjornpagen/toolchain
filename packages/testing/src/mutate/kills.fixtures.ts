@@ -1,9 +1,13 @@
 import { Effect, FileSystem, Path, String as Str } from "effect"
 import type { Loading } from "#mutate/checkout.ts"
-import type { Judged } from "#mutate/kills.ts"
+import { type Judged, redText } from "#mutate/kills.ts"
 import { type RealPath, realPathOf } from "#mutate/mutated.ts"
+import { OVERRUN_FILE, type Whose } from "#mutate/overrun.fixtures.ts"
+import type { MutantPool } from "#mutate/pool.ts"
 import { shell } from "#mutate/processes.fixtures.ts"
+import type { Red } from "#mutate/schedule.ts"
 import type { Kill } from "#property.ts"
+import { SILENCE_GRACE_MILLIS } from "#runner/pool.ts"
 
 /** The file the kills mutate. */
 const TARGET = "src/f.ts"
@@ -115,3 +119,90 @@ export const checkoutOf = Effect.gen(function* () {
 	)
 	return directory
 })
+
+/**
+ * The case deadline the overrun property's subject runs under, in milliseconds: short, so a frozen case's worker is
+ * ended within it and the pool's silence grace.
+ */
+export const OVERRUN_DEADLINE = 2000
+
+/** The original each kill of the overrun property's subject replaces: the subject's case, run while not loaded. */
+const OVERRUN_ORIGINAL = 'load ? frozen("its own") : Effect.void'
+
+/**
+ * The kills of the overrun property's subject (overrun.fixtures.ts), by whose overrun each makes: each freezes the
+ * subject's case for ever, the machine's loading the machine first.
+ */
+export const OVERRUN_KILLS: Readonly<Record<Whose, Kill>> = {
+	"its own": {
+		file: OVERRUN_FILE,
+		original: OVERRUN_ORIGINAL,
+		replacement: 'frozen("its own")',
+		why: "its own overrun"
+	},
+	"the machine's": {
+		file: OVERRUN_FILE,
+		original: OVERRUN_ORIGINAL,
+		replacement: 'frozen("the machine\'s")',
+		why: "the machine's overrun"
+	}
+}
+
+/** A mutant pool whose leases' workers find `env` in their environment beside their image's. */
+export const withEnv = <E>(
+	pool: MutantPool<E>,
+	env: Readonly<Record<string, string>>
+): MutantPool<E> => ({
+	width: pool.width,
+	lease: (image, workers, serves) =>
+		pool.lease({ ...image, env: { ...image.env, ...env } }, workers, serves)
+})
+
+/**
+ * How a red's worker ended, as the overrun property reads it: by its pool past its bound, with the leg of its watch
+ * that fired and, a stall, its stall window; or how else the property went red.
+ */
+const endedOf = (red: Red): string => {
+	if (red.kind === "unstarted" || red.finding.kind !== "lost") {
+		return redText(red)
+	}
+	const by = red.finding.by
+	switch (by.kind) {
+		case "other":
+			return `lost otherwise: ${red.finding.report}`
+		case "bound":
+			return by.overrun.kind === "stalled"
+				? `ended by its pool, stalled over a window of ${String(by.overrun.window)} ms`
+				: `ended by its pool, its ${by.overrun.kind} leg`
+	}
+}
+
+/** A judged kill of the overrun property's subject: its verdict, why it is unjudged, and how its red's worker ended. */
+export const overranOf = (judged: Judged): string => {
+	const verdict = judged.verdict
+	switch (verdict.kind) {
+		case "killed":
+			return `${judged.kill.why}: killed, ${endedOf(verdict.red)}`
+		case "survived":
+			return `${judged.kill.why}: survived, ${verdict.loaded ? "loaded" : "never loaded"}`
+		case "stale":
+			return `${judged.kill.why}: stale, found ${String(verdict.stale.found)}`
+		case "unjudged":
+			return `${judged.kill.why}: unjudged, ${verdict.why}, ${endedOf(verdict.red)}`
+	}
+}
+
+/**
+ * What the overrun property must find of the kill making `whose` overrun: its worker ended by the pool past one case's
+ * deadline and the grace, a stall, and killed when the overrun is its own, unjudged when the machine's.
+ */
+export const overranExpected = (whose: Whose): string => {
+	const ended = `ended by its pool, stalled over a window of ${String(OVERRUN_DEADLINE + SILENCE_GRACE_MILLIS)} ms`
+	const why = OVERRUN_KILLS[whose].why
+	switch (whose) {
+		case "its own":
+			return `${why}: killed, ${ended}`
+		case "the machine's":
+			return `${why}: unjudged, the baseline overran too, ${ended}`
+	}
+}

@@ -1,4 +1,4 @@
-import { Array as Arr, Effect, Option, Result, String as Str } from "effect"
+import { Array as Arr, Effect, Option, Result, Schema, String as Str } from "effect"
 import { stalledShareOfCpu, waitedWindows } from "#runner/limits.ts"
 
 /**
@@ -620,20 +620,24 @@ export type Standing = Readonly<{ kind: "working"; window: Reading; readAgainAt:
  * a runqueue for more (queuedBetween), while none of them did storage work (storedBetween), so it waited on something
  * that did not come; `waited`, the window's wall time in declared waits on work besides, which the leg counts none of.
  * `waited`, the wall time its declared waits on work held it since it began (`waited`, ms) at its bound (`bound`, ms):
- * waits answered one after another, a window never whole between them.
+ * waits answered one after another, a window never whole between them. A schema, since a case lost with a worker its
+ * pool ended carries the leg that fired in its result (runner/protocol.ts LostBy).
  */
-export type Overrun =
-	| Readonly<{ kind: "spent"; spent: number; budget: number }>
-	| Readonly<{ kind: "waited"; waited: number; bound: number }>
-	| Readonly<{
-			kind: "stalled"
-			moved: number
-			queued: number
-			over: number
-			waited: number
-			progress: number
-			window: number
-	  }>
+export const Overrun = Schema.Union([
+	Schema.Struct({ kind: Schema.Literal("spent"), spent: Schema.Finite, budget: Schema.Finite }),
+	Schema.Struct({ kind: Schema.Literal("waited"), waited: Schema.Finite, bound: Schema.Finite }),
+	Schema.Struct({
+		kind: Schema.Literal("stalled"),
+		moved: Schema.Finite,
+		queued: Schema.Finite,
+		over: Schema.Finite,
+		waited: Schema.Finite,
+		progress: Schema.Finite,
+		window: Schema.Finite
+	})
+])
+
+export type Overrun = typeof Overrun.Type
 
 /** Milliseconds as seconds to the tenth, as a report states them. */
 const seconds = (millis: number): string => `${(millis / millisPerSecond).toFixed(1)} s`
