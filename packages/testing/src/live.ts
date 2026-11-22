@@ -131,8 +131,9 @@ export const stopHung = <A, E>(running: Fiber.Fiber<A, E>): Effect.Effect<void> 
  * end or an answer to a ping; one nothing writes, for the watchdog's thread to time a wait on), then, at the first
  * 8-byte boundary past them, two BigInt64 moments, whole milliseconds since the epoch, each read and written atomically
  * (the earliest moment a case in flight passes the moment its guard would stop it, and the moment the watchdog's thread
- * will next wake of itself; `never`, Number.MAX_SAFE_INTEGER, for none), then one Float64 (how long the earliest case's
- * thread then has to answer, in milliseconds).
+ * will next wake of itself; `never`, Number.MAX_SAFE_INTEGER, for none), and a BigInt64 count (the watchdog thread's own
+ * CPU so far, in microseconds, as it states it after each turn: work.ts observer), then one Float64 (how long the
+ * earliest case's thread then has to answer, in milliseconds).
  */
 const LAYOUT = {
 	generation: 0,
@@ -141,12 +142,13 @@ const LAYOUT = {
 	counters: 3,
 	earliest: 0,
 	wakes: 1,
-	stamps: 2,
+	observed: 2,
+	stamps: 3,
 	stampsOffset: 16,
 	grace: 0,
 	moments: 1,
-	momentsOffset: 32,
-	bytes: 40,
+	momentsOffset: 40,
+	bytes: 48,
 	never: Number.MAX_SAFE_INTEGER,
 	stalledShare: stalledShareOfCpu,
 	tickMillis: TICK_MILLIS
@@ -227,7 +229,18 @@ const watchdogThread = (layout: Layout, judge: typeof hangOver): void => {
 		Atomics.store(stamps, layout.wakes, BigInt(Math.min(Math.ceil(moment), layout.never)))
 		return earliestMoment()
 	}
+	/**
+	 * States this thread's CPU so far, in microseconds, for the main thread to leave out of its cases' (work.ts ownCpu),
+	 * each time the thread goes to sleep: whatever it spent since, its start among it, is stated before any case can read
+	 * it, so no case's window opens on CPU of this thread's that a later reading leaves out (stated only after a turn,
+	 * a planted case's windows read the thread's start, about 17 to 22 ms, as negative progress).
+	 */
+	const stateOwnCpu = (): void => {
+		const spent = process.threadCpuUsage()
+		Atomics.store(stamps, layout.observed, BigInt(spent.user + spent.system))
+	}
 	const after = (waited: ReturnType<typeof Atomics.waitAsync>, then: () => void): void => {
+		stateOwnCpu()
 		if (waited.async) {
 			void waited.value.then(then)
 		} else {
@@ -452,13 +465,16 @@ export const answerOf = (inFlight: ReadonlyArray<Watched>, now: number): Answer 
  * synchronously holds the thread its guard's timer would run on. `watch` registers a case in flight and returns its
  * release; `answer` is what the main thread tells the watchdog's thread that asks it, interrupted, whether it is
  * blocked; `wakes` is when the watchdog's thread will next wake of itself, as it last said, none until it first says and
- * while it waits for a case to wake it. A process whose tests run off its main thread, in a worker, has none: its watch
- * does nothing, and only the guard's timer stops a case.
+ * while it waits for a case to wake it; `observed` is the CPU the watchdog has spent observing, in microseconds, its
+ * thread's as it states it after each turn and the main thread's while it answered, which work.ts ownCpu leaves out of
+ * every case's. A process whose tests run off its main thread, in a worker, has none: its watch does nothing, and only
+ * the guard's timer stops a case.
  */
 type Watchdog = Readonly<{
 	watch: (watched: Watched) => () => void
 	answer: () => Answer
 	wakes: () => Option.Option<number>
+	observed: () => number
 }>
 
 declare global {
@@ -469,7 +485,8 @@ declare global {
 const offMainThread: Watchdog = {
 	watch: () => () => undefined,
 	answer: () => ({ kind: "running" }),
-	wakes: () => Option.none()
+	wakes: () => Option.none(),
+	observed: () => 0
 }
 
 /**
@@ -497,6 +514,7 @@ const startedWatchdog = (): Watchdog => {
 	}
 	worker.on("message", progressed)
 	worker.unref()
+	let answering = 0
 	const inFlight = new Map<number, Watched>()
 	let watched = 0
 	const publish = () => {
@@ -525,8 +543,17 @@ const startedWatchdog = (): Watchdog => {
 				publish()
 			}
 		},
-		answer: () =>
-			answerOf(Arr.fromIterable(inFlight.values()), performance.timeOrigin + performance.now()),
+		answer: () => {
+			const began = process.threadCpuUsage()
+			const answered = answerOf(
+				Arr.fromIterable(inFlight.values()),
+				performance.timeOrigin + performance.now()
+			)
+			const spent = process.threadCpuUsage(began)
+			answering += spent.user + spent.system
+			return answered
+		},
+		observed: () => Number(Atomics.load(stamps, LAYOUT.observed)) + answering,
 		wakes: () =>
 			Option.filter(
 				Option.some(Number(Atomics.load(stamps, LAYOUT.wakes))),

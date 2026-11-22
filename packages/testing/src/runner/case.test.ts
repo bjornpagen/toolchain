@@ -328,6 +328,15 @@ export const opensOutsideTheCase = property.explore(slowOpens, {
 	]
 })
 
+/**
+ * A need that does not open fails its property once, naming it and why, and no case of it runs. A stalling open sleeps
+ * twenty stall windows, spending nothing: its guard reads the whole worker's process, so the CPU of the cases running
+ * beside it in the worker, and the time its main thread waits to run under load, which a window takes out of the time
+ * the open could have run (work.ts standingOf), can keep the first few windows from reading stalled; at e8b7ecec,
+ * under trunk@toolchain's load, an open of four windows (448 ms each) ended unjudged and its cases ran (rotating seed
+ * 0x499a838c, case 115, 2026-11-22), which a replay alone never repeats. A judged open is interrupted at its first
+ * stalled window, so the windows it is given cost nothing.
+ */
 export const unopenedOnce = property.explore(
 	(source) => ({
 		ending: source.draw(unopenedEndings),
@@ -342,7 +351,7 @@ export const unopenedOnce = property.explore(
 			({ ending, bound, others }) =>
 				Effect.gen(function* () {
 					c.note(ending)
-					const inner = needing(ending === "fails" ? 0 : 4 * bound, ending, others)
+					const inner = needing(ending === "fails" ? 0 : 20 * bound, ending, others)
 					const verdict = yield* searchedAt(inner.property, {
 						...fullRun("unopened once/inner", 0),
 						stall: bound
@@ -375,7 +384,14 @@ export const unopenedOnce = property.explore(
 			kind: "specification",
 			name: "a need that does not open fails its property once, naming it and why, and no case of it runs"
 		},
-		kept: [],
+		kept: [
+			{
+				token: ReplayToken("src/runner/case.test.ts#unopenedOnce:-:1.6w.1"),
+				reason:
+					"an open that stalls past a 448 ms stall window beside one other need, which trunk@toolchain at e8b7ecec judged too late (its four windows of sleep ended unjudged under load, the cases beside it moving the worker's CPU; rotating seed 0x499a838c, case 115, 2026-11-22)",
+				since: "2026-11-22"
+			}
+		],
 		kills: [
 			{
 				file: "packages/testing/src/runner/case.ts",

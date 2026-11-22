@@ -110,8 +110,8 @@ export const childWorkCounts = property.exhaust(finite(childBurns), {
 	kills: [
 		{
 			file: "packages/testing/src/runner/work.ts",
-			original: '\t\t\t\tcpu: ownCpu() + reaped(statOf("self")) + descendants.cpu,\n',
-			replacement: '\t\t\t\tcpu: ownCpu() + reaped(statOf("self")),\n',
+			original: "\t\t\t\tcpu: cpu + descendants.cpu,\n",
+			replacement: "\t\t\t\tcpu,\n",
 			why: "A live child's CPU is left out until the child is reaped, so a case that waits on a working child spends nothing of its own and is stalled after a window; the child-work property fails."
 		}
 	]

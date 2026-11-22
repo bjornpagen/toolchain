@@ -8,7 +8,10 @@
  * grace have passed and before a grace more, the latest bound that still tells a watchdog waiting twice its grace
  * apart (measured on cassowary, 2026-11-16, load average 300 to 400 on 64 cores: 64 runaways ended 41 to 5,248 ms past
  * their moment, median 156, 90th percentile 249), and a body that waits in Atomics.wait ends with its thread's answer
- * to the inspector, which no grace bounds (blocking.fixtures.ts gracesOfBody); a body that returns, pauses past its
+ * to the inspector, which no grace bounds (blocking.fixtures.ts gracesOfBody), judged by the CPU its case spent, the
+ * watchdog's own observing left out (work.ts ownCpu): of 192 such programs under a 71 ms deadline one read running at
+ * its first answer, its own warm-up past progress, and one spent its deadline on it (probe4's r2-32 and r4-11 and probe6's r2-2,
+ * 2026-11-22, load 285 to 335), so planted deadlines start above the warm-up (PLANTED_DEADLINE_MILLIS); a body that returns, pauses past its
  * deadline short of the grace, or
  * sleeps past it, yielding, must end its search in the program by the guard's verdict. A runaway costs its deadline and
  * the grace, so the space draws settling bodies and an aim draws each body once its situation is pending. Oracle:
@@ -115,7 +118,13 @@ export const watchdog = property.explore(aimed(settlingRuns, bodyAims), {
 		{
 			token: ReplayToken("src/blocking.test.ts#watchdog:4.2:1f.0.15.13oy4zl"),
 			reason:
-				"a planted thread that waits a second at a time in Atomics.wait (threshold 0, deadline 71 ms, pause 113 ms, seed 2400084417), whose wake-ups' waits to run under trunk@toolchain's load read as progress, so its watchdog answered running at every ask and the pool's stall window took its worker (floor case 2 of seed 0xa5b59f36, at e7f90259 and 86060d1d, 2026-11-22)",
+				"a planted thread that waits a second at a time in Atomics.wait (threshold 0, seed 2400084417; drawn with a deadline of 71 ms, pause 113 ms, before planted deadlines started at 400), whose wake-ups' waits to run under trunk@toolchain's load read as progress, so its watchdog answered running at every ask and the pool's stall window took its worker (floor case 2 of seed 0xa5b59f36, at e7f90259 and 86060d1d, 2026-11-22)",
+			since: "2026-11-22"
+		},
+		{
+			token: ReplayToken("src/blocking.test.ts#watchdog:-:2.0.9.0.3clv2e"),
+			reason:
+				"a planted body that sleeps past its deadline, yielding, drawn with a deadline of 20 ms before planted deadlines started at 400: its case's 20 ms windows, less its main thread's waits to run under trunk@toolchain's load, never came whole before its 80 ms sleep ended, so it was exhausted where it is hung (rotating seed 0x344cae69, case 2, at e8b7ecec, 2026-11-22)",
 			since: "2026-11-22"
 		}
 	],

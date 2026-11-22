@@ -98,8 +98,40 @@ const storingFor = (pauseMillis: number): string =>
 	`const fs = require("node:fs"); const file = require("node:path").join(require("node:os").tmpdir(), "watchdog-blocks-" + process.pid); const fd = fs.openSync(file, "w"); const page = Buffer.alloc(4096, 1); const rest = new Int32Array(new SharedArrayBuffer(4)); const until = Date.now() + ${String(pauseMillis)}; while (Date.now() < until) { fs.writeSync(fd, page); fs.fsyncSync(fd); Atomics.wait(rest, 0, 0, ${String(PAGE_PAUSE_MILLIS)}) } fs.closeSync(fd); fs.unlinkSync(file)`
 
 /**
- * A planted search of `body`: a threshold, a short case deadline, and a pause past it by far less than the watchdog's
- * grace. A pause holds the thread on every case from the threshold up, so it is kept short.
+ * The least case deadline of a planted search (but one that blocks), in milliseconds: its case's CPU budget, which the
+ * planted program's own work beside the case must never spend, so a runaway that only waits reads as stalled, never as
+ * having spent its deadline.
+ *
+ * @limitKind measured
+ * @owner the watchdog's property (blocking.test.ts watchdog, plantedOf)
+ * @unit milliseconds of a planted case's deadline, its CPU budget and its stall window
+ * @scope each planted search but one that blocks, run in a program of its own
+ * @evidence ~/.cache/metis/SLOP-FIXER-2-scratch/watchdog/measure: the planted waits program (threshold 0, a deadline of
+ *   a second so no reading spends it, seed 2400084417) run 48 at a time, four rounds, by measure.sh there, each reading
+ *   of its case's judge printed (spent since the case began, moved over the window) by a print in judgeOf that the run
+ *   alone held; and /tmp/sf2-insp/cost.mjs, a worker's inspector session and Runtime.evaluate against a main thread that
+ *   waits a second at a time, 24 at once
+ * @observed 2026-11-22 21:02 to 21:06 UTC
+ * @environment cassowary, Ubuntu 26.04 on arm64 in AWS, 64 cores and 247 GiB, load average 296 to 416; Node 26.13.1;
+ *   the testing library with the watchdog's own CPU left out of a case's (work.ts ownCpu)
+ * @workload a held case that only waits in Atomics.wait, the watchdog answering through the inspector every grace,
+ *   192 programs
+ * @result its first window, from the case's start to the first answer, spent 2.6 ms of CPU at the median, 4.5 at the
+ *   90th percentile, 174.8 at the 99th and 190.9 at most, the program's own warm-up beside its case (a first window
+ *   holding 24 to 191 ms also waited 13 to 201 ms to run, the process busy as the case began); each later window
+ *   moved 1.1 ms at the median and 2.0 at most (38 windows), under the 10 ms that shows progress; an inspector session
+ *   and its evaluate cost the main thread 0.3 to 1.6 ms. Under a 71 ms deadline the warm-up spent the deadline once in
+ *   192 runs (probe6's r2-2, 2026-11-22: its first answer read spent, the leg a waiting body is never judged by)
+ * @decision twice the largest first window, 400 ms rounded up: a warm-up twice any seen still reads stalled at its
+ *   second answer; the later windows' CPU, a fifth of progress, keeps a waiting case stalled at every answer past it
+ * @revalidate a planted case judged spent or answered running past its second answer; a Node or V8 upgrade; another
+ *   machine
+ */
+const PLANTED_DEADLINE_MILLIS = 400
+
+/**
+ * A planted search of `body`: a threshold, a case deadline from PLANTED_DEADLINE_MILLIS, and a pause past it by far less
+ * than the watchdog's grace. A pause holds the thread on every case from the threshold up, so it is kept short.
  */
 const plantedOf =
 	(body: Body): Gen<Planted> =>
@@ -112,7 +144,7 @@ const plantedOf =
 				pauseMillis: BLOCKED_DEADLINE_MILLIS + 2 * watchdogGraceMillis + source.draw(int(1, 100))
 			}
 		}
-		const deadlineMillis = source.draw(int(20, 100))
+		const deadlineMillis = source.draw(int(PLANTED_DEADLINE_MILLIS, PLANTED_DEADLINE_MILLIS + 80))
 		return {
 			body,
 			threshold: source.draw(int(0, 9)),
@@ -226,7 +258,7 @@ export const settledHere = (planted: Planted, seed: number) =>
  * four of the watchdog's graces, so the thread sleeps until four graces past that search's first case's start. The
  * property requires that moment to come past the runaway's moment and grace, counted from when the planted search
  * began (dueBeforeTheThreadWakes), which holds while the search waits less than three graces less the runaway's
- * deadline (at most 100 ms, plantedOf) for the thread; a thread left asleep that long, waiting its grace once it wakes,
+ * deadline (at most 480 ms, plantedOf) for the thread; a thread left asleep that long, waiting its grace once it wakes,
  * then ends the process past the property's bound. It is no limit: any multiple of the grace from three up separates
  * the two, and four leaves the wait a grace.
  */

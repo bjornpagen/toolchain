@@ -233,10 +233,22 @@ const keptEffort = (): ((pids: ReadonlyArray<string>) => Effort) => {
 	}
 }
 
-/** This process's own CPU so far, every thread's, in milliseconds: process.cpuUsage, a system call and no file. */
+/**
+ * This process's own CPU so far, every thread's but what its watchdog spent observing its cases, in milliseconds:
+ * process.cpuUsage, a system call and no file, less the watchdog's own (live.ts Watchdog's observed: its thread's CPU,
+ * and the main thread's while it answered the watchdog, a reading of its cases' work among it), which no case spends.
+ * Counted as a case's, the observer's work read as the case's progress and spent its budget: of 192 planted threads
+ * that only wait, under a 71 ms deadline, one read as working at its first answer and one spent its 71 ms by its
+ * second, neither doing anything (~/.cache/metis/SLOP-FIXER-2-scratch/watchdog/probe4, r4-11 and r2-32, 2026-11-22). A
+ * case's own worker threads and V8's helpers count: a held case's near none, a running one's real work.
+ */
 export const ownCpu = (): number => {
 	const own = process.cpuUsage()
-	return (own.user + own.system) / microsPerMilli
+	const observed = Option.match(Option.fromUndefinedOr(globalThis.bjornpagenTestingWatchdog), {
+		onNone: () => 0,
+		onSome: (watchdog) => watchdog.observed()
+	})
+	return (own.user + own.system - observed) / microsPerMilli
 }
 
 /** The CPU (ms) of the children a process has waited for. */
@@ -449,11 +461,12 @@ export const ownWork = (wall: number, own: number): TreeWork => {
 		},
 		waited: ownWaited,
 		effort: () => {
+			const cpu = ownCpu() + reaped(statOf("self"))
 			const descendants = kept(
 				Option.match(since, { onNone: () => [], onSome: (at) => descendantsOf("self", at) })
 			)
 			return {
-				cpu: ownCpu() + reaped(statOf("self")) + descendants.cpu,
+				cpu: cpu + descendants.cpu,
 				stir: stirPlus(stirOwn(), descendants.stir)
 			}
 		}
