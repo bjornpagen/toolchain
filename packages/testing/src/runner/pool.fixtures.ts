@@ -1,7 +1,7 @@
 import { Array as Arr, Config, Duration, Effect, FileSystem } from "effect"
 import { ChildProcess } from "effect/process"
 import { boolean, finite, type Gen, int, map } from "#gen.ts"
-import { liveSleep, waitingOn } from "#live.ts"
+import { HUNG_CLEANUP_GRACE, liveSleep, waitingOn, watchdogGraceMillis } from "#live.ts"
 import { plantedBudget } from "#planted.fixtures.ts"
 import { type Need, property } from "#property.ts"
 import { Scratch } from "#resources/scratch.ts"
@@ -266,16 +266,30 @@ export const blocksItsWorker = property.exhaust(finite(int(0, 1)), {
 export const WAITS_DECLARED = "src/runner/pool.fixtures.ts#waitsDeclared"
 
 /**
- * The deadlines its case runs under, in milliseconds, each with the pool's bound and grace well within its wait, and its
- * wait within the wall time a case's declared waits may hold it (runner/limits.ts waitedWindows of its deadline).
+ * The deadlines its case runs under, in milliseconds, each with six of the pool's windows within its wait
+ * (DECLARED_WAIT), and its wait within the wall time a case's declared waits may hold it (runner/limits.ts
+ * waitedWindows of its deadline: thirty 5 s windows, 150 s, the shorter's).
  */
-export const declaredWaitDeadlines: Gen<number> = map(boolean, (longer) => (longer ? 3000 : 2000))
+export const declaredWaitDeadlines: Gen<number> = map(boolean, (longer) => (longer ? 6000 : 5000))
 
 /**
- * Two of the pool's whole windows (the longer of declaredWaitDeadlines and the silence grace) and more: the case's own
- * CPU before its wait may carry the first window, so only a wait past two of them would stall in the second.
+ * How many of the pool's windows the planted case's declared wait spans, so the pool's kill of a worker whose waits it
+ * ignores is judged however its idle noise falls: the pool reads an idle worker from /proc, its watchdog and readings
+ * among it, at 10 ms in 35 of 48 steady 17 s windows, 20 ms in 10 and 30 ms in 3, under load 182 to 292
+ * (~/.cache/metis/SLOP-FIXER-2-scratch/watchdog/idle-probe.log, 2026-11-22), so 13 of 48 idle windows read above the
+ * pool's 0.1% of progress; a wait of two windows let the ignoring pool keep the worker in about 0.27² of trials, 7%, as
+ * one whole-package run did, and six leave it about 0.27⁶, 0.04% (grizzle, 2026-11-22).
  */
-const DECLARED_WAIT = Duration.millis(40_000)
+const POOL_WINDOWS = 6
+
+/**
+ * The planted case's declared wait: POOL_WINDOWS of the pool's windows at the longer deadline, the deadline and the
+ * silence grace (runner/pool.ts SILENCE_GRACE_MILLIS: the watchdog's grace twice and a hung case's cleanup grace),
+ * 126 s.
+ */
+const DECLARED_WAIT = Duration.millis(
+	POOL_WINDOWS * (6000 + 2 * watchdogGraceMillis + Duration.toMillis(HUNG_CLEANUP_GRACE))
+)
 
 /**
  * A property planted to wait on a resource other processes hold, as a case's lease or lock wait does: its case spends

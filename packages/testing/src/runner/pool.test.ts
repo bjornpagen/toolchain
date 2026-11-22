@@ -15,8 +15,9 @@ import { Array as Arr, Effect, FileSystem, Option, String as Str } from "effect"
 import { assert } from "#assert.ts"
 import { countWithin } from "#enumerate.ts"
 import { array, boolean, finite, int } from "#gen.ts"
+import { waitingOn } from "#live.ts"
 import { Checkout } from "#mutate/checkout.ts"
-import { property } from "#property.ts"
+import { property, ReplayToken } from "#property.ts"
 import { Scratch } from "#resources/scratch.ts"
 import { sharedStore } from "#runner/compile-cache.ts"
 import { placesLeased } from "#runner/lease.ts"
@@ -448,7 +449,7 @@ export const unreadMessageEndsItsWorker = property.exhaust(finite(boolean), {
 })
 
 export const declaredWaitKept = property.exhaust(finite(declaredWaitDeadlines), {
-	box: "a case that waits, declared, past its deadline and its pool's bound and grace, under two deadlines",
+	box: "a case that waits, declared, six of its pool's windows past its deadline, under two deadlines",
 	needs: { checkout: Checkout.dir },
 	situations: [],
 	check:
@@ -471,10 +472,13 @@ export const declaredWaitKept = property.exhaust(finite(declaredWaitDeadlines), 
 							runs: [],
 							stall: 1000
 						})
-						const results = yield* pool.evaluator.evaluate(
-							[shortCase(WAITS_DECLARED, deadline)],
-							() => true
-						)
+						const results = yield* pool.evaluator
+							.evaluate([shortCase(WAITS_DECLARED, deadline)], () => true)
+							.pipe(
+								waitingOn(
+									"pool.test.ts declaredWaitKept's pool, its case in a declared wait of its own"
+								)
+							)
 						return Arr.map(Arr.flatten(results), (result) => result.outcome.kind)
 					})
 				)
@@ -485,7 +489,14 @@ export const declaredWaitKept = property.exhaust(finite(declaredWaitDeadlines), 
 		name: "a case that waits, declared, on a resource other processes hold spends no stall: past its deadline and its pool's bound and grace in wall time, spending nothing, it is neither hung by its own guard nor killed by its pool, and passes"
 	},
 	budget: { runs: 2, steered: 0 },
-	kept: [],
+	kept: [
+		{
+			token: ReplayToken("src/runner/pool.test.ts#declaredWaitKept:-:0"),
+			reason:
+				"the shorter deadline's case, whose kill of the pool ignoring declared waits survived one whole-package run when its wait spanned two of the pool's windows, an idle worker read from /proc above the pool's floor in both (2026-11-22)",
+			since: "2026-11-22"
+		}
+	],
 	kills: [
 		{
 			file: "packages/testing/src/runner/pool.ts",

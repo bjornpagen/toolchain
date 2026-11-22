@@ -725,8 +725,15 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 
 		/**
 		 * Watches a worker in a phase of one of its units: silent while its process tree spends the phase's CPU bound and the
-		 * grace, or does not move over a whole stall window and grace of wall time (live.ts overrun), it is killed, the leg
-		 * that fired kept for its report. A worker whose case the machine slows keeps moving and is left to its own guard.
+		 * grace, or does not move over a whole stall window and grace of the time it could run (live.ts overrun), it is
+		 * killed, the leg that fired kept for its report. A worker whose case the machine slows keeps moving and is left to
+		 * its own guard. The pool reads the worker from /proc, its watchdog's and its guards' own work among it, which the
+		 * worker's own guard leaves out: an idle worker moved 10 ms in 35 of 48 steady 17 s windows, 20 ms in 10 and 30 ms in
+		 * 3 under load 182 to 292 (0.06 to 0.18% of a CPU; ~/.cache/metis/SLOP-FIXER-2-scratch/watchdog/idle-probe.log,
+		 * 2026-11-22), so about 27% of an idle worker's windows read as progress against the 0.1% its guard's floor holds
+		 * too. No share separates idle from a case its own guard calls working, which moves that floor and this noise
+		 * together, so the pool keeps the guard's floor: its backstop is coarse by nature and judges a stall later than the
+		 * guard, a window or a few (grizzle, 2026-11-22).
 		 */
 		const watch = (worker: Worker, id: number, phase: Phase) =>
 			Effect.gen(function* () {
