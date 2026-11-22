@@ -388,14 +388,16 @@ export const leaveWait = (wall: number, id: number): void => {
 
 /**
  * Each open checked wait's claim asked again at `wall` (a guard's reading, live.ts overrun), never waited for: a reading
- * takes the answer the ask a reading before it made, if it has come, and asks again in a fiber of its own, so no guard
- * blocks on its own claim check, and an ask is given a whole window to answer (trunk@toolchain at e8b7ecec, 2026-11-22: a kill trial's guard waited 69 minutes on a check whose
- * connect a busy member never answered, and judged nothing). A wait whose server has answered that it is not working on
- * it, or has not answered, at two readings in a row, a whole window apart, closes at the first of them, as if its work
- * had ended then, so the guard counts the wall time after it as the stall it is: the client awaits an answer no server
- * is working on (a promise that never settles, a backend gone, a member that takes the ask and never answers). One
- * answer alone closes nothing: a backend between two pipelined statements of its session is idle for an instant. A claim
- * that cannot be asked (the ask fails) holds.
+ * takes the answer the last ask gave, if it has come, and only then asks again, in a fiber of its own, so no guard
+ * blocks on its own claim check (trunk@toolchain at e8b7ecec, 2026-11-22: a kill trial's guard waited 69 minutes on a
+ * check whose connect a busy member never answered, and judged nothing). A wait whose server has answered that it is not
+ * working on it at two readings in a row, a whole window apart, closes at the first of them, as if its work had ended
+ * then, so the guard counts the wall time after it as the stall it is: the client awaits an answer no server is working
+ * on (a promise that never settles, a backend gone). One answer alone closes nothing: a backend between two pipelined
+ * statements of its session is idle for an instant. An ask not answered yet says nothing either way, as one that cannot
+ * be made holds: a slow member's answer, past a 150 ms window under trunk's load, closed waits whose backends worked
+ * (cloneDropWaitIsDeclared and sessionStatementIsDeclared at da272aeb, 2026-11-22), and a member that takes the ask and
+ * never answers leaves its wait to the waited leg, which judges it.
  */
 export const checkedClaims = (wall: number): Effect.Effect<void> => {
 	const ledger = processWaits()
@@ -416,11 +418,11 @@ export const checkedClaims = (wall: number): Effect.Effect<void> => {
 						})
 					)
 				}
-				if (asked === undefined) {
+				if (asked === undefined || Option.isNone(asked.answer)) {
 					return
 				}
 				const since = ledger.idle.get(id)
-				if (Option.getOrElse(asked.answer, () => false)) {
+				if (asked.answer.value) {
 					ledger.idle.delete(id)
 				} else if (since === undefined) {
 					ledger.idle.set(id, wall)

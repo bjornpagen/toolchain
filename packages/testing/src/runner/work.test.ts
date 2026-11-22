@@ -337,7 +337,7 @@ export const unansweredClaimIsJudged = property.exhaust(finite(deadlocks), {
 		}),
 	oracle: {
 		kind: "specification",
-		name: "a guard never blocks on its own claim check: a case inside a declared wait whose server takes the ask and never answers is judged hung, the unanswered claim held as no work (grizzle, 2026-11-22)"
+		name: "a guard never blocks on its own claim check: a case inside a declared wait whose server takes the ask and never answers is judged hung, by the waited leg its wait leaves it to (grizzle, 2026-11-22)"
 	},
 	kept: [],
 	kills: [
@@ -346,12 +346,6 @@ export const unansweredClaimIsJudged = property.exhaust(finite(deadlocks), {
 			original: "\t\t\t\t\tyield* Effect.forkDetach(\n",
 			replacement: "\t\t\t\t\tyield* Effect.asVoid(\n",
 			why: "A reading waits for its claim's answer, as it did: a member that takes the ask and never answers holds the guard's reading for good, so the case is never judged (trunk@toolchain at e8b7ecec, 2026-11-22: a kill trial waited 69 minutes on a check's connect); the property fails, never judged."
-		},
-		{
-			file: "packages/testing/src/runner/work.ts",
-			original: "\t\t\t\tif (Option.getOrElse(asked.answer, () => false)) {\n",
-			replacement: "\t\t\t\tif (Option.getOrElse(asked.answer, () => true)) {\n",
-			why: "A claim not yet answered holds as work, so a member that never answers keeps the wait open and the case's stall unread; the property fails, never judged."
 		}
 	]
 })

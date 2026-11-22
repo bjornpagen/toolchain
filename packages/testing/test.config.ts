@@ -25,6 +25,7 @@ export default defineRunner({
 		"src/resources/scratch.test.ts",
 		"src/resources/resources.test.ts",
 		"src/pg/settle.test.ts",
+		"src/pg/monitor.test.ts",
 		"src/core.test.ts",
 		"src/recorded.test.ts",
 		"src/idioms.test.ts",

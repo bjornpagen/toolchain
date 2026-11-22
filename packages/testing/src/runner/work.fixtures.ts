@@ -199,19 +199,16 @@ export const deadlockedCase = (shape: Deadlock): Property =>
 	})
 
 /**
- * An inner search whose one case waits on the live clock for twenty deadlines, spending nothing, inside a declared wait
- * whose claim is asked and never answers (live.ts waitingOnWork), as a statement waits on a member that takes the ask of
- * its backend's work and never replies.
+ * An inner search whose one case waits forever, spending nothing, inside a declared wait whose claim is asked and never
+ * answers (live.ts waitingOnWork), as a statement waits on a member that takes the ask of its backend's work and never
+ * replies: only its guard's waited leg ends it.
  */
-export const unansweredClaimCase = (shape: Deadlock): Property =>
+export const unansweredClaimCase = (_shape: Deadlock): Property =>
 	property.explore(int(0, 9), {
 		needs: {},
 		situations: [],
 		check: () => () =>
-			Duration.millis(shape.deadline * HUNG_DEADLINES).pipe(
-				liveSleep,
-				waitingOnWork("work.fixtures.ts unansweredClaimCase's sleep", Effect.never)
-			),
+			Effect.never.pipe(waitingOnWork("work.fixtures.ts unansweredClaimCase's wait", Effect.never)),
 		oracle: planted,
 		kept: [],
 		kills: []

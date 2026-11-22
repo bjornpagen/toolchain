@@ -4,6 +4,7 @@ import { waitingOn, waitingOnWork } from "#live.ts"
 import { bootstrapSuperuser } from "#pg/server.ts"
 import type { PgMember } from "#pg/settle.ts"
 import type { PgSession, Statements } from "#resources/cluster.ts"
+import { needStallMillis } from "#runner/limits.ts"
 import { NeedFailed } from "#runner/services.ts"
 
 /** A failure of a session on `member` as the need it failed: what it was doing, and what the driver said. */
@@ -36,9 +37,12 @@ END
 FROM pg_catalog.pg_stat_activity AS a WHERE a.pid = $1::int4`
 
 /**
- * Whether the backend `pid` of `member` works on what its client awaits, as the member says on a connection of its own,
- * the bootstrap superuser's over the member's socket (no secret, no TLS: a check costs its process a few milliseconds
- * of CPU, which a case's guard counts as the case's, where a TLS sign-in cost tens) (BACKEND_WORKING): it runs a
+ * Whether the backend `pid` of `member` works on what its client awaits, as the member says on this process's monitor
+ * connection to it (monitorOf), the bootstrap superuser's over the member's socket, opened once and asked again and
+ * again, one statement at a time: a check is one statement on a connection already made, where a fresh connection each
+ * check cost its process milliseconds of CPU at every reading, which spent a 150 ms case's budget under trunk's load
+ * (lockedStatementIsDeclared at da272aeb, 2026-11-22), and a connect a busy member never answered held its guard for 69
+ * minutes (BACKEND_WORKING): it runs a
  * statement (pg_stat_activity's `active`, behind an LWLock, I/O or a checkpoint as much as on a CPU), where `idle`,
  * `idle in transaction` or a backend gone means the member has answered, or never will, so its client awaits nothing
  * the member does. A backend behind a heavyweight lock works while something holding it, at any remove (a holder
@@ -49,43 +53,101 @@ FROM pg_catalog.pg_stat_activity AS a WHERE a.pid = $1::int4`
  * will (grizzle's test/pg/substrate/budget.test.ts under its first kill, UNITREDS, 2026-11-22: the case failed with
  * its holder idle in transaction on ACCESS EXCLUSIVE and two pool reads of its own behind it; its cleanup closed the
  * pool before the holder, so it waited on the reads, the reads on the holder, and the reads' waits read active, 14 to
- * 73 minutes and more with no verdict). A member
- * that cannot be asked (the connection fails) answers yes: the claim holds when it cannot be checked.
+ * 73 minutes and more with no verdict). It asks on this process's monitor connection to the member (monitorOf), one
+ * statement on a connection already made, where a fresh connection each check cost its process milliseconds of CPU at
+ * every reading (lockedStatementIsDeclared spent its 150 ms case's budget so under trunk's load at da272aeb, 2026-11-22)
+ * and a connect a busy member never answered held a guard 69 minutes. A member that cannot be asked (its connection
+ * fails or overruns monitorBoundMillis, and is made again at the next check) answers yes: the claim holds when it
+ * cannot be checked.
  */
-export const backendWorking = (member: PgMember, pid: number): Effect.Effect<boolean> => {
-	const unasked = () => "unasked" as const
-	return Effect.orElseSucceed(
-		Effect.acquireUseRelease(
-			Effect.tap(
-				Effect.sync(
-					() =>
-						new pg.Client({
-							host: member.socket,
-							port: member.port,
-							user: bootstrapSuperuser(),
-							database: "postgres",
-							application_name: "toolchain backend check"
-						})
-				),
-				(client) => Effect.tryPromise({ try: () => client.connect(), catch: unasked })
-			),
-			(client) =>
-				Effect.map(
-					Effect.tryPromise({
-						try: () =>
-							client.query<[boolean]>({
-								text: BACKEND_WORKING,
-								values: [pid],
-								rowMode: "array"
-							}),
-						catch: unasked
-					}),
-					(result) => result.rows[0]?.[0] === true
-				),
-			(client) => Effect.ignore(Effect.tryPromise({ try: () => client.end(), catch: unasked }))
-		),
+export const backendWorking = (member: PgMember, pid: number): Effect.Effect<boolean> =>
+	backendWorkingWithin(member, pid, monitorBoundMillis)
+
+/**
+ * How long this process's monitor connection to a member may take to open, or to answer one check, before it is
+ * dropped and the check answers as one that cannot be asked: a member that takes the connection and never answers
+ * would hold the monitor, and every later check of every wait on that member, for good.
+ *
+ * @limitKind derived
+ * @owner the testing library's claim checks (pg/session.ts monitorOf)
+ * @unit milliseconds
+ * @scope the open of one monitor connection, and each check asked on it
+ * @derivation a check that has not answered within a need's stall window answers nothing a guard could use: the stall
+ *   window bounds every wait on work a guard does not declare (runner/limits.ts needStallMillis)
+ * @from runner/limits.ts needStallMillis
+ */
+const monitorBoundMillis = needStallMillis
+
+/** backendWorking with the monitor bounded by `bound` milliseconds (monitorBoundMillis in production; a test's own). */
+export const backendWorkingWithin = (
+	member: PgMember,
+	pid: number,
+	bound: number
+): Effect.Effect<boolean> =>
+	Effect.orElseSucceed(
+		Effect.tryPromise({
+			try: () => monitorOf(member, bound).ask(pid),
+			catch: () => "unasked" as const
+		}),
 		() => true
 	)
+
+/** This process's monitor connection to a member: its client, and the turn its next statement waits for. */
+type Monitor = Readonly<{ ask: (pid: number) => Promise<boolean> }>
+
+declare global {
+	var bjornpagenTestingMonitors: Map<string, Monitor> | undefined
+}
+
+/**
+ * This process's one monitor connection to `member`, made the first time a check asks it and kept for the process's
+ * life, its statements one at a time (pg 8 refuses a statement sent while another runs, and the hardened flags make
+ * that fatal); its open and each statement bounded by `bound` (node-postgres's connectionTimeoutMillis and
+ * query_timeout), and a connection that fails or overruns is forgotten and ended, so the next check makes it again.
+ */
+const monitorOf = (member: PgMember, bound: number): Monitor => {
+	globalThis.bjornpagenTestingMonitors ??= new Map()
+	const monitors = globalThis.bjornpagenTestingMonitors
+	const key = `${member.socket}:${String(member.port)}`
+	const known = monitors.get(key)
+	if (known !== undefined) {
+		return known
+	}
+	const client = new pg.Client({
+		host: member.socket,
+		port: member.port,
+		user: bootstrapSuperuser(),
+		database: "postgres",
+		application_name: "toolchain backend check",
+		connectionTimeoutMillis: bound,
+		query_timeout: bound
+	})
+	const forget = () => {
+		if (monitors.get(key) === monitor) {
+			monitors.delete(key)
+			void client.end().catch(() => undefined)
+		}
+	}
+	client.on("error", forget)
+	const connected = client.connect()
+	let turn: Promise<unknown> = connected
+	const monitor: Monitor = {
+		ask: (pid) => {
+			const asked = turn.then(() =>
+				client.query<[boolean]>({ text: BACKEND_WORKING, values: [pid], rowMode: "array" })
+			)
+			turn = asked.catch(() => undefined)
+			return asked.then(
+				(result) => result.rows[0]?.[0] === true,
+				(cause: unknown) => {
+					forget()
+					throw cause
+				}
+			)
+		}
+	}
+	monitors.set(key, monitor)
+	return monitor
 }
 
 /**
