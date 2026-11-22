@@ -1,6 +1,6 @@
 import { Array as Arr, Config, Duration, Effect, FileSystem, String as Str } from "effect"
 import { array, element, type Gen, int, map } from "#gen.ts"
-import { liveMillis, liveSleep, waitingOn } from "#live.ts"
+import { liveMillis, liveSleep, waitingOn, waitingOnWork } from "#live.ts"
 import { type Property, property } from "#property.ts"
 import { type Limits, runnerLimits } from "#runner/limits.ts"
 import { fullRun, type InnerRun } from "#runner/search.fixtures.ts"
@@ -174,12 +174,44 @@ export const deadlocks: Gen<Deadlock> = map(int(0, 1), (step) => ({
 	deadlines: 6
 }))
 
+/**
+ * How many deadlines a case its guard must judge hung waits before it would pass: twenty, where a case that passes
+ * waits its shape's six. A window counts only the time the case's tree could have run, its processes' waits to run
+ * taken out, so under trunk's load a 150 ms window comes whole later than 150 ms of wall time (wakingTreeIsHung's
+ * waking case passed in six at load 384, 2026-11-22); a hung case is interrupted at its first stalled window, so the
+ * deadlines it is given cost nothing. A test's own time, no limit.
+ */
+const HUNG_DEADLINES = 20
+
+/** How many deadlines a property waits for a guard's verdict before it reads the case as never judged: past the twenty
+ * a hung case is given, so a verdict that comes at all comes first. A test's own time, no limit. */
+export const UNJUDGED_DEADLINES = 60
+
 /** An inner search whose one case waits on the live clock for many deadlines, spending nothing, then passes. */
 export const deadlockedCase = (shape: Deadlock): Property =>
 	property.explore(int(0, 9), {
 		needs: {},
 		situations: [],
-		check: () => () => liveSleep(Duration.millis(shape.deadline * shape.deadlines)),
+		check: () => () => liveSleep(Duration.millis(shape.deadline * HUNG_DEADLINES)),
+		oracle: planted,
+		kept: [],
+		kills: []
+	})
+
+/**
+ * An inner search whose one case waits on the live clock for twenty deadlines, spending nothing, inside a declared wait
+ * whose claim is asked and never answers (live.ts waitingOnWork), as a statement waits on a member that takes the ask of
+ * its backend's work and never replies.
+ */
+export const unansweredClaimCase = (shape: Deadlock): Property =>
+	property.explore(int(0, 9), {
+		needs: {},
+		situations: [],
+		check: () => () =>
+			Duration.millis(shape.deadline * HUNG_DEADLINES).pipe(
+				liveSleep,
+				waitingOnWork("work.fixtures.ts unansweredClaimCase's sleep", Effect.never)
+			),
 		oracle: planted,
 		kept: [],
 		kills: []
@@ -253,7 +285,7 @@ export const wakingCase = (shape: Deadlock): Property =>
 		situations: [],
 		check: () => () =>
 			Effect.scoped(
-				Effect.andThen(wakingChild, liveSleep(Duration.millis(shape.deadline * shape.deadlines)))
+				Effect.andThen(wakingChild, liveSleep(Duration.millis(shape.deadline * HUNG_DEADLINES)))
 			),
 		oracle: planted,
 		kept: [],

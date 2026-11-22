@@ -31,7 +31,7 @@ import { array, boolean, finite, int } from "#gen.ts"
 import { liveMillis, liveSleep, overrun, waitingOn, waitingOnWork } from "#live.ts"
 import { Checkout } from "#mutate/checkout.ts"
 import { backendWorking } from "#pg/session.ts"
-import { type Case, property } from "#property.ts"
+import { type Case, property, ReplayToken } from "#property.ts"
 import { PgCluster, quoteIdent, run as runIn, single } from "#resources/cluster.ts"
 import {
 	type CollectionPhase,
@@ -1308,6 +1308,7 @@ export const cloneDropWaitIsDeclared = property.exhaust(finite(deadlocks), {
 								Effect.map(
 									overrun(ownWork(wall, ownCpu()), {
 										...deadlineBound(shape.deadline),
+										cpu: Number.POSITIVE_INFINITY,
 										waited: Number.POSITIVE_INFINITY
 									}),
 									overrunText
@@ -1335,7 +1336,14 @@ export const cloneDropWaitIsDeclared = property.exhaust(finite(deadlocks), {
 		kind: "specification",
 		name: "a clone's drop that waits on the member past its case's deadline, behind a lock a session in the clone holds while it works, is a declared wait named by its statement: the case's guard judges none of it, this process's open waits name it while it waits, and it ends no session in the clone"
 	},
-	kept: [],
+	kept: [
+		{
+			token: ReplayToken("src/resources/resources.test.ts#cloneDropWaitIsDeclared:-:0"),
+			reason:
+				"a drop held 900 ms behind a working holder, whose case spent its 150 ms of CPU on the clone, the sessions and the claim checks under trunk@toolchain's load at 93f4cedc, judged spent where the property judges the stall alone (2026-11-22)",
+			since: "2026-11-22"
+		}
+	],
 	kills: [
 		{
 			file: "packages/testing/src/pg/session.ts",
@@ -1452,8 +1460,8 @@ export const unansweredStatementIsHung = property.exhaust(finite(deadlocks), {
 	kills: [
 		{
 			file: "packages/testing/src/runner/work.ts",
-			original: "\t\t\t\t\t\t\tleaveWait(since, open.id)\n",
-			replacement: "\t\t\t\t\t\t\tledger.idle.set(open.id, since)\n",
+			original: "\t\t\t\t\tleaveWait(since, id)\n",
+			replacement: "\t\t\t\t\tledger.idle.set(id, since)\n",
 			why: "A declared wait's claim is never held against its server, as every wait was a claim alone: a statement whose answer never comes, its backend idle (a promise node-postgres never settles, a backend gone), keeps its case's guard blind for good, and the run waits with nothing reported (JUDGEWRITE's 19 rule-* modules, 2026-11-21: 30 minutes flat, its backends idle in ClientRead); the property fails, never judged."
 		}
 	]

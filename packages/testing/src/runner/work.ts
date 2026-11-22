@@ -234,9 +234,11 @@ const keptEffort = (): ((pids: ReadonlyArray<string>) => Effort) => {
 }
 
 /**
- * This process's own CPU so far, every thread's but what its watchdog spent observing its cases, in milliseconds:
- * process.cpuUsage, a system call and no file, less the watchdog's own (live.ts Watchdog's observed: its thread's CPU,
- * and the main thread's while it answered the watchdog, a reading of its cases' work among it), which no case spends.
+ * This process's own CPU so far, every thread's but what it spent observing its cases, in milliseconds:
+ * process.cpuUsage, a system call and no file, less the observer's (live.ts Watchdog's observed: the watchdog thread's
+ * CPU, and the main thread's in each reading of a case's work, its walk of /proc for descendants among it), which no
+ * case spends. A worker runs its units one at a time and a search its cases one at a time (runner/worker.ts
+ * evaluating, explore.ts windowOf), so with the observer left out a case's window holds only its own work.
  * Counted as a case's, the observer's work read as the case's progress and spent its budget: of 192 planted threads
  * that only wait, under a 71 ms deadline, one read as working at its first answer and one spent its 71 ms by its
  * second, neither doing anything (~/.cache/metis/SLOP-FIXER-2-scratch/watchdog/probe4, r4-11 and r2-32, 2026-11-22). A
@@ -321,6 +323,7 @@ type ProcessWaits = {
 	waits: Waits
 	open: ReadonlyArray<OpenWait>
 	idle: Map<number, number>
+	asking: Map<number, { answer: Option.Option<boolean> }>
 	next: number
 	report: Option.Option<(change: WaitChange) => void>
 }
@@ -335,6 +338,7 @@ const processWaits = (): ProcessWaits => {
 		waits: noWaits,
 		open: [],
 		idle: new Map(),
+		asking: new Map(),
 		next: 0,
 		report: Option.none()
 	}
@@ -373,6 +377,7 @@ export const leaveWait = (wall: number, id: number): void => {
 		(at) => {
 			ledger.open = Arr.remove(ledger.open, at)
 			ledger.idle.delete(id)
+			ledger.asking.delete(id)
 			ledger.waits = waitLeft(ledger.waits, wall)
 			if (ledger.waits.open === 0) {
 				Option.map(ledger.report, (report) => report({ kind: "waited" }))
@@ -382,29 +387,45 @@ export const leaveWait = (wall: number, id: number): void => {
 }
 
 /**
- * Each open checked wait's claim asked again at `wall` (a guard's reading, live.ts overrun): a wait whose server has
- * answered that it is not working on it at two readings in a row, a whole window apart, closes at the first of them, as
- * if its work had ended then, so the guard counts the wall time after it as the stall it is: the client awaits an answer
- * no server is working on (a promise that never settles, a backend gone). One answer alone closes nothing: a backend
- * between two pipelined statements of its session is idle for an instant. A claim that cannot be asked holds.
+ * Each open checked wait's claim asked again at `wall` (a guard's reading, live.ts overrun), never waited for: a reading
+ * takes the answer the last ask gave, if it has come, and asks again in a fiber of its own, so no guard blocks on its
+ * own claim check (trunk@toolchain at e8b7ecec, 2026-11-22: a kill trial's guard waited 69 minutes on a check whose
+ * connect a busy member never answered, and judged nothing). A wait whose server has answered that it is not working on
+ * it, or has not answered, at two readings in a row, a whole window apart, closes at the first of them, as if its work
+ * had ended then, so the guard counts the wall time after it as the stall it is: the client awaits an answer no server
+ * is working on (a promise that never settles, a backend gone, a member that takes the ask and never answers). One
+ * answer alone closes nothing: a backend between two pipelined statements of its session is idle for an instant. A claim
+ * that cannot be asked (the ask fails) holds.
  */
 export const checkedClaims = (wall: number): Effect.Effect<void> => {
 	const ledger = processWaits()
+	const checked = Arr.flatMap(ledger.open, (open) =>
+		open.claim.kind === "checked" ? [{ id: open.id, working: open.claim.working }] : []
+	)
 	return Effect.forEach(
-		Arr.filter(ledger.open, (open) => open.claim.kind === "checked"),
-		(open) =>
-			open.claim.kind === "checked"
-				? Effect.map(open.claim.working, (working) => {
-						const since = ledger.idle.get(open.id)
-						if (working) {
-							ledger.idle.delete(open.id)
-						} else if (since === undefined) {
-							ledger.idle.set(open.id, wall)
-						} else {
-							leaveWait(since, open.id)
-						}
-					})
-				: Effect.void,
+		checked,
+		({ id, working }) =>
+			Effect.gen(function* () {
+				const asked = ledger.asking.get(id)
+				const answer = Option.flatMap(Option.fromUndefinedOr(asked), (slot) => slot.answer)
+				if (asked === undefined || Option.isSome(answer)) {
+					const slot: { answer: Option.Option<boolean> } = { answer: Option.none() }
+					ledger.asking.set(id, slot)
+					yield* Effect.forkDetach(
+						Effect.map(working, (works) => {
+							slot.answer = Option.some(works)
+						})
+					)
+				}
+				const since = ledger.idle.get(id)
+				if (Option.getOrElse(answer, () => false)) {
+					ledger.idle.delete(id)
+				} else if (since === undefined) {
+					ledger.idle.set(id, wall)
+				} else {
+					leaveWait(since, id)
+				}
+			}),
 		{ discard: true }
 	)
 }
@@ -461,14 +482,17 @@ export const ownWork = (wall: number, own: number): TreeWork => {
 		},
 		waited: ownWaited,
 		effort: () => {
+			const reading = process.threadCpuUsage()
 			const cpu = ownCpu() + reaped(statOf("self"))
 			const descendants = kept(
 				Option.match(since, { onNone: () => [], onSome: (at) => descendantsOf("self", at) })
 			)
-			return {
-				cpu: cpu + descendants.cpu,
-				stir: stirPlus(stirOwn(), descendants.stir)
-			}
+			const stir = stirPlus(stirOwn(), descendants.stir)
+			const spent = process.threadCpuUsage(reading)
+			Option.map(Option.fromUndefinedOr(globalThis.bjornpagenTestingWatchdog), (watchdog) =>
+				watchdog.observing(spent.user + spent.system)
+			)
+			return { cpu: cpu + descendants.cpu, stir }
 		}
 	}
 }

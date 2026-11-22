@@ -25,10 +25,11 @@
  *
  * Oracles are stated per property.
  */
-import { Array as Arr, Effect } from "effect"
+import { Array as Arr, Duration, Effect } from "effect"
 import { assert } from "#assert.ts"
 import type { Reached } from "#features.ts"
 import { finite } from "#gen.ts"
+import { liveSleep } from "#live.ts"
 import { property } from "#property.ts"
 import { searchedAt, verdictKind } from "#runner/search.fixtures.ts"
 import {
@@ -51,6 +52,8 @@ import {
 	slowShapes,
 	STATED_CPU_SHORTFALL_MILLIS,
 	storageDirectory,
+	UNJUDGED_DEADLINES,
+	unansweredClaimCase,
 	waitingCase,
 	waitingThreads,
 	waitingWindowOf,
@@ -110,8 +113,8 @@ export const childWorkCounts = property.exhaust(finite(childBurns), {
 	kills: [
 		{
 			file: "packages/testing/src/runner/work.ts",
-			original: "\t\t\t\tcpu: cpu + descendants.cpu,\n",
-			replacement: "\t\t\t\tcpu,\n",
+			original: "\t\t\treturn { cpu: cpu + descendants.cpu, stir }\n",
+			replacement: "\t\t\treturn { cpu, stir }\n",
 			why: "A live child's CPU is left out until the child is reaped, so a case that waits on a working child spends nothing of its own and is stalled after a window; the child-work property fails."
 		}
 	]
@@ -310,6 +313,45 @@ export const waitingToRunIsNoProgress = property.explore(waitingThreads, {
 			original: "\tconst over = now.wall - window.wall - waited - queued\n",
 			replacement: "\tconst over = now.wall - window.wall - waited\n",
 			why: "A wait to run is not taken out of the window's time, so a thread the machine starved has a whole window in which it spent nothing, and is stalled though it could not run (the starved app servers of trunk@metis's browser runs, 86 to 96 s of 95 on the run queue, 2026-11-22); the property fails on the starved thread."
+		}
+	]
+})
+
+export const unansweredClaimIsJudged = property.exhaust(finite(deadlocks), {
+	box: "a case waiting inside a declared wait whose claim is asked and never answers, under each deadline",
+	needs: {},
+	situations: [],
+	check: () => (shape) =>
+		Effect.gen(function* () {
+			const verdict = yield* Effect.raceFirst(
+				Effect.map(
+					searchedAt(
+						unansweredClaimCase(shape),
+						innerRun("work/unanswered", INNER_SEED, shape.deadline)
+					),
+					verdictKind
+				),
+				Effect.as(liveSleep(Duration.millis(shape.deadline * UNJUDGED_DEADLINES)), "never judged")
+			)
+			assert.equal(verdict, "hung")
+		}),
+	oracle: {
+		kind: "specification",
+		name: "a guard never blocks on its own claim check: a case inside a declared wait whose server takes the ask and never answers is judged hung, the unanswered claim held as no work (grizzle, 2026-11-22)"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/runner/work.ts",
+			original: "\t\t\t\t\tyield* Effect.forkDetach(\n",
+			replacement: "\t\t\t\t\tyield* Effect.asVoid(\n",
+			why: "A reading waits for its claim's answer, as it did: a member that takes the ask and never answers holds the guard's reading for good, so the case is never judged (trunk@toolchain at e8b7ecec, 2026-11-22: a kill trial waited 69 minutes on a check's connect); the property fails, never judged."
+		},
+		{
+			file: "packages/testing/src/runner/work.ts",
+			original: "\t\t\t\tif (Option.getOrElse(answer, () => false)) {\n",
+			replacement: "\t\t\t\tif (Option.getOrElse(answer, () => true)) {\n",
+			why: "A claim not yet answered holds as work, so a member that never answers keeps the wait open and the case's stall unread; the property fails, never judged."
 		}
 	]
 })

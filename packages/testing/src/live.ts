@@ -465,9 +465,10 @@ export const answerOf = (inFlight: ReadonlyArray<Watched>, now: number): Answer 
  * synchronously holds the thread its guard's timer would run on. `watch` registers a case in flight and returns its
  * release; `answer` is what the main thread tells the watchdog's thread that asks it, interrupted, whether it is
  * blocked; `wakes` is when the watchdog's thread will next wake of itself, as it last said, none until it first says and
- * while it waits for a case to wake it; `observed` is the CPU the watchdog has spent observing, in microseconds, its
- * thread's as it states it after each turn and the main thread's while it answered, which work.ts ownCpu leaves out of
- * every case's. A process whose tests run off its main thread, in a worker, has none: its watch does nothing, and only
+ * while it waits for a case to wake it; `observed` is the CPU this process has spent observing its cases, in
+ * microseconds, the watchdog thread's as it states it before each sleep and the main thread's in every reading of a
+ * case's work (work.ts ownWork, whether a guard's timer or the watchdog's answer reads it), which `observing` adds and
+ * work.ts ownCpu leaves out of every case's. A process whose tests run off its main thread, in a worker, has none: its watch does nothing, and only
  * the guard's timer stops a case.
  */
 type Watchdog = Readonly<{
@@ -475,6 +476,7 @@ type Watchdog = Readonly<{
 	answer: () => Answer
 	wakes: () => Option.Option<number>
 	observed: () => number
+	observing: (micros: number) => void
 }>
 
 declare global {
@@ -486,7 +488,8 @@ const offMainThread: Watchdog = {
 	watch: () => () => undefined,
 	answer: () => ({ kind: "running" }),
 	wakes: () => Option.none(),
-	observed: () => 0
+	observed: () => 0,
+	observing: () => undefined
 }
 
 /**
@@ -514,7 +517,7 @@ const startedWatchdog = (): Watchdog => {
 	}
 	worker.on("message", progressed)
 	worker.unref()
-	let answering = 0
+	let reading = 0
 	const inFlight = new Map<number, Watched>()
 	let watched = 0
 	const publish = () => {
@@ -543,17 +546,12 @@ const startedWatchdog = (): Watchdog => {
 				publish()
 			}
 		},
-		answer: () => {
-			const began = process.threadCpuUsage()
-			const answered = answerOf(
-				Arr.fromIterable(inFlight.values()),
-				performance.timeOrigin + performance.now()
-			)
-			const spent = process.threadCpuUsage(began)
-			answering += spent.user + spent.system
-			return answered
+		answer: () =>
+			answerOf(Arr.fromIterable(inFlight.values()), performance.timeOrigin + performance.now()),
+		observed: () => Number(Atomics.load(stamps, LAYOUT.observed)) + reading,
+		observing: (micros) => {
+			reading += micros
 		},
-		observed: () => Number(Atomics.load(stamps, LAYOUT.observed)) + answering,
 		wakes: () =>
 			Option.filter(
 				Option.some(Number(Atomics.load(stamps, LAYOUT.wakes))),

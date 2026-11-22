@@ -330,12 +330,14 @@ export const opensOutsideTheCase = property.explore(slowOpens, {
 
 /**
  * A need that does not open fails its property once, naming it and why, and no case of it runs. A stalling open sleeps
- * twenty stall windows, spending nothing: its guard reads the whole worker's process, so the CPU of the cases running
- * beside it in the worker, and the time its main thread waits to run under load, which a window takes out of the time
- * the open could have run (work.ts standingOf), can keep the first few windows from reading stalled; at e8b7ecec,
- * under trunk@toolchain's load, an open of four windows (448 ms each) ended unjudged and its cases ran (rotating seed
- * 0x499a838c, case 115, 2026-11-22), which a replay alone never repeats. A judged open is interrupted at its first
- * stalled window, so the windows it is given cost nothing.
+ * twenty stall windows, spending nothing. A worker runs its units one at a time and a search its cases one at a time
+ * (runner/worker.ts evaluating, explore.ts windowOf), so the process's CPU, the observer's left out (work.ts ownCpu:
+ * its watchdog thread, and every reading's own walk of /proc), is the open's own; but each window counts only the time
+ * the open could have run, the process's waits to run taken out, so under load a window comes whole later than its
+ * wall time. At e8b7ecec, with the observer and the readings still counted, an open of four 448 ms windows ended
+ * unjudged under trunk@toolchain's load and its cases ran (rotating seed 0x499a838c, case 115, 2026-11-22), which a
+ * replay alone never repeats. A judged open is interrupted at its first stalled window, so the windows it is given cost
+ * nothing: a test's own time, no limit.
  */
 export const unopenedOnce = property.explore(
 	(source) => ({
@@ -388,7 +390,7 @@ export const unopenedOnce = property.explore(
 			{
 				token: ReplayToken("src/runner/case.test.ts#unopenedOnce:-:1.6w.1"),
 				reason:
-					"an open that stalls past a 448 ms stall window beside one other need, which trunk@toolchain at e8b7ecec judged too late (its four windows of sleep ended unjudged under load, the cases beside it moving the worker's CPU; rotating seed 0x499a838c, case 115, 2026-11-22)",
+					"an open that stalls past a 448 ms stall window beside one other need, which trunk@toolchain at e8b7ecec judged too late (its four windows of sleep ended unjudged under load, the watchdog's and the readings' own CPU still counted; rotating seed 0x499a838c, case 115, 2026-11-22)",
 				since: "2026-11-22"
 			}
 		],
