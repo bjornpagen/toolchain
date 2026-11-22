@@ -40,7 +40,7 @@ import {
 import { aimed, finite } from "#gen.ts"
 import { answerOf, hangOver, watchdogGraceMillis } from "#live.ts"
 import { Checkout } from "#mutate/checkout.ts"
-import { property } from "#property.ts"
+import { property, ReplayToken } from "#property.ts"
 import { replayOf } from "#replay.ts"
 import { forcedChooser, generate, recorder } from "#source.ts"
 
@@ -111,7 +111,14 @@ export const watchdog = property.explore(aimed(settlingRuns, bodyAims), {
 		kind: "specification",
 		name: "a runaway ends its process past its deadline and the watchdog's grace, naming its case and the leg its guard read (spent for one that spends a CPU, stalled for one that waits); any other body ends its search by the guard's verdict, one whose thread is silent past the graces while spending no CPU of its own among them"
 	},
-	kept: [],
+	kept: [
+		{
+			token: ReplayToken("src/blocking.test.ts#watchdog:4.2:1f.0.15.13oy4zl"),
+			reason:
+				"a planted thread that waits a second at a time in Atomics.wait (threshold 0, deadline 71 ms, pause 113 ms, seed 2400084417), whose wake-ups' waits to run under trunk@toolchain's load read as progress, so its watchdog answered running at every ask and the pool's stall window took its worker (floor case 2 of seed 0xa5b59f36, at e7f90259 and 86060d1d, 2026-11-22)",
+			since: "2026-11-22"
+		}
+	],
 	kills: [
 		{
 			file: "packages/testing/src/live.ts",

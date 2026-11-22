@@ -208,7 +208,7 @@ export const stirOfLedger = (ledger: StirLedger): Stir =>
 	Arr.reduce(Arr.fromIterable(ledger.last.values()), ledger.gone, stirPlus)
 
 /**
- * The effort of a tree's processes as a work reads them again and again (selfWork, processWork): their CPU summed, and
+ * The effort of a tree's processes as a work reads them again and again (ownWork, processWork): their CPU summed, and
  * their stir kept by a ledger (StirLedger), so an ended process's stays in it.
  */
 const keptEffort = (): ((pids: ReadonlyArray<string>) => Effort) => {
@@ -423,13 +423,18 @@ export const readingOf = (work: TreeWork, wall: number): Reading => {
 }
 
 /**
- * This process's work, begun at `wall` on the live clock with `own` CPU (ownCpu, read before the work started): its own
- * CPU, every thread's, its waited-for children's, and its live descendants'; its descendants' stir, and its own as
- * `stirOwn` reads it. Read when a guard first needs it, once the work has yielded, so work that runs to its end
- * synchronously reads no file; it reads /proc/self/stat once to begin, and no descendant, since none the work started is
- * counted until its first reading, all of whose CPU is the work's. Without /proc its own CPU counts alone.
+ * This process's work, begun at `wall` on the live clock with `own` CPU (ownCpu, read before the work started), as its
+ * guards read it, the case's guard and its watchdog alike (live.ts watchedCase), one work set for both: its own CPU,
+ * every thread's, its waited-for children's (a synchronous spawn reaps them, the only reaping a held main thread does),
+ * and its live descendants'; and the stir of the process itself beside its descendants', so a main thread the machine
+ * keeps from running, held or between cases, takes that time out of its windows (standingOf) and is never stalled for
+ * it, while one that waits by its own choice is. Read when a guard first needs it, once the work has yielded, so work
+ * that runs to its end synchronously reads no file; it reads /proc/self/stat once to begin, and no descendant, since
+ * none the work started is counted until its first reading, all of whose CPU is the work's. Without /proc its own CPU
+ * counts alone.
  */
-const selfWork = (wall: number, own: number, stirOwn: () => Stir): TreeWork => {
+export const ownWork = (wall: number, own: number): TreeWork => {
+	const stirOwn = () => effortOfProcess("self").stir
 	const self = statOf("self")
 	const since = sinceBootAt(self, wall)
 	const reaped = (stat: Option.Option<(field: number) => number>) =>
@@ -456,15 +461,9 @@ const selfWork = (wall: number, own: number, stirOwn: () => Stir): TreeWork => {
 }
 
 /**
- * This process's work as its own guards read it (selfWork), its stir its descendants' alone: a process whose guards
- * judge it wakes on its own, so waiting to run or faulting its pages in only delays a guard that sees the rest.
- */
-export const ownWork = (wall: number, own: number): TreeWork => selfWork(wall, own, () => noStir)
-
-/**
  * Another process's work, begun at `wall` on the live clock (the pool's watch of a worker): its own CPU, its waited-for
  * children's, and its live descendants' started since, the wall time `waited` says it spent in declared waits on work,
- * and the stir of its descendants: the worker's own is a guard's process's too (its own guards wake it), judged by its CPU alone. A process this one
+ * and the stir of the worker itself beside its descendants', the work set its own guards read (ownWork). A process this one
  * cannot read (none started, gone, or no /proc) reads as spending nothing, so its work never moves and a guard ends it
  * after one deadline of wall time outside its waits, as the live clock did.
  */
@@ -492,7 +491,11 @@ export const processWork = (
 		)
 	const effort = (): Effort => {
 		const theirs = descendants()
-		return { cpu: own() + theirs.cpu, stir: theirs.stir }
+		const its = Option.match(pid, {
+			onNone: () => noStir,
+			onSome: (id) => effortOfProcess(String(id)).stir
+		})
+		return { cpu: own() + theirs.cpu, stir: stirPlus(its, theirs.stir) }
 	}
 	const began = effort()
 	return {
@@ -501,17 +504,6 @@ export const processWork = (
 		effort
 	}
 }
-
-/**
- * This process's work as its watchdog reads it while a case holds the main thread (live.ts watchedCase, selfWork): its
- * CPU, the children a synchronous spawn reaped among it (the only reaping a held main thread does), and the stir of the
- * process itself beside its descendants': a held main thread
- * that waits to run or faults its pages in (a machine that starves it or pages it out) is waiting on the machine, not
- * stalled, and no guard of its own wakes it while it is held, which is why a pool judges a worker by its CPU alone and
- * the watchdog need not (the REDFIX2 deaths, 2026-11-20: two cases killed under 63 to 74% memory pressure).
- */
-export const heldWork = (wall: number, own: number): TreeWork =>
-	selfWork(wall, own, () => effortOfProcess("self").stir)
 
 /**
  * How much work a piece of work may do, in milliseconds, one number for each of a guard's legs: `cpu`, the CPU its
@@ -613,7 +605,7 @@ export const overrunText = (overrun: Overrun): string => {
 		case "waited":
 			return `its declared waits on work held it ${seconds(overrun.waited)} of wall time in all, its bound ${seconds(overrun.bound)}, each wait answered and the next begun`
 		case "stalled":
-			return `its process tree's CPU moved ${overrun.moved.toFixed(0)} ms and its other processes waited ${overrun.queued.toFixed(1)} ms to run over ${seconds(overrun.over)} of wall time outside declared waits on work (${seconds(overrun.waited)} in them besides), under the ${overrun.progress.toFixed(0)} ms that shows progress over its stall window of ${seconds(overrun.window)}, and no other process of its tree did storage work`
+			return `its process tree's CPU moved ${overrun.moved.toFixed(0)} ms over ${seconds(overrun.over)} it could have run (its wall time outside declared waits on work, ${seconds(overrun.waited)} in them besides, less ${overrun.queued.toFixed(1)} ms its processes waited to run), under the ${overrun.progress.toFixed(0)} ms that shows progress over its stall window of ${seconds(overrun.window)}, and no process of its tree did storage work`
 	}
 }
 
@@ -622,39 +614,41 @@ export const overrunText = (overrun: Overrun): string => {
  * CPU over it, and never less than one clock tick, the smallest change Linux states of a child's CPU (and more than a
  * timer's wake-up and a reading cost a process that waits).
  */
-const progressOver = (window: number): number => Math.max(window * stalledShareOfCpu, TICK_MILLIS)
+export const progressOver = (window: number): number =>
+	Math.max(window * stalledShareOfCpu, TICK_MILLIS)
 
 /**
- * How long the processes a case's work counts beside the guard's own waited on a runqueue between two readings, in
- * milliseconds: CPU they asked for that the machine had not given yet, which shows progress as the CPU they got does
- * (standingOf adds the two against progressOver), so a child the machine keeps from running, runnable for the whole
- * window, is working however little CPU it gets. A process that waits on something that does not come wakes now and
- * then all the same (a timer, a heartbeat, its runtime's own housekeeping) and waits a little to run each time: an idle
- * nested pool's worker woke 16 times in 133 s under load 150 to 250 and waited 0.17 ms in all, 0.0001 % of a CPU
- * (TOOLCHAIN6, 2026-11-21). A wait of any length counted as a move before, so such a tree read as working in every
- * window and a case holding it was never hung (pool.test.ts workersLeaveNoChild's kill trials, whose planted child
- * never ends, ran for an hour and more). The guard's own process, whose wake-ups to read its work wait to run too, is
- * judged by its CPU alone.
+ * How long a work's processes waited on a runqueue between two readings, in milliseconds: time they were runnable and
+ * the machine gave them no CPU, which is time the work could not run, so standingOf takes it out of the window's wall
+ * time and never counts it as progress. A tree the machine starves for a whole window has no time it could have run,
+ * however long the window, and is never stalled; a thread that only waits wakes now and then and waits a little to run
+ * each time (a timer, a heartbeat, a wait of a second at a time in Atomics.wait), so nearly all its window is time it
+ * could have run, and it spends none of it. Counted as progress, as it was, those little waits added up under load:
+ * the watchdog's planted thread that waits a second at a time in Atomics.wait read as working at every answer under
+ * trunk@toolchain's load and was never ended (blocking.test.ts#watchdog, floor case 2 of seed 0xa5b59f36, its worker
+ * lost to the pool's stall window at e7f90259 and 86060d1d, 2026-11-22; 192 such runs 48 at a time on cassowary ended
+ * after one to four extra watchdog cycles, ~/.cache/metis/SLOP-FIXER-2-scratch/watchdog/probe3.log).
  */
 const queuedBetween = (before: Reading, after: Reading): number =>
 	after.stir.queued - before.stir.queued
 
 /**
- * Whether the processes a case's work counts beside the guard's own did storage work between two readings, by any
- * amount: a process blocked on storage or swap spends neither CPU nor runqueue wait, its bytes and the pages it faults in
- * its only sign of work, and none of the idle trees measured moved them (queuedBetween's, whose bytes and faults stood
- * still over 133 s). A tree that faults pages in on each idle wake-up under swap would read as working; that is this
- * rule's revalidation.
+ * Whether a work's processes did storage work between two readings, by any amount: a process blocked on storage or swap
+ * spends neither CPU nor runqueue wait, its bytes and the pages it faults in its only sign of work, and none of the idle
+ * trees measured moved them (an idle nested pool's worker, whose bytes and faults stood still over 133 s under load 150
+ * to 250, TOOLCHAIN6, 2026-11-21). A tree that faults pages in on each idle wake-up under swap would read as working;
+ * that is this rule's revalidation.
  */
 const storedBetween = (before: Reading, after: Reading): boolean =>
 	after.stir.stored > before.stir.stored
 
 /**
  * A piece of work's standing at `now`, having begun at `began`, its current window begun at `window`, under `bound`: its
- * CPU budget and its stall window. A window is whole once a stall window of its wall time lies outside declared waits on
- * work; its work moves by its tree's CPU with the runqueue wait of the processes it counts beside the guard's own
- * (queuedBetween), together at least progressOver, or by any storage work of theirs (storedBetween): a child the machine
- * keeps waiting to run, or one blocked on storage or swap, is working, and a tree that only wakes now and then is not.
+ * CPU budget and its stall window. A window is whole once a stall window of time the work could have run lies in it:
+ * its wall time outside declared waits on work, less the time its processes waited on a runqueue (queuedBetween), so a
+ * tree the machine starves is never whole. Its work moves by its tree's CPU, at least progressOver, or by any storage
+ * work of its processes (storedBetween): one blocked on storage or swap is working, and a tree that only wakes now and
+ * then, or a held thread that waits by its own choice, is not.
  * Work whose declared waits have held it its bound's `waited` in all is over it, whatever its windows. Working work is
  * read again when its window could next be whole, or sooner when its remaining CPU, spent at one CPU, or its remaining
  * waits, held without a break, would reach their bounds first.
@@ -672,12 +666,12 @@ export const standingOf = (
 		return { kind: "waited", waited: waitedAll, bound: bound.waited }
 	}
 	const waited = now.waited - window.waited
-	const over = now.wall - window.wall - waited
+	const queued = queuedBetween(window, now)
+	const over = now.wall - window.wall - waited - queued
 	const progress = progressOver(bound.stall)
 	const moved = now.cpu - window.cpu
-	const queued = queuedBetween(window, now)
 	const whole = over >= bound.stall
-	if (whole && moved + queued < progress && !storedBetween(window, now)) {
+	if (whole && moved < progress && !storedBetween(window, now)) {
 		return { kind: "stalled", moved, queued, over, waited, progress, window: bound.stall }
 	}
 	return {

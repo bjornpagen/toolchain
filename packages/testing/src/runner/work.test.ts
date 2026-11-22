@@ -14,6 +14,8 @@
  *   for it: the same wait as the deadlocked case's, declared, passes.
  * - A deadlocked case is hung though its tree holds a child that wakes on a timer: the child's wake-ups spend a little
  *   CPU and wait a little to run, short of progress, so the wait is a stall still.
+ * - A wait to run is never progress: it is time the work could not run, taken out of its window, so a thread that only
+ *   waits is stalled however long its wake-ups wait to run, and one the machine starves for all its window never is.
  *
  * Each inner case ends of itself well past its deadline (its search explores), so a guard that misjudges it lets it
  * pass.
@@ -50,11 +52,14 @@ import {
 	STATED_CPU_SHORTFALL_MILLIS,
 	storageDirectory,
 	waitingCase,
+	waitingThreads,
+	waitingWindowOf,
 	wakingCase,
 	windowOf
 } from "#runner/work.fixtures.ts"
 import {
 	noStirLedger,
+	progressOver,
 	type StirLedger,
 	standingOf,
 	stirLedgerAfter,
@@ -81,7 +86,7 @@ export const slowIsNotHung = property.exhaust(finite(slowShapes), {
 	kills: [
 		{
 			file: "packages/testing/src/runner/work.ts",
-			original: "\tif (whole && moved + queued < progress && !storedBetween(window, now)) {",
+			original: "\tif (whole && moved < progress && !storedBetween(window, now)) {",
 			replacement: "\tif (whole) {",
 			why: "A case is hung once a deadline of wall time passes, as the live clock's old deadline judged it: the slow case, whose CPU moves and stays a tenth of its deadline, is hung; the slow-case property fails."
 		}
@@ -159,7 +164,7 @@ export const deadlockIsHung = property.exhaust(finite(deadlocks), {
 	kills: [
 		{
 			file: "packages/testing/src/runner/work.ts",
-			original: "\tif (whole && moved + queued < progress && !storedBetween(window, now)) {",
+			original: "\tif (whole && moved < progress && !storedBetween(window, now)) {",
 			replacement: "\tif (whole && moved < 0) {",
 			why: "No window is ever stalled: a case that waits spends nothing and never reaches its CPU budget, so it waits to its end and passes; the deadlock property fails."
 		}
@@ -201,7 +206,7 @@ export const declaredWaitIsNoStall = property.exhaust(finite(deadlocks), {
 })
 
 export const othersMoveTheWork = property.exhaust(finite(otherMoves), {
-	box: "a whole window of a work whose own process spent no CPU, in which nothing else moved, a child woke and waited to run a little, a child waited to run for progress, or a child did the least storage work",
+	box: "a window of two deadlines of a work whose CPU did not move, in which nothing else moved, a child woke and waited to run a little, a thread waited to run for progress and slept the rest, a child waited to run all the window, or a child did the least storage work",
 	needs: {},
 	situations: [],
 	check: () => (move) =>
@@ -209,24 +214,26 @@ export const othersMoveTheWork = property.exhaust(finite(otherMoves), {
 			const standing = standingOf({ began: windowOf(move).window, ...windowOf(move) })
 			assert.equal(
 				standing.kind,
-				move === "none" || move === "a child woke and waited a little" ? "stalled" : "working"
+				move === "a child waited to run all the window" || move === "a child stored"
+					? "working"
+					: "stalled"
 			)
 		}),
 	oracle: {
 		kind: "specification",
-		name: "a window is stalled when the work's CPU and its other processes' runqueue wait together fall short of progress and none of them did storage work: a child kept from running for progress, or one that did any storage work, keeps it working; a child that only woke and waited a little does not"
+		name: "a window is stalled when a whole deadline of time the work could have run (its wall time outside declared waits, less its processes' waits to run) passed with its CPU short of progress and none of its processes doing storage work: a wait to run is never a move, so a thread that waited to run for progress and slept the rest is stalled, and a child starved for all the window leaves no time it could have run, so it is working"
 	},
 	kept: [],
 	kills: [
 		{
 			file: "packages/testing/src/runner/work.ts",
-			original: "\tif (whole && moved + queued < progress && !storedBetween(window, now)) {",
+			original: "\tif (whole && moved < progress && !storedBetween(window, now)) {",
 			replacement: "\tif (whole && moved < progress) {",
-			why: "The guard reads CPU alone in its window, as it did: a child the machine keeps waiting to run, or one blocked on storage or swap, is no move, so a wait behind it is stalled (land #4's contended red, 2026-11-20, load 230 to 330, memory pressure full near 20%); the property fails."
+			why: "The guard reads CPU alone in its window: a child blocked on storage or swap is no move, so a wait behind it is stalled (land #4's contended red, 2026-11-20, load 230 to 330, memory pressure full near 20%); the property fails on the child that stored."
 		},
 		{
 			file: "packages/testing/src/runner/work.ts",
-			original: "\tif (whole && moved + queued < progress && !storedBetween(window, now)) {",
+			original: "\tif (whole && moved < progress && !storedBetween(window, now)) {",
 			replacement:
 				"\tif (whole && moved < progress && !(queued > 0) && !storedBetween(window, now)) {",
 			why: "A runqueue wait of any length counts as a move, as it did: a child that only woke and waited a little reads as working, so a case whose tree holds an idle process that wakes now and then is never hung (workersLeaveNoChild's kill trials ran for an hour and more, 2026-11-21); the property fails."
@@ -238,6 +245,71 @@ export const othersMoveTheWork = property.exhaust(finite(otherMoves), {
 			replacement:
 				"const storedBetween = (before: Reading, after: Reading): boolean =>\n\tafter.stir.stored > before.stir.stored + 1\n",
 			why: "Storage work counts only past a threshold, so the least a counter moves, which a process paging in under swap may move by in a window, is none; the property fails."
+		},
+		{
+			file: "packages/testing/src/runner/work.ts",
+			original: "\tif (whole && moved < progress && !storedBetween(window, now)) {",
+			replacement: "\tif (whole && moved + queued < progress && !storedBetween(window, now)) {",
+			why: "A wait to run counts as progress, as it did: a thread whose wake-ups waited to run for progress reads as working, so the watchdog's planted thread that waits a second at a time was never ended under trunk@toolchain's load (floor case 2 of seed 0xa5b59f36, 2026-11-22); the property fails on that thread."
+		},
+		{
+			file: "packages/testing/src/runner/work.ts",
+			original: "\tconst over = now.wall - window.wall - waited - queued\n",
+			replacement: "\tconst over = now.wall - window.wall - waited\n",
+			why: "A wait to run is not taken out of the window's time, so a child the machine starves for all the window, which could not run at all, has a whole window that spent nothing, and is stalled; the property fails on the starved child."
+		}
+	]
+})
+
+type WaitingFeature =
+	| "a thread that waited to run past progress"
+	| "a thread that waited to run short of progress"
+	| "a thread the machine starved"
+
+export const waitingToRunIsNoProgress = property.explore(waitingThreads, {
+	needs: {},
+	situations: [
+		"a thread that waited to run past progress",
+		"a thread that waited to run short of progress",
+		"a thread the machine starved"
+	] satisfies ReadonlyArray<Reached<WaitingFeature>>,
+	check: (_, c) => (thread) =>
+		Effect.sync(() => {
+			const { window, now, bound } = waitingWindowOf(thread)
+			const standing = standingOf({ began: window, window, now, bound })
+			if (thread.starved) {
+				c.note("a thread the machine starved")
+				assert.equal(
+					standing.kind,
+					"working",
+					"a thread kept from running all its window is never stalled"
+				)
+				return
+			}
+			c.note(
+				thread.queued >= progressOver(thread.deadline)
+					? "a thread that waited to run past progress"
+					: "a thread that waited to run short of progress"
+			)
+			assert.equal(standing.kind, "stalled", "a thread that only waits reads as not progressing")
+		}),
+	oracle: {
+		kind: "specification",
+		name: "a thread that only waits, its CPU short of progress, is stalled once a whole deadline of time it could have run has passed, however long its wake-ups waited to run under a run-queue delay; one the machine kept from running for all its window outside declared waits never is (grizzle, 2026-11-22: a wait to run is never progress)"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/runner/work.ts",
+			original: "\tif (whole && moved < progress && !storedBetween(window, now)) {",
+			replacement: "\tif (whole && moved + queued < progress && !storedBetween(window, now)) {",
+			why: "A wait to run counts as progress, as it did: a thread whose wake-ups waited to run for progress under load reads as working however long it only waits (blocking.test.ts#watchdog's floor case 2, its worker lost at e7f90259 and 86060d1d, 2026-11-22); the property fails on a thread that waited to run past progress."
+		},
+		{
+			file: "packages/testing/src/runner/work.ts",
+			original: "\tconst over = now.wall - window.wall - waited - queued\n",
+			replacement: "\tconst over = now.wall - window.wall - waited\n",
+			why: "A wait to run is not taken out of the window's time, so a thread the machine starved has a whole window in which it spent nothing, and is stalled though it could not run (the starved app servers of trunk@metis's browser runs, 86 to 96 s of 95 on the run queue, 2026-11-22); the property fails on the starved thread."
 		}
 	]
 })
@@ -262,7 +334,7 @@ export const wakingTreeIsHung = property.exhaust(finite(deadlocks), {
 	kills: [
 		{
 			file: "packages/testing/src/runner/work.ts",
-			original: "\tif (whole && moved + queued < progress && !storedBetween(window, now)) {",
+			original: "\tif (whole && moved < progress && !storedBetween(window, now)) {",
 			replacement:
 				"\tif (whole && moved < progress && !(queued > 0) && !storedBetween(window, now)) {",
 			why: "A runqueue wait of any length counts as a move, as it did: the waking child's little waits keep every window working, so the case waits to its end and passes, as workersLeaveNoChild's kill trials waited for an hour and more (2026-11-21); the property fails."

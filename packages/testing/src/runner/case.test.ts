@@ -48,6 +48,8 @@ import {
 	failingInCases,
 	failingMidShrink,
 	hanging,
+	hangingInAStep,
+	HUNG_STEP,
 	holdingHistories,
 	LATE_USES,
 	lateUses,
@@ -108,7 +110,7 @@ export const hangsOnTheLiveClock = property.explore(
 		kills: [
 			{
 				file: "packages/testing/src/runner/case.ts",
-				original: `leg: \`\${overrunText(settled.overrun)}\${waitedOnText(settled.waitedOn)}\`,`,
+				original: `leg: \`\${overrunText(settled.overrun)}\${waitedOnText(settled.waitedOn)}\${withinText(settled.within, settled.at)}\`,`,
 				replacement: 'leg: "",',
 				why: "A hung case is reported without the leg its guard read, so a hang under load says neither whether the case spent its CPU nor whether it waited on something no one declared (CONFINE's inductive control run, hung at case 0)."
 			},
@@ -119,6 +121,50 @@ export const hangsOnTheLiveClock = property.explore(
 				replacement:
 					"\t\t\tEffect.andThen(Effect.sleep(Duration.millis(readAt - window.wall)), Effect.tap(liveMillis, checkedClaims)),",
 				why: "The case deadline's timer sleeps on the Effect clock, which a TestClock never moves, so a hanging case under one is never read and never stopped (hang-on-test-clock, re-anchored from guarded's race to live.ts overrun's reading timer); the hanging case property fails, red by its own case deadline."
+			}
+		]
+	}
+)
+
+export const hungNamesItsStep = property.explore(
+	(source) => ({ deadline: source.draw(int(1, 20)), seed: source.draw(seeds) }),
+	{
+		needs: {},
+		situations: [],
+		check:
+			() =>
+			({ deadline, seed }) =>
+				Effect.gen(function* () {
+					const verdict = yield* searchedAt(hangingInAStep, {
+						...fullRun("hangs in a step/inner", seed),
+						limits: { ...runnerLimits, deadline }
+					})
+					const finding = yield* Effect.fromOption(findingOf(verdict))
+					assert.ok(
+						finding.kind === "hung" &&
+							Str.includes(`; it stood inside "${HUNG_STEP}", opened `)(finding.leg),
+						`the hung finding names the innermost span the case stood in: ${finding.kind === "hung" ? finding.leg : finding.kind}`
+					)
+				}),
+		oracle: {
+			kind: "specification",
+			name: 'a case hung inside a span is reported with the innermost span it stood in, its name and how long before it opened (grizzle, 2026-11-22: a case hung inside step "open /login" is reported with that step)'
+		},
+		kept: [],
+		kills: [
+			{
+				file: "packages/testing/src/runner/case.ts",
+				original: `leg: \`\${overrunText(settled.overrun)}\${waitedOnText(settled.waitedOn)}\${withinText(settled.within, settled.at)}\`,`,
+				replacement: `leg: \`\${overrunText(settled.overrun)}\${waitedOnText(settled.waitedOn)}\`,`,
+				why: "A hung case is reported without the span it stood in, as it was: a browser journey hung on a page that never comes says only that its tree stood still, not which step waited (metis's idle hangs, 2026-11-22: signOutLandsOnSignIn and resultsWithoutAssignmentGoHome hung with no step named); the property fails."
+			},
+			{
+				file: "packages/testing/src/runner/case.ts",
+				original:
+					"innermost: (): Option.Option<OpenSpan> => Arr.last(Arr.fromIterable(open.values()))",
+				replacement:
+					"innermost: (): Option.Option<OpenSpan> => Arr.head(Arr.fromIterable(open.values()))",
+				why: "The outermost open span is named, so a journey hung in a step is reported with the journey around it, never the step that waited; the property fails."
 			}
 		]
 	}
@@ -186,9 +232,8 @@ export const synchronousCases = property.explore(
 		kills: [
 			{
 				file: "packages/testing/src/runner/case.ts",
-				original:
-					"\t\t\tconst running = yield* Effect.forkDetach(Effect.exit(effect), { startImmediately: true })",
-				replacement: "\t\t\tconst running = yield* Effect.forkDetach(Effect.exit(effect))",
+				original: "\t\t\t\t\tstartImmediately: true\n",
+				replacement: "\t\t\t\t\tstartImmediately: false\n",
 				why: "Every case starts in a forked fiber on a later turn, arming its deadline's timer, never inline (sync-case-forked, re-anchored from explore.ts to case.ts guarded); the synchronous case property fails."
 			}
 		]

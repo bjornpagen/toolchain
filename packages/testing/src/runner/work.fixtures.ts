@@ -9,6 +9,7 @@ import {
 	deadlineBound,
 	ownCpu,
 	ownWork,
+	progressOver,
 	type Reading,
 	type Stir
 } from "#runner/work.ts"
@@ -269,15 +270,18 @@ export const innerRun = (id: string, seed: number, deadline: number): InnerRun =
 }
 
 /**
- * What the processes a guard counts beside its own did in a window (runner/work.ts queuedBetween, storedBetween):
- * nothing, so the window is stalled; a child woke and waited to run a little, by the least a counter moves, a stall
- * still; a child waited to run for the window's whole progress, the machine keeping it from running, so the window is
+ * What a work's processes did in a window beside its CPU, which spent nothing (runner/work.ts queuedBetween,
+ * storedBetween): nothing, so the window is stalled; a child woke and waited to run a little, by the least a counter
+ * moves, a stall still; a thread waited to run for the window's whole progress and slept the rest, the waits of its
+ * wake-ups under load, a stall still, since a wait to run is time it could not run and never a move; a child waited to
+ * run for all the window's wall time, the machine starving it, so the window holds no time it could have run and is
  * working; or a child did the least storage work, working too.
  */
 export type OtherMove =
 	| "none"
 	| "a child woke and waited a little"
-	| "a child waited to run for progress"
+	| "a thread waited to run for progress and slept the rest"
+	| "a child waited to run all the window"
 	| "a child stored"
 
 /** Every move, one case each. */
@@ -286,7 +290,8 @@ export const otherMoves: Gen<OtherMove> = (source) =>
 		element([
 			"none",
 			"a child woke and waited a little",
-			"a child waited to run for progress",
+			"a thread waited to run for progress and slept the rest",
+			"a child waited to run all the window",
 			"a child stored"
 		] as const)
 	)
@@ -298,16 +303,19 @@ export const otherMoves: Gen<OtherMove> = (source) =>
 const WINDOW_DEADLINE = 1000
 const WINDOW_PROGRESS = 10
 
+/** A drawn window's wall time: two deadlines, so a window that waited to run a little still holds a whole deadline. */
+const WINDOW_WALL = 2 * WINDOW_DEADLINE
+
 /**
- * A whole window of a work whose own process spent no CPU, its two readings, `move` the one thing that moved between
- * them: what standingOf judges at its second reading.
+ * A window of a work whose own process spent no CPU, two deadlines of wall time, its two readings, `move` the one thing
+ * that moved between them: what standingOf judges at its second reading.
  */
 export const windowOf = (
 	move: OtherMove
 ): Readonly<{ window: Reading; now: Reading; bound: Bound }> => {
 	const quiet: Stir = { queued: 10, stored: 10 }
 	const window: Reading = { wall: 0, cpu: 5, waited: 0, stir: quiet }
-	const later: Reading = { ...window, wall: WINDOW_DEADLINE }
+	const later: Reading = { ...window, wall: WINDOW_WALL }
 	const stirred = (stir: Stir): Readonly<{ window: Reading; now: Reading; bound: Bound }> => ({
 		window,
 		now: { ...later, stir },
@@ -318,10 +326,63 @@ export const windowOf = (
 			return stirred(quiet)
 		case "a child woke and waited a little":
 			return stirred({ ...quiet, queued: quiet.queued + 1 })
-		case "a child waited to run for progress":
+		case "a thread waited to run for progress and slept the rest":
 			return stirred({ ...quiet, queued: quiet.queued + WINDOW_PROGRESS })
+		case "a child waited to run all the window":
+			return stirred({ ...quiet, queued: quiet.queued + WINDOW_WALL })
 		case "a child stored":
 			return stirred({ ...quiet, stored: quiet.stored + 1 })
+	}
+}
+
+/**
+ * A thread that only waits, as a stall window's readings hold it: its deadline, the wall time of its window and the part
+ * of it in declared waits on work, the CPU it moved, short of progress, and how long it waited to run, under a run-queue
+ * delay the machine forces on its wake-ups, never more than leaves a whole deadline it could have run; or, `starved`,
+ * runnable and kept from running for all its window outside its declared waits.
+ */
+export type WaitingThread = Readonly<{
+	deadline: number
+	wall: number
+	waited: number
+	moved: number
+	queued: number
+	starved: boolean
+}>
+
+/**
+ * A thread that only waits under a run-queue delay, or one the machine starves: a deadline of 150 ms, a second or a
+ * minute, a window of one to three deadlines with up to a deadline of it in declared waits, CPU short of progress, and a
+ * wait to run from none to all the time the window leaves (its progress among the draws), or past it for a starved one.
+ */
+export const waitingThreads: Gen<WaitingThread> = (source) => {
+	const deadline = source.draw(element([150, 1000, 60_000] as const))
+	const progress = progressOver(deadline)
+	const waited = source.draw(int(0, deadline))
+	const wall = waited + source.draw(int(deadline, 3 * deadline))
+	const moved = source.draw(int(0, Math.ceil(progress) - 1))
+	const starved = source.draw(int(0, 3)) === 0
+	const room = wall - waited - deadline
+	const queued = starved
+		? source.draw(int(room + 1, wall - waited))
+		: source.draw(element([0, Math.min(Math.ceil(progress), room), room] as const))
+	return { deadline, wall, waited, moved, queued, starved }
+}
+
+/** A waiting thread's window, its two readings, as standingOf judges it at its second. */
+export const waitingWindowOf = (
+	thread: WaitingThread
+): Readonly<{ window: Reading; now: Reading; bound: Bound }> => {
+	const window: Reading = { wall: 0, cpu: 7, waited: 0, stir: { queued: 3, stored: 4 } }
+	return {
+		window,
+		now: {
+			wall: thread.wall,
+			cpu: window.cpu + thread.moved,
+			waited: thread.waited,
+			stir: { queued: window.stir.queued + thread.queued, stored: window.stir.stored }
+		},
+		bound: deadlineBound(thread.deadline)
 	}
 }
 

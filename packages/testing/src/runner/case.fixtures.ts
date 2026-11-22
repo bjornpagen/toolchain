@@ -43,6 +43,23 @@ export const hanging: Property = property.explore(int(0, 9), {
 	kills: []
 })
 
+/** The step a stepped hanging case waits in, as a browser journey names one. */
+export const HUNG_STEP = "open /login"
+
+/** An inner search whose every case waits forever inside a span named HUNG_STEP, inside a span of its own. */
+export const hangingInAStep: Property = property.explore(int(0, 9), {
+	needs: {},
+	situations: [],
+	check: () => () =>
+		Effect.never.pipe(
+			Effect.withSpan(HUNG_STEP),
+			Effect.withSpan("case.fixtures.ts the journey around the step")
+		),
+	oracle: planted,
+	kept: [],
+	kills: []
+})
+
 /** How a property uses its case after the case ended: by a note, a draw, an observation or a measure. */
 export const LATE_USES = ["a note", "a draw", "an observation", "a measure"] as const
 

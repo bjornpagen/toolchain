@@ -7,12 +7,12 @@ import {
 	checkedClaims,
 	deadlineBound,
 	enterWait,
-	heldWork,
 	judgeOf,
 	leaveWait,
 	type Overrun,
 	overrunText,
 	ownCpu,
+	ownWork,
 	type Reading,
 	readingOf,
 	standingOf,
@@ -85,6 +85,9 @@ export const liveSleep = (duration: Duration.Input) =>
 export const liveMillis = Clock.currentTimeMillis.pipe(
 	Effect.provideService(Clock.Clock, Clock.Clock.defaultValue())
 )
+
+/** The live clock's time, read where no effect runs: a tracer's span as it opens (runner/case.ts spansOpenOver). */
+export const liveMillisNow = (): number => Clock.Clock.defaultValue().currentTimeMillisUnsafe()
 
 /**
  * A sleep on the live clock until it reads `moment`, in milliseconds since the epoch, or later. A timer may fire a
@@ -573,7 +576,7 @@ export const watchedCase = <A, E, R>(
 	return Effect.acquireUseRelease(
 		Effect.flatMap(liveMillis, (now) =>
 			Effect.sync(() => {
-				const judge = judgeOf(heldWork(now, ownCpu()), deadlineBound(hangMillis))
+				const judge = judgeOf(ownWork(now, ownCpu()), deadlineBound(hangMillis))
 				const cutText = (cut: number) =>
 					`its search's cut, the moment its deadline leaves for reporting, came ${Math.round(Math.max(0, cut - now))} ms after it began`
 				return watchdogOfProcess().watch({
