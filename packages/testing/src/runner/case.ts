@@ -242,7 +242,7 @@ export const needCacheOf = (
 /**
  * Which needs a process holds open for which of its properties: a property readied there uses the keys of its needs;
  * once every property that used a key has retired (its search ended, so no case of it comes again), the key is no
- * longer used and is released, so a worker holds a held need (a seat's clone and session, a lease's permit) only while
+ * longer used and is released, so a worker holds a held need (a pool's clones, a lease's permit) only while
  * a property that needs it may still run there.
  */
 export type Holdings = Readonly<{

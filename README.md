@@ -107,7 +107,7 @@ section, in the same commit:
    holds each property's `readyingCpu`, its readyings' CPU summed over every worker that readied it, which bounds any
    one open of its needs from above. A test's own planted need is a test's input and needs no evidence.
 2. **Every `Template.database({ ... })`** states `budget`, the CPU its open may spend on a worker, its build or the wait
-   on another worker's build included; `Database.fresh`, `seat`, `transaction` and `oneOf` take it from the template. A
+   on another worker's build included; `Database.fresh` and `oneOf` take it from the template. A
    `DatabaseNeed` literal states `budget` and `runNeeds` as any need does. The budget is no part of a template's
    identity: no template is rebuilt for it.
 3. **A resource a run makes once for every worker** (an app's build) is a `RunNeed`: `{ key, budget, value, open }`,

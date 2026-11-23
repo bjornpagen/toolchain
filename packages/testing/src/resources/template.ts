@@ -47,7 +47,7 @@ export type Content =
  * round-trip form, -0, NaN and the infinities kept apart from 0 and null, so two contents share a text exactly when
  * they are the same data.
  */
-export const canonicalText = (content: Content): string => {
+const canonicalText = (content: Content): string => {
 	if (Predicate.isString(content)) {
 		return quoted(content)
 	}
@@ -84,7 +84,7 @@ export type Opened<T> = Readonly<{ clone: Effect.Effect<T, NeedFailed, Scope.Sco
  * opening it (once per worker, inside a need's open) builds it if it is not yet built and gives its Opened handle.
  * `budget` is the CPU, in milliseconds, its open may spend on a worker, its build or the wait on another's included:
  * its owner's measured choice, stated with its evidence where the template is declared, which every need over it
- * (Database.fresh, seat, transaction, oneOf) is judged by (property.ts Need).
+ * (Database.fresh, oneOf) is judged by (property.ts Need).
  */
 export type Template<T> = Readonly<{
 	key: string

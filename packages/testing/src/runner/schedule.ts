@@ -7,7 +7,7 @@ import { runOfLabel } from "#runner/stack.ts"
  * property's mean case time (what a message is sized by), its mean occupancy a case (how long a unit held its worker,
  * as the pool saw it, round trip included: what a unit's work is reckoned by), and what readying costs, in two parts a
  * worker measures apart: each module's import, the least any worker took to import it, and each property's opening of
- * its needs (a template's plan, a seat's clones), the least any worker took to open them. The least, since it is what a
+ * its needs (a template's plan, a pool's clones), the least any worker took to open them. The least, since it is what a
  * further worker pays once whatever the needs share is in place (a template built once on the cluster, which only the
  * first worker waits for). What a further worker spends readying a module's queued work is its import and the opening
  * of every property queued there, each of which it readies in turn; a module with a queued property no worker has

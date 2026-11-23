@@ -1,5 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices"
-import { Array as Arr, Brand, Context, Effect, Layer, Option, Ref, type Scope } from "effect"
+import { Array as Arr, Brand, Context, Effect, Layer, Option, type Scope } from "effect"
 import { ChildProcess } from "effect/process"
 import pg from "pg"
 import { boolean, characterOf, type Gen, int, string } from "#gen.ts"
@@ -244,49 +244,6 @@ export const derivedTemplate = (origin: DatabaseTemplate, token: string) =>
 export const derivedMarksTemplate = (token: string) => derivedTemplate(marksTemplate, token)
 
 /**
- * The statements of the seat template: items with an identity, which the seat's reset empties, and a ledger it does
- * not, holding one seed row, and a sequence of its own advanced once.
- */
-const seatSchema = [
-	"CREATE TABLE public.items (id int8 GENERATED ALWAYS AS IDENTITY PRIMARY KEY, value int4 NOT NULL)",
-	"CREATE TABLE public.ledger (entry text NOT NULL)",
-	"INSERT INTO public.ledger VALUES ('seed')",
-	"CREATE SEQUENCE public.tickets",
-	"SELECT pg_catalog.nextval('public.tickets')"
-] as const
-
-/** A template a seat or a transaction case runs on. */
-export const seatTemplate = Template.database({
-	declaredIn: import.meta,
-	name: "seat",
-	content: { statements: seatSchema },
-	from: Template.cluster,
-	budget: plantedBudget,
-	build: building(seatSchema)
-})
-
-/**
- * A template a seat runs on whose materialized view is created WITH NO DATA, so reading it fails until a REFRESH: items,
- * and their tally.
- */
-export const unpopulatedViewTemplate = Template.database({
-	declaredIn: import.meta,
-	name: "unpopulated view",
-	content: {
-		statements: [
-			"CREATE TABLE public.items (id int8 GENERATED ALWAYS AS IDENTITY PRIMARY KEY, value int4 NOT NULL)",
-			"CREATE MATERIALIZED VIEW public.tallies AS SELECT pg_catalog.count(*) AS n FROM public.items WITH NO DATA"
-		]
-	},
-	from: Template.cluster,
-	budget: plantedBudget,
-	build: building([
-		"CREATE TABLE public.items (id int8 GENERATED ALWAYS AS IDENTITY PRIMARY KEY, value int4 NOT NULL)",
-		"CREATE MATERIALIZED VIEW public.tallies AS SELECT pg_catalog.count(*) AS n FROM public.items WITH NO DATA"
-	])
-})
-
-/**
  * A case of the fresh-locale property: a locale the member has (the `pick`-th, modulo their count, of its libc
  * collations of a UTF-8 codeset) or a name no system has (`zz` letters, a territory and a UTF-8 codeset), and two texts
  * of letters in both cases, a hyphen, a space and an accented letter, which a locale may order unlike their code points.
@@ -325,9 +282,6 @@ export const freshTemplate = (locale: string, token: string) =>
 		build: building([])
 	})
 
-/** The seat's tables: the items, emptied after each case; their identity is put back with every sequence. */
-export const seatTables = ["public.items"] as const
-
 /** A template of one table whose identity is `token`, unique to the case that declares it, built by `build`. */
 export const tokenTemplate = (
 	token: string,
@@ -365,25 +319,6 @@ export const templateNameOf = databaseNameOf
 
 /** This module's URL: a module whose closure differs from a test module's that imports it, so its hash is another. */
 export const fixturesModule = import.meta.url
-
-/**
- * `cluster` with every session its connect opens counted in `open` while it lives, so a property can see how many
- * sessions the resources hold between cases.
- */
-export const countedConnections = (
-	cluster: Context.Service.Shape<typeof PgCluster>,
-	open: Ref.Ref<number>
-): Context.Service.Shape<typeof PgCluster> => ({
-	...cluster,
-	connect: (member, database) =>
-		Effect.andThen(
-			Effect.acquireRelease(
-				Ref.update(open, (n) => n + 1),
-				() => Ref.update(open, (n) => n - 1)
-			),
-			cluster.connect(member, database)
-		)
-})
 
 /**
  * A session of the member's bootstrap superuser (the account) in `database`, over the member's socket (psql, its

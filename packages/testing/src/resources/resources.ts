@@ -1,7 +1,7 @@
 /**
  * Per-case resources, isolated by construction: no case ever shares a mutable database or directory with another. What
  * is shared is immutable (a Template, built once per cluster member and never changed after); what a case gets is its
- * own (a clone, a scratch directory), or a worker's own clone checked back to its template after every case.
+ * own (a clone, a scratch directory).
  */
 export { type Collected, collect, templatesOf } from "#resources/collect.ts"
 export {
@@ -19,8 +19,7 @@ export {
 	Database,
 	type DatabaseNeed,
 	rowsEmptied,
-	type TemplateDatabase,
-	type Transaction
+	type TemplateDatabase
 } from "#resources/database.ts"
 export { cachedScratch, Scratch, type ScratchDir } from "#resources/scratch.ts"
 export {

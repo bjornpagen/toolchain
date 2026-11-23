@@ -2,14 +2,12 @@
  * The per-case resources (resources/): a fresh clone holds its template's rows and its case's alone; a template is
  * built once however many open it at once; a template whose module's closure changed is a new one and the old is
  * collected, with the clones of a worker that ended; a pool never hands one clone twice, and clones only as its cases
- * ask, one ahead of its first case where every slot it may have made one at its open; a seat comes back to its
- * template after every case or is replaced, failing the case that left something; a transaction case is rolled back
- * and one that commits fails; a scratch directory is the case's own and gone after it. Run against the PostgreSQL
+ * ask, one ahead of its first case where every slot it may have made one at its open; a scratch directory is the case's
+ * own and gone after it. Run against the PostgreSQL
  * libpq's environment names (resources.fixtures.ts). Oracle: the specification, stated in each check.
  */
 import {
 	Array as Arr,
-	Cause,
 	Context,
 	Deferred,
 	Duration,
@@ -43,7 +41,6 @@ import { Database } from "#resources/database.ts"
 import {
 	claimedBy,
 	claimsGone,
-	countedConnections,
 	derivedMarksTemplate,
 	derivedTemplate,
 	dropTemplate,
@@ -54,8 +51,6 @@ import {
 	marksTemplate,
 	ownCluster,
 	runsOf,
-	seatTables,
-	seatTemplate,
 	services,
 	superuserSessionIn,
 	superuserSessions,
@@ -64,8 +59,7 @@ import {
 	templateNameOf,
 	tokenTemplate,
 	UTF8_COLLATIONS,
-	undeclaredSession,
-	unpopulatedViewTemplate
+	undeclaredSession
 } from "#resources/resources.fixtures.ts"
 import type { DatabaseTemplate } from "#resources/template.ts"
 import { defineRunner, noMutation } from "#runner/config.ts"
@@ -947,212 +941,6 @@ export const cloneOutlivesNoTemplate = property.exhaust(
 				why: "Collection drops clones before templates, as before: a worker that ends between the steps keeps its clone (its owner lock held at the clone step) and loses its template (its use key free at the template step), and the next build of the template meets its former build's roles still owned in that clone (grizzle's forms#seated: 2BP01); this property fails."
 			}
 		]
-	}
-)
-
-export const seatOverUnpopulatedView = property.exhaust(finite(boolean), {
-	box: "a case that refreshes the view and one that leaves it",
-	needs: { services },
-	situations: [],
-	check:
-		({ services: context }) =>
-		(refreshes) =>
-			Effect.gen(function* () {
-				const ctx = yield* context
-				const seen = yield* Effect.provideContext(
-					Effect.scoped(
-						Effect.gen(function* () {
-							const take = yield* Database.seat(unpopulatedViewTemplate, seatTables).open
-							const first = yield* Scope.make()
-							const database = yield* Scope.provide(take, first)
-							yield* inDatabase(database, "INSERT INTO public.items (value) VALUES (1)", [])
-							if (refreshes) {
-								yield* inDatabase(database, "REFRESH MATERIALIZED VIEW public.tallies", [])
-							}
-							const closed = yield* Effect.exit(Scope.close(first, Exit.void))
-							const populated = yield* Effect.scoped(
-								Effect.gen(function* () {
-									const next = yield* take
-									return yield* inDatabase(
-										next,
-										"SELECT relispopulated::text FROM pg_catalog.pg_class WHERE oid = 'public.tallies'::regclass",
-										[]
-									)
-								})
-							)
-							return { left: Exit.isFailure(closed), populated }
-						})
-					),
-					ctx
-				)
-				assert.deepEqual(seen, { left: refreshes, populated: [["false"]] })
-			}),
-	oracle: {
-		kind: "specification",
-		name: "a seat opens on a template whose materialized view holds no data; a case's REFRESH of it leaves the seat unlike its template, which fails that case, and never reaches the next"
-	},
-	kept: [],
-	kills: [
-		{
-			file: "packages/testing/src/resources/database.ts",
-			original: "\t\tWHEN c.relkind = 'm' AND NOT c.relispopulated\n",
-			replacement: "\t\tWHEN false\n",
-			why: "A seat's fingerprint reads every materialized view's rows, as before, and an unpopulated one refuses the read (55000), so a seat over grizzle's docs world or rule-seeding's viewed shape cannot open; this property fails."
-		}
-	]
-})
-
-export const seatSettles = property.explore(
-	(source) => ({
-		values: source.draw(array(int(0, 9), { min: 0, max: 5 })),
-		leaks: source.draw(boolean)
-	}),
-	{
-		needs: { services },
-		situations: ["a seat reset after rows", "a seat replaced after a leak"],
-		check:
-			({ services: context }, c) =>
-			({ values, leaks }) =>
-				Effect.gen(function* () {
-					c.note(leaks ? "a seat replaced after a leak" : "a seat reset after rows")
-					const shared = yield* context
-					const open = yield* Ref.make(0)
-					const ctx = Context.add(
-						shared,
-						PgCluster,
-						countedConnections(Context.get(shared, PgCluster), open)
-					)
-					const outcome = yield* Effect.provideContext(
-						Effect.scoped(
-							Effect.gen(function* () {
-								const take = yield* Database.seat(seatTemplate, seatTables).open
-								const first = yield* Scope.make()
-								const database = yield* Scope.provide(take, first)
-								yield* Effect.forEach(
-									values,
-									(value) =>
-										inDatabase(database, "INSERT INTO public.items (value) VALUES ($1::int4)", [
-											String(value)
-										]),
-									{ discard: true }
-								)
-								yield* inDatabase(database, "SELECT pg_catalog.nextval('public.tickets')::text", [])
-								if (leaks) {
-									yield* inDatabase(database, "INSERT INTO public.ledger VALUES ('leak')", [])
-								}
-								const closed = yield* Effect.exit(Scope.close(first, Exit.void))
-								const between = yield* Ref.get(open)
-								const again = yield* Effect.scoped(
-									Effect.gen(function* () {
-										const next = yield* take
-										const items = yield* inDatabase(
-											next,
-											"SELECT pg_catalog.count(*)::text FROM public.items",
-											[]
-										)
-										const ledger = yield* inDatabase(
-											next,
-											"SELECT entry FROM public.ledger ORDER BY 1",
-											[]
-										)
-										const ticket = yield* inDatabase(
-											next,
-											"SELECT pg_catalog.nextval('public.tickets')::text",
-											[]
-										)
-										const id = yield* inDatabase(
-											next,
-											"INSERT INTO public.items (value) VALUES (0) RETURNING id::text",
-											[]
-										)
-										return { name: next.name, items, ledger, ticket, id }
-									})
-								)
-								return { closed, between, again, first: database.name }
-							})
-						),
-						ctx
-					)
-					assert.equal(Exit.isFailure(outcome.closed), leaks)
-					assert.equal(outcome.between, 0)
-					assert.equal(outcome.again.name !== outcome.first, leaks)
-					assert.deepEqual(outcome.again.items, [["0"]])
-					assert.deepEqual(outcome.again.ledger, [["seed"]])
-					assert.deepEqual(outcome.again.ticket, [["2"]])
-					assert.deepEqual(outcome.again.id, [["1"]])
-				}),
-		oracle: {
-			kind: "specification",
-			name: "a seat is its template again after every case (reset, sequences put back), or is replaced and the case fails"
-		},
-		kept: [],
-		kills: [
-			{
-				file: "packages/testing/src/resources/database.ts",
-				original: "const read = yield* Effect.scoped(",
-				replacement: "const read = yield* Scope.provide(scope)(",
-				why: "A held clone keeps the session its baseline was read on for its life, so a worker holds a connection per seat template between cases, against its lease; the property fails."
-			}
-		]
-	}
-)
-
-export const transactionsRollBack = property.explore(
-	(source) => ({
-		values: source.draw(array(int(0, 9), { min: 0, max: 5 })),
-		commits: source.draw(boolean)
-	}),
-	{
-		needs: { services },
-		situations: ["a case rolled back", "a case that commits"],
-		check:
-			({ services: context }, c) =>
-			({ values, commits }) =>
-				Effect.gen(function* () {
-					c.note(commits ? "a case that commits" : "a case rolled back")
-					const ctx = yield* context
-					const outcome = yield* Effect.provideContext(
-						Effect.scoped(
-							Effect.gen(function* () {
-								const take = yield* Database.transaction(seatTemplate).open
-								const first = yield* Scope.make()
-								const transaction = yield* Scope.provide(take, first)
-								yield* Effect.forEach(
-									values,
-									(value) =>
-										transaction.session.query(
-											"INSERT INTO public.items (value) VALUES ($1::int4)",
-											[String(value)]
-										),
-									{ discard: true }
-								)
-								if (commits) {
-									yield* transaction.session.query("COMMIT", [])
-								}
-								const closed = yield* Effect.exit(Scope.close(first, Exit.void))
-								const items = yield* Effect.scoped(
-									Effect.flatMap(take, (next) =>
-										next.session.query("SELECT pg_catalog.count(*)::text FROM public.items", [])
-									)
-								)
-								return { closed, items }
-							})
-						),
-						ctx
-					)
-					assert.equal(Exit.isFailure(outcome.closed), commits)
-					assert.equal(
-						Exit.match(outcome.closed, { onFailure: Cause.hasDies, onSuccess: () => false }),
-						commits
-					)
-					assert.deepEqual(outcome.items, [["0"]])
-				}),
-		oracle: {
-			kind: "specification",
-			name: "a transaction case leaves nothing behind, and one that commits fails and leaves nothing either"
-		},
-		kept: [],
-		kills: []
 	}
 )
 

@@ -352,7 +352,7 @@ export const runSeedLogged: Effect.Effect<RunSeed, Config.ConfigError | Schema.S
  * cores, and never more workers than the run has properties, runWorkers, so a run opens no connection it has no work
  * for, under this process's flags, the hardened flags and the config's conditions among them), and gives each
  * property's verdict. The pool is closed before it returns, every worker ended and what its needs held released (a
- * seat's clone, an owner's session), so nothing the caller runs next runs beside idle workers that still hold them.
+ * a template's clone, an owner's session), so nothing the caller runs next runs beside idle workers that still hold them.
  */
 export const runPackage = (
 	request: RunRequest

@@ -35,10 +35,10 @@ const firstPort = 20_000
  * The testing package's own local cluster, which its resource properties clone from (resources.fixtures.ts): at each
  * checkout, its family's one member, the unit postgres@toolchain-test-<key>-0, reached over verify-full TLS at
  * localhost at a port it claims from firstPort, owned by toolchain_dev, who may set session_replication_role, which a
- * seat's reset sets (resources/database.ts rowsEmptied), its template carrying no extension, throwaway, its connections
- * a capacity of the machine, production's predicate locks for each backend until the package measures
- * its room (CONTRIBUTING.md, "A family's predicate lock room"), and the rest at PostgreSQL's defaults. `toolchain-pg
- * settle` from this directory gives the checkout's family this spec; a run only reads it.
+ * reset between a caller's cases sets (resources/database.ts rowsEmptied), its template carrying no extension,
+ * throwaway, its connections a capacity of the machine, production's predicate locks for each backend until the
+ * package measures its room (CONTRIBUTING.md, "A family's predicate lock room"), and the rest at PostgreSQL's
+ * defaults. `toolchain-pg settle` from this directory gives the checkout's family this spec; a run only reads it.
  */
 export default localCluster({
 	unit: "toolchain-test",
