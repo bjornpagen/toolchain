@@ -20,7 +20,7 @@ import { type Catch, type Counted, censusOf, type Reading, type Standing } from 
 import { loadingOf } from "#mutate/checkout.ts"
 import { foreignPool, foreignSubject } from "#mutate/foreign.ts"
 import { imagesOf } from "#mutate/image.ts"
-import { type Judged, killsOf, unjudgedText } from "#mutate/kills.ts"
+import { type Judged, killsOf, redText } from "#mutate/kills.ts"
 import { mutatorPool } from "#mutate/lease.ts"
 import { realPathOf } from "#mutate/mutated.ts"
 import { type Choice, type MutantJudged, mutationOf } from "#mutate/operators.ts"
@@ -28,6 +28,7 @@ import type { MutantPool } from "#mutate/pool.ts"
 import { isMutable, listedReport, namedFiles } from "#mutate/report.ts"
 import type { Subject } from "#mutate/schedule.ts"
 import { treesOf } from "#mutate/tree.ts"
+import { unjudgedText } from "#mutate/verdict.ts"
 import { importClosuresAt, noVerdicts, trackedIn, verdictsAt } from "#runner/affected.ts"
 import { editOf } from "#runner/cache.ts"
 import type { Mutation, RunnerConfig } from "#runner/config.ts"
@@ -85,7 +86,7 @@ export const judgedLine = (judged: Judged): string => {
 		case "stale":
 			return `${property}: STALE: ${verdict.stale.message}`
 		case "unjudged":
-			return `${property}: UNJUDGED: ${kill.why}, since ${unjudgedText(verdict.why, verdict.red)}`
+			return `${property}: UNJUDGED: ${kill.why}, since ${unjudgedText(verdict.why, redText(verdict.red))}`
 	}
 }
 
@@ -107,7 +108,7 @@ const failingLine = (judged: Judged): ReadonlyArray<string> => {
 		case "unjudged":
 			return [
 				`  UNJUDGED ${kill.file}: ${kill.why}`,
-				`    ${unjudgedText(verdict.why, verdict.red)}`
+				`    ${unjudgedText(verdict.why, redText(verdict.red))}`
 			]
 	}
 }

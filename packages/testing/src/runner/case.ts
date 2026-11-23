@@ -14,8 +14,7 @@ import {
 	Result,
 	Schema,
 	Scope,
-	Struct,
-	Tracer
+	Struct
 } from "effect"
 import { countWithin } from "#enumerate.ts"
 import { failureText } from "#failure.ts"
@@ -27,8 +26,11 @@ import {
 	liveMillis,
 	liveMillisNow,
 	liveNanos,
+	type OpenSpan,
 	overrun,
-	watchedCase
+	spansOpenOver,
+	watchedCase,
+	withinText
 } from "#live.ts"
 import type { CheckContext, Need, NeedContext, Needs, NeedValue, Resources } from "#property.ts"
 import { fnv1a32 } from "#random.ts"
@@ -533,81 +535,6 @@ const printedOf = <S>(
 	value: shownOf(print, value),
 	draws: Arr.map(drew, (draw) => Formatter.format(draw))
 })
-
-/** A span a case opened and had not closed: its name, and when it opened, in milliseconds on the live clock. */
-type OpenSpan = Readonly<{ name: string; opened: number }>
-
-/**
- * A tracer that hands every span to `inner` and keeps the spans the case it traces opened and has not closed, in the
- * order they opened, so a hung case's report names where it stood: the innermost open span, the last opened (an
- * `Effect.fn`'s name, a step's `Effect.withSpan`), with no second annotation API (grizzle, 2026-11-22). Its opening is
- * read on the live clock, whatever clock its case runs under.
- */
-const spansOpenOver = (inner: Tracer.Tracer) => {
-	const open = new Map<string, OpenSpan>()
-	return {
-		tracer: Tracer.make({
-			span: (options) => {
-				const span = inner.span(options)
-				open.set(span.spanId, {
-					name: options.name,
-					opened: liveMillisNow()
-				})
-				return {
-					_tag: "Span",
-					get name() {
-						return span.name
-					},
-					get spanId() {
-						return span.spanId
-					},
-					get traceId() {
-						return span.traceId
-					},
-					get parent() {
-						return span.parent
-					},
-					get annotations() {
-						return span.annotations
-					},
-					get status() {
-						return span.status
-					},
-					get attributes() {
-						return span.attributes
-					},
-					get links() {
-						return span.links
-					},
-					get sampled() {
-						return span.sampled
-					},
-					get kind() {
-						return span.kind
-					},
-					end: (endTime, exit) => {
-						open.delete(span.spanId)
-						span.end(endTime, exit)
-					},
-					attribute: (key, value) => span.attribute(key, value),
-					event: (name, startTime, attributes) => span.event(name, startTime, attributes),
-					addLinks: (links) => span.addLinks(links)
-				} satisfies Tracer.Span
-			},
-			...(inner.context === undefined ? {} : { context: inner.context })
-		}),
-		innermost: (): Option.Option<OpenSpan> => Arr.last(Arr.fromIterable(open.values()))
-	}
-}
-
-/** What a hung case's report adds of the span it stood in at its verdict, at `now` on the live clock: the innermost
- * open one, its name and how long before it opened, or nothing. */
-const withinText = (within: Option.Option<OpenSpan>, now: number): string =>
-	Option.match(within, {
-		onNone: () => "",
-		onSome: (span) =>
-			`; it stood inside "${span.name}", opened ${((now - span.opened) / 1000).toFixed(1)} s before`
-	})
 
 /** What a hung case's report adds of the declared waits open at its verdict: what each waits on, or nothing. */
 const waitedOnText = (on: ReadonlyArray<string>): string =>

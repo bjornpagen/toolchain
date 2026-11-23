@@ -25,6 +25,7 @@ import {
 	type WitnessRun
 } from "#mutate/schedule.ts"
 import type { TreeFailed } from "#mutate/tree.ts"
+import { type RedVerdict, verdictOfRed } from "#mutate/verdict.ts"
 import type { Kill, PropertyId } from "#property.ts"
 import { findingLines, headlineOf } from "#runner/report.ts"
 
@@ -35,22 +36,13 @@ import { findingLines, headlineOf } from "#runner/report.ts"
  * the file only in a child process without needing Checkout.dir is told apart from one that runs it and misses the bug.
  * Stale: the kill's original no longer stands once in its file, which fails the gate. Unjudged: the property goes red
  * with no mutant at all, on the same image and workers (`red`, its baseline's, and `why`, Unjudged), so its witnesses
- * going red with the kill applied says nothing about the kill, which fails the gate.
+ * going red with the kill applied says nothing about the kill, which fails the gate. Killed and unjudged are a red
+ * trial's verdicts (mutate/verdict.ts RedVerdict), as every runner of kill trials states them.
  */
 export type KillVerdict =
-	| Readonly<{ kind: "killed"; red: Red }>
+	| RedVerdict<Red>
 	| Readonly<{ kind: "survived"; loaded: boolean }>
 	| Readonly<{ kind: "stale"; stale: KillStale }>
-	| Readonly<{ kind: "unjudged"; red: Red; why: Unjudged }>
-
-/**
- * Why a kill is unjudged. `red with no mutant`: its property's baseline, its witnesses with no mutant, went red before
- * any of its kills was tried (a need the run's width cannot serve, workers that cannot start). `the baseline overran
- * too`: the kill's trial went red only because the pool ended its worker past its bound (protocol.ts LostBy), and its
- * baseline, run again at once on a lease as wide under the same bound, went red too, so the overrun is the machine's
- * load, not the mutant's.
- */
-export type Unjudged = "red with no mutant" | "the baseline overran too"
 
 /** One kill of one property, judged. */
 export type Judged = Readonly<{ property: PropertyId; kill: Kill; verdict: KillVerdict }>
@@ -101,22 +93,9 @@ const survivorOf = (probed: TrialVerdict<KillStage>): KillVerdict => {
 const overran = (red: Red): boolean =>
 	red.kind === "found" && red.finding.kind === "lost" && red.finding.by.kind === "bound"
 
-/**
- * A kill's verdict once its kill stage went red (`red`), which is the kill's, but when the pool ended its worker past
- * its bound: then `again`, its baseline run again at once under the same bound, judges it, the kill unjudged when the
- * baseline goes red too.
- */
-const redOf = <E>(
-	red: Red,
-	again: Effect.Effect<TrialVerdict<KillStage>, E>
-): Effect.Effect<KillVerdict, E> =>
-	overran(red)
-		? Effect.map(again, (baseline): KillVerdict =>
-				baseline.kind === "red"
-					? { kind: "unjudged", red: baseline.red, why: "the baseline overran too" }
-					: { kind: "killed", red }
-			)
-		: Effect.succeed({ kind: "killed", red })
+/** A trial's red, none when it passed. */
+const redOfTrial = (verdict: TrialVerdict<KillStage>): Option.Option<Red> =>
+	verdict.kind === "red" ? Option.some(verdict.red) : Option.none()
 
 /**
  * What turned a property red, on one line: the runner's own report of its witnesses' finding (runner/report.ts), its
@@ -126,16 +105,6 @@ export const redText = (red: Red): string =>
 	red.kind === "unstarted"
 		? `its workers would not start: ${red.message}`
 		: Arr.join([headlineOf(red.finding), ...findingLines(red.finding)], "; ")
-
-/** Why a kill is unjudged (Unjudged), on one line, with the red of its property's baseline (redText). */
-export const unjudgedText = (why: Unjudged, red: Red): string => {
-	switch (why) {
-		case "red with no mutant":
-			return `the property goes red with no mutant (${redText(red)})`
-		case "the baseline overran too":
-			return `the pool ended the kill's worker past its bound, and the baseline overran too: run again at once with no mutant, under the same bound, the property went red (${redText(red)})`
-	}
-}
 
 /**
  * The kill gate: every kill of every subject applied to its file in the checkout (killApplied), and the subject's
@@ -211,7 +180,11 @@ export const killsOf = <E>(
 							}),
 							(killed) =>
 								killed.kind === "red"
-									? redOf(killed.red, staged(baselineOf(subject)))
+									? verdictOfRed(
+											killed.red,
+											overran(killed.red),
+											Effect.map(staged(baselineOf(subject)), redOfTrial)
+										)
 									: Effect.map(
 											staged({
 												image: images.open(subject.loading, Option.some(probe)),

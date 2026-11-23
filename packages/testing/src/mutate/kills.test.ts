@@ -165,8 +165,8 @@ export const killOverran = property.exhaust(finite(overrunSpace), {
 			why: "A unit lost with a worker the pool ended past its bound reads as any other loss, so a kill the machine's load overran is killed with no second look at its baseline; this property fails."
 		},
 		{
-			file: "packages/testing/src/mutate/kills.ts",
-			original: "\toverran(red)\n\t\t? Effect.map(",
+			file: "packages/testing/src/mutate/verdict.ts",
+			original: "\toverran\n\t\t? Effect.map(",
 			replacement: "\tfalse\n\t\t? Effect.map(",
 			why: "A kill whose worker the pool ended past its bound is killed without its baseline run again, so an overrun the machine's load brought about, which the baseline shares, reads as the mutant's; this property fails."
 		}

@@ -159,7 +159,7 @@ export const hungNamesItsStep = property.explore(
 				why: "A hung case is reported without the span it stood in, as it was: a browser journey hung on a page that never comes says only that its tree stood still, not which step waited (metis's idle hangs, 2026-11-22: signOutLandsOnSignIn and resultsWithoutAssignmentGoHome hung with no step named); the property fails."
 			},
 			{
-				file: "packages/testing/src/runner/case.ts",
+				file: "packages/testing/src/live.ts",
 				original:
 					"innermost: (): Option.Option<OpenSpan> => Arr.last(Arr.fromIterable(open.values()))",
 				replacement:

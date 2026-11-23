@@ -16,6 +16,9 @@
  *   CPU and wait a little to run, short of progress, so the wait is a stall still.
  * - A wait to run is never progress: it is time the work could not run, taken out of its window, so a thread that only
  *   waits is stalled however long its wake-ups wait to run, and one the machine starves for all its window never is.
+ * - Work judged outside a run's cases (live.ts withinBound) is judged as a case is: a runaway is ended by its CPU
+ *   budget, spent, and a deadlocked wait by its stall window, stalled, named with the step it stood in; work that ends
+ *   in time gives its outcome, and the CPU it spent reads at least what it burned (live.ts spentOn).
  *
  * Each inner case ends of itself well past its deadline (its search explores), so a guard that misjudges it lets it
  * pass.
@@ -25,11 +28,11 @@
  *
  * Oracles are stated per property.
  */
-import { Array as Arr, Duration, Effect } from "effect"
+import { Array as Arr, Duration, Effect, Option, Result } from "effect"
 import { assert } from "#assert.ts"
 import type { Reached } from "#features.ts"
 import { finite } from "#gen.ts"
-import { liveSleep } from "#live.ts"
+import { boundOver, liveSleep, spentOn, withinBound } from "#live.ts"
 import { property } from "#property.ts"
 import { searchedAt, verdictKind } from "#runner/search.fixtures.ts"
 import {
@@ -44,7 +47,10 @@ import {
 	lastSeenAt,
 	liveAt,
 	livesGen,
+	OUTSIDE_STEP,
 	otherMoves,
+	outsides,
+	outsideWork,
 	runawayCase,
 	runaways,
 	SLOW_DEADLINE,
@@ -450,6 +456,66 @@ export const treeStirOnlyGrows = property.explore(livesGen, {
 			original: "\t\t\t(total, [, stir]) => stirPlus(total, stir)\n",
 			replacement: "\t\t\t(total) => total\n",
 			why: "An ended process's stir leaves its tree's with it, as it did: a window in which a busy child ends reads a negative runqueue wait, which cancels its tree's CPU, so a need whose child ends inside its window is judged stalled though it worked (trunk@metis at a53810cd, 2026-11-22); the property fails."
+		}
+	]
+})
+
+export const boundedOutsideACase = property.exhaust(finite(outsides), {
+	box: "two runaways, two deadlocked waits and work that ends, each under a bound of its deadline",
+	needs: {},
+	situations: [],
+	check: () => (shape) =>
+		Effect.gen(function* () {
+			const { work, deadline } = outsideWork(shape)
+			const [ended, spent] = yield* spentOn(
+				withinBound(boundOver(deadline, deadline), Effect.withSpan(work, OUTSIDE_STEP))
+			)
+			switch (shape.kind) {
+				case "runaway":
+					assert.equal(Result.isFailure(ended) ? ended.failure.overrun.kind : "ended", "spent")
+					return
+				case "deadlock":
+					assert.equal(Result.isFailure(ended) ? ended.failure.overrun.kind : "ended", "stalled")
+					assert.equal(
+						Result.isFailure(ended)
+							? Option.getOrNull(Option.map(ended.failure.within, (span) => span.name))
+							: null,
+						OUTSIDE_STEP
+					)
+					return
+				case "ends":
+					assert.equal(Result.isSuccess(ended) ? "ended" : "overran", "ended")
+					assert.ok(
+						spent >= shape.burn - STATED_CPU_SHORTFALL_MILLIS,
+						`the work burned ${String(shape.burn)} ms of CPU and its spending read ${String(spent)} ms`
+					)
+			}
+		}),
+	oracle: {
+		kind: "specification",
+		name: "work its caller judges under a bound is ended as a case under that deadline is: a runaway at its CPU budget, a wait that spends nothing at its first whole stall window, named with the innermost span it stood in; work that ends in time gives its outcome, and the CPU it spent reads at least what it burned, to the ticks Linux rounds it down to"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/live.ts",
+			original:
+				"\t\t\t\tEffect.flatMap(liveMillis, (wall) => overrun(ownWork(wall, ownCpu()), bound)),\n\t\t\t\t(ran) => Result.fail(",
+			replacement: "\t\t\t\tEffect.never,\n\t\t\t\t(ran) => Result.fail(",
+			why: "Work under withinBound has no guard, so a mutant's hung trial holds its caller forever, as syzkaller-browser's journeys kills did on 2026-11-22 (the refresh journey's first kill, stopped after twenty minutes); the runaway and the deadlocked wait end of themselves, and this property fails."
+		},
+		{
+			file: "packages/testing/src/live.ts",
+			original: "[outcome, work.effort().cpu - work.began.cpu] as const",
+			replacement: "[outcome, 0] as const",
+			why: "The work's spending reads nothing, so a caller that bounds a trial by its baseline's spending bounds it by nothing; this property fails."
+		},
+		{
+			file: "packages/testing/src/live.ts",
+			original:
+				"Effect.map(Effect.withTracer(effect, spans.tracer), (outcome) => Result.succeed(outcome))",
+			replacement: "Effect.map(effect, (outcome) => Result.succeed(outcome))",
+			why: "Work its guard ended is reported without the step it stood in, so a kill trial hung on a page that never comes says only that its tree spent its budget, not which step waited (a clean refresh journey hung over five minutes at seed 17 on 2026-11-22, its step unknown); this property fails."
 		}
 	]
 })

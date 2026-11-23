@@ -1,5 +1,15 @@
 import { isMainThread, Worker } from "node:worker_threads"
-import { Array as Arr, Clock, Duration, Effect, Fiber, Option, Record as Rec } from "effect"
+import {
+	Array as Arr,
+	Clock,
+	Duration,
+	Effect,
+	Fiber,
+	Option,
+	Record as Rec,
+	Result,
+	Tracer
+} from "effect"
 import { stalledShareOfCpu } from "#runner/limits.ts"
 import {
 	type Bound,
@@ -707,3 +717,129 @@ export const overrun = (work: TreeWork, bound: Bound): Effect.Effect<Overrun> =>
 		)
 	return watch(work.began, work.began.wall + Math.min(bound.cpu, bound.stall))
 }
+
+/**
+ * `effect`'s outcome with the CPU this process's work spent from now to its end, in milliseconds: runner/work.ts
+ * ownWork, the work set this process's guards read (its CPU, its threads' and its reaped children's, and its live
+ * descendants' started since). The measure a caller outside a run's cases takes of a piece of work to bound the next
+ * like it (withinBound).
+ */
+export const spentOn = <A, E, R>(
+	effect: Effect.Effect<A, E, R>
+): Effect.Effect<readonly [A, number], E, R> =>
+	Effect.flatMap(liveMillis, (wall) =>
+		Effect.suspend(() => {
+			const work = ownWork(wall, ownCpu())
+			return Effect.map(effect, (outcome) => [outcome, work.effort().cpu - work.began.cpu] as const)
+		})
+	)
+
+/** A span a piece of work opened and had not closed: its name, and when it opened, in milliseconds on the live clock. */
+export type OpenSpan = Readonly<{ name: string; opened: number }>
+
+/**
+ * A tracer that hands every span to `inner` and keeps the spans the case or work it traces opened and has not closed,
+ * in the order they opened, so a hung case's report, or the overrun of work its guard ended (withinBound), names where
+ * it stood: the innermost open span, the last opened (an `Effect.fn`'s name, a step's `Effect.withSpan`), with no
+ * second annotation API (grizzle, 2026-11-22). Its opening is read on the live clock, whatever clock its case runs
+ * under.
+ */
+export const spansOpenOver = (inner: Tracer.Tracer) => {
+	const open = new Map<string, OpenSpan>()
+	return {
+		tracer: Tracer.make({
+			span: (options) => {
+				const span = inner.span(options)
+				open.set(span.spanId, {
+					name: options.name,
+					opened: liveMillisNow()
+				})
+				return {
+					_tag: "Span",
+					get name() {
+						return span.name
+					},
+					get spanId() {
+						return span.spanId
+					},
+					get traceId() {
+						return span.traceId
+					},
+					get parent() {
+						return span.parent
+					},
+					get annotations() {
+						return span.annotations
+					},
+					get status() {
+						return span.status
+					},
+					get attributes() {
+						return span.attributes
+					},
+					get links() {
+						return span.links
+					},
+					get sampled() {
+						return span.sampled
+					},
+					get kind() {
+						return span.kind
+					},
+					end: (endTime, exit) => {
+						open.delete(span.spanId)
+						span.end(endTime, exit)
+					},
+					attribute: (key, value) => span.attribute(key, value),
+					event: (name, startTime, attributes) => span.event(name, startTime, attributes),
+					addLinks: (links) => span.addLinks(links)
+				} satisfies Tracer.Span
+			},
+			...(inner.context === undefined ? {} : { context: inner.context })
+		}),
+		innermost: (): Option.Option<OpenSpan> => Arr.last(Arr.fromIterable(open.values()))
+	}
+}
+
+/** What a hung case's report adds of the span it stood in at its verdict, at `now` on the live clock: the innermost
+ * open one, its name and how long before it opened, or nothing. */
+export const withinText = (within: Option.Option<OpenSpan>, now: number): string =>
+	Option.match(within, {
+		onNone: () => "",
+		onSome: (span) =>
+			`; it stood inside "${span.name}", opened ${((now - span.opened) / 1000).toFixed(1)} s before`
+	})
+
+/**
+ * What ended work its guard judged (withinBound): the leg of the guard that fired, with what it measured (Overrun), and
+ * the span the work stood in then, the innermost open one (spansOpenOver), at `at` on the live clock.
+ */
+export type Overran = Readonly<{ overrun: Overrun; within: Option.Option<OpenSpan>; at: number }>
+
+/** An Overran as a report states it: the leg that fired, what it measured, and the span the work stood inside. */
+export const overranText = (overran: Overran): string =>
+	`${overrunText(overran.overrun)}${withinText(overran.within, overran.at)}`
+
+/**
+ * `effect` judged as this process's work from now under `bound` (overrun of runner/work.ts ownWork, which counts none
+ * of the wall time its declared waits on work hold it): its own outcome when it ends first, else what ended it, the leg
+ * of the guard that fired and the span it stood in, as a hung case's report names them (Overran), `effect`
+ * interrupted. The guard a caller outside a run's cases judges its own work by: a consumer's kill trials run so, their
+ * overruns judged as the kill gate's are (mutate/verdict.ts verdictOfRed).
+ */
+export const withinBound = <A, E, R>(
+	bound: Bound,
+	effect: Effect.Effect<A, E, R>
+): Effect.Effect<Result.Result<A, Overran>, E, R> =>
+	Effect.flatMap(Effect.tracer, (inner) => {
+		const spans = spansOpenOver(inner)
+		return Effect.raceFirst(
+			Effect.map(Effect.withTracer(effect, spans.tracer), (outcome) => Result.succeed(outcome)),
+			Effect.map(
+				Effect.flatMap(liveMillis, (wall) => overrun(ownWork(wall, ownCpu()), bound)),
+				(ran) => Result.fail({ overrun: ran, within: spans.innermost(), at: liveMillisNow() })
+			)
+		)
+	})
+
+export { type Bound, boundOver, type Overrun, overrunText } from "#runner/work.ts"

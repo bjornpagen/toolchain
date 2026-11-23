@@ -146,21 +146,24 @@ export const runaways: Gen<Runaway> = map(int(0, 1), (step) => ({
 /** How long one burst of a runaway lasts before it yields, in CPU milliseconds. */
 const RUNAWAY_BURST_MILLIS = 5
 
-/** An inner search whose one case is a runaway: it spends its deadline's CPU many times over, yielding as it goes, so
- * only the budget stops it; then it passes. */
+/** A runaway's work: it spends its deadline's CPU many times over, yielding as it goes, so only a CPU budget stops it;
+ * then it ends. */
+const runawayWork = (shape: Runaway): Effect.Effect<void> =>
+	Effect.forEach(
+		Array.from(
+			{ length: (shape.deadline * shape.deadlines) / RUNAWAY_BURST_MILLIS },
+			(_, at) => at
+		),
+		() => Effect.andThen(burn(RUNAWAY_BURST_MILLIS), Effect.yieldNow),
+		{ discard: true }
+	)
+
+/** An inner search whose one case is a runaway (runawayWork); then it passes. */
 export const runawayCase = (shape: Runaway): Property =>
 	property.explore(int(0, 9), {
 		needs: {},
 		situations: [],
-		check: () => () =>
-			Effect.forEach(
-				Array.from(
-					{ length: (shape.deadline * shape.deadlines) / RUNAWAY_BURST_MILLIS },
-					(_, at) => at
-				),
-				() => Effect.andThen(burn(RUNAWAY_BURST_MILLIS), Effect.yieldNow),
-				{ discard: true }
-			),
+		check: () => () => runawayWork(shape),
 		oracle: planted,
 		kept: [],
 		kills: []
@@ -187,12 +190,17 @@ const HUNG_DEADLINES = 20
  * a hung case is given, so a verdict that comes at all comes first. A test's own time, no limit. */
 export const UNJUDGED_DEADLINES = 60
 
+/** A deadlocked case's work: it waits on the live clock, spending nothing, the twenty deadlines a hung case is given
+ * (HUNG_DEADLINES), so a guard that misjudges it lets it end. */
+const deadlockedWork = (shape: Deadlock): Effect.Effect<void> =>
+	liveSleep(Duration.millis(shape.deadline * HUNG_DEADLINES))
+
 /** An inner search whose one case waits on the live clock for many deadlines, spending nothing, then passes. */
 export const deadlockedCase = (shape: Deadlock): Property =>
 	property.explore(int(0, 9), {
 		needs: {},
 		situations: [],
-		check: () => () => liveSleep(Duration.millis(shape.deadline * HUNG_DEADLINES)),
+		check: () => () => deadlockedWork(shape),
 		oracle: planted,
 		kept: [],
 		kills: []
@@ -546,3 +554,43 @@ export const lastSeenAt = (lives: Lives, at: number): Stir =>
 			return { queued: total.queued + last.queued, stored: total.stored + last.stored }
 		}
 	)
+
+/**
+ * A piece of work its caller judges outside a run's cases (live.ts withinBound) under a bound of its shape's deadline,
+ * in CPU and as its stall window: a runaway (runawayWork) and a deadlocked wait (deadlockedWork), each of whose
+ * deadlines the guard's own properties use; or work that spends a fifth of a runaway's least deadline and ends.
+ */
+export type Outside =
+	| Readonly<{ kind: "runaway"; runaway: Runaway }>
+	| Readonly<{ kind: "deadlock"; deadlock: Deadlock }>
+	| Readonly<{ kind: "ends"; burn: number; deadline: number }>
+
+/** The work burned by the outside shape that ends: a fifth of the least runaway deadline. */
+const ENDING_BURN_MILLIS = 200
+
+export const outsides: Gen<Outside> = map(int(0, 4), (at): Outside => {
+	if (at < 2) {
+		return { kind: "runaway", runaway: { deadline: 1000 + 500 * at, deadlines: 4 } }
+	}
+	if (at < 4) {
+		return { kind: "deadlock", deadlock: { deadline: 150 + 150 * (at - 2), deadlines: 6 } }
+	}
+	return { kind: "ends", burn: ENDING_BURN_MILLIS, deadline: 1000 }
+})
+
+/** The work of an outside shape and the deadline it is bounded by. */
+export const outsideWork = (
+	shape: Outside
+): Readonly<{ work: Effect.Effect<void>; deadline: number }> => {
+	switch (shape.kind) {
+		case "runaway":
+			return { work: runawayWork(shape.runaway), deadline: shape.runaway.deadline }
+		case "deadlock":
+			return { work: deadlockedWork(shape.deadlock), deadline: shape.deadlock.deadline }
+		case "ends":
+			return { work: burn(shape.burn), deadline: shape.deadline }
+	}
+}
+
+/** The step an outside shape's work runs in, which a guard that ends it names (live.ts withinBound). */
+export const OUTSIDE_STEP = "outside step"
