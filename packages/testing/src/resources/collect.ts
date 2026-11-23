@@ -11,6 +11,7 @@ import { templateClaimsTable } from "#pg/settle.ts"
 import type { Needs } from "#property.ts"
 import {
 	type DatabasePrefix,
+	databaseDroppedOn,
 	lockKey,
 	PgCluster,
 	type PgMember,
@@ -163,11 +164,7 @@ const templatesCollected: CollectionPhase = (collector) =>
 						[]
 					)
 				}
-				yield* run(
-					collector.admin,
-					`DROP DATABASE IF EXISTS ${quoteIdent(database.name)} WITH (FORCE)`,
-					[]
-				)
+				yield* databaseDroppedOn(collector.admin, database.name, "ended")
 				return Option.some<string>(database.name)
 			})
 		)
@@ -186,11 +183,7 @@ const clonesCollected: CollectionPhase = (collector) =>
 					) {
 						return Option.none<string>()
 					}
-					yield* run(
-						collector.admin,
-						`DROP DATABASE IF EXISTS ${quoteIdent(database.name)} WITH (FORCE)`,
-						[]
-					)
+					yield* databaseDroppedOn(collector.admin, database.name, "ended")
 					return Option.some<string>(database.name)
 				})
 			)

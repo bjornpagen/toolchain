@@ -4,6 +4,7 @@ import {
 	Option,
 	Predicate,
 	Record as Rec,
+	Result,
 	type Scope,
 	String as Str
 } from "effect"
@@ -16,6 +17,7 @@ import {
 	type PgMember,
 	type Statements,
 	type DatabaseName,
+	databaseDroppedOn,
 	lockKey,
 	quoteIdent,
 	quoteLiteral,
@@ -476,10 +478,10 @@ const ensureBuilt = (
 					return
 				}
 				if (state === "partial") {
-					yield* run(gate, `DROP DATABASE ${quoteIdent(name)} WITH (FORCE)`, [])
+					yield* databaseDroppedOn(gate, name, "ended")
 				}
 				const building = buildName(cluster.prefix, digest)
-				yield* run(gate, `DROP DATABASE IF EXISTS ${quoteIdent(building)} WITH (FORCE)`, [])
+				yield* databaseDroppedOn(gate, building, "ended")
 				yield* Option.match(identified.origin, {
 					onNone: () =>
 						template.from.kind === "fresh"
@@ -516,7 +518,7 @@ const ensureBuilt = (
 					[]
 				)
 				yield* replayed(building, name)
-				yield* run(gate, `DROP DATABASE IF EXISTS ${quoteIdent(building)} WITH (FORCE)`, [])
+				yield* databaseDroppedOn(gate, building, "ended")
 				yield* run(gate, `ALTER DATABASE ${quoteIdent(name)} ALLOW_CONNECTIONS false`, [])
 				yield* run(gate, `ALTER DATABASE ${quoteIdent(name)} IS_TEMPLATE true`, [])
 			})
@@ -576,6 +578,31 @@ const claimed = (
 		)
 	)
 
+/** Each session still in database $1, as a refused drop's log names it: its pid, role, application and backend type. */
+const sessionsInQuery = `SELECT pg_catalog.string_agg(pg_catalog.format('%s %s %s %s', a.pid, a.usename, a.application_name, a.backend_type), '; ' ORDER BY a.pid) FROM pg_catalog.pg_stat_activity AS a WHERE a.datname = $1::name`
+
+/**
+ * A clone's drop the server refused, logged as a warning with the clone's name, the refusal and the sessions still in
+ * the clone (sessionsInQuery), or why they could not be read: never the case's failure, since the run's collection drops
+ * the clone once its worker has ended (openDatabaseTemplate).
+ */
+const refusedDropLogged = (
+	session: Statements,
+	clone: DatabaseName,
+	refused: NeedFailed
+): Effect.Effect<void> =>
+	Effect.flatMap(Effect.result(single(session, sessionsInQuery, [clone])), (sessions) =>
+		Effect.logWarning(
+			`the drop of clone ${clone} was refused, and the run's collection drops it: ${refused.message}; the sessions in it: ${Result.match(
+				sessions,
+				{
+					onFailure: (unread) => `unread (${unread.message})`,
+					onSuccess: (listed) => listed ?? "none"
+				}
+			)}`
+		)
+	)
+
 /** A database template opened on the worker's member: its name there, how a clone of it is made, and what a clone gets again. */
 type BuiltTemplate = Readonly<{
 	member: PgMember
@@ -588,12 +615,14 @@ type BuiltTemplate = Readonly<{
  * Opens `template` on the worker's member: the cluster and the closure hashes from the run, the member the worker
  * reaches, the template held in use for the worker's life (holdInUse) and built there once (ensureBuilt), the strategy
  * the member clones with, and what each clone gets again. A clone is created in the caller's scope, which drops it when
- * it closes, then given its template's privileges and settings, and refused unless they are the template's. The drop
- * ends no session: the case's own sessions in the clone were closed before it, so it waits only for their backends to
- * leave (dbcommands.c dropdb, CountOtherDBBackends, five seconds at most), and a session the case leaked is the case's
- * to end, not the drop's, whose ending it would fail mid-run in the client that holds it; only the run's collection
- * ends sessions (collect.ts). A drop the server refuses (a session still in the clone past the drop's wait, an
- * autovacuum worker held up under load) never fails the case, whose verdict its teardown is not: the clone is its
+ * it closes, then given its template's privileges and settings, and refused unless they are the template's. The drop is
+ * the one drop of a database (cluster.ts databaseDropped): every replication slot made in the clone goes first, and
+ * then the clone, its sessions awaited, never ended: the case's own sessions in the clone were closed before it, so it
+ * waits only for their backends to leave (dbcommands.c dropdb, CountOtherDBBackends, five seconds at most), and a
+ * session the case leaked is the case's to end, not the drop's, whose ending it would fail mid-run in the client that
+ * holds it; only the run's collection ends sessions (collect.ts). A drop the server refuses (a session still in the
+ * clone past the drop's wait, an autovacuum worker held up under load) never fails the case, whose verdict its teardown
+ * is not: it is logged with the clone's name and the sessions still in it (refusedDropLogged), the clone is its
  * worker's, by its owner key, and the run's collection drops it once the worker has ended (runner/run.ts collected).
  */
 const openDatabaseTemplate = (
@@ -626,7 +655,10 @@ const openDatabaseTemplate = (
 					`CREATE DATABASE ${quoteIdent(made)} TEMPLATE ${quoteIdent(name)} STRATEGY ${strategy}`,
 					[]
 				),
-				() => Effect.ignore(run(owner.session, `DROP DATABASE IF EXISTS ${quoteIdent(made)}`, []))
+				() =>
+					Effect.catch(databaseDroppedOn(owner.session, made, "awaited"), (refused) =>
+						refusedDropLogged(owner.session, made, refused)
+					)
 			)
 			yield* replayedOn(cluster, member, owner.session, replay(quoteIdent(made)))
 			if ((yield* single(owner.session, replayedQuery, [made, name])) !== "true") {

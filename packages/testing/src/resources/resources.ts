@@ -7,10 +7,12 @@ export { type Collected, collect, templatesOf } from "#resources/collect.ts"
 export {
 	DatabasePrefix,
 	type DatabaseName,
+	databaseDropped,
 	PgCluster,
 	type PgClusterSpec,
 	type PgMember,
 	type PgSession,
+	type SessionsAtDrop,
 	type Statements
 } from "#resources/cluster.ts"
 export {

@@ -15,6 +15,7 @@ import {
 import { checkoutHere, familyOf, homesHere } from "#pg/family.ts"
 import { membersRead, type PgMember, type Platform } from "#pg/settle.ts"
 import type { LocalCluster, WorkerSizing } from "#pg/spec.ts"
+import { runnerLimits } from "#runner/limits.ts"
 import { NeedFailed, WorkerIndex } from "#runner/services.ts"
 
 export type { PgMember } from "#pg/settle.ts"
@@ -166,6 +167,53 @@ export const run = (
 	params: ReadonlyArray<string>
 ): Effect.Effect<TextRows, NeedFailed> =>
 	Effect.flatMap(session.query(sql, params), (rows) => textRows(sql, rows))
+
+/**
+ * How a drop of a database treats the sessions still in it (databaseDropped): `ended`, terminated by the drop (WITH
+ * (FORCE)), for a database no live case holds, a collected clone or template or a build's own; `awaited`, left for
+ * their backends to leave within the drop's own wait (dbcommands.c dropdb, CountOtherDBBackends: five seconds), and the
+ * drop refused on one still in it, for a clone after its case, whose sessions the case closed: a session the case
+ * leaked is the case's to end, never the drop's, whose ending would fail it mid-run in the client that holds it.
+ */
+export type SessionsAtDrop = "ended" | "awaited"
+
+/**
+ * How long a drop waits for a terminated walsender of the database it drops to exit (pg_terminate_backend's timeout)
+ * before it drops the walsender's slot: the case deadline.
+ *
+ * @limitKind derived
+ * @owner the testing library's resources (resources/cluster.ts databaseDropped)
+ * @unit milliseconds
+ * @scope one walsender's exit, waited for by one drop of a database on the local cluster
+ * @derivation a clone's drop is its case's teardown, which the case deadline bounds, so a walsender that outlives a
+ *   whole deadline after its termination has hung; a collection's or a build's drop waits on no more than a case's
+ * @from {@link runnerLimits}
+ */
+const walsenderExitWait = runnerLimits.deadline
+
+/**
+ * The statements that drop database `name`, the one drop of a database, sent from a session outside it whose role
+ * holds REPLICATION and pg_signal_backend, as a cluster owner's does (pg/settle.ts), or the bootstrap superuser's:
+ * first every replication slot made in it, which PostgreSQL refuses to drop a database under (dbcommands.c dropdb,
+ * 55006) and WITH (FORCE) ends neither, each slot's walsender terminated and its exit waited for (walsenderExitWait)
+ * before the slot is dropped; then the database, its sessions as `sessions` says (SessionsAtDrop). A logical slot a
+ * case's live source made in its clone (grizzle's served leader, `__live_<digest>`, named by its template) outlived the
+ * clone's refused drop, and the next case on the member met it, 42710 (TESTRESET4, 2026-11-23,
+ * test/pg/net/network.test.ts). A walsender that outlives the wait leaves its slot active, and the slot's drop fails.
+ */
+export const databaseDropped = (name: string, sessions: SessionsAtDrop): ReadonlyArray<string> => [
+	`SELECT pg_catalog.pg_terminate_backend(active_pid, ${walsenderExitWait}) FROM pg_catalog.pg_replication_slots WHERE database = ${quoteLiteral(name)}::name AND active_pid IS NOT NULL`,
+	`SELECT pg_catalog.pg_drop_replication_slot(slot_name) FROM pg_catalog.pg_replication_slots WHERE database = ${quoteLiteral(name)}::name`,
+	`DROP DATABASE IF EXISTS ${quoteIdent(name)}${sessions === "ended" ? " WITH (FORCE)" : ""}`
+]
+
+/** Drops database `name` on `session` (databaseDropped), each statement in turn. */
+export const databaseDroppedOn = (
+	session: Statements,
+	name: string,
+	sessions: SessionsAtDrop
+): Effect.Effect<void, NeedFailed> =>
+	Effect.forEach(databaseDropped(name, sessions), (sql) => run(session, sql, []), { discard: true })
 
 /** The first column of the first row of `sql`'s answer, or NeedFailed when it has none. */
 export const single = (

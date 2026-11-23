@@ -1367,8 +1367,8 @@ export const cloneDropWaitIsDeclared = property.exhaust(finite(deadlocks), {
 		},
 		{
 			file: "packages/testing/src/resources/template.ts",
-			original: `run(owner.session, \`DROP DATABASE IF EXISTS \${quoteIdent(made)}\`, [])`,
-			replacement: `run(owner.session, \`DROP DATABASE IF EXISTS \${quoteIdent(made)} WITH (FORCE)\`, [])`,
+			original: 'databaseDroppedOn(owner.session, made, "awaited")',
+			replacement: 'databaseDroppedOn(owner.session, made, "ended")',
 			why: "A clone's drop ends the sessions still in it, as it did, so a session of the case's dies under the client that holds it once the drop has its lock, where only the run's collection should end one; the property fails, the session ended."
 		}
 	]
