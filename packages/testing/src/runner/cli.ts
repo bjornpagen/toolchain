@@ -77,17 +77,21 @@ const usageWritten = (packageRoot: string, seed: number, millis: number, usage: 
 /**
  * `run [paths | ids]`, the full run per production version: every property named, reading no cached pass; then the
  * kills of each whose searches passed, and every verdict recorded in the verdict cache (settle.ts settledRun); each
- * run's line as it lands (runPackage), then every kill's, every failure and the run's usage; 1 when any search failed
- * or any kill did not turn its property red, judged or not.
+ * run's line as it lands (runPackage), and the run's JSON record once every search has ended, before the kills are
+ * judged, which can take longer than the searches; then every kill's line, every failure and the run's usage; 1 when
+ * any search failed or any kill did not turn its property red, judged or not.
  */
 const run = (selected: ReadonlyArray<string>) =>
 	Effect.scoped(
 		Effect.gen(function* () {
 			const { seed } = yield* runSeedLogged
 			const outcome = yield* runPackage({ root, seed, reach: "full", selected })
-			const { lines, passing } = yield* settledRun(root, selected, outcome)
 			const usage = reportOf(outcome.usage, outcome.properties)
 			const written = yield* usageWritten(root, seed, outcome.millis, usage)
+			yield* Console.log(
+				`every search ended in ${Math.round(outcome.millis)} ms, their CPU and wall time, every property's, as JSON: ${written}; the kills next`
+			)
+			const { lines, passing } = yield* settledRun(root, selected, outcome)
 			const failed = Arr.filter(outcome.properties, (ran) => ran.verdict.kind === "failed")
 			const failing = Arr.filter(
 				Arr.dedupe(Arr.map(outcome.properties, (ran) => ran.id)),
