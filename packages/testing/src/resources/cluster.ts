@@ -122,8 +122,8 @@ export type PgClusterShape = Readonly<{
 	/** The worker's owner on `member`, opened once (Owner). */
 	owner: (member: PgMember) => Effect.Effect<Owner, NeedFailed>
 	/**
-	 * The run's checkout (pg/family.ts checkoutHere: its package root, a lane's workspace or trunk's worktree, which a
-	 * mutant's worker tree is given), read once the first time a need asks: the checkout whose family the run reaches,
+	 * The run's checkout (pg/family.ts checkoutHere: the workspace root of its package, a lane's workspace or trunk's
+	 * worktree, which a mutant's worker tree is given), read once the first time a need asks: the checkout whose family the run reaches,
 	 * and whose claims a template's use records (template.ts claimed), which collection keeps the template for while the
 	 * checkout exists (collect.ts).
 	 */

@@ -47,7 +47,8 @@ export const placesLeased = (width: number) => {
  * so a worker tree's workers load the tree's modules and its test.config.ts, and run in the tree's package directory;
  * its workers take this process's flags and serve the image's mutant (PoolSpec served), and its environment adds to
  * this process's, naming this process's own checkout as theirs (pg/family.ts checkoutHere, read once as the pool is
- * made: the package root it runs from, or the checkout it was itself given in a tree), so a worker in a tree, and a
+ * made: the workspace root of the package it runs from, or the checkout it was itself given in a tree), so a worker in
+ * a tree, and a
  * worker of a lease made inside a tree, reaches that checkout's cluster family, never one of a tree's own; the run
  * needs its properties read (`runs`) open here once, in the image's package directory, before its workers start
  * (runner/runs.ts), so a mutant reaches them on disk. Its pool bounds each unit per case (runner/pool.ts Bounding): a

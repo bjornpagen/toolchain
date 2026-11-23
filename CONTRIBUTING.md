@@ -191,8 +191,9 @@ the key the first 8 hex digits of the SHA-256 of the checkout's real path (`src/
 `postgres@<unit>-<key>-<i>`. Every run, command and script of a checkout reaches its own family and no other's, so
 trunk's worktree and each lane's workspace never share a member and never wait on each other's SSI LWLocks (on
 2026-11-22 trunk's 32-worker pg tier and every lane's run shared grizzle's one family: 54 to 75% of its busy backends
-waited on them). The checkout is the real path of the working directory, or `TOOLCHAIN_PG_CHECKOUT` where a worker runs
-elsewhere (the mutator's worker trees). A family's size is derived per machine: `ceil(testWorkers / workersPerMember)`
+waited on them). The checkout is the workspace root of the working directory (the nearest directory above it holding
+`pnpm-workspace.yaml`, else the nearest holding `.git`), so every package of one checkout reaches one family and settles
+it from anywhere in it; or that of `TOOLCHAIN_PG_CHECKOUT` where a worker runs elsewhere (the mutator's worker trees). A family's size is derived per machine: `ceil(testWorkers / workersPerMember)`
 members, `workersPerMember` the repository's measured number.
 
 - `toolchain-pg settle` settles the working directory's family, as the unit `<family>-settle`. A fresh family takes

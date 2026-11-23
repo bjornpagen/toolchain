@@ -23,12 +23,16 @@ import { type LocalCluster, UnitName } from "#pg/spec.ts"
  */
 
 /**
- * The real path of the package root whose family a process reaches (a lane's workspace, trunk's worktree): a run's, a
- * command's and a script's. Read once at a process's boundary (checkoutHere) and taken by everything after it.
+ * The real path of the checkout whose family a process reaches (a lane's workspace, trunk's worktree): its workspace's
+ * root, which every package of it shares (checkoutOfPath), so a run, a command and a script of any package of one
+ * checkout reach one family. Read once at a process's boundary (checkoutHere) and taken by everything after it.
  */
 export type Checkout = string & Brand.Brand<"Checkout">
 
 const checkoutOf = Brand.nominal<Checkout>()
+
+/** Node's paths, which a checkout's parents and a `.git` file's relative git directory are resolved by. */
+const paths = process.getBuiltinModule("node:path")
 
 /**
  * The variable that names the checkout a process reaches the family of, where its working directory is not that
@@ -37,24 +41,68 @@ const checkoutOf = Brand.nominal<Checkout>()
  */
 export const checkoutVariable = "TOOLCHAIN_PG_CHECKOUT"
 
+/** The file that marks a pnpm workspace's root, which every package of the workspace lies under. */
+const workspaceMarker = "pnpm-workspace.yaml"
+
+/** The entry that marks a repository's root: git's directory, or the file a worktree's holds in its place. */
+const repositoryMarker = ".git"
+
+/** The nearest directory at or above `path` that holds an entry named `marker`, if any. */
+const nearestHolding = (
+	path: string,
+	marker: string
+): Effect.Effect<Option.Option<string>, never, FileSystem.FileSystem> =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		let at = path
+		for (;;) {
+			if (yield* Effect.orElseSucceed(fs.exists(`${at}/${marker}`), () => false)) {
+				return Option.some(at)
+			}
+			const up = paths.dirname(at)
+			if (up === at) {
+				return Option.none()
+			}
+			at = up
+		}
+	})
+
 /**
- * The checkout this process reaches the family of (Checkout): the real path `checkoutVariable` names when it is set, and
- * by default the real path of the working directory, the package root every toolchain command and every run's worker
- * runs from. Its process's boundary reads it once (toolchain-pg's main, PgCluster.layer).
+ * The checkout the real path `path` lies in (Checkout): the nearest directory at or above it that holds
+ * pnpm-workspace.yaml, its workspace's root, which every package of the workspace shares; else the nearest that holds
+ * .git, its repository's root; else `path` itself. So every package of one checkout reaches one family, where each
+ * package root was a checkout of its own (metis, 2026-11-23: its suites, run from packages/database, syscall-handlers
+ * and syzkaller-upstream, reached three families, two never settled).
+ */
+export const checkoutOfPath = (
+	path: string
+): Effect.Effect<Checkout, never, FileSystem.FileSystem> =>
+	Effect.gen(function* () {
+		const workspace = yield* nearestHolding(path, workspaceMarker)
+		if (Option.isSome(workspace)) {
+			return checkoutOf(workspace.value)
+		}
+		const repository = yield* nearestHolding(path, repositoryMarker)
+		return checkoutOf(Option.getOrElse(repository, () => path))
+	})
+
+/**
+ * The checkout this process reaches the family of (Checkout): that of the real path `checkoutVariable` names when it is
+ * set, and by default that of the working directory, the package root every toolchain command and every run's worker
+ * runs from: its workspace's root (checkoutOfPath). Its process's boundary reads it once (toolchain-pg's main, PgCluster.layer).
  */
 export const checkoutHere: Effect.Effect<Checkout, ClusterFailed, FileSystem.FileSystem> =
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem
 		const named = yield* Effect.orDie(Config.option(Config.String(checkoutVariable)))
 		const path = Option.getOrElse(named, () => ".")
-		return yield* Effect.mapBoth(fs.realPath(path), {
-			onFailure: (error) =>
-				ClusterFailed.make({
-					cluster: checkoutVariable,
-					message: `the checkout ${path}: ${error.message}`
-				}),
-			onSuccess: checkoutOf
-		})
+		const real = yield* Effect.mapError(fs.realPath(path), (error) =>
+			ClusterFailed.make({
+				cluster: checkoutVariable,
+				message: `the checkout ${path}: ${error.message}`
+			})
+		)
+		return yield* checkoutOfPath(real)
 	})
 
 /** A checkout's real path, as a test names one it made. */
@@ -193,9 +241,6 @@ const claimsOf = (homes: Homes, name: string) =>
 
 /** Node's sockets. */
 const net = process.getBuiltinModule("node:net")
-
-/** Node's paths, which a `.git` file's relative git directory is resolved by. */
-const paths = process.getBuiltinModule("node:path")
 
 /** The addresses a member's TLS listener binds when it listens at localhost: IPv4's and IPv6's loopback. */
 const loopbacks = ["127.0.0.1", "::1"] as const
@@ -364,8 +409,9 @@ export const familyRemoved = (homes: Homes, name: string) =>
 
 /**
  * Every family of the cluster `unit` in `homes` (a state named `<unit>-<8 hex digits>`, familyOf's) whose recorded
- * checkout is no checkout now (checkoutLive: its folder deleted, or a workspace forgotten whose folder lingers) removed
- * (familyRemoved): no run reaches it again, and each member holds its shared memory while it runs. Only the settling
+ * checkout is no checkout now (checkoutLive: its folder deleted, or a workspace forgotten whose folder lingers), or a
+ * place inside one, which no process reaches a family at (checkoutOfPath: a package of a workspace, where a family was
+ * made at each package root before checkouts were workspaces) removed (familyRemoved): no run reaches it again, and each member holds its shared memory while it runs. Only the settling
  * repository's own families are read; a state that records no checkout (a cluster of before families, another unit's)
  * is never touched. Returns the names removed.
  */
@@ -391,7 +437,11 @@ export const familiesCollected = (
 			Effect.flatMap(recordedCheckout(`${homes.states}/${name}`), (recorded) =>
 				Option.match(recorded, {
 					onNone: () => Effect.succeed(false),
-					onSome: (checkout) => Effect.map(checkoutLive(checkout), (live) => !live)
+					onSome: (checkout) =>
+						Effect.map(
+							Effect.all([checkoutLive(checkout), checkoutOfPath(checkout)]),
+							([live, root]) => !live || root !== checkout
+						)
 				})
 			)
 		)

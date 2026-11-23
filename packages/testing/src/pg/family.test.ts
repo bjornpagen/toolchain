@@ -15,6 +15,8 @@ import { Array as Arr, Effect, Order } from "effect"
 import { assert } from "#assert.ts"
 import { element, finite, int } from "#gen.ts"
 import {
+	checkoutLayout,
+	checkoutPlaces,
 	type CheckoutKind,
 	familyOfKind,
 	kinds,
@@ -24,6 +26,8 @@ import {
 	step
 } from "#pg/family.fixtures.ts"
 import {
+	checkoutAt,
+	checkoutOfPath,
 	checkoutRecorded,
 	familiesCollected,
 	familyOf,
@@ -130,7 +134,7 @@ export const familiesClaimApart = property.explore(
 export const goneFamiliesCollected = property.exhaust(
 	finite((source): CheckoutKind => source.draw(element(kinds))),
 	{
-		box: "a family of each kind of checkout: deleted, forgotten, a worktree, a clone, a plain folder, unrecorded",
+		box: "a family of each kind of checkout: deleted, forgotten, a package inside a workspace, a worktree, a clone, a plain folder, unrecorded",
 		needs: {},
 		situations: [],
 		check: () => (kind) =>
@@ -152,7 +156,7 @@ export const goneFamiliesCollected = property.exhaust(
 					const liveLeft = yield* leftOf(live)
 					const anotherLeft = yield* leftOf(another)
 					const elsewhereLeft = yield* leftOf(elsewhere)
-					const gone = kind === "deleted" || kind === "forgotten"
+					const gone = kind === "deleted" || kind === "forgotten" || kind === "package"
 					assert.deepEqual(
 						{
 							collected: Arr.contains(collected, family.name),
@@ -209,9 +213,68 @@ export const goneFamiliesCollected = property.exhaust(
 			},
 			{
 				file: "packages/testing/src/pg/family.ts",
+				original: "\t\t\t\t\t\t\t([live, root]) => !live || root !== checkout\n",
+				replacement: "\t\t\t\t\t\t\t([live]) => !live\n",
+				why: "A family made at a package root, before checkouts were workspaces, is kept while the package's folder exists, its members running for good though no process reaches them again (metis, 2026-11-23: three families of one checkout); the property fails."
+			},
+			{
+				file: "packages/testing/src/pg/family.ts",
 				original: `\t\t\t(name) => Str.startsWith(\`\${unit}-\`)(name) && familyKey.test(Str.slice(unit.length + 1)(name))\n`,
 				replacement: "\t\t\t(name) => name !== claimsDirectory\n",
 				why: "A settle collects every cluster's families, so one repository's settle stops and removes another's (PGFAMILY's own kill trial, 2026-11-22, run against the account's homes, removed den's, five lanes' and trunk's clusters); the property fails."
+			}
+		]
+	}
+)
+
+export const checkoutsAreWorkspaces = property.exhaust(
+	finite((source) => source.draw(element(checkoutPlaces))),
+	{
+		box: "a package of a pnpm workspace, nested or at its root, of a second workspace, of a repository with no workspace file, and a plain folder",
+		needs: {},
+		situations: [],
+		check: () => (place) =>
+			Effect.scoped(
+				Effect.gen(function* () {
+					const [from, expected] = place
+					const root = yield* checkoutLayout
+					const checkout = yield* checkoutOfPath(`${root}/${from}`)
+					const cluster = yield* clusterOf({ tls: false, spread: false, room: true })
+					const homes = yield* scratchHomes
+					const ofPackages = Arr.map(["ws1/packages/a", "ws1/packages/b", "ws2/packages/a"], (at) =>
+						Effect.map(
+							checkoutOfPath(`${root}/${at}`),
+							(resolved) => familyOf(cluster, resolved, homes).name
+						)
+					)
+					const [a, b, other] = yield* Effect.all(ofPackages)
+					assert.deepEqual(
+						{ checkout, oneWorkspaceOneFamily: a === b, twoWorkspacesTwo: a !== other },
+						{
+							checkout: checkoutAt(`${root}/${expected}`),
+							oneWorkspaceOneFamily: true,
+							twoWorkspacesTwo: true
+						}
+					)
+				})
+			),
+		oracle: {
+			kind: "specification",
+			name: "a place's checkout is the nearest directory above it holding pnpm-workspace.yaml, else the nearest holding .git, else the place itself; two packages of one workspace reach one family, two workspaces two"
+		},
+		kept: [],
+		kills: [
+			{
+				file: "packages/testing/src/pg/family.ts",
+				original: "\t\tconst workspace = yield* nearestHolding(path, workspaceMarker)\n",
+				replacement: "\t\treturn checkoutOf(path)\n",
+				why: "A checkout is the package root a process runs from, as it was, so each package of one workspace reaches a family of its own and every suite but the settled package's fails unsettled (metis, 2026-11-23: three families of one checkout); the property fails."
+			},
+			{
+				file: "packages/testing/src/pg/family.ts",
+				original: "\t\tconst repository = yield* nearestHolding(path, repositoryMarker)\n",
+				replacement: "\t\tconst repository = Option.none<string>()\n",
+				why: "A repository with no workspace file is a checkout at each package, so its packages reach families of their own; the property fails."
 			}
 		]
 	}
