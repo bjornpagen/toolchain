@@ -60,6 +60,17 @@ export type Network = Readonly<{ kind: "socket" }> | Readonly<{ kind: "tls"; fro
 export type TemplateExtension = Readonly<{ name: string; schema: string }>
 
 /**
+ * A library every member of a cluster preloads (shared_preload_libraries), inert in every database until a database
+ * turns it on (settings.ts preloadSettings): `pg_stat_statements`, whose counts of each statement's plans and calls a
+ * test of what a backend plans reads. Its SQL interface is in the owner's own database (settle.ts), so no clone a test
+ * works in carries an object of it, and its counts are the cluster's, read from there.
+ */
+const preloadedLibraries = ["pg_stat_statements"] as const
+
+/** A library of `preloadedLibraries`. */
+export type PreloadedLibrary = (typeof preloadedLibraries)[number]
+
+/**
  * What a cluster's data is worth past a run: `throwaway`, a test cluster's, whose clones a run makes again (fsync off);
  * or `kept`, a development cluster's, a person's own data (PostgreSQL's fsync).
  */
@@ -163,9 +174,10 @@ export type Sizing = WorkerSizing | SessionsSizing
  * A repository's local PostgreSQL cluster, as it states it once: its unit name (the members' units, UnitName), how its
  * clients reach it (Network), the owner role (which owns every database it makes, signs in with a password the
  * cluster's state holds, and whose own database holds the runner's sessions), the template database every database is
- * made from and the extensions it carries, the server parameters the owner may set though only a superuser may by
- * default (`ownerParameters`, each granted as `GRANT SET ON PARAMETER`: grizzle's installation sets deadlock_timeout and
- * session_replication_role), its durability and its sizing (`S`: for a run's workers or for its sessions, so only a
+ * made from and the extensions it carries, the libraries every member preloads, inert until a database turns them on
+ * (`preload`), the server parameters the owner may set though only a superuser may by default (`ownerParameters`, each
+ * granted as `GRANT SET ON PARAMETER`: grizzle's installation sets deadlock_timeout and session_replication_role, and a
+ * test of planning turns pg_stat_statements on in its own database), its durability and its sizing (`S`: for a run's workers or for its sessions, so only a
  * cluster sized for workers is handed to a runner's layer). The server runs as the workbench's units; `toolchain-pg
  * settle` (settle.ts) gives each member what the spec states, and a run only reads it. `toolchain-pg` reads the spec as
  * the default export of the package's pg.config.ts; its class is how the command tells it from any other export.
@@ -176,6 +188,7 @@ export class LocalCluster<S extends Sizing = Sizing> {
 	readonly owner: string
 	readonly template: string
 	readonly extensions: ReadonlyArray<TemplateExtension>
+	readonly preload: ReadonlyArray<PreloadedLibrary>
 	readonly ownerParameters: ReadonlyArray<string>
 	readonly durability: Durability
 	readonly sizing: S
@@ -189,6 +202,7 @@ export class LocalCluster<S extends Sizing = Sizing> {
 		this.owner = fields.owner
 		this.template = fields.template
 		this.extensions = fields.extensions
+		this.preload = fields.preload
 		this.ownerParameters = fields.ownerParameters
 		this.durability = fields.durability
 		this.sizing = fields.sizing
@@ -202,6 +216,7 @@ export type LocalClusterFields<S extends Sizing = Sizing> = Readonly<{
 	owner: string
 	template: string
 	extensions: ReadonlyArray<TemplateExtension>
+	preload: ReadonlyArray<PreloadedLibrary>
 	ownerParameters: ReadonlyArray<string>
 	durability: Durability
 	sizing: S

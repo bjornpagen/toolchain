@@ -46,6 +46,7 @@ export default localCluster({
 	owner: "toolchain_dev",
 	template: "toolchain_template",
 	extensions: [],
+	preload: [],
 	ownerParameters: ["session_replication_role"],
 	durability: "throwaway",
 	sizing: {

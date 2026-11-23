@@ -22,6 +22,7 @@ const fields = {
 	owner: "toolchain_dev",
 	template: "toolchain_template",
 	extensions: [],
+	preload: [],
 	ownerParameters: [],
 	durability: "throwaway"
 } as const

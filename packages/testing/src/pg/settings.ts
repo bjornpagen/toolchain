@@ -342,9 +342,35 @@ const ofDurability = (durability: Durability): ReadonlyArray<Setting> =>
 			]
 		: []
 
-/** The settings every member of `cluster` holds exactly (everyMember, and its durability's). */
+/**
+ * The settings a cluster's preloaded libraries add (LocalCluster `preload`), each library inert in every database until
+ * one turns it on: shared_preload_libraries names them, in their roster's order; for pg_stat_statements,
+ * compute_query_id off, so no statement is jumbled into a query id, and its track `none` and track_planning off, so
+ * each of its hooks returns at its first test and it counts nothing. A database that turns it on sets compute_query_id
+ * `on`, track `all` and track_planning `on` for itself (ALTER DATABASE ... SET, which the owner may where the cluster's
+ * `ownerParameters` name the three), so only the backends of that database count their statements' plans and calls.
+ *
+ * What a member with it inert costs a test that never turns it on, measured as two same-moment pairs of one ordinary
+ * grizzle test file, test/pg/laws/plain-native.test.ts under TEST_SEED=2219874524, run at once from two checkouts of one
+ * tree, one family preloading pg_stat_statements inert and one preloading nothing (grizzle lane PROLOGUE, 2026-11-23,
+ * cassowary, PostgreSQL 19.0, load average 66 to 136): 18.2 s wall and 16.8 s on the workers beside 18.3 s and 16.9 s,
+ * then 30.9 s and 27.7 s beside 30.2 s and 27.2 s. The pairs differ by 0.1 s and 0.7 s (2.5%), while one checkout's two
+ * runs differ by 70% with the machine's load: nothing a run can tell.
+ */
+const preloadSettings = (cluster: LocalCluster): ReadonlyArray<Setting> =>
+	Arr.match(cluster.preload, {
+		onEmpty: () => [],
+		onNonEmpty: (libraries) => [
+			["shared_preload_libraries", Arr.join(libraries, ",")],
+			["compute_query_id", "off"],
+			["pg_stat_statements.track", "none"],
+			["pg_stat_statements.track_planning", "off"]
+		]
+	})
+
+/** The settings every member of `cluster` holds exactly (everyMember, its durability's and its preloads'). */
 export const fixedSettings = (cluster: LocalCluster): Arr.NonEmptyReadonlyArray<Setting> =>
-	Arr.appendAll(everyMember, ofDurability(cluster.durability))
+	Arr.appendAll(everyMember, [...ofDurability(cluster.durability), ...preloadSettings(cluster)])
 
 /**
  * The members a cluster sized by `sizing` has among `workers` workers: a family's, one or the workers over a member's

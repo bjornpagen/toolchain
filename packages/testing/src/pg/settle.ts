@@ -370,9 +370,10 @@ const readIfThere = (file: string) =>
 	)
 
 /**
- * The owner role with `password`, its grants, the template and its extensions, and the owner's own database, in the
- * member at `at`, as the bootstrap superuser makes them: each made where absent and given what every member's holds
- * where present (the role its attributes, password and grants, the template its owner and IS_TEMPLATE).
+ * The owner role with `password`, its grants, the template and its extensions, and the owner's own database with each
+ * preloaded library's extension, in the member at `at`, as the bootstrap superuser makes them: each made where absent
+ * and given what every member's holds where present (the role its attributes, password and grants, the template its
+ * owner and IS_TEMPLATE).
  */
 /**
  * The table in the owner's database that records which checkout claims which template (resources/template.ts claim,
@@ -449,9 +450,10 @@ const owned = (cluster: LocalCluster, bin: string, at: SocketAt, password: strin
 			cluster.owner,
 			[
 				`CREATE TABLE IF NOT EXISTS public.${templateClaimsTable} (template text NOT NULL, checkout text NOT NULL, logical text NOT NULL, claimed timestamptz NOT NULL DEFAULT pg_catalog.clock_timestamp(), PRIMARY KEY (template, checkout))`,
-				`ALTER TABLE public.${templateClaimsTable} OWNER TO ${owner}`
+				`ALTER TABLE public.${templateClaimsTable} OWNER TO ${owner}`,
+				...Arr.map(cluster.preload, (library) => `CREATE EXTENSION IF NOT EXISTS ${ident(library)}`)
 			],
-			doing("its template claims")
+			doing("its template claims and its preloaded libraries' extensions")
 		)
 	})
 

@@ -237,6 +237,7 @@ export const clusterOf = (
 			owner: "toolchain_settle",
 			template: "toolchain_settle_template",
 			extensions: [],
+			preload: [],
 			ownerParameters: [],
 			durability: "throwaway",
 			sizing: {

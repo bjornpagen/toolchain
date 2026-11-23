@@ -46,6 +46,7 @@ export {
 	localCluster,
 	type Network,
 	type PredicateRoom,
+	type PreloadedLibrary,
 	type Replication,
 	type SessionsSizing,
 	type SizedBuffers,

@@ -57,6 +57,7 @@ export const predicateSettingsHoldTheRoom = property.explore(
 						owner: "owner",
 						template: "template",
 						extensions: [],
+						preload: [],
 						ownerParameters: [],
 						durability: "throwaway",
 						sizing: {

@@ -552,7 +552,8 @@ const holdInUse = (owner: Owner, identified: Identified): Effect.Effect<void, Ne
  * the same logical template. So a checkout that moves to a new closure gives up its old digest the moment it uses the
  * new one, and only its own claim of it; collection keeps a template while any existing checkout claims it (collect.ts),
  * whichever run collects. Made after the template is held in use (holdInUse) and built (ensureBuilt), so no collection
- * finds it unclaimed and unheld between the two.
+ * finds it unclaimed and unheld between the two. It runs at the owner session's READ COMMITTED (cluster.ts ownerLevel),
+ * so claims of two checkouts at once both commit.
  */
 const claimed = (
 	owner: Owner,

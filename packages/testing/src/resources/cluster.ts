@@ -252,9 +252,24 @@ export const useKey = (placeholder: string): string =>
 	`('x' || pg_catalog.substr(${placeholder}, 1, 8))::bit(32)::int4, ('x' || pg_catalog.substr(${placeholder}, 9, 8))::bit(32)::int4`
 
 /**
- * Opens the worker's owner on `member` in `scope`: a session in the owner's database holding the lock of a fresh owner
- * key, 64 bits the server draws (pg_catalog.random over int8's whole range, as 16 hex digits) and locks in one
- * statement, and the counter of the clones it names.
+ * The level every transaction of a worker's owner session runs at, stated on the session as it opens whatever its
+ * repository's sessions default to (grizzle's harness defaults to SERIALIZABLE): READ COMMITTED. Its statements are the
+ * library's own bookkeeping in the owner's database, each a transaction of its own: a template's claim (template.ts
+ * claimed), an upsert ON CONFLICT, which PostgreSQL arbitrates at READ COMMITTED natively, and whose DELETE takes only
+ * its own checkout's rows of one logical template, so two checkouts' claims at once both commit, where under
+ * SERIALIZABLE their reads of the claims table conflicted with each other's writes and one failed 40001 (grizzle's
+ * whole network tier, lane CO-PG, 2026-11-23: 97 properties lost at once, every need whose claim failed); and its clones'
+ * creations and drops, its locks and its reads of the catalog, none of which a level changes. A READ COMMITTED
+ * transaction holds no SIREAD lock, so none of them fails 40001. The level is the session's, never a BEGIN of each
+ * claim: the worker's needs share the session one statement at a time, so a claim's BEGIN and COMMIT, sent as statements
+ * of their own, could take another need's CREATE DATABASE between them, which PostgreSQL refuses inside a transaction.
+ */
+const ownerLevel = "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL READ COMMITTED"
+
+/**
+ * Opens the worker's owner on `member` in `scope`: a session in the owner's database at READ COMMITTED (`ownerLevel`),
+ * holding the lock of a fresh owner key, 64 bits the server draws (pg_catalog.random over int8's whole range, as 16 hex
+ * digits) and locks in one statement, and the counter of the clones it names.
  */
 const openOwner = (
 	spec: PgClusterSpec,
@@ -263,6 +278,7 @@ const openOwner = (
 ): Effect.Effect<Owner, NeedFailed> =>
 	Effect.gen(function* () {
 		const session = yield* Scope.provide(spec.connect(member, spec.cluster.owner), scope)
+		yield* run(session, ownerLevel, [])
 		const drawn = yield* single(
 			session,
 			`SELECT k FROM (SELECT pg_catalog.lpad(pg_catalog.to_hex(pg_catalog.random((-9223372036854775808)::int8, 9223372036854775807::int8)), 16, '0') AS k) AS fresh, LATERAL (SELECT pg_catalog.pg_advisory_lock(${lockKey("fresh.k")})) AS locked`,
