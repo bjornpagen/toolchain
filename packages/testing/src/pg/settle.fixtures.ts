@@ -12,7 +12,7 @@ import {
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { boolean, type Gen } from "#gen.ts"
 import { type CheckoutFamily, checkoutAt, familyOf, homesHere, unitOf } from "#pg/family.ts"
-import { memberNames, settled } from "#pg/settle.ts"
+import { memberNames, memberSettled, settled } from "#pg/settle.ts"
 import { type LocalCluster, localCluster, type WorkerSizing } from "#pg/spec.ts"
 import { testWorkers } from "#workers.ts"
 
@@ -273,6 +273,19 @@ export const familyIn = (cluster: LocalCluster) =>
 		})
 	})
 
+/**
+ * `family` settled whole in this process: its state and its first member (settled, the member settled here as its unit
+ * would, memberSettled), then every other member, in member order; each as a run reads it.
+ */
+export const settledWhole = (family: CheckoutFamily) =>
+	Effect.gen(function* () {
+		const first = yield* settled(family, memberSettled)
+		const rest = yield* Effect.forEach(Arr.drop(memberNames(family), 1), (_, at) =>
+			memberSettled(family, at + 1)
+		)
+		return Arr.prepend(rest, first)
+	})
+
 /** Whether `name`'s member unit is active now, as systemctl says (`systemctl --user is-active`, which exits 0 when it is). */
 export const unitActive = (name: string) =>
 	Effect.flatMap(ChildProcessSpawner.ChildProcessSpawner, (spawner) =>
@@ -341,7 +354,7 @@ export const leftCluster = (left: Left) =>
 		)
 		yield* removedAtEnd(cluster)
 		const family = yield* familyIn(cluster)
-		yield* settled(family)
+		yield* settledWhole(family)
 		if (!left.alive) {
 			yield* Scope.close(holding, Exit.void)
 		}

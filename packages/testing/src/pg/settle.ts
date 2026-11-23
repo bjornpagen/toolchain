@@ -1,10 +1,20 @@
 import { totalmem } from "node:os"
 import { regex } from "arkregex"
-import { Array as Arr, Config, Effect, FileSystem, Option, Redacted, String as Str } from "effect"
+import {
+	Array as Arr,
+	Config,
+	Effect,
+	FileSystem,
+	Option,
+	Redacted,
+	Result,
+	String as Str
+} from "effect"
 import { ChildProcess, type ChildProcessSpawner } from "effect/process"
 import {
 	type CheckoutFamily,
 	checkoutRecorded,
+	checkoutVariable,
 	familiesCollected,
 	holderText,
 	memberNamesOf,
@@ -40,10 +50,12 @@ import { testWorkers } from "#workers.ts"
  * A repository's cluster at a checkout (family.ts CheckoutFamily) as units of the workbench's PostgreSQL
  * (~/Documents/beefy-workspace/workbench/parts/postgres): member i of a family is the unit `postgres@<family>-<i>`,
  * which systemd makes on its first start (initdb, trust for the account) and runs, its data and its socket the unit's.
- * Nothing here makes, starts or stops a server by its own programs: `toolchain-pg settle` (settled) starts each member's
- * unit and gives it what the spec states, by ALTER SYSTEM and the bootstrap superuser's statements, restarting the unit
- * only when a setting it changed waits for one; a run only reads the members (membersRead), and refuses a member that
- * is not as its spec states, naming the command.
+ * Nothing here makes, starts or stops a server by its own programs: a member's settle (memberSettled, its unit's
+ * `toolchain-pg settle <index>`) starts the member's unit and gives it what the spec states, by ALTER SYSTEM and the
+ * bootstrap superuser's statements, restarting the unit only when a setting it changed waits for one. `toolchain-pg
+ * settle` (settled) settles the family's state and its first member; a run's worker brings up the member it reaches on
+ * its first need (memberBroughtUp), and no other, so a family runs the members its runs reached, or none once stopped.
+ * A read (memberRead) starts nothing, and refuses a member that is not as its spec states, naming the command.
  */
 
 /** The platform a cluster's settling and reading run on: its processes and its files. */
@@ -500,113 +512,39 @@ const freedForgotten = (data: string, name: string, step: Step) =>
 	})
 
 /**
- * Settles `family`: first every family of its cluster whose checkout is gone removed (family.ts familiesCollected),
- * then its state (the checkout it records; the owner's password, kept once made; its hba file; its unrelated CA) and
- * its ports (portsOf), then each member at once: over TLS its port refused where another listener holds it (portFree),
- * a freed member's link to nothing removed (freedForgotten), its unit started (systemd makes it on its first start, and
- * again after it was freed), every setting its spec states written by ALTER SYSTEM and read again (pg_reload_conf),
- * what the bootstrap superuser makes in it (owned), and its unit restarted when a setting it changed waits for a
- * restart (pg_settings' pending_restart), which only a fresh member, a change of the spec or of the machine's memory
- * makes; then the members read as a run reads them (membersRead), which fails if any is still not as its spec states. A
- * run never settles: `toolchain-pg settle` does, as a unit of its own (pg/cli.ts).
+ * What every read and every member's settle of `family` takes from its state, writing nothing: its owner's password,
+ * its state's files (stateFiles), how a client verifies its members (over TLS the CA the workbench's part names,
+ * caVariable, and the family's unrelated CA), each member's name and port (its family's claim, over TLS) in member
+ * order, and the server's bin directory. A family whose state lacks any of them, never settled, fails, naming
+ * `toolchain-pg settle`.
  */
-export const settled = (
-	family: CheckoutFamily
-): Effect.Effect<Arr.NonEmptyReadonlyArray<PgMember>, ClusterFailed, Platform> =>
-	Effect.gen(function* () {
-		const fs = yield* FileSystem.FileSystem
-		const { cluster } = family
-		const step: Step = { cluster: family.name, doing: "settling it" }
-		yield* familiesCollected(family.homes, cluster.unit)
-		const state = stateOf(family)
-		const files = stateFiles(state)
-		yield* Effect.mapError(fs.makeDirectory(state, { recursive: true }), (error) =>
-			failed(step, `${state}: ${error.message}`)
-		)
-		yield* checkoutRecorded(family, step)
-		const kept = yield* readIfThere(files.password)
-		const password = yield* Option.match(kept, {
-			onSome: Effect.succeed,
-			onNone: () =>
-				Effect.tap(freshPassword(step), (fresh) => written(step, files.password, `${fresh}\n`))
-		})
-		yield* written(step, files.hba, hbaOf(cluster))
-		const unrelated = yield* readIfThere(files.wrongCa)
-		if (cluster.network.kind === "tls" && Option.isNone(unrelated)) {
-			const pem = yield* unrelatedCa(step, "/CN=toolchain unrelated CA")
-			yield* written(step, files.wrongCa, pem)
-		}
-		const bin = yield* serverBin(step)
-		const names = memberNames(family)
-		const ports = yield* portsOf(family, names.length, step)
-		yield* Effect.forEach(
-			Arr.zip(names, ports),
-			([name, port]) =>
-				Effect.gen(function* () {
-					const at: Step = { cluster: family.name, doing: `settling its member ${name}` }
-					if (cluster.network.kind === "tls") {
-						yield* portFree(name, port, at)
-					}
-					yield* freedForgotten(family.homes.data, name, at)
-					yield* systemctl("start", name, at)
-					const socket = yield* socketNow(name, at)
-					const blockSize = yield* blockSizeOf(bin, socket, at)
-					const expected = expectedSettings(cluster, port, files.hba, blockSize)
-					const changed = yield* differing(bin, socket, expected, at)
-					yield* Arr.match(changed, {
-						onEmpty: () => Effect.void,
-						onNonEmpty: (settings) =>
-							Effect.asVoid(
-								adminSql(
-									bin,
-									socket,
-									"postgres",
-									Arr.append(
-										Arr.map(settings, (drift) => undone(drift, expected)),
-										"SELECT pg_catalog.pg_reload_conf()"
-									),
-									{ ...at, doing: `${at.doing}: ALTER SYSTEM` }
-								)
-							)
-					})
-					yield* owned(cluster, bin, socket, password, at)
-					const [pending = "0"] = yield* adminSql(
-						bin,
-						socket,
-						"postgres",
-						["SELECT pg_catalog.count(*) FROM pg_catalog.pg_settings WHERE pending_restart"],
-						{ ...at, doing: `${at.doing}: reading what waits for a restart` }
-					)
-					if (pending !== "0") {
-						yield* systemctl("restart", name, at)
-					}
-				}),
-			{ concurrency: "unbounded", discard: true }
-		)
-		return yield* membersRead(family)
-	})
+type FamilyState = Readonly<{
+	password: string
+	files: ReturnType<typeof stateFiles>
+	tls: MemberTls
+	members: ReadonlyArray<readonly [name: string, port: number]>
+	bin: string
+}>
 
-/**
- * `family`'s members as a run reads them, writing nothing: each member's socket and port (its family's claim, over
- * TLS), its settings against its spec's, the owner's password and, over TLS, the CA the workbench's part names
- * (caVariable) and the family's unrelated CA. A member whose unit runs no server, whose port its family does not claim,
- * or that holds a setting other than its spec states, fails, naming `toolchain-pg settle`, which gives it them: a run
- * never changes a server, so a family changes only when its checkout's person or gate settles it.
- */
-export const membersRead = (
-	family: CheckoutFamily
-): Effect.Effect<Arr.NonEmptyReadonlyArray<PgMember>, ClusterFailed, Platform> =>
+/** A refusal of `family` for `why`, at `step`, naming the command that gives its family its spec. */
+const unsettledOf =
+	(family: CheckoutFamily, step: Step) =>
+	(why: string): ClusterFailed =>
+		failed(
+			step,
+			`${why}: run \`pnpm exec toolchain-pg settle\` (as a unit) in ${family.checkout} to give its family its spec`
+		)
+
+/** `family`'s state as its reads and its members' settles take it (FamilyState). */
+const familyState = (
+	family: CheckoutFamily,
+	step: Step
+): Effect.Effect<FamilyState, ClusterFailed, Platform> =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem
 		const { cluster } = family
-		const step: Step = { cluster: family.name, doing: "reading it" }
-		const unsettled = (why: string) =>
-			failed(
-				step,
-				`${why}: run \`pnpm exec toolchain-pg settle\` (as a unit) in ${family.checkout} to give its family its spec`
-			)
-		const state = stateOf(family)
-		const files = stateFiles(state)
+		const unsettled = unsettledOf(family, step)
+		const files = stateFiles(stateOf(family))
 		const keptPassword = yield* readIfThere(files.password)
 		const password = yield* Effect.mapError(Effect.fromOption(keptPassword), () =>
 			unsettled(`${files.password} holds no owner password`)
@@ -636,54 +574,313 @@ export const membersRead = (
 			)
 		}
 		const bin = yield* serverBin(step)
-		const members = yield* Effect.forEach(
-			Arr.zip(names, ports),
-			([name, port]) =>
-				Effect.gen(function* () {
-					const at: Step = { cluster: family.name, doing: `reading its member ${name}` }
-					const socket = yield* Effect.mapError(socketNow(name, at), (error) =>
-						unsettled(error.message)
-					)
-					const blockSize = yield* blockSizeOf(bin, socket, at)
-					const differs = yield* differing(
+		const state: FamilyState = { password, files, tls, members: Arr.zip(names, ports), bin }
+		return state
+	})
+
+/** Member `index`'s name and port in `state`, or a failure at `step` naming the members there are. */
+const memberIn = (state: FamilyState, index: number, step: Step) =>
+	Effect.mapError(Effect.fromOption(Arr.get(state.members, index)), () =>
+		failed(step, `it has no member ${index}: its members are 0 to ${state.members.length - 1}`)
+	)
+
+/**
+ * Member `index` of `family` as a run reads it from `state`, writing nothing: its socket and port, its settings against
+ * its spec's and its template claims table. A member whose unit runs no server, or that holds a setting other than its
+ * spec states, fails, naming `toolchain-pg settle`.
+ */
+const memberReadIn = (
+	family: CheckoutFamily,
+	state: FamilyState,
+	index: number
+): Effect.Effect<PgMember, ClusterFailed, Platform> =>
+	Effect.gen(function* () {
+		const { cluster } = family
+		const step: Step = { cluster: family.name, doing: `reading its member ${index}` }
+		const unsettled = unsettledOf(family, step)
+		const [name, port] = yield* memberIn(state, index, step)
+		const socket = yield* Effect.mapError(socketNow(name, step), (error) =>
+			unsettled(error.message)
+		)
+		const blockSize = yield* blockSizeOf(state.bin, socket, step)
+		const differs = yield* differing(
+			state.bin,
+			socket,
+			expectedSettings(cluster, port, state.files.hba, blockSize),
+			step
+		)
+		if (Arr.isReadonlyArrayNonEmpty(differs)) {
+			return yield* unsettled(`${name} holds ${Arr.join(Arr.map(differs, driftText), ", ")}`)
+		}
+		const [claims = "f"] = yield* Effect.mapError(
+			adminSql(
+				state.bin,
+				socket,
+				cluster.owner,
+				[`SELECT pg_catalog.to_regclass('public.${templateClaimsTable}') IS NOT NULL`],
+				{ ...step, doing: `${step.doing}: reading its template claims table` }
+			),
+			(error) => unsettled(error.message)
+		)
+		if (claims !== "t") {
+			return yield* unsettled(`${name} holds no template claims table (${templateClaimsTable})`)
+		}
+		const member: PgMember = {
+			name,
+			socket: socket.socket,
+			port,
+			owner: cluster.owner,
+			password: Redacted.make(state.password),
+			passwordFile: state.files.password,
+			tls: state.tls
+		}
+		return member
+	})
+
+/**
+ * Member `index` of `family` as a run reads it, writing nothing: what its family's state holds for it (the owner's
+ * password, its port, and over TLS the CA the workbench's part names and the family's unrelated CA), its socket, its
+ * settings against its spec's and its template claims table. A member whose unit runs no server, whose port its family
+ * does not claim, or that holds a setting other than its spec states, fails, naming `toolchain-pg settle`. A read
+ * starts nothing and changes no server: a worker's first need brings up its own member (memberBroughtUp).
+ */
+export const memberRead = (
+	family: CheckoutFamily,
+	index: number
+): Effect.Effect<PgMember, ClusterFailed, Platform> =>
+	Effect.flatMap(familyState(family, { cluster: family.name, doing: "reading it" }), (state) =>
+		memberReadIn(family, state, index)
+	)
+
+/**
+ * `family`'s members that run now, in member order, each read as a run reads it (memberRead): a member whose socket
+ * directory holds no socket, its unit stopped or never started, is not among them. What collection reads
+ * (resources/collect.ts) and `toolchain-pg check`: a family runs only the members its runs' workers reached.
+ */
+export const membersRunning = (
+	family: CheckoutFamily
+): Effect.Effect<ReadonlyArray<PgMember>, ClusterFailed, Platform> =>
+	Effect.gen(function* () {
+		const step: Step = { cluster: family.name, doing: "reading the members that run" }
+		const state = yield* familyState(family, step)
+		const running = yield* Effect.filter(
+			Arr.map(state.members, (_, index) => index),
+			(index) =>
+				Effect.flatMap(memberIn(state, index, step), ([name]) =>
+					Effect.isSuccess(socketNow(name, step))
+				)
+		)
+		return yield* Effect.forEach(running, (index) => memberReadIn(family, state, index), {
+			concurrency: "unbounded"
+		})
+	})
+
+/**
+ * `family`'s state settled, its members' own parts aside (memberSettled): first every family of its cluster whose
+ * checkout is gone removed (family.ts familiesCollected), then its state (the checkout it records; the owner's
+ * password, kept once made; its hba file; its unrelated CA) and the ports of all its members (portsOf), claimed at once,
+ * so each member's port stays its own however many of them run.
+ */
+const familySettled = (family: CheckoutFamily): Effect.Effect<void, ClusterFailed, Platform> =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		const { cluster } = family
+		const step: Step = { cluster: family.name, doing: "settling it" }
+		yield* familiesCollected(family.homes, cluster.unit)
+		const state = stateOf(family)
+		const files = stateFiles(state)
+		yield* Effect.mapError(fs.makeDirectory(state, { recursive: true }), (error) =>
+			failed(step, `${state}: ${error.message}`)
+		)
+		yield* checkoutRecorded(family, step)
+		const kept = yield* readIfThere(files.password)
+		if (Option.isNone(kept)) {
+			const fresh = yield* freshPassword(step)
+			yield* written(step, files.password, `${fresh}\n`)
+		}
+		yield* written(step, files.hba, hbaOf(cluster))
+		const unrelated = yield* readIfThere(files.wrongCa)
+		if (cluster.network.kind === "tls" && Option.isNone(unrelated)) {
+			const pem = yield* unrelatedCa(step, "/CN=toolchain unrelated CA")
+			yield* written(step, files.wrongCa, pem)
+		}
+		yield* portsOf(family, memberNames(family).length, step)
+	})
+
+/**
+ * Member `index` of `family` settled in this process from its family's state (familyState, which a family never settled
+ * lacks): over TLS its port refused where another listener holds it (portFree), a freed member's link to nothing
+ * removed (freedForgotten), its unit started (systemd makes it on its first start, and again after it was freed), every
+ * setting its spec states written by ALTER SYSTEM and read again (pg_reload_conf), what the bootstrap superuser makes in
+ * it (owned), and its unit restarted when a setting it changed waits for a restart (pg_settings' pending_restart),
+ * which only a fresh member, a change of the spec or of the machine's memory makes; then it is read as a run reads it
+ * (memberRead), which fails if it is still not as its spec states. What the member's settle unit runs (settleUnit,
+ * `toolchain-pg settle <index>`), so a member has one settle at a time.
+ */
+export const memberSettled = (
+	family: CheckoutFamily,
+	index: number
+): Effect.Effect<PgMember, ClusterFailed, Platform> =>
+	Effect.gen(function* () {
+		const { cluster } = family
+		const at: Step = { cluster: family.name, doing: `settling its member ${index}` }
+		const state = yield* familyState(family, at)
+		const [name, port] = yield* memberIn(state, index, at)
+		const { bin, files, password } = state
+		if (cluster.network.kind === "tls") {
+			yield* portFree(name, port, at)
+		}
+		yield* freedForgotten(family.homes.data, name, at)
+		yield* systemctl("start", name, at)
+		const socket = yield* socketNow(name, at)
+		const blockSize = yield* blockSizeOf(bin, socket, at)
+		const expected = expectedSettings(cluster, port, files.hba, blockSize)
+		const changed = yield* differing(bin, socket, expected, at)
+		yield* Arr.match(changed, {
+			onEmpty: () => Effect.void,
+			onNonEmpty: (settings) =>
+				Effect.asVoid(
+					adminSql(
 						bin,
 						socket,
-						expectedSettings(cluster, port, files.hba, blockSize),
-						at
-					)
-					if (Arr.isReadonlyArrayNonEmpty(differs)) {
-						return yield* unsettled(`${name} holds ${Arr.join(Arr.map(differs, driftText), ", ")}`)
-					}
-					const [claims = "f"] = yield* Effect.mapError(
-						adminSql(
-							bin,
-							socket,
-							cluster.owner,
-							[`SELECT pg_catalog.to_regclass('public.${templateClaimsTable}') IS NOT NULL`],
-							{ ...at, doing: `${at.doing}: reading its template claims table` }
+						"postgres",
+						Arr.append(
+							Arr.map(settings, (drift) => undone(drift, expected)),
+							"SELECT pg_catalog.pg_reload_conf()"
 						),
-						(error) => unsettled(error.message)
+						{ ...at, doing: `${at.doing}: ALTER SYSTEM` }
 					)
-					if (claims !== "t") {
-						return yield* unsettled(
-							`${name} holds no template claims table (${templateClaimsTable})`
-						)
-					}
-					const member: PgMember = {
-						name,
-						socket: socket.socket,
-						port,
-						owner: cluster.owner,
-						password: Redacted.make(password),
-						passwordFile: files.password,
-						tls
-					}
-					return member
-				}),
-			{ concurrency: "unbounded" }
+				)
+		})
+		yield* owned(cluster, bin, socket, password, at)
+		const [pending = "0"] = yield* adminSql(
+			bin,
+			socket,
+			"postgres",
+			["SELECT pg_catalog.count(*) FROM pg_catalog.pg_settings WHERE pending_restart"],
+			{ ...at, doing: `${at.doing}: reading what waits for a restart` }
 		)
-		const first = yield* Effect.mapError(Effect.fromOption(Arr.head(members)), () =>
-			failed(step, "the family has no member")
-		)
-		return Arr.prepend(Arr.drop(members, 1), first)
+		if (pending !== "0") {
+			yield* systemctl("restart", name, at)
+		}
+		return yield* memberReadIn(family, state, index)
 	})
+
+/**
+ * How a member of a family is settled where a worker's first need finds it absent or not as its spec states
+ * (memberBroughtUp): by its settle unit (unitSettled), or, in a test of a case's cluster, which no package's
+ * pg.config.ts states, in the case's own process (memberSettled).
+ */
+export type MemberSettle = (
+	family: CheckoutFamily,
+	index: number
+) => Effect.Effect<unknown, ClusterFailed, Platform>
+
+/**
+ * Member `index` of `family` as a worker's first need reaches it: read (memberRead), and where the read refuses it
+ * (absent, freed by its stop, or not as its spec states) settled by `settle` and read again. So a run brings up the
+ * members its workers reach and no other, each by the worker that reaches it. A settle that fails is the worker's
+ * failure, with what the settle said; one that succeeds is answered by the read after it.
+ */
+export const memberBroughtUp = (
+	family: CheckoutFamily,
+	index: number,
+	settle: MemberSettle
+): Effect.Effect<PgMember, ClusterFailed, Platform> =>
+	Effect.catch(memberRead(family, index), () =>
+		Effect.flatMap(Effect.result(settle(family, index)), (settling) =>
+			Effect.mapError(memberRead(family, index), (refused) =>
+				Result.isFailure(settling) ? settling.failure : refused
+			)
+		)
+	)
+
+/**
+ * Settles `family` as `toolchain-pg settle` does: its state (familySettled), then its first member, the one `env`,
+ * `psql` and `admin` reach, brought up as a worker brings up its own (memberBroughtUp, by `settle`). Its other members
+ * its runs' workers bring up, each the one it reaches, on its first need. A run never settles a family's state.
+ */
+export const settled = (
+	family: CheckoutFamily,
+	settle: MemberSettle
+): Effect.Effect<PgMember, ClusterFailed, Platform> =>
+	Effect.andThen(familySettled(family), memberBroughtUp(family, 0, settle))
+
+/** What a settle unit settles: a family's state and its first member (settled), or one member (memberSettled). */
+export type SettleTarget =
+	| Readonly<{ kind: "family" }>
+	| Readonly<{ kind: "member"; index: number }>
+
+/**
+ * The variable a settle unit runs its settle with: present, `toolchain-pg settle` settles in its own process; absent, it
+ * starts the settle's unit (settleUnit) and waits on it, so every settle of a family, and every settle of a member,
+ * runs as the one unit its name gives.
+ */
+export const settlingVariable = "TOOLCHAIN_PG_SETTLING"
+
+/** The command a settle unit runs: this package's `toolchain-pg`, which strips the types of its TypeScript source. */
+const settleProgram = process
+	.getBuiltinModule("node:url")
+	.fileURLToPath(new URL("../../scripts/toolchain-pg.sh", import.meta.url))
+
+/**
+ * `target`'s settle as its unit: `<family>-settle` for its family, `<member>-settle` for a member, in its cluster's
+ * repository's slice (its unit name's first word), run with `toolchain-pg settle [index]` in this process's working
+ * directory, whose pg.config.ts states the cluster, and given the family's checkout, so it settles that family wherever
+ * systemd starts it. Type=oneshot, so `systemctl --user start` of the unit while it runs joins its start and returns as
+ * it ends (unitSettled). `systemd-run --wait --pipe` answers the unit's exit status and is refused at once while the
+ * unit runs.
+ */
+export const settleUnit = (
+	family: CheckoutFamily,
+	target: SettleTarget,
+	stdio: "inherit" | "pipe"
+): Readonly<{ unit: string; command: ChildProcess.Command }> => {
+	const named = target.kind === "family" ? family.name : `${family.name}-${target.index}`
+	const unit = `${named}-settle`
+	const slice = `${Option.getOrElse(Arr.head(Str.split(family.cluster.unit, "-")), () => family.cluster.unit)}.slice`
+	return {
+		unit,
+		command: ChildProcess.make(
+			"systemd-run",
+			[
+				"--user",
+				"-d",
+				"-u",
+				unit,
+				`--slice=${slice}`,
+				"-p",
+				"Type=oneshot",
+				"--wait",
+				"--pipe",
+				"--collect",
+				"-E",
+				`${settlingVariable}=1`,
+				"-E",
+				`${checkoutVariable}=${family.checkout}`,
+				"--",
+				"/bin/sh",
+				settleProgram,
+				"settle",
+				...(target.kind === "family" ? [] : [`${target.index}`])
+			],
+			{ stdin: stdio, stdout: stdio, stderr: stdio }
+		)
+	}
+}
+
+/**
+ * A member's settle as its unit (settleUnit), as a run's worker settles the member it reaches: run, and where that
+ * fails, the unit joined (`systemctl --user start`, which waits on the unit while another process's settle of the
+ * member runs, and finds none once it has ended), its failure kept for memberBroughtUp to give where the member's read
+ * still refuses it after.
+ */
+export const unitSettled: MemberSettle = (family, index) => {
+	const { unit, command } = settleUnit(family, { kind: "member", index }, "pipe")
+	const step: Step = { cluster: family.name, doing: `settling its member ${index} as ${unit}` }
+	return Effect.tapError(succeeded(step, command), () =>
+		Effect.ignore(
+			succeeded(step, ChildProcess.make("systemctl", ["--user", "start", `${unit}.service`]))
+		)
+	)
+}

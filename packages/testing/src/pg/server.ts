@@ -101,7 +101,7 @@ export type SocketAt = Readonly<{ socket: string; port: number }>
  * runs outside a transaction block, the first failing one ending the run; each row one line, its columns separated by
  * `|`. A declared wait of this process named by its statements (live.ts waitingOn), as every statement the library
  * sends is (resources/cluster.ts run): psql, its child, waits on the member's work, which spends none of its tree's
- * CPU, and a run reads a member through it (pg/settle.ts membersRead) the first time a need reaches the cluster.
+ * CPU, and a run reads a member through it (pg/settle.ts memberRead) the first time a need reaches it.
  */
 export const adminSql = (
 	bin: string,

@@ -175,10 +175,12 @@ Before you move `vendor/toolchain` past this section, in the same commit:
 ## Consumer migration: a cluster is units of the workbench's PostgreSQL (2026-11-21)
 
 The toolchain no longer makes, starts, stops or leases a server. A cluster's members are the workbench's
-`postgres@<unit>-<i>` units (systemd makes each on its first start), `toolchain-pg settle` is the one writer (it starts
-each member's unit and gives it the spec by ALTER SYSTEM, its hba file, owner role, template and extensions, restarting
-the unit only when a setting waits for one; it runs as the unit `<unit>-settle`, so a second settle is refused, never
-queued), and a run only reads the members (`membersRead`), refusing one not as its spec states and naming the command.
+`postgres@<unit>-<i>` units (systemd makes each on its first start), and a member's settle is its one writer (it starts
+the member's unit and gives it the spec by ALTER SYSTEM, its hba file, owner role, template and extensions, restarting
+the unit only when a setting waits for one; it runs as the unit `<member>-settle`, so a member has one settle at a
+time). `toolchain-pg settle` settles the family's state and its first member; a run's worker brings up the member it
+reaches on its first need (`memberBroughtUp`), and a read (`memberRead`) starts nothing, refusing a member not as its
+spec states and naming the command.
 Leases, `scripts/hold.pl`, the family queue and its tickets, `RunLease`, the cluster lock, `@bjornpagen/testing/lock`,
 `TOOLCHAIN_PG_CLUSTER` and the private families under `~/.local/var/toolchain-pg` are gone. Before you move
 `vendor/toolchain` past this section, in the same commit:

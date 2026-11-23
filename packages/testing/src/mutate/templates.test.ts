@@ -54,7 +54,7 @@ export const trialTemplatesApart = property.exhaust(runPairs, {
 				const ctx = yield* context
 				const fs = yield* FileSystem.FileSystem
 				const member = yield* Effect.provideContext(
-					Effect.flatMap(PgCluster, (cluster) => Effect.map(cluster.members, Arr.headNonEmpty)),
+					Effect.flatMap(PgCluster, (cluster) => cluster.memberAt(0)),
 					ctx
 				)
 				const token = yield* Effect.provideContext(

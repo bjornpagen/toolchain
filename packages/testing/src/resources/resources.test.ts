@@ -174,7 +174,7 @@ export const derivedKeepsItsOrigin = property.explore(int(0, 3), {
 				const seen = yield* Effect.provideContext(
 					Effect.gen(function* () {
 						const cluster = yield* PgCluster
-						const member = yield* Effect.map(cluster.members, Arr.headNonEmpty)
+						const member = yield* cluster.memberAt(0)
 						const token = yield* Effect.scoped(
 							Effect.flatMap(cluster.connect(member, cluster.maintenance), (session) =>
 								single(session, "SELECT pg_catalog.gen_random_uuid()::text", [])
@@ -237,7 +237,7 @@ export const builtOnce = property.explore(int(2, 8), {
 				const outcome = yield* Effect.provideContext(
 					Effect.gen(function* () {
 						const cluster = yield* PgCluster
-						const member = yield* Effect.map(cluster.members, Arr.headNonEmpty)
+						const member = yield* cluster.memberAt(0)
 						const token = yield* Effect.scoped(
 							Effect.flatMap(cluster.connect(member, cluster.maintenance), (session) =>
 								single(session, "SELECT pg_catalog.gen_random_uuid()::text", [])
@@ -252,29 +252,25 @@ export const builtOnce = property.explore(int(2, 8), {
 								),
 							{ concurrency: "unbounded" }
 						)
-						const built = yield* Effect.flatMap(cluster.members, (all) =>
+						const built = yield* Effect.flatMap(cluster.memberAt(0), (first) =>
 							Effect.scoped(
-								Effect.flatMap(
-									cluster.connect(Arr.headNonEmpty(all), cluster.maintenance),
-									(session) =>
-										single(
-											session,
-											"SELECT pg_catalog.count(*)::text FROM pg_catalog.pg_database WHERE datistemplate AND pg_catalog.shobj_description(oid, 'pg_database') LIKE $1",
-											[`%token ${token ?? ""}%`]
-										)
+								Effect.flatMap(cluster.connect(first, cluster.maintenance), (session) =>
+									single(
+										session,
+										"SELECT pg_catalog.count(*)::text FROM pg_catalog.pg_database WHERE datistemplate AND pg_catalog.shobj_description(oid, 'pg_database') LIKE $1",
+										[`%token ${token ?? ""}%`]
+									)
 								)
 							)
 						)
-						const templateName = yield* Effect.flatMap(cluster.members, (all) =>
+						const templateName = yield* Effect.flatMap(cluster.memberAt(0), (first) =>
 							Effect.scoped(
-								Effect.flatMap(
-									cluster.connect(Arr.headNonEmpty(all), cluster.maintenance),
-									(session) =>
-										single(
-											session,
-											"SELECT datname::text FROM pg_catalog.pg_database WHERE pg_catalog.shobj_description(oid, 'pg_database') LIKE $1",
-											[`%token ${token ?? ""}%`]
-										)
+								Effect.flatMap(cluster.connect(first, cluster.maintenance), (session) =>
+									single(
+										session,
+										"SELECT datname::text FROM pg_catalog.pg_database WHERE pg_catalog.shobj_description(oid, 'pg_database') LIKE $1",
+										[`%token ${token ?? ""}%`]
+									)
 								)
 							)
 						)
@@ -308,7 +304,7 @@ export const templatesTakeNoSession = property.exhaust(finite(int(2, 8)), {
 				const outcome = yield* Effect.provideContext(
 					Effect.gen(function* () {
 						const cluster = yield* PgCluster
-						const member = yield* Effect.map(cluster.members, Arr.headNonEmpty)
+						const member = yield* cluster.memberAt(0)
 						const inMaintenance = (statement: string, params: ReadonlyArray<string>) =>
 							Effect.scoped(
 								Effect.flatMap(cluster.connect(member, cluster.maintenance), (session) =>
@@ -382,7 +378,7 @@ export const refusedDropCollected = property.exhaust(finite(int(1, 3)), {
 				const token = yield* Effect.provideContext(
 					Effect.gen(function* () {
 						const cluster = yield* PgCluster
-						const member = yield* Effect.map(cluster.members, Arr.headNonEmpty)
+						const member = yield* cluster.memberAt(0)
 						return yield* Effect.scoped(
 							Effect.flatMap(cluster.connect(member, cluster.maintenance), (session) =>
 								single(session, freshHex, [])
@@ -609,7 +605,7 @@ export const staleCollected = property.explore(int(1, 3), {
 						const prefixToken = yield* Effect.provideContext(
 							Effect.gen(function* () {
 								const cluster = yield* PgCluster
-								const member = yield* Effect.map(cluster.members, Arr.headNonEmpty)
+								const member = yield* cluster.memberAt(0)
 								return yield* Effect.scoped(
 									Effect.flatMap(cluster.connect(member, cluster.maintenance), (session) =>
 										single(session, freshHex, [])
@@ -705,7 +701,7 @@ export const claimedTemplatesKept = property.exhaust(finite(boolean), {
 				const outcome = yield* Effect.scoped(
 					Effect.gen(function* () {
 						const cluster = Context.get(ctx, PgCluster)
-						const member = yield* Effect.map(cluster.members, Arr.headNonEmpty)
+						const member = yield* cluster.memberAt(0)
 						const prefixToken = yield* Effect.scoped(
 							Effect.flatMap(cluster.connect(member, cluster.maintenance), (session) =>
 								Effect.flatMap(single(session, freshHex, []), (drawn) =>
@@ -785,7 +781,7 @@ export const inUseKept = property.exhaust(
 					const outcome = yield* Effect.scoped(
 						Effect.gen(function* () {
 							const cluster = Context.get(ctx, PgCluster)
-							const member = yield* Effect.map(cluster.members, Arr.headNonEmpty)
+							const member = yield* cluster.memberAt(0)
 							const prefixToken = yield* Effect.scoped(
 								Effect.flatMap(cluster.connect(member, cluster.maintenance), (session) =>
 									Effect.flatMap(single(session, freshHex, []), (drawn) =>
@@ -892,7 +888,7 @@ export const cloneOutlivesNoTemplate = property.exhaust(
 					const outcome = yield* Effect.scoped(
 						Effect.gen(function* () {
 							const cluster = Context.get(ctx, PgCluster)
-							const member = yield* Effect.map(cluster.members, Arr.headNonEmpty)
+							const member = yield* cluster.memberAt(0)
 							const prefixToken = yield* Effect.scoped(
 								Effect.flatMap(cluster.connect(member, cluster.maintenance), (session) =>
 									Effect.flatMap(single(session, freshHex, []), (drawn) =>
@@ -1182,7 +1178,7 @@ export const freshInItsLocale = property.explore(localeCases, {
 				yield* Effect.provideContext(
 					Effect.gen(function* () {
 						const cluster = yield* PgCluster
-						const member = yield* Effect.map(cluster.members, Arr.headNonEmpty)
+						const member = yield* cluster.memberAt(0)
 						const facts = yield* Effect.scoped(
 							Effect.flatMap(cluster.connect(member, cluster.maintenance), (session) =>
 								Effect.all({
@@ -1642,7 +1638,7 @@ export const roleSettingCloned = property.explore(int(0, 3), {
 				Effect.provideContext(
 					Effect.gen(function* () {
 						const cluster = yield* PgCluster
-						const member = yield* Effect.map(cluster.members, Arr.headNonEmpty)
+						const member = yield* cluster.memberAt(0)
 						const token = yield* Effect.scoped(
 							Effect.flatMap(cluster.connect(member, cluster.maintenance), (session) =>
 								single(session, freshHex, [])

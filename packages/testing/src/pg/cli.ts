@@ -1,5 +1,6 @@
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime"
 import * as NodeServices from "@effect/platform-node/NodeServices"
+import { regex } from "arkregex"
 import {
 	Array as Arr,
 	Config,
@@ -9,20 +10,24 @@ import {
 	Path,
 	type PlatformError,
 	Redacted,
-	Schema,
-	String as Str
+	Schema
 } from "effect"
-import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { ChildProcessSpawner } from "effect/process"
 import { failureText } from "#failure.ts"
-import {
-	type CheckoutFamily,
-	checkoutHere,
-	checkoutVariable,
-	familyOf,
-	homesHere
-} from "#pg/family.ts"
+import { type CheckoutFamily, checkoutHere, familyOf, homesHere } from "#pg/family.ts"
 import { bootstrapSuperuser, type ClusterFailed, psql, serverBin } from "#pg/server.ts"
-import { membersRead, type PgMember, settled } from "#pg/settle.ts"
+import {
+	memberNames,
+	memberRead,
+	memberSettled,
+	membersRunning,
+	type PgMember,
+	type SettleTarget,
+	settled,
+	settleUnit,
+	settlingVariable,
+	unitSettled
+} from "#pg/settle.ts"
 import { LocalCluster } from "#pg/spec.ts"
 
 /** The file a package's cluster is stated in, at the root the command runs from. */
@@ -69,8 +74,8 @@ const envLines = (member: PgMember, template: string): ReadonlyArray<string> => 
 	`TOOLCHAIN_PG_PASSWORD_FILE=${member.passwordFile}`
 ]
 
-/** The first of a family's members, as a run reads it. */
-const firstMember = (family: CheckoutFamily) => Effect.map(membersRead(family), Arr.headNonEmpty)
+/** The first of a family's members, as a run reads it, which `toolchain-pg settle` brings up. */
+const firstMember = (family: CheckoutFamily) => memberRead(family, 0)
 
 /** psql on the first member with this terminal's stdin, stdout and stderr, its exit status this command's. */
 const interactive = (family: CheckoutFamily, as: "owner" | "admin", args: ReadonlyArray<string>) =>
@@ -112,29 +117,15 @@ const interactive = (family: CheckoutFamily, as: "owner" | "admin", args: Readon
 		return yield* spawner.exitCode(command)
 	})
 
-/**
- * The variable a settle's own unit runs it with: present, the command settles here; absent, it starts its unit
- * (settleUnit) and waits on it, so every settle of a family runs as the one unit its name gives.
- */
-const settlingVariable = "TOOLCHAIN_PG_SETTLING"
-
-/**
- * The unit a family's settle runs as, `<family>-settle`, and its repository's slice: its cluster's unit name's first
- * word.
- */
-const settleUnit = (family: CheckoutFamily) => ({
-	unit: `${family.name}-settle`,
-	slice: `${Option.getOrElse(Arr.head(Str.split(family.cluster.unit, "-")), () => family.cluster.unit)}.slice`
-})
-
 /** The usage this command prints for anything else. */
 const usage = Arr.join(
 	[
 		"usage: toolchain-pg <command>, for this checkout's family of the cluster the working directory's pg.config.ts states",
-		"  settle                             remove the cluster's families whose checkout is gone, then start each member's unit",
-		"                                     (postgres@<family>-<i>) and give it its spec, as the unit <family>-settle:",
-		"                                     a second settle of the family is refused",
-		"  check                              read every member, as a run reads it, writing nothing",
+		"  settle                             remove the cluster's families whose checkout is gone, settle the family's state",
+		"                                     and its first member (postgres@<family>-0), as the unit <family>-settle: a",
+		"                                     second settle of the family is refused; a run's worker brings up its own member",
+		"  settle <member>                    start that member's unit and give it its spec, as the unit <family>-<member>-settle",
+		"  check                              read every member that runs, as a run reads it, writing nothing",
 		"  psql [database] [psql args...]     the owner, on the first member",
 		"  admin [database] [psql args...]    the bootstrap superuser (this account) over the socket, on the first member",
 		"  env                                the first member's facts, one NAME=value line each"
@@ -142,42 +133,33 @@ const usage = Arr.join(
 	"\n"
 )
 
-/**
- * `settle` as the family's settle unit: run with this process's own program and flags in the working directory,
- * `systemd-run --wait --pipe`, which answers the unit's exit status and is refused at once when the unit already runs,
- * so two settles of one family never run together and none waits its turn. The unit is given the checkout, so it
- * settles this one's family wherever systemd starts it.
- */
-const settleAsUnit = (family: CheckoutFamily) =>
-	Effect.gen(function* () {
-		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-		const { unit, slice } = settleUnit(family)
-		return yield* spawner.exitCode(
-			ChildProcess.make(
-				"systemd-run",
-				[
-					"--user",
-					"-d",
-					"-u",
-					unit,
-					`--slice=${slice}`,
-					"--wait",
-					"--pipe",
-					"--collect",
-					"-E",
-					`${settlingVariable}=1`,
-					"-E",
-					`${checkoutVariable}=${family.checkout}`,
-					"--",
-					process.execPath,
-					...process.execArgv,
-					...Arr.take(Arr.drop(process.argv, 1), 1),
-					"settle"
-				],
-				{ stdin: "inherit", stdout: "inherit", stderr: "inherit" }
-			)
-		)
+/** A member's index as `settle <member>` names it: decimal, one of the family's. */
+const memberIndex = regex("^[0-9]+$")
+
+/** What `settle [member]` settles: the family, or the member its argument names, else none. */
+const targetOf = (
+	family: CheckoutFamily,
+	args: ReadonlyArray<string>
+): Option.Option<SettleTarget> =>
+	Arr.match(args, {
+		onEmpty: () => Option.some<SettleTarget>({ kind: "family" }),
+		onNonEmpty: ([named, ...rest]) =>
+			memberIndex.test(named) &&
+			Arr.isReadonlyArrayEmpty(rest) &&
+			Number(named) < memberNames(family).length
+				? Option.some<SettleTarget>({ kind: "member", index: Number(named) })
+				: Option.none()
 	})
+
+/**
+ * `target` settled here, as its settle unit runs it: the family's state and its first member (settled, which brings
+ * the member up by its own unit, as a worker does), or one member (memberSettled); either named on stdout.
+ */
+const settledHere = (family: CheckoutFamily, target: SettleTarget) =>
+	Effect.flatMap(
+		target.kind === "family" ? settled(family, unitSettled) : memberSettled(family, target.index),
+		(member) => Console.log(`settled: ${member.name} (port ${member.port})`)
+	)
 
 /** The commands, by name, each from its arguments to its exit status, over this checkout's family. */
 const commands = (
@@ -194,33 +176,32 @@ const commands = (
 		>
 	>
 > => ({
-	settle: () =>
-		Effect.flatMap(
-			Config.option(Config.String(settlingVariable)).pipe(Effect.orDie),
-			(
-				settling
-			): Effect.Effect<
-				number,
-				ClusterFailed | PlatformError.PlatformError,
-				NodeServices.NodeServices
-			> =>
-				Option.isNone(settling)
-					? Effect.map(settleAsUnit(family), (status): number => Number(status))
-					: Effect.as(
-							Effect.flatMap(settled(family), (members) =>
-								Console.log(
-									`settled: ${Arr.join(
-										Arr.map(members, (member) => `${member.name} (port ${member.port})`),
-										", "
-									)}`
+	settle: (args) =>
+		Option.match(targetOf(family, args), {
+			onNone: () => Effect.as(Console.error(usage), 2),
+			onSome: (target) =>
+				Effect.flatMap(
+					Config.option(Config.String(settlingVariable)).pipe(Effect.orDie),
+					(
+						settling
+					): Effect.Effect<
+						number,
+						ClusterFailed | PlatformError.PlatformError,
+						NodeServices.NodeServices
+					> =>
+						Option.isNone(settling)
+							? Effect.flatMap(ChildProcessSpawner.ChildProcessSpawner, (spawner) =>
+									Effect.map(
+										spawner.exitCode(settleUnit(family, target, "inherit").command),
+										(status): number => Number(status)
+									)
 								)
-							),
-							0
-						)
-		),
+							: Effect.as(settledHere(family, target), 0)
+				)
+		}),
 	check: () =>
 		Effect.as(
-			Effect.flatMap(membersRead(family), (members) =>
+			Effect.flatMap(membersRunning(family), (members) =>
 				Console.log(
 					`as its spec states: ${Arr.join(
 						Arr.map(members, (member) => member.name),

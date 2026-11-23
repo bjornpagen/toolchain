@@ -210,9 +210,13 @@ once and 16 twice 4's, for 40 to 47% more of the family in memory (grizzle's pg.
 The testing package's own cluster stays `one`: its resource properties read the databases of the one member, and 7 of
 their 23 fail with a member a worker.
 
-- `toolchain-pg settle` settles the working directory's family, as the unit `<family>-settle`. A fresh family takes
-  about 10 to 40 s (initdb, its owner, template and extensions); a settled one, a second. Trunk's script and a lane run
-  it before any pg run.
+- `toolchain-pg settle` settles the working directory's family's state (its password, hba file and CA, and the ports
+  of all its members) and its first member, as the unit `<family>-settle`. Trunk's script and a lane run it before any
+  pg run. A run's worker brings up the member it reaches on its first need, and no other: where the member is absent
+  or not as its spec states it is settled as the unit `<family>-<i>-settle` (`toolchain-pg settle <i>`), a second asker
+  joining that unit's start, and a settle that fails is that worker's failure. So a family runs the members its runs
+  reached: a run of one worker, one member. A fresh member takes a few seconds (initdb, its owner, template and
+  extensions, a restart); a read of a settled one starts nothing.
 - Over TLS a family's members claim their ports: the lowest from the spec's `from` that no family claims and nothing
   listens at, each claim a file `~/.local/state/toolchain-pg/ports/<port>` naming its family, created with O_EXCL, so two
   families settling at once take different ports. Nothing waits on a claim. A listener outside the claims (a cluster

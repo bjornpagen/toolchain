@@ -13,7 +13,14 @@ import {
 	String as Str
 } from "effect"
 import { checkoutHere, familyOf, homesHere } from "#pg/family.ts"
-import { membersRead, type PgMember, type Platform } from "#pg/settle.ts"
+import {
+	memberBroughtUp,
+	memberNames,
+	membersRunning,
+	type PgMember,
+	type Platform,
+	unitSettled
+} from "#pg/settle.ts"
 import type { LocalCluster, WorkerSizing } from "#pg/spec.ts"
 import { runnerLimits } from "#runner/limits.ts"
 import { NeedFailed, WorkerIndex } from "#runner/services.ts"
@@ -114,12 +121,18 @@ export type PgClusterShape = Readonly<{
 	maintenance: string
 	connect: PgClusterSpec["connect"]
 	superuser: PgClusterSpec["superuser"]
-	/** The cluster's members, read once the first time a need asks (pg/settle.ts membersRead), never changed by a run. */
-	members: Effect.Effect<Arr.NonEmptyReadonlyArray<PgMember>, NeedFailed>
-	/** The member a worker reaches: worker i on member i mod the members' count, so a run's workers spread over them. */
+	/**
+	 * Member `index` mod the family's member count, brought up the first time a need asks (pg/settle.ts memberBroughtUp:
+	 * read, and where it is absent or not as its spec states settled by its own unit, then read again), once a process:
+	 * so a run starts the members its workers reach, and no other.
+	 */
+	memberAt: (index: number) => Effect.Effect<PgMember, NeedFailed>
+	/** The member a worker reaches: worker i on member i mod the members' count (memberAt), so a run's workers spread over them. */
 	memberOf: (
 		worker: Context.Service.Shape<typeof WorkerIndex>
 	) => Effect.Effect<PgMember, NeedFailed>
+	/** The family's members that run now, each read, none brought up (pg/settle.ts membersRunning): what collection reads. */
+	running: Effect.Effect<ReadonlyArray<PgMember>, NeedFailed>
 	/** The worker's owner on `member`, opened once (Owner). */
 	owner: (member: PgMember) => Effect.Effect<Owner, NeedFailed>
 	/**
@@ -271,9 +284,8 @@ export class PgCluster extends Context.Service<PgCluster, PgClusterShape>()(
 	 * The service a repository's runner config provides (its `layer`), built once per worker the first time a case
 	 * there opens a need: it reads nothing then, so a worker whose needs use no database never reaches the cluster; the
 	 * run's checkout and the account's homes are read once the first time a need asks (pg/family.ts checkoutHere,
-	 * homesHere), and its family's members
-	 * (pg/settle.ts membersRead, which refuses a member not as its spec states, naming `toolchain-pg settle`), and an
-	 * owner per member opened when the worker first reaches it, held until the worker ends. Nothing admits a worker or
+	 * homesHere), and the member a need asks for brought up then, once (memberAt), and an owner per member opened when
+	 * the worker first reaches it, held until the worker ends. Nothing admits a worker or
 	 * makes it wait: a member past its capacity refuses a connection.
 	 */
 	static readonly layer = (
@@ -289,18 +301,40 @@ export class PgCluster extends Context.Service<PgCluster, PgClusterShape>()(
 						NeedFailed.make({ need: "the local cluster", message: failure.message })
 					)
 				)
-				const members = yield* Effect.cached(
+				const clusterFailed = (failure: Readonly<{ message: string }>) =>
+					NeedFailed.make({ need: "the local cluster", message: failure.message })
+				const family = yield* Effect.cached(
 					Effect.flatMap(checkout, (at) =>
-						Effect.mapError(
-							Effect.provideContext(
-								Effect.flatMap(homesHere, (homes) =>
-									membersRead(familyOf(spec.cluster, at, homes))
-								),
-								platform
-							),
-							(failure) => NeedFailed.make({ need: "the local cluster", message: failure.message })
-						)
+						Effect.mapBoth(homesHere, {
+							onFailure: clusterFailed,
+							onSuccess: (homes) => familyOf(spec.cluster, at, homes)
+						})
 					)
+				)
+				const brought = new Map<number, Deferred.Deferred<PgMember, NeedFailed>>()
+				const memberAt = (index: number): Effect.Effect<PgMember, NeedFailed> =>
+					Effect.flatMap(family, (reached) => {
+						const at = index % memberNames(reached).length
+						return Option.match(Option.fromUndefinedOr(brought.get(at)), {
+							onSome: Deferred.await,
+							onNone: () => {
+								const bringing = Deferred.makeUnsafe<PgMember, NeedFailed>()
+								brought.set(at, bringing)
+								return Effect.andThen(
+									Deferred.into(
+										Effect.mapError(
+											Effect.provideContext(memberBroughtUp(reached, at, unitSettled), platform),
+											clusterFailed
+										),
+										bringing
+									),
+									Deferred.await(bringing)
+								)
+							}
+						})
+					})
+				const running = Effect.flatMap(family, (reached) =>
+					Effect.mapError(Effect.provideContext(membersRunning(reached), platform), clusterFailed)
 				)
 				const owners = new Map<string, Deferred.Deferred<Owner, NeedFailed>>()
 				return {
@@ -309,10 +343,10 @@ export class PgCluster extends Context.Service<PgCluster, PgClusterShape>()(
 					maintenance: spec.cluster.owner,
 					connect: spec.connect,
 					superuser: spec.superuser,
-					members,
+					memberAt,
+					memberOf: (worker) => memberAt(worker.index),
+					running,
 					checkout,
-					memberOf: (worker) =>
-						Effect.map(members, (all) => Arr.getUnsafe(all, worker.index % all.length)),
 					owner: (member) =>
 						Effect.suspend(() =>
 							Option.match(Option.fromUndefinedOr(owners.get(member.name)), {

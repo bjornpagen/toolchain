@@ -227,9 +227,10 @@ export const collectMemberBy =
 		)
 
 /**
- * Collection, on every member of the cluster: the clones of workers that have ended (a crashed worker's included) and
- * the templates no existing checkout claims (templatesCollected), which `toolchain-test` runs before and after a run
- * whose properties declare a template (runner/run.ts collected).
+ * Collection, on every member of the cluster that runs (PgCluster running; a member stopped holds nothing, its data in
+ * memory gone with its stop): the clones of workers that have ended (a crashed worker's included) and the templates no
+ * existing checkout claims (templatesCollected), which `toolchain-test` runs before and after a run whose properties
+ * declare a template (runner/run.ts collected). It brings up no member.
  */
 export const collect: Effect.Effect<
 	ReadonlyArray<Collected>,
@@ -237,6 +238,6 @@ export const collect: Effect.Effect<
 	PgCluster | FileSystem.FileSystem
 > = Effect.gen(function* () {
 	const cluster = yield* PgCluster
-	const members = yield* cluster.members
+	const members = yield* cluster.running
 	return yield* Effect.forEach(members, (member) => collectMemberBy(collectionPhases)(member))
 })

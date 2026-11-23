@@ -3,9 +3,10 @@
  * repository: its spec (localCluster, the default export of the package's pg.config.ts, which `toolchain-pg` reads);
  * its family at a checkout (familyOf, of the checkout a process's boundary reads, checkoutHere), the members every run
  * and command of the checkout reaches, and no other checkout's; the family's settling (settled: every family of a
- * checkout gone removed, then each member's unit started and given what the spec states, which `toolchain-pg settle`
- * runs as a unit of its own) and its reading (membersRead: what a run reads, writing nothing); and the client check
- * interval every member holds (clientCheckInterval), which bounds how long a backend outlives its client.
+ * checkout gone removed, then its state and its first member, which `toolchain-pg settle` runs as a unit of its own;
+ * memberBroughtUp: the member a worker reaches, settled by its own unit where it is absent) and its reading (memberRead:
+ * what a run reads, writing nothing; membersRunning: every member that runs); and the client check interval every member
+ * holds (clientCheckInterval), which bounds how long a backend outlives its client.
  */
 export {
 	type Checkout,
@@ -23,11 +24,16 @@ export { clientCheckInterval } from "#pg/settings.ts"
 export {
 	caVariable,
 	type MemberTls,
+	type MemberSettle,
+	memberBroughtUp,
 	memberNames,
-	membersRead,
+	memberRead,
+	membersRunning,
+	memberSettled,
 	type PgMember,
 	type Platform,
-	settled
+	settled,
+	unitSettled
 } from "#pg/settle.ts"
 export {
 	type Capacity,

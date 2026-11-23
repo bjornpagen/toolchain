@@ -1,15 +1,15 @@
 /**
- * A cluster's family at a checkout as units of the workbench's PostgreSQL (pg/settle.ts): `settled` starts each
- * member's unit and gives it what its spec states, and `membersRead`, what a run reads, then answers every member, over
- * its socket or over TLS at a port its family claims; a member a setting of which was changed behind the spec's back,
- * or that ALTER SYSTEM gave a setting the spec does not state, is refused, naming `toolchain-pg settle`, and settled
- * again, the unstated setting reset; a settled member promotes a relation's predicate locks where production does,
- * whatever its room, and its predicate lock table stays one a read of pg_locks can copy (settings.ts
- * lockStatusConnections); a run that reads a family never settled is refused at once, starting no unit and writing no
- * state; a member whose port another listener took while it was stopped is refused by its settle before its unit
- * starts, the settle naming that listener's process, and settled once the listener is gone; and a case cluster the
- * process that drew it left as it ended is removed as the next case draws its own, where one a live case holds is
- * kept. Each case's cluster is a unit name of its own, its family at a checkout of the case's own, its units stopped
+ * A cluster's family at a checkout as units of the workbench's PostgreSQL (pg/settle.ts): a settle starts a member's
+ * unit and gives it what its spec states, and a read, what a run reads, then answers every member, over its socket or
+ * over TLS at a port its family claims; a member a setting of which was changed behind the spec's back, or that ALTER
+ * SYSTEM gave a setting the spec does not state, is refused, naming `toolchain-pg settle`, and settled again, the
+ * unstated setting reset; a settled member promotes a relation's predicate locks where production does, whatever its
+ * room, and its predicate lock table stays one a read of pg_locks can copy (settings.ts lockStatusConnections); a read
+ * starts nothing, a family never settled refused at once with no unit started and no state written, and a worker's
+ * first need starts only its own member (memberBroughtUp); a member whose port another listener took while it was
+ * stopped is refused by its settle before its unit starts, the settle naming that listener's process, and settled once
+ * the listener is gone; and a case cluster the process that drew it left as it ended is removed as the next case draws
+ * its own, where one a live case holds is kept. Each case's cluster is a unit name of its own, its family at a checkout of the case's own, its units stopped
  * and its data, claims and state removed when the case ends. Oracle: the specification, stated in the checks.
  */
 import { Array as Arr, Effect, FileSystem, Option, String as Str } from "effect"
@@ -29,10 +29,18 @@ import {
 	portHeldHere,
 	presenceOf,
 	removedAtEnd,
+	settledWhole,
 	shapes,
 	unitActive
 } from "#pg/settle.fixtures.ts"
-import { memberNames, membersRead, settled } from "#pg/settle.ts"
+import {
+	memberBroughtUp,
+	memberNames,
+	memberRead,
+	memberSettled,
+	membersRunning,
+	settled
+} from "#pg/settle.ts"
 import { property } from "#property.ts"
 
 export const settledAsItsSpec = property.exhaust(finite(shapes), {
@@ -45,10 +53,10 @@ export const settledAsItsSpec = property.exhaust(finite(shapes), {
 				const cluster = yield* clusterOf(shape)
 				yield* removedAtEnd(cluster)
 				const family = yield* familyIn(cluster)
-				const members = yield* settled(family)
-				const read = yield* membersRead(family)
+				const members = yield* settledWhole(family)
+				const read = yield* membersRunning(family)
 				const claims = yield* portsHeld(family)
-				const first = Arr.headNonEmpty(read)
+				const first = Arr.headNonEmpty(members)
 				const bin = yield* serverBin({ cluster: family.name, doing: "the property" })
 				yield* adminSql(
 					bin,
@@ -60,9 +68,9 @@ export const settledAsItsSpec = property.exhaust(finite(shapes), {
 					],
 					{ cluster: family.name, doing: "changing a setting behind the spec's back" }
 				)
-				const refusedAfterChange = yield* failedOf(membersRead(family))
-				yield* settled(family)
-				const readAgain = yield* membersRead(family)
+				const refusedAfterChange = yield* failedOf(memberRead(family, 0))
+				yield* settled(family, memberSettled)
+				const readAgain = yield* membersRunning(family)
 				yield* adminSql(
 					bin,
 					{ socket: first.socket, port: first.port },
@@ -88,8 +96,8 @@ export const settledAsItsSpec = property.exhaust(finite(shapes), {
 					],
 					{ cluster: family.name, doing: "reading its relation promotion" }
 				)
-				const refusedAfterUnstated = yield* failedOf(membersRead(family))
-				yield* settled(family)
+				const refusedAfterUnstated = yield* failedOf(memberRead(family, 0))
+				yield* settled(family, memberSettled)
 				const unstatedLeft = yield* adminSql(
 					bin,
 					{ socket: first.socket, port: first.port },
@@ -186,8 +194,8 @@ export const settledAsItsSpec = property.exhaust(finite(shapes), {
 	]
 })
 
-export const unsettledStartsNothing = property.exhaust(finite(shapes), {
-	box: "a cluster's family never settled, over its socket or over TLS, of one member or two",
+export const aReadStartsNothingANeedItsOwnMember = property.exhaust(finite(shapes), {
+	box: "a cluster's family over its socket or over TLS, of one member or two: read never settled, then settled, every member stopped, and its last member reached by a worker's first need",
 	needs: {},
 	situations: [],
 	check: () => (shape) =>
@@ -197,24 +205,33 @@ export const unsettledStartsNothing = property.exhaust(finite(shapes), {
 				const cluster = yield* clusterOf(shape)
 				yield* removedAtEnd(cluster)
 				const family = yield* familyIn(cluster)
-				const refused = yield* failedOf(membersRead(family))
-				const active = yield* Effect.forEach(memberNames(family), unitActive)
-				const data = yield* Effect.forEach(memberNames(family), (name) =>
+				const names = memberNames(family)
+				const refused = yield* Effect.forEach(names, (_, index) =>
+					failedOf(memberRead(family, index))
+				)
+				const active = yield* Effect.forEach(names, unitActive)
+				const data = yield* Effect.forEach(names, (name) =>
 					Effect.flatMap(dataOf(name), (directory) => fs.exists(directory))
 				)
+				yield* settled(family, memberSettled)
+				yield* Effect.forEach(names, memberStopped, { discard: true })
+				const last = names.length - 1
+				yield* memberBroughtUp(family, last, memberSettled)
+				const activeAfterNeed = yield* Effect.forEach(names, unitActive)
 				assert.deepEqual(
-					{ refused, active, data },
+					{ refused, active, data, activeAfterNeed },
 					{
-						refused: true,
-						active: Arr.map(memberNames(family), () => false),
-						data: Arr.map(memberNames(family), () => false)
+						refused: Arr.map(names, () => true),
+						active: Arr.map(names, () => false),
+						data: Arr.map(names, () => false),
+						activeAfterNeed: Arr.map(names, (_, index) => index === last)
 					}
 				)
 			})
 		),
 	oracle: {
 		kind: "specification",
-		name: "a run that reads a family never settled is refused, and no member's unit is started or made"
+		name: "a read starts nothing: a member of a family never settled is refused, and no member's unit is started or made; and a worker's first need starts only the member it reaches, the family's others left stopped"
 	},
 	kept: [],
 	kills: [
@@ -223,7 +240,14 @@ export const unsettledStartsNothing = property.exhaust(finite(shapes), {
 			original: "\t\tconst keptPassword = yield* readIfThere(files.password)\n",
 			replacement:
 				'\t\tyield* Effect.forEach(memberNames(family), (name) => systemctl("start", name, step), { discard: true })\n\t\tconst keptPassword = yield* readIfThere(files.password)\n',
-			why: "A run's read starts each member's unit, as the old harness's need made and started its cluster, so a run changes a server every run shares; the property fails, the units started."
+			why: "A read starts each member's unit, as the old harness's need made and started its cluster, so a run changes a server every run shares; the property fails, the units started."
+		},
+		{
+			file: "packages/testing/src/pg/settle.ts",
+			original: "\t\tEffect.flatMap(Effect.result(settle(family, index)), (settling) =>\n",
+			replacement:
+				"\t\tEffect.flatMap(Effect.result(Effect.forEach(memberNames(family), (_, other) => settle(family, other))), (settling) =>\n",
+			why: "A worker's first need brings up every member of its family, as a settle of the whole family did, so a run of one worker starts every server of it (FAMILYFREE, 2026-11-23: grizzle's union-import by path, one worker, 32 members and 2.2 GiB of /dev/shm); the property fails, the member no worker reached started."
 		}
 	]
 })
@@ -238,16 +262,18 @@ export const aHeldPortRefusesItsSettle = property.exhaust(finite(boolean), {
 				const cluster = yield* clusterOf({ tls: true, spread, room: true })
 				yield* removedAtEnd(cluster)
 				const family = yield* familyIn(cluster)
-				yield* settled(family)
-				const name = Arr.lastNonEmpty(memberNames(family))
+				yield* settledWhole(family)
+				const names = memberNames(family)
+				const name = Arr.lastNonEmpty(names)
+				const last = names.length - 1
 				const claims = yield* portsHeld(family)
-				const port = Arr.getUnsafe(claims, claims.length - 1)
+				const port = Arr.getUnsafe(claims, last)
 				yield* memberStopped(name)
 				const refusal = yield* Effect.scoped(
-					Effect.andThen(portHeldHere(port), Effect.flip(settled(family)))
+					Effect.andThen(portHeldHere(port), Effect.flip(memberSettled(family, last)))
 				)
 				const startedUnder = yield* unitActive(name)
-				const read = yield* settled(family)
+				const read = yield* settledWhole(family)
 				assert.deepEqual(
 					{
 						namesThePort: Str.includes(`its port ${port}`)(refusal.message),
@@ -287,7 +313,7 @@ export const aHeldPortRefusesItsSettle = property.exhaust(finite(boolean), {
 		},
 		{
 			file: "packages/testing/src/pg/settle.ts",
-			original: "\t\t\t\t\tyield* freedForgotten(family.homes.data, name, at)\n",
+			original: "\t\tyield* freedForgotten(family.homes.data, name, at)\n",
 			replacement: "",
 			why: "A settle starts a stopped member as its stop left it, its data directory a link to data in memory that went with the stop, which the workbench's postgres@ unit refuses to start bare (TESTRESET3, 2026-11-23: a freed member started with a plain systemctl start came up as initdb leaves a cluster, at PostgreSQL's port with its own hba file), so a family stopped once never settles again; the property fails, the stopped member never settled."
 		}
