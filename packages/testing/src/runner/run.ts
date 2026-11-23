@@ -42,11 +42,12 @@ import {
 import { moduleClosureAt } from "#runner/module-closure.ts"
 import { type Pool, PoolFailed, placesOf, placesShared, poolOf } from "#runner/pool.ts"
 import type { Reach, SearchRun, Verdict } from "#runner/protocol.ts"
+import { failureLines, lineOf } from "#runner/report.ts"
 import { openedRuns } from "#runner/runs.ts"
 import type { Translation } from "#runner/search.ts"
 import { ModuleClosure, WorkerIndex } from "#runner/services.ts"
 import { labelOf, runOfLabel, type Stack } from "#runner/stack.ts"
-import type { RunUsage } from "#runner/usage.ts"
+import { landedText, type RunUsage } from "#runner/usage.ts"
 import { runWorkers } from "#workers.ts"
 
 /**
@@ -378,7 +379,10 @@ export const runSeedLogged: Effect.Effect<RunSeed, Config.ConfigError | Schema.S
 	})
 
 /**
- * Runs a package's properties on the pool, every property's search at once, its cases spread over every worker:
+ * Runs a package's properties on the pool, every property's search at once, its cases spread over every worker, and
+ * prints each property's verdict line the moment its search ends (a failure's case, failure and replay token under it),
+ * with its time to its verdict and its wall time on the workers, so a run's first failure shows when it lands, never
+ * only once the run ends:
  * loads the package's runner config and the test modules the request names, opens once, here, the run needs their
  * needs read (runner/runs.ts), forks the pool (a worker for every two
  * cores, and never more workers than the run has properties, runWorkers, so a run opens no connection it has no work
@@ -468,6 +472,21 @@ export const runPackage = (
 								})
 								yield* pool.retire(label)
 								const end = yield* liveMillis
+								const usage = yield* pool.usage
+								const wall = Arr.reduce(
+									Arr.filter(usage.properties, (one) => one.label === label),
+									0,
+									(sum, one) => sum + one.casesWall + one.readyingWall
+								)
+								yield* Console.log(
+									Arr.join(
+										[
+											`${lineOf(label, found.property.oracle, verdict)}; ${landedText(end - start, wall)}`,
+											...failureLines(verdict)
+										],
+										"\n"
+									)
+								)
 								return {
 									id: found.id,
 									stack,

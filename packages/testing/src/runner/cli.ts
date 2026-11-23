@@ -45,10 +45,11 @@ import { reportOf, type UsageReport, usageJson, usageLines } from "#runner/usage
  *   toolchain-test kept migrate [paths | ids]   kept tokens written before a weighted decision recorded its option
  *                                               (71eb30f), rewritten in their modules as they are written now, once
  *
- * A run prints its seed first (TEST_SEED reproduces the run), then one line per property, then each failure: the case
- * as it ran, its failure and its replay token. Every process of the run, this one and its workers, runs under the
- * hardened flags and the config's export conditions: when this process was started without them it starts itself
- * again with them. A command is an entry of `commands`; a lane adds its own (affected, kills, mutate, fuzz) there,
+ * A run prints its seed first (TEST_SEED reproduces the run), then one line per property the moment its verdict lands
+ * (a failure's case, failure and replay token under it), then, once every search has ended, each kill's line, each
+ * failure again, the run's CPU and its properties' wall time, the longest first. Every process of the run, this one
+ * and its workers, runs under the hardened flags and the config's export conditions: when this process was started
+ * without them it starts itself again with them. A command is an entry of `commands`; a lane adds its own (affected, kills, mutate, fuzz) there,
  * reading runPackage's results.
  */
 
@@ -56,7 +57,7 @@ import { reportOf, type UsageReport, usageJson, usageLines } from "#runner/usage
 const root = process.cwd()
 
 /**
- * Writes a run's CPU report as JSON under toolchain-test's cache, beside every repository's verdicts:
+ * Writes a run's CPU and wall-time report as JSON under toolchain-test's cache, beside every repository's verdicts:
  * `${XDG_CACHE_HOME:-~/.cache}/toolchain-test/runs/<seed>-<pid>.json`, and the same as `runs/last.json`, with the
  * package root, the run's seed and its wall time; and gives the run's path.
  */
@@ -76,8 +77,8 @@ const usageWritten = (packageRoot: string, seed: number, millis: number, usage: 
 /**
  * `run [paths | ids]`, the full run per production version: every property named, reading no cached pass; then the
  * kills of each whose searches passed, and every verdict recorded in the verdict cache (settle.ts settledRun); each
- * run's line, every kill's, then every failure; 1 when any search failed or any kill did not turn its property red,
- * judged or not.
+ * run's line as it lands (runPackage), then every kill's, every failure and the run's usage; 1 when any search failed
+ * or any kill did not turn its property red, judged or not.
  */
 const run = (selected: ReadonlyArray<string>) =>
 	Effect.scoped(
@@ -85,7 +86,7 @@ const run = (selected: ReadonlyArray<string>) =>
 			const { seed } = yield* runSeedLogged
 			const outcome = yield* runPackage({ root, seed, reach: "full", selected })
 			const { lines, passing } = yield* settledRun(root, selected, outcome)
-			const usage = reportOf(outcome.usage)
+			const usage = reportOf(outcome.usage, outcome.properties)
 			const written = yield* usageWritten(root, seed, outcome.millis, usage)
 			const failed = Arr.filter(outcome.properties, (ran) => ran.verdict.kind === "failed")
 			const failing = Arr.filter(
@@ -95,12 +96,11 @@ const run = (selected: ReadonlyArray<string>) =>
 			yield* Console.log(
 				Arr.join(
 					[
-						...Arr.map(outcome.properties, (ran) => lineOf(ran.label, ran.oracle, ran.verdict)),
 						...lines,
 						...Arr.flatMap(failed, (ran) => ["", `${ran.label}:`, ...failureLines(ran.verdict)]),
 						"",
 						...usageLines(usage),
-						`its CPU, as JSON: ${written}`,
+						`its CPU and wall time, every property's, as JSON: ${written}`,
 						"",
 						`${outcome.properties.length} properties, ${failing} failed, in ${Math.round(outcome.millis)} ms on ${outcome.workers.length} workers`
 					],

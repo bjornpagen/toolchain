@@ -49,7 +49,7 @@ import type { RunnerConfig } from "#runner/config.ts"
 import { runnerLimits } from "#runner/limits.ts"
 import type { Discovered } from "#runner/load.ts"
 import type { LoadKeying } from "#runner/loads.ts"
-import { failureLines, lineOf } from "#runner/report.ts"
+import { failureLines } from "#runner/report.ts"
 import {
 	loadPackage,
 	type RunOutcome,
@@ -814,7 +814,6 @@ export const affected = (root: string, args: ReadonlyArray<string>) =>
 			yield* Console.log(
 				Arr.join(
 					[
-						...Arr.map(outcome.properties, (ran) => lineOf(ran.label, ran.oracle, ran.verdict)),
 						...lines,
 						...Arr.flatMap(failed, (ran) => ["", `${ran.label}:`, ...failureLines(ran.verdict)]),
 						"",

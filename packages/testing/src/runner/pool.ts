@@ -57,7 +57,13 @@ import {
 	schedulerOf,
 	type View
 } from "#runner/schedule.ts"
-import type { ChildrenStated, PoolUsage, PropertyUsage } from "#runner/usage.ts"
+import {
+	type ChildrenStated,
+	type PoolUsage,
+	type PropertyUsage,
+	summed,
+	unused
+} from "#runner/usage.ts"
 import {
 	type Bound,
 	boundOver,
@@ -521,25 +527,27 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 
 		let childrenStated: ChildrenStated = "stated"
 
-		/** Adds what a property's cases or readying cost to its usage, and what the children they ran cost. */
-		const spent = (
-			label: string,
-			cost: Readonly<{ cases: number; casesCpu: number; readyingCpu: number; childrenCpu: number }>
-		) => {
-			const before = properties.get(label) ?? {
+		/**
+		 * Adds what a property's cases or readying cost to its usage: their CPU, the CPU of the children they ran, and
+		 * their wall time on a worker.
+		 */
+		const spent = (label: string, cost: Partial<Omit<PropertyUsage, "label">>) => {
+			properties.set(
 				label,
-				cases: 0,
-				casesCpu: 0,
-				readyingCpu: 0,
-				childrenCpu: 0
-			}
-			properties.set(label, {
-				label,
-				cases: before.cases + cost.cases,
-				casesCpu: before.casesCpu + cost.casesCpu,
-				readyingCpu: before.readyingCpu + cost.readyingCpu,
-				childrenCpu: before.childrenCpu + cost.childrenCpu
-			})
+				summed(properties.get(label) ?? unused(label), { ...unused(label), ...cost })
+			)
+		}
+
+		/**
+		 * The wall time a worker's unit held it, as it ends (answered, or its worker ended): from the moment the worker
+		 * started it (given it, or done with the unit before) to now, the readying in that span taken out; the worker's
+		 * clock for its next unit starts now.
+		 */
+		const heldBy = (worker: Worker): number => {
+			const held = Math.max(0, now - worker.occupiedSince - worker.readyingMillis)
+			worker.occupiedSince = now
+			worker.readyingMillis = 0
+			return held
 		}
 
 		/** The CPU a worker's reading of its children states, noting a reading that states none. */
@@ -700,7 +708,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 			const ran = ranOf(done)
 			counts[worker.index] = (counts[worker.index] ?? 0) + ran.cases
 			scheduler.finished(unit.property, ran.cases, ran.millis, ran.cpu)
-			spent(unit.property, { cases: ran.cases, casesCpu: ran.cpu, readyingCpu: 0, childrenCpu: 0 })
+			spent(unit.property, { cases: ran.cases, casesCpu: ran.cpu })
 			Deferred.doneUnsafe(unit.done, Effect.succeed(done))
 		}
 
@@ -884,6 +892,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 						worker.sent = []
 						worker.ready = false
 						Option.map(lost, ({ unit, phase }) => {
+							spent(unit.property, { casesWall: heldBy(worker) })
 							const how = event.signal ?? `exit ${event.code}`
 							const report = `${lostIn(phase, spec.stall)} ended (${how}) ${endedBy(worker.ended)}; ${heardText(worker.heard, now)}; what it last wrote:\n${worker.output}`
 							finish(worker, unit, doneWith(unit.work, lostResult(report, lostByOf(worker.ended))))
@@ -953,10 +962,9 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 										})
 										worker.readyingMillis += received.millis
 										spent(unit.property, {
-											cases: 0,
-											casesCpu: 0,
 											readyingCpu: received.cpu,
-											childrenCpu: childrenMillis(received.children)
+											childrenCpu: childrenMillis(received.children),
+											readyingWall: received.millis
 										})
 										afterFinished(scheduler, view, apply, worker.index, unit.module)
 										grow()
@@ -971,21 +979,18 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 								const unit = Arr.findFirst(worker.sent, (sent) => sent.id === received.unit)
 								if (Option.isSome(unit)) {
 									yield* settle(worker)
+									const held = heldBy(worker)
 									scheduler.occupied(
 										worker.index,
 										unit.value.property,
 										ranOf(received.done).cases,
-										Math.max(0, now - worker.occupiedSince - worker.readyingMillis)
+										held
 									)
-									worker.occupiedSince = now
-									worker.readyingMillis = 0
-									finish(worker, unit.value, received.done)
 									spent(unit.value.property, {
-										cases: 0,
-										casesCpu: 0,
-										readyingCpu: 0,
-										childrenCpu: childrenMillis(received.children)
+										childrenCpu: childrenMillis(received.children),
+										casesWall: held
 									})
+									finish(worker, unit.value, received.done)
 									afterFinished(scheduler, view, apply, worker.index, unit.value.module)
 									grow()
 								}
