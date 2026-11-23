@@ -18,8 +18,13 @@ import { type LocalCluster, UnitName } from "#pg/spec.ts"
  * it, reaches the checkout's own family, `<unit>-<key>` (familyOf), and no other checkout's: trunk's worktree has one,
  * and each lane's workspace another. So the workers one member serves are its own run's, as its spec sizes them, never
  * those of every run on the machine at once (2026-11-22: trunk's 32-worker pg tier and every lane's run on grizzle's
- * one family, 54 to 75% of its busy backends waiting on SSI's cluster-wide LWLocks). A family lives as long as its
- * checkout, its templates kept between the checkout's runs, and goes with it (familiesCollected).
+ * one family, 54 to 75% of its busy backends waiting on SSI's cluster-wide LWLocks). A family's state lives as long as
+ * its checkout and goes with it (familiesCollected); its members' data lives as long as their units run, its templates
+ * kept between the checkout's runs while it does. A member in memory (a pattern of ~/.config/postgres/memory matching
+ * its name) runs with its spec or holds no memory: the workbench's postgres@ unit removes its data as it stops, but not
+ * as it restarts, and refuses to start it bare, without the spec that went with its files
+ * (~/Documents/beefy-workspace/workbench/parts/postgres/files/postgres-cluster); the next settle makes it again in
+ * seconds (settle.ts freedForgotten).
  */
 
 /**
@@ -110,34 +115,21 @@ export const checkoutAt = (path: string): Checkout => checkoutOf(path)
 
 /**
  * Where families live: `states`, a directory a family (its owner's password, hba file, unrelated CA and the checkout it
- * records) beside the directory of port claims (claimsDirectory); `data`, the workbench's postgres@ units' data, a
- * directory a member; and `memory`, where the workbench keeps the data of a member its memory list names (a pattern of
- * ~/.config/postgres/memory matching its name), a directory a member, which the member's directory in `data` links to.
- * Read once at a process's boundary (homesHere); a test gives its own.
+ * records) beside the directory of port claims (claimsDirectory); and `data`, the workbench's postgres@ units' data, a
+ * directory a member (for a member in memory, a link to its data in /dev/shm, which names nothing once its unit
+ * stopped). Read once at a process's boundary (homesHere); a test gives its own.
  */
-export type Homes = Readonly<{ states: string; data: string; memory: string }>
+export type Homes = Readonly<{ states: string; data: string }>
 
 /**
- * The workbench's memory home (Homes `memory`): the folder in /dev/shm the workbench's postgres-cluster makes a listed
- * member's data in, `/dev/shm/postgres/$name` (~/Documents/beefy-workspace/workbench/parts/postgres/files/
- * postgres-cluster).
- */
-const memoryHome = "/dev/shm/postgres"
-
-/**
- * The homes of this account (Homes): states `${XDG_STATE_HOME:-~/.local/state}/toolchain-pg`, data
- * `~/.local/var/postgres`, where the workbench's postgres@ template keeps each member's, and the workbench's memory
- * home (memoryHome).
+ * The homes of this account (Homes): states `${XDG_STATE_HOME:-~/.local/state}/toolchain-pg`, and data
+ * `~/.local/var/postgres`, where the workbench's postgres@ template keeps each member's.
  */
 export const homesHere: Effect.Effect<Homes, ClusterFailed> = Effect.mapError(
 	Effect.gen(function* () {
 		const home = yield* Config.String("HOME")
 		const base = yield* Config.withDefault(Config.String("XDG_STATE_HOME"), `${home}/.local/state`)
-		return {
-			states: `${base}/toolchain-pg`,
-			data: `${home}/.local/var/postgres`,
-			memory: memoryHome
-		}
+		return { states: `${base}/toolchain-pg`, data: `${home}/.local/var/postgres` }
 	}),
 	() =>
 		ClusterFailed.make({
@@ -483,9 +475,9 @@ const membersRemoved = (home: string, name: string) =>
 
 /**
  * Everything of the family `name` in `homes` gone: its members' units stopped (`postgres@<name>-*`, systemctl's pattern
- * over the units it has loaded) and their failures forgotten, each member's data directory (`<data>/<name>-<i>`) and
- * its data in memory (`<memory>/<name>-<i>`, which removing the link in `data` leaves in /dev/shm), its port claims
- * (only the files holding its name) and its state directory removed. What is already gone is no error.
+ * over the units it has loaded), which takes a member's data in memory with it, and their failures forgotten, each
+ * member's data directory (`<data>/<name>-<i>`), its port claims (only the files holding its name) and its state
+ * directory removed. What is already gone is no error.
  */
 export const familyRemoved = (homes: Homes, name: string) =>
 	Effect.gen(function* () {
@@ -499,9 +491,7 @@ export const familyRemoved = (homes: Homes, name: string) =>
 				),
 			{ discard: true }
 		)
-		yield* Effect.forEach([homes.data, homes.memory], (home) => membersRemoved(home, name), {
-			discard: true
-		})
+		yield* membersRemoved(homes.data, name)
 		const ports = yield* claimsOf(homes, name)
 		yield* Effect.forEach(
 			ports,

@@ -157,8 +157,9 @@ const namesIn = (directory: string) =>
 /**
  * Case cluster `unit` gone, whatever is left of it: its members' units stopped (`postgres@<unit>-*`, systemctl's
  * pattern over the units it has loaded, every family's) and their failures forgotten, then every member's data
- * directory (`<data>/<unit>-*`, the workbench's) and its data in memory (`<memory>/<unit>-*`, where the workbench's
- * memory list names it) removed. Its families' state and claims are in the case's scratch directory, gone with it.
+ * directory (`<data>/<unit>-*`, the workbench's) removed: a member in memory (the workbench's memory list names
+ * `tcs-*`) takes its data with its unit's stop. Its families' state and claims are in the case's scratch directory,
+ * gone with it.
  */
 const clusterRemoved = (unit: string) =>
 	Effect.gen(function* () {
@@ -173,16 +174,10 @@ const clusterRemoved = (unit: string) =>
 			{ discard: true }
 		)
 		const homes = yield* machineHomes
+		const names = yield* namesIn(homes.data)
 		yield* Effect.forEach(
-			[homes.data, homes.memory],
-			(home) =>
-				Effect.flatMap(namesIn(home), (names) =>
-					Effect.forEach(
-						Arr.filter(names, Str.startsWith(`${unit}-`)),
-						(member) => Effect.ignore(fs.remove(`${home}/${member}`, { recursive: true })),
-						{ discard: true }
-					)
-				),
+			Arr.filter(names, Str.startsWith(`${unit}-`)),
+			(member) => Effect.ignore(fs.remove(`${homes.data}/${member}`, { recursive: true })),
 			{ discard: true }
 		)
 	})
@@ -263,7 +258,7 @@ export const clusterOf = (
 /**
  * `cluster`'s family at a checkout of the case's own, with a states home of its own, both in a scratch directory made
  * for the enclosing scope (the checkout under no `.git`, so a checkout while it exists, family.ts checkoutLive), and the
- * workbench's data and memory homes, where its members' units keep their data.
+ * workbench's data home, where its members' units keep their data.
  */
 export const familyIn = (cluster: LocalCluster) =>
 	Effect.gen(function* () {
@@ -274,8 +269,7 @@ export const familyIn = (cluster: LocalCluster) =>
 		const homes = yield* machineHomes
 		return familyOf(cluster, checkoutAt(`${real}/checkout`), {
 			states: `${real}/state`,
-			data: homes.data,
-			memory: homes.memory
+			data: homes.data
 		})
 	})
 
@@ -300,7 +294,10 @@ export const unitActive = (name: string) =>
 export const removedAtEnd = (cluster: LocalCluster) =>
 	Effect.addFinalizer(() => clusterRemoved(cluster.unit))
 
-/** `name`'s member unit stopped (`systemctl --user stop`), its data kept, as a person or the machine's restart does. */
+/**
+ * `name`'s member unit stopped (`systemctl --user stop`), as a person does: a case cluster's member is in memory
+ * (`tcs-*`), so its data goes with the stop and the next settle makes it again.
+ */
 export const memberStopped = (name: string) =>
 	Effect.flatMap(ChildProcessSpawner.ChildProcessSpawner, (spawner) =>
 		Effect.orDie(spawner.exitCode(ChildProcess.make("systemctl", ["--user", "stop", unitOf(name)])))

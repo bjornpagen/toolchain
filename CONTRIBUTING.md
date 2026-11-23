@@ -213,12 +213,13 @@ their 23 fail with a member a worker.
   loopback of two.
 - Every settle first collects its cluster's families whose checkout is gone: the folder deleted, or a workspace
   forgotten whose folder lingers (its `.git` file names a git directory that `jj workspace forget` or `git worktree
-  prune` removed). Their units are stopped, and their data, claims and state removed, a member's data in memory with
-  them. It reads only its own cluster's families (`<unit>-<8 hex digits>`) and never a cluster made before families. A
-  live checkout's family stays running between runs, its templates kept.
-- A member whose name a pattern of `~/.config/postgres/memory` matches (the workbench's postgres part) has its data in
-  `/dev/shm/postgres/<member>`, its data directory a link there (`Homes.memory`). Removing a family removes both: the
-  link alone left the data in memory until the machine restarted.
+  prune` removed). Their units are stopped, and their data, claims and state removed. It reads only its own cluster's
+  families (`<unit>-<8 hex digits>`) and never a cluster made before families. A live checkout's family stays running
+  between runs, its templates kept.
+- A member whose name a pattern of `~/.config/postgres/memory` matches (the workbench's postgres part) is running or
+  absent: its data is in `/dev/shm/postgres/<member>`, its data directory a link there, and the workbench's postgres@
+  unit removes both as it stops, but not as it restarts (`postgres-cluster --stopped`). Stop a family no run uses
+  (`systemctl --user stop 'postgres@<family>-*'`) and its memory is free; the next settle makes it again in seconds.
 - A throwaway member logs no test's errors: a client backend's ERROR, WARNING and NOTICE go to the test that provoked
   them, and its log is its unit's journal, whose rate limit dropped other units' lines when test servers logged tens of
   thousands of lines a member (settings.ts ofDurability).

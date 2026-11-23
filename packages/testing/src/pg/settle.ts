@@ -479,15 +479,36 @@ const portFree = (name: string, port: number, step: Step) =>
 	})
 
 /**
+ * Member `name`'s data directory in `data` (`<data>/<name>`) removed where it is a link that names nothing: a member in
+ * memory whose files went with its unit's stop or with a restart of the machine, which the workbench's postgres@ unit
+ * refuses to start bare rather than make it again as initdb leaves a cluster, its spec gone with its files
+ * (~/Documents/beefy-workspace/workbench/parts/postgres/files/postgres-cluster). With the link gone the member's start
+ * makes it again, and the settle gives it its spec. A data directory that holds a cluster, on disk or in memory, and
+ * one that is not there are left as they are.
+ */
+const freedForgotten = (data: string, name: string, step: Step) =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		const path = `${data}/${name}`
+		const linked = yield* Effect.isSuccess(fs.readLink(path))
+		const named = yield* Effect.orElseSucceed(fs.exists(path), () => false)
+		if (linked && !named) {
+			yield* Effect.mapError(fs.remove(path), (error) =>
+				failed(step, `${path}, a link to a freed member's data: ${error.message}`)
+			)
+		}
+	})
+
+/**
  * Settles `family`: first every family of its cluster whose checkout is gone removed (family.ts familiesCollected),
- * then its state (the checkout it records; the owner's password, kept once made; its hba file; its unrelated CA) and its
- * ports (portsOf), then each member at once: over TLS its port refused where another listener holds it (portFree), its
- * unit started (systemd makes it on its first start), every setting its
- * spec states written by ALTER SYSTEM and read again (pg_reload_conf), what the bootstrap superuser makes in it (owned),
- * and its unit restarted when a setting it changed waits for a restart (pg_settings' pending_restart), which only a
- * change of the spec or of the machine's memory makes; then the members read as a run reads them (membersRead), which
- * fails if any is still not as its spec states. A run never settles: `toolchain-pg settle` does, as a unit of its own
- * (pg/cli.ts).
+ * then its state (the checkout it records; the owner's password, kept once made; its hba file; its unrelated CA) and
+ * its ports (portsOf), then each member at once: over TLS its port refused where another listener holds it (portFree),
+ * a freed member's link to nothing removed (freedForgotten), its unit started (systemd makes it on its first start, and
+ * again after it was freed), every setting its spec states written by ALTER SYSTEM and read again (pg_reload_conf),
+ * what the bootstrap superuser makes in it (owned), and its unit restarted when a setting it changed waits for a
+ * restart (pg_settings' pending_restart), which only a fresh member, a change of the spec or of the machine's memory
+ * makes; then the members read as a run reads them (membersRead), which fails if any is still not as its spec states. A
+ * run never settles: `toolchain-pg settle` does, as a unit of its own (pg/cli.ts).
  */
 export const settled = (
 	family: CheckoutFamily
@@ -526,6 +547,7 @@ export const settled = (
 					if (cluster.network.kind === "tls") {
 						yield* portFree(name, port, at)
 					}
+					yield* freedForgotten(family.homes.data, name, at)
 					yield* systemctl("start", name, at)
 					const socket = yield* socketNow(name, at)
 					const blockSize = yield* blockSizeOf(bin, socket, at)

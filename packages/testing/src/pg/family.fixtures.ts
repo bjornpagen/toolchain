@@ -29,14 +29,12 @@ const scratch = Effect.gen(function* () {
 /** A checkout of the case's own, a scratch directory, at its real path. */
 export const scratchCheckout = Effect.map(scratch, checkoutAt)
 
-/** Homes of the case's own: a states, a data and a memory directory in a scratch directory. */
+/** Homes of the case's own: a states and a data directory in a scratch directory. */
 export const scratchHomes = Effect.gen(function* () {
 	const fs = yield* FileSystem.FileSystem
 	const root = yield* scratch
-	const homes: Homes = { states: `${root}/state`, data: `${root}/data`, memory: `${root}/memory` }
-	yield* Effect.forEach([homes.states, homes.data, homes.memory], (home) =>
-		Effect.orDie(fs.makeDirectory(home))
-	)
+	const homes: Homes = { states: `${root}/state`, data: `${root}/data` }
+	yield* Effect.forEach([homes.states, homes.data], (home) => Effect.orDie(fs.makeDirectory(home)))
 	return homes
 })
 
@@ -68,8 +66,8 @@ export const kinds: ReadonlyArray<CheckoutKind> & Readonly<{ 0: CheckoutKind }> 
 
 /**
  * A family of `cluster` at a checkout of `kind` in `homes`, made as settle leaves one, with no server: its state's
- * checkout record (but an unrecorded one's), a member's data in memory and its data directory a link to it, as the
- * workbench makes a member its memory list names, and a port claim from `from`.
+ * checkout record (but an unrecorded one's), a member's data directory, as the workbench keeps a stopped member's on
+ * disk, and a port claim from `from`.
  */
 export const familyOfKind = (
 	cluster: Parameters<typeof familyOf>[0],
@@ -92,10 +90,7 @@ export const familyOfKind = (
 		if (kind !== "unrecorded") {
 			yield* checkoutRecorded(family, step(family))
 		}
-		yield* Effect.orDie(fs.makeDirectory(`${homes.memory}/${family.name}-0`))
-		yield* Effect.orDie(
-			fs.symlink(`${homes.memory}/${family.name}-0`, `${homes.data}/${family.name}-0`)
-		)
+		yield* Effect.orDie(fs.makeDirectory(`${homes.data}/${family.name}-0`))
 		yield* portsClaimed(family, 1, from, step(family))
 		const gitdir = `${checkout}.gitdir`
 		switch (kind) {
@@ -121,19 +116,15 @@ export const familyOfKind = (
 		return family
 	})
 
-/**
- * What is left of `family`: its state, its member's data directory (the link itself, whatever it points at), its
- * member's data in memory, and its claims.
- */
+/** What is left of `family`: its state, its member's data directory, and its claims. */
 export const leftOf = (family: CheckoutFamily) =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem
 		const exists = (path: string) => Effect.orElseSucceed(fs.exists(path), () => false)
 		const state = yield* exists(stateOf(family))
-		const data = yield* Effect.isSuccess(fs.readLink(`${family.homes.data}/${family.name}-0`))
-		const memory = yield* exists(`${family.homes.memory}/${family.name}-0`)
+		const data = yield* exists(`${family.homes.data}/${family.name}-0`)
 		const claims = yield* portsHeld(family)
-		return { state, data, memory, claims: claims.length }
+		return { state, data, claims: claims.length }
 	})
 
 /**

@@ -269,7 +269,7 @@ export const aHeldPortRefusesItsSettle = property.exhaust(finite(boolean), {
 		),
 	oracle: {
 		kind: "specification",
-		name: "a member whose claimed port another listener holds is refused by its settle before its unit starts, the refusal naming the port and the holder's process, and its family settled at the same ports once the listener is gone"
+		name: "a member whose claimed port another listener holds is refused by its settle before its unit starts, the refusal naming the port and the holder's process, and its family settled at the same ports once the listener is gone, the stopped member, whose data in memory went with its stop, made again"
 	},
 	kept: [],
 	kills: [
@@ -284,6 +284,12 @@ export const aHeldPortRefusesItsSettle = property.exhaust(finite(boolean), {
 			original: '\t\t\t(holder) => holder.kind === "unseen" || holder.unit !== unitOf(name)\n',
 			replacement: "\t\t\t() => true\n",
 			why: "A settle counts its member's own server as another holder, so every settle of a running family refuses it; the property fails, the family never settled again once the listener is gone."
+		},
+		{
+			file: "packages/testing/src/pg/settle.ts",
+			original: "\t\t\t\t\tyield* freedForgotten(family.homes.data, name, at)\n",
+			replacement: "",
+			why: "A settle starts a stopped member as its stop left it, its data directory a link to data in memory that went with the stop, which the workbench's postgres@ unit refuses to start bare (TESTRESET3, 2026-11-23: a freed member started with a plain systemctl start came up as initdb leaves a cluster, at PostgreSQL's port with its own hba file), so a family stopped once never settles again; the property fails, the stopped member never settled."
 		}
 	]
 })
