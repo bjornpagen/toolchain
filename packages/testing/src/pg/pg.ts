@@ -5,8 +5,8 @@
  * and command of the checkout reaches, and no other checkout's; the family's settling (settled: every family of a
  * checkout gone removed, then its state and its first member, which `toolchain-pg settle` runs as a unit of its own;
  * memberBroughtUp: the member a worker reaches, settled by its own unit where it is absent) and its reading (memberRead:
- * what a run reads, writing nothing; membersRunning: every member that runs); and the client check interval every member
- * holds (clientCheckInterval), which bounds how long a backend outlives its client.
+ * what a run reads, writing nothing; memberAtPort: the one at a port; membersRunning: every member that runs); and the
+ * client check interval every member holds (clientCheckInterval), which bounds how long a backend outlives its client.
  */
 export {
 	type Checkout,
@@ -25,6 +25,7 @@ export {
 	caVariable,
 	type MemberTls,
 	type MemberSettle,
+	memberAtPort,
 	memberBroughtUp,
 	memberNames,
 	memberRead,

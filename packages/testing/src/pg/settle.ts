@@ -653,6 +653,33 @@ export const memberRead = (
 	)
 
 /**
+ * The member of `family` whose port its family's claims give as `port` (over its socket alone every member is at
+ * PostgreSQL's default port, so the first), read as a run reads it (memberRead), reading no other member: what a process
+ * its parent lent a member by its port reaches (grizzle's command line children, which read a member a command). A port
+ * no member of the family is at fails, naming the members' ports.
+ */
+export const memberAtPort = (
+	family: CheckoutFamily,
+	port: number
+): Effect.Effect<PgMember, ClusterFailed, Platform> =>
+	Effect.gen(function* () {
+		const step: Step = { cluster: family.name, doing: `reading its member at port ${port}` }
+		const state = yield* familyState(family, step)
+		const index = yield* Effect.mapError(
+			Effect.fromOption(Arr.findFirstIndex(state.members, ([, held]) => held === port)),
+			() =>
+				failed(
+					step,
+					`no member of it is at port ${port}: its members are at ${Arr.join(
+						Arr.map(state.members, ([, held]) => `${held}`),
+						", "
+					)}`
+				)
+		)
+		return yield* memberReadIn(family, state, index)
+	})
+
+/**
  * `family`'s members that run now, in member order, each read as a run reads it (memberRead): a member whose socket
  * directory holds no socket, its unit stopped or never started, is not among them. What collection reads
  * (resources/collect.ts) and `toolchain-pg check`: a family runs only the members its runs' workers reached.

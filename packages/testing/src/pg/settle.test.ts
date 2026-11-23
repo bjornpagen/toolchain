@@ -34,6 +34,7 @@ import {
 	unitActive
 } from "#pg/settle.fixtures.ts"
 import {
+	memberAtPort,
 	memberBroughtUp,
 	memberNames,
 	memberRead,
@@ -55,6 +56,7 @@ export const settledAsItsSpec = property.exhaust(finite(shapes), {
 				const family = yield* familyIn(cluster)
 				const members = yield* settledWhole(family)
 				const read = yield* membersRunning(family)
+				const atPorts = yield* Effect.forEach(read, (member) => memberAtPort(family, member.port))
 				const claims = yield* portsHeld(family)
 				const first = Arr.headNonEmpty(members)
 				const bin = yield* serverBin({ cluster: family.name, doing: "the property" })
@@ -124,6 +126,7 @@ export const settledAsItsSpec = property.exhaust(finite(shapes), {
 							member.tls.kind
 						]),
 						claims: claims.length,
+						atPorts: Arr.map(atPorts, (member) => member.name),
 						claimedFromItsFirst: Arr.every(
 							claims,
 							(port) => network.kind === "tls" && port >= network.from
@@ -148,6 +151,9 @@ export const settledAsItsSpec = property.exhaust(finite(shapes), {
 							network.kind
 						]),
 						claims: network.kind === "tls" ? memberNames(family).length : 0,
+						atPorts: Arr.map(memberNames(family), (name) =>
+							network.kind === "tls" ? name : Arr.headNonEmpty(memberNames(family))
+						),
 						claimedFromItsFirst: true,
 						names: shape.spread ? 2 : 1,
 						refusedAfterChange: true,
@@ -162,7 +168,7 @@ export const settledAsItsSpec = property.exhaust(finite(shapes), {
 		),
 	oracle: {
 		kind: "specification",
-		name: "a settled cluster's members are read as its spec states them, each its unit's, at its port; one changed behind the spec's back, or given a setting its spec does not state, is refused, and settled again, the unstated setting reset; and its predicate lock table, copied whole by a read of pg_locks, a SERIALIZABLEXACT of 168 bytes an entry, stays within PostgreSQL's 1 GB allocation"
+		name: "a settled cluster's members are read as its spec states them, each its unit's, at its port, and each read alone by its port; one changed behind the spec's back, or given a setting its spec does not state, is refused, and settled again, the unstated setting reset; and its predicate lock table, copied whole by a read of pg_locks, a SERIALIZABLEXACT of 168 bytes an entry, stays within PostgreSQL's 1 GB allocation"
 	},
 	kept: [],
 	kills: [
@@ -172,6 +178,13 @@ export const settledAsItsSpec = property.exhaust(finite(shapes), {
 				'\t\t\t\t\treturn actual === value ? [] : [{ kind: "held", name, expected: value, actual }]\n',
 			replacement: "\t\t\t\t\treturn []\n",
 			why: "A run reads a member whatever its settings, so one a person changed behind the spec's back serves the run as if it held its spec; the property fails, the changed member read."
+		},
+		{
+			file: "packages/testing/src/pg/settle.ts",
+			original:
+				"\t\t\tEffect.fromOption(Arr.findFirstIndex(state.members, ([, held]) => held === port)),\n",
+			replacement: "\t\t\tEffect.fromOption(Arr.findFirstIndex(state.members, () => true)),\n",
+			why: "A process lent a member by its port reaches the family's first member whatever the port, so a command line child of a case on member 1 opens its sessions on member 0, under another worker's budget; the property fails, the second member's port answered by the first."
 		},
 		{
 			file: "packages/testing/src/pg/settle.ts",
