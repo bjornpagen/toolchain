@@ -157,8 +157,8 @@ const namesIn = (directory: string) =>
 /**
  * Case cluster `unit` gone, whatever is left of it: its members' units stopped (`postgres@<unit>-*`, systemctl's
  * pattern over the units it has loaded, every family's) and their failures forgotten, then every member's data
- * directory (`<data>/<unit>-*`, the workbench's) removed. Its families' state and claims are in the case's scratch
- * directory, gone with it.
+ * directory (`<data>/<unit>-*`, the workbench's) and its data in memory (`<memory>/<unit>-*`, where the workbench's
+ * memory list names it) removed. Its families' state and claims are in the case's scratch directory, gone with it.
  */
 const clusterRemoved = (unit: string) =>
 	Effect.gen(function* () {
@@ -173,11 +173,16 @@ const clusterRemoved = (unit: string) =>
 			{ discard: true }
 		)
 		const homes = yield* machineHomes
-		const data = yield* namesIn(homes.data)
-		const members = Arr.filter(data, Str.startsWith(`${unit}-`))
 		yield* Effect.forEach(
-			members,
-			(member) => Effect.ignore(fs.remove(`${homes.data}/${member}`, { recursive: true })),
+			[homes.data, homes.memory],
+			(home) =>
+				Effect.flatMap(namesIn(home), (names) =>
+					Effect.forEach(
+						Arr.filter(names, Str.startsWith(`${unit}-`)),
+						(member) => Effect.ignore(fs.remove(`${home}/${member}`, { recursive: true })),
+						{ discard: true }
+					)
+				),
 			{ discard: true }
 		)
 	})
@@ -258,7 +263,7 @@ export const clusterOf = (
 /**
  * `cluster`'s family at a checkout of the case's own, with a states home of its own, both in a scratch directory made
  * for the enclosing scope (the checkout under no `.git`, so a checkout while it exists, family.ts checkoutLive), and the
- * workbench's data home, where its members' units keep their data.
+ * workbench's data and memory homes, where its members' units keep their data.
  */
 export const familyIn = (cluster: LocalCluster) =>
 	Effect.gen(function* () {
@@ -269,7 +274,8 @@ export const familyIn = (cluster: LocalCluster) =>
 		const homes = yield* machineHomes
 		return familyOf(cluster, checkoutAt(`${real}/checkout`), {
 			states: `${real}/state`,
-			data: homes.data
+			data: homes.data,
+			memory: homes.memory
 		})
 	})
 
@@ -293,6 +299,26 @@ export const unitActive = (name: string) =>
 /** `cluster` gone as the enclosing scope closes, however it ends (clusterRemoved), while the scope still holds it. */
 export const removedAtEnd = (cluster: LocalCluster) =>
 	Effect.addFinalizer(() => clusterRemoved(cluster.unit))
+
+/** `name`'s member unit stopped (`systemctl --user stop`), its data kept, as a person or the machine's restart does. */
+export const memberStopped = (name: string) =>
+	Effect.flatMap(ChildProcessSpawner.ChildProcessSpawner, (spawner) =>
+		Effect.orDie(spawner.exitCode(ChildProcess.make("systemctl", ["--user", "stop", unitOf(name)])))
+	)
+
+/**
+ * `port` held at IPv4's loopback by a listener of this process for the enclosing scope, where a member listening at
+ * localhost binds it: another listener at a family's port, as a cluster outside the claims holds one. A port it cannot
+ * take ends the case: the member it was stopped from holds it still.
+ */
+export const portHeldHere = (port: number) =>
+	Effect.gen(function* () {
+		const listener = yield* listenerAt({ port, host: Arr.headNonEmpty(LOOPBACKS) })
+		if (Option.isNone(listener)) {
+			return yield* Effect.die(`port ${port} is held already: its member still listens there`)
+		}
+		yield* Effect.addFinalizer(() => closedAll([listener.value]))
+	})
 
 /** A left cluster's case: one member or two, over its socket, and whether the process that drew it is still alive. */
 export type Left = Readonly<{ spread: boolean; alive: boolean }>

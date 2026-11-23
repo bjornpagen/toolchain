@@ -5,15 +5,16 @@
  * or that ALTER SYSTEM gave a setting the spec does not state, is refused, naming `toolchain-pg settle`, and settled
  * again, the unstated setting reset; a settled member promotes a relation's predicate locks where production does,
  * whatever its room, and its predicate lock table stays one a read of pg_locks can copy (settings.ts
- * lockStatusConnections); and a run that reads a family never settled is refused at once, starting no unit and writing
- * no state; and a case cluster the process that drew it left as it ended is removed as the next case draws its own,
- * where one a live case holds is kept. Each case's cluster is a unit name of its own, its family at a checkout of the
- * case's own, its units stopped and its data, claims and state removed when the case ends. Oracle: the specification,
- * stated in the checks.
+ * lockStatusConnections); a run that reads a family never settled is refused at once, starting no unit and writing no
+ * state; a member whose port another listener took while it was stopped is refused by its settle before its unit
+ * starts, the settle naming that listener's process, and settled once the listener is gone; and a case cluster the
+ * process that drew it left as it ended is removed as the next case draws its own, where one a live case holds is
+ * kept. Each case's cluster is a unit name of its own, its family at a checkout of the case's own, its units stopped
+ * and its data, claims and state removed when the case ends. Oracle: the specification, stated in the checks.
  */
-import { Array as Arr, Effect, FileSystem, Option } from "effect"
+import { Array as Arr, Effect, FileSystem, Option, String as Str } from "effect"
 import { assert } from "#assert.ts"
-import { finite } from "#gen.ts"
+import { boolean, finite } from "#gen.ts"
 import { portsHeld } from "#pg/family.ts"
 import { adminSql, serverBin } from "#pg/server.ts"
 import {
@@ -24,6 +25,8 @@ import {
 	holdTaken,
 	leftCluster,
 	lefts,
+	memberStopped,
+	portHeldHere,
 	presenceOf,
 	removedAtEnd,
 	shapes,
@@ -221,6 +224,66 @@ export const unsettledStartsNothing = property.exhaust(finite(shapes), {
 			replacement:
 				'\t\tyield* Effect.forEach(memberNames(family), (name) => systemctl("start", name, step), { discard: true })\n\t\tconst keptPassword = yield* readIfThere(files.password)\n',
 			why: "A run's read starts each member's unit, as the old harness's need made and started its cluster, so a run changes a server every run shares; the property fails, the units started."
+		}
+	]
+})
+
+export const aHeldPortRefusesItsSettle = property.exhaust(finite(boolean), {
+	box: "a settled family over TLS of one member or two, its last member stopped and its port taken by a listener of the case's process",
+	needs: {},
+	situations: [],
+	check: () => (spread) =>
+		Effect.scoped(
+			Effect.gen(function* () {
+				const cluster = yield* clusterOf({ tls: true, spread, room: true })
+				yield* removedAtEnd(cluster)
+				const family = yield* familyIn(cluster)
+				yield* settled(family)
+				const name = Arr.lastNonEmpty(memberNames(family))
+				const claims = yield* portsHeld(family)
+				const port = Arr.getUnsafe(claims, claims.length - 1)
+				yield* memberStopped(name)
+				const refusal = yield* Effect.scoped(
+					Effect.andThen(portHeldHere(port), Effect.flip(settled(family)))
+				)
+				const startedUnder = yield* unitActive(name)
+				const read = yield* settled(family)
+				assert.deepEqual(
+					{
+						namesThePort: Str.includes(`its port ${port}`)(refusal.message),
+						namesTheHolder: Str.includes(`(pid ${process.pid})`)(refusal.message),
+						startedUnder,
+						settledOnceGone: Arr.map(read, (member) => [member.name, member.port])
+					},
+					{
+						namesThePort: true,
+						namesTheHolder: true,
+						startedUnder: false,
+						settledOnceGone: Arr.map(memberNames(family), (member, index) => [
+							member,
+							Arr.getUnsafe(claims, index)
+						])
+					}
+				)
+			})
+		),
+	oracle: {
+		kind: "specification",
+		name: "a member whose claimed port another listener holds is refused by its settle before its unit starts, the refusal naming the port and the holder's process, and its family settled at the same ports once the listener is gone"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/pg/settle.ts",
+			original: '\t\t\t(holder) => holder.kind === "unseen" || holder.unit !== unitOf(name)\n',
+			replacement: "\t\t\t() => false\n",
+			why: "A settle starts a member whatever holds its port, as before families' claims were checked, so its server fails to bind the port another listener took and the settle reports only that its unit failed to start, naming no holder; the property fails, the holder unnamed."
+		},
+		{
+			file: "packages/testing/src/pg/settle.ts",
+			original: '\t\t\t(holder) => holder.kind === "unseen" || holder.unit !== unitOf(name)\n',
+			replacement: "\t\t\t() => true\n",
+			why: "A settle counts its member's own server as another holder, so every settle of a running family refuses it; the property fails, the family never settled again once the listener is gone."
 		}
 	]
 })

@@ -194,19 +194,34 @@ trunk's worktree and each lane's workspace never share a member and never wait o
 waited on them). The checkout is the workspace root of the working directory (the nearest directory above it holding
 `pnpm-workspace.yaml`, else the nearest holding `.git`), so every package of one checkout reaches one family and settles
 it from anywhere in it; or that of `TOOLCHAIN_PG_CHECKOUT` where a worker runs elsewhere (the mutator's worker trees). A family's size is derived per machine: `ceil(testWorkers / workersPerMember)`
-members, `workersPerMember` the repository's measured number.
+members, `workersPerMember` the repository's measured number. A repository starts at 1, a server a worker, and
+measures from there: on grizzle's laws subset, its families in memory, 1 took 4% less time than 4 over three runs at
+once and 16 twice 4's, for 40 to 47% more of the family in memory (grizzle's pg.config.ts, lane RUNPG1, 2026-11-23).
+The testing package's own cluster stays `one`: its resource properties read the databases of the one member, and 7 of
+their 23 fail with a member a worker.
 
 - `toolchain-pg settle` settles the working directory's family, as the unit `<family>-settle`. A fresh family takes
   about 10 to 40 s (initdb, its owner, template and extensions); a settled one, a second. Trunk's script and a lane run
   it before any pg run.
 - Over TLS a family's members claim their ports: the lowest from the spec's `from` that no family claims and nothing
   listens at, each claim a file `~/.local/state/toolchain-pg/ports/<port>` naming its family, created with O_EXCL, so two
-  families settling at once take different ports. Nothing waits on a claim.
+  families settling at once take different ports. Nothing waits on a claim. A listener outside the claims (a cluster
+  made before families at a port of its own, a test's family claiming in homes of its own, a server a person started)
+  can still take a claimed port while its member is stopped, so a settle reads the kernel's socket table (`ss -Hltnp`)
+  before it starts each member and refuses one whose port anything but the member's own unit holds, naming each
+  holder by its unit and pid (settle.ts portFree), where the member's server would fail to bind it, or bind one
+  loopback of two.
 - Every settle first collects its cluster's families whose checkout is gone: the folder deleted, or a workspace
   forgotten whose folder lingers (its `.git` file names a git directory that `jj workspace forget` or `git worktree
-  prune` removed). Their units are stopped, and their data, claims and state removed. It reads only its own cluster's
-  families (`<unit>-<8 hex digits>`) and never a cluster made before families. A live checkout's family stays running
-  between runs, its templates kept.
+  prune` removed). Their units are stopped, and their data, claims and state removed, a member's data in memory with
+  them. It reads only its own cluster's families (`<unit>-<8 hex digits>`) and never a cluster made before families. A
+  live checkout's family stays running between runs, its templates kept.
+- A member whose name a pattern of `~/.config/postgres/memory` matches (the workbench's postgres part) has its data in
+  `/dev/shm/postgres/<member>`, its data directory a link there (`Homes.memory`). Removing a family removes both: the
+  link alone left the data in memory until the machine restarted.
+- A throwaway member logs no test's errors: a client backend's ERROR, WARNING and NOTICE go to the test that provoked
+  them, and its log is its unit's journal, whose rate limit dropped other units' lines when test servers logged tens of
+  thousands of lines a member (settings.ts ofDurability).
 - A test of settling or collection runs in homes of its own (`Homes`, a scratch directory), never the account's
   `~/.local/state/toolchain-pg` or another cluster's units. On 2026-11-22 a kill trial of the collection property ran
   against the account's homes and removed den's, five lanes' and trunk's clusters.

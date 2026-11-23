@@ -10,7 +10,7 @@ import {
 	String as Str
 } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
-import { ClusterFailed, failed, type Step } from "#pg/server.ts"
+import { ClusterFailed, failed, type Step, succeeded } from "#pg/server.ts"
 import { type LocalCluster, UnitName } from "#pg/spec.ts"
 
 /**
@@ -110,20 +110,34 @@ export const checkoutAt = (path: string): Checkout => checkoutOf(path)
 
 /**
  * Where families live: `states`, a directory a family (its owner's password, hba file, unrelated CA and the checkout it
- * records) beside the directory of port claims (claimsDirectory); and `data`, the workbench's postgres@ units' data, a
- * directory a member. Read once at a process's boundary (homesHere); a test gives its own.
+ * records) beside the directory of port claims (claimsDirectory); `data`, the workbench's postgres@ units' data, a
+ * directory a member; and `memory`, where the workbench keeps the data of a member its memory list names (a pattern of
+ * ~/.config/postgres/memory matching its name), a directory a member, which the member's directory in `data` links to.
+ * Read once at a process's boundary (homesHere); a test gives its own.
  */
-export type Homes = Readonly<{ states: string; data: string }>
+export type Homes = Readonly<{ states: string; data: string; memory: string }>
 
 /**
- * The homes of this account (Homes): states `${XDG_STATE_HOME:-~/.local/state}/toolchain-pg`, and data
- * `~/.local/var/postgres`, where the workbench's postgres@ template keeps each member's.
+ * The workbench's memory home (Homes `memory`): the folder in /dev/shm the workbench's postgres-cluster makes a listed
+ * member's data in, `/dev/shm/postgres/$name` (~/Documents/beefy-workspace/workbench/parts/postgres/files/
+ * postgres-cluster).
+ */
+const memoryHome = "/dev/shm/postgres"
+
+/**
+ * The homes of this account (Homes): states `${XDG_STATE_HOME:-~/.local/state}/toolchain-pg`, data
+ * `~/.local/var/postgres`, where the workbench's postgres@ template keeps each member's, and the workbench's memory
+ * home (memoryHome).
  */
 export const homesHere: Effect.Effect<Homes, ClusterFailed> = Effect.mapError(
 	Effect.gen(function* () {
 		const home = yield* Config.String("HOME")
 		const base = yield* Config.withDefault(Config.String("XDG_STATE_HOME"), `${home}/.local/state`)
-		return { states: `${base}/toolchain-pg`, data: `${home}/.local/var/postgres` }
+		return {
+			states: `${base}/toolchain-pg`,
+			data: `${home}/.local/var/postgres`,
+			memory: memoryHome
+		}
 	}),
 	() =>
 		ClusterFailed.make({
@@ -320,6 +334,86 @@ export const portsClaimed = (family: CheckoutFamily, count: number, from: number
 /** The ports `family` claims now, member i's the i-th: what a run reads, claiming nothing. */
 export const portsHeld = (family: CheckoutFamily) => claimsOf(family.homes, family.name)
 
+/**
+ * A listener at a port, as the kernel's socket table shows it: a `process` of this account's, by its pid and the
+ * systemd unit its cgroup is (a member's `postgres@<member>.service`, a run's unit, a terminal's scope); or `unseen`,
+ * a listener whose process this account may not read (another account's).
+ */
+export type PortHolder =
+	| Readonly<{ kind: "process"; pid: number; unit: string }>
+	| Readonly<{ kind: "unseen" }>
+
+/** A holder as a refusal names it. */
+export const holderText = (holder: PortHolder): string =>
+	holder.kind === "process"
+		? `${holder.unit} (pid ${holder.pid})`
+		: "a process of another account, which this one may not read"
+
+/** A process's pid in `ss -p`'s users column: `pid=<n>`, each of a socket's processes. */
+const socketPid = regex("pid=([0-9]+)", "g")
+
+/** The systemd unit a cgroup path ends in: its last `.service` or `.scope` part. */
+const unitPart = regex("\\.(service|scope)$")
+
+/** What precedes a process's cgroup path in /proc/<pid>/cgroup: cgroup v2's hierarchy 0, with no controllers. */
+const cgroupLine = regex("^0::")
+
+/**
+ * The unit of process `pid`: the last `.service` or `.scope` of its cgroup's path (/proc/<pid>/cgroup, cgroup v2's one
+ * line `0::<path>`), else the path itself; none for a process gone since the socket table was read.
+ */
+const unitOfProcess = (pid: number) =>
+	Effect.flatMap(FileSystem.FileSystem, (fs) =>
+		Effect.option(
+			Effect.map(fs.readFileString(`/proc/${pid}/cgroup`), (text) => {
+				const path = Str.replace(cgroupLine, "")(Str.trim(text))
+				return Option.getOrElse(
+					Arr.findLast(Str.split(path, "/"), (part) => unitPart.test(part)),
+					() => path
+				)
+			})
+		)
+	)
+
+/**
+ * Every listener at TCP `port` on this machine now (PortHolder), read from the kernel's socket table by
+ * `ss -Hltnp sport = :<port>`, which reads it and binds nothing, so a member starting at that port at that moment is
+ * never refused by the reading: none where nothing listens there.
+ */
+export const portHolders = (
+	port: number,
+	step: Step
+): Effect.Effect<
+	ReadonlyArray<PortHolder>,
+	ClusterFailed,
+	FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner
+> =>
+	Effect.gen(function* () {
+		const listed = yield* succeeded(
+			{ ...step, doing: `${step.doing}: reading who listens at its port ${port}` },
+			ChildProcess.make("ss", ["-Hltnp", "sport", "=", `:${port}`])
+		)
+		const lines = Arr.filter(Str.split(listed, "\n"), Str.isNonEmpty)
+		const held = yield* Effect.forEach(lines, (line) =>
+			Arr.match(
+				Arr.map(Array.from(Str.matchAll(socketPid)(line)), ([, pid]) => Number(pid)),
+				{
+					onEmpty: () => Effect.succeed<ReadonlyArray<PortHolder>>([{ kind: "unseen" }]),
+					onNonEmpty: (pids) =>
+						Effect.map(
+							Effect.forEach(pids, (pid) =>
+								Effect.map(unitOfProcess(pid), (unit) =>
+									Option.map(unit, (named): PortHolder => ({ kind: "process", pid, unit: named }))
+								)
+							),
+							Arr.getSomes
+						)
+				}
+			)
+		)
+		return Arr.dedupeWith(Arr.flatten(held), (a, b) => holderText(a) === holderText(b))
+	})
+
 /** A `.git` file's line naming its git directory: `gitdir: <path>`, the path relative to the file's folder or absolute. */
 const gitdirLine = regex("^gitdir:\\s*")
 
@@ -367,10 +461,31 @@ const recordedCheckout = (state: string) =>
 		)
 	)
 
+/** Every member directory of the family `name` in `home` (`<home>/<name>-<i>`) removed, a link as itself. */
+const membersRemoved = (home: string, name: string) =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		const entries = yield* Effect.orElseSucceed(
+			fs.readDirectory(home),
+			(): ReadonlyArray<string> => []
+		)
+		const members = Arr.filter(
+			entries,
+			(entry) =>
+				Str.startsWith(`${name}-`)(entry) && memberIndex.test(Str.slice(name.length + 1)(entry))
+		)
+		yield* Effect.forEach(
+			members,
+			(member) => Effect.ignore(fs.remove(`${home}/${member}`, { recursive: true })),
+			{ discard: true }
+		)
+	})
+
 /**
  * Everything of the family `name` in `homes` gone: its members' units stopped (`postgres@<name>-*`, systemctl's pattern
- * over the units it has loaded) and their failures forgotten, each member's data directory (`<data>/<name>-<i>`), its
- * port claims (only the files holding its name) and its state directory removed. What is already gone is no error.
+ * over the units it has loaded) and their failures forgotten, each member's data directory (`<data>/<name>-<i>`) and
+ * its data in memory (`<memory>/<name>-<i>`, which removing the link in `data` leaves in /dev/shm), its port claims
+ * (only the files holding its name) and its state directory removed. What is already gone is no error.
  */
 export const familyRemoved = (homes: Homes, name: string) =>
 	Effect.gen(function* () {
@@ -384,20 +499,9 @@ export const familyRemoved = (homes: Homes, name: string) =>
 				),
 			{ discard: true }
 		)
-		const entries = yield* Effect.orElseSucceed(
-			fs.readDirectory(homes.data),
-			(): ReadonlyArray<string> => []
-		)
-		const members = Arr.filter(
-			entries,
-			(entry) =>
-				Str.startsWith(`${name}-`)(entry) && memberIndex.test(Str.slice(name.length + 1)(entry))
-		)
-		yield* Effect.forEach(
-			members,
-			(member) => Effect.ignore(fs.remove(`${homes.data}/${member}`, { recursive: true })),
-			{ discard: true }
-		)
+		yield* Effect.forEach([homes.data, homes.memory], (home) => membersRemoved(home, name), {
+			discard: true
+		})
 		const ports = yield* claimsOf(homes, name)
 		yield* Effect.forEach(
 			ports,

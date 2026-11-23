@@ -6,7 +6,9 @@ import {
 	type CheckoutFamily,
 	checkoutRecorded,
 	familiesCollected,
+	holderText,
 	memberNamesOf,
+	portHolders,
 	portsClaimed,
 	portsHeld,
 	stateOf,
@@ -454,9 +456,33 @@ const portsOf = (family: CheckoutFamily, count: number, step: Step) => {
 }
 
 /**
+ * Member `name`'s port, `port`, held by nothing but the member's own unit, else its settle refused, naming each other
+ * holder (family.ts portHolders): its unit, a run's, a terminal's scope, by its pid. A family's members listen only at
+ * the ports it claims, and a claim is made only where no family claims and nothing listens, so another listener there
+ * took it outside the claims (a cluster made before families at a port of its own, a test's family claiming in homes of
+ * its own, a listener a person started) while the member was stopped; started there, the member's server would fail to
+ * bind it, or bind one loopback of two beside the other listener. Socket-only members listen at no TCP port.
+ */
+const portFree = (name: string, port: number, step: Step) =>
+	Effect.gen(function* () {
+		const holders = yield* portHolders(port, step)
+		const others = Arr.filter(
+			holders,
+			(holder) => holder.kind === "unseen" || holder.unit !== unitOf(name)
+		)
+		if (Arr.isReadonlyArrayNonEmpty(others)) {
+			return yield* failed(
+				step,
+				`its port ${port}, its family's claim, is held by ${Arr.join(Arr.map(others, holderText), " and ")}: stop that listener, then settle again`
+			)
+		}
+	})
+
+/**
  * Settles `family`: first every family of its cluster whose checkout is gone removed (family.ts familiesCollected),
  * then its state (the checkout it records; the owner's password, kept once made; its hba file; its unrelated CA) and its
- * ports (portsOf), then each member at once: its unit started (systemd makes it on its first start), every setting its
+ * ports (portsOf), then each member at once: over TLS its port refused where another listener holds it (portFree), its
+ * unit started (systemd makes it on its first start), every setting its
  * spec states written by ALTER SYSTEM and read again (pg_reload_conf), what the bootstrap superuser makes in it (owned),
  * and its unit restarted when a setting it changed waits for a restart (pg_settings' pending_restart), which only a
  * change of the spec or of the machine's memory makes; then the members read as a run reads them (membersRead), which
@@ -497,6 +523,9 @@ export const settled = (
 			([name, port]) =>
 				Effect.gen(function* () {
 					const at: Step = { cluster: family.name, doing: `settling its member ${name}` }
+					if (cluster.network.kind === "tls") {
+						yield* portFree(name, port, at)
+					}
 					yield* systemctl("start", name, at)
 					const socket = yield* socketNow(name, at)
 					const blockSize = yield* blockSizeOf(bin, socket, at)

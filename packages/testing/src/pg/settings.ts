@@ -305,8 +305,14 @@ const everyMember: Arr.NonEmptyReadonlyArray<Setting> = [
 ]
 
 /**
+ * A throwaway member's log_min_messages, as pg_settings spells it (PostgreSQL 19's list: a default level, then a level
+ * a process type): client backends from LOG, every other process from PostgreSQL's default, WARNING.
+ */
+const throwawayLogLevels = "warning, backend:log"
+
+/**
  * The settings a cluster's durability adds (Durability): a throwaway cluster's members never wait for the disk, fsync
- * off; a kept one's keep PostgreSQL's fsync.
+ * off, and log what no test provoked; a kept one's keep PostgreSQL's fsync and logging.
  *
  * fsync off: a test database is a clone made for one case and dropped after it (resources/database.ts), and every
  * DROP DATABASE forces a checkpoint it waits for inside its transaction (dbcommands.c dropdb, RequestCheckpoint with
@@ -317,9 +323,24 @@ const everyMember: Arr.NonEmptyReadonlyArray<Setting> = [
  * still written and its flush pointer still advances past every commit (xlog.c XLogWrite), unlike synchronous_commit =
  * off. What it gives up is a member's survival of a crash of the machine, which a throwaway cluster, made again by its
  * next need, never needs, and a kept one's data does.
+ *
+ * log_min_messages (throwawayLogLevels) and log_checkpoints off: a throwaway member's log is its unit's journal, and
+ * what filled it was a run's own doing, which journald's rate limit then answered by dropping other units' lines (a
+ * unit-wait could miss a FAILED line). A client backend's ERROR, WARNING and NOTICE go to its client, the test that
+ * provoked it (a refused write, a violated key) and reads it, so the log holds them no longer; every other process keeps
+ * PostgreSQL's warning, so a checkpointer's, autovacuum's or WAL sender's error, which no client reads, is still logged,
+ * and so are every FATAL and PANIC, a backend's with its statement, and the postmaster's LOG of a child that crashed.
+ * Each forced checkpoint (a clone's, by FILE_COPY at fsync off, resources/template.ts) logged two lines;
+ * pg_stat_checkpointer counts them still. A kept cluster's log is a person's, who reads their own errors there.
  */
 const ofDurability = (durability: Durability): ReadonlyArray<Setting> =>
-	durability === "throwaway" ? [["fsync", "off"]] : []
+	durability === "throwaway"
+		? [
+				["fsync", "off"],
+				["log_min_messages", throwawayLogLevels],
+				["log_checkpoints", "off"]
+			]
+		: []
 
 /** The settings every member of `cluster` holds exactly (everyMember, and its durability's). */
 export const fixedSettings = (cluster: LocalCluster): Arr.NonEmptyReadonlyArray<Setting> =>

@@ -1,15 +1,15 @@
 /**
  * A cluster's families at checkouts (pg/family.ts), in homes of the case's own (a scratch directory: never the
  * account's families' state, data or port claims, which a mutant of collection would otherwise remove), with no server
- * started:
- * checkouts apart are families apart, which claim ports apart even when they claim at once, each family's own ports
- * read back as it claimed them and claimed again as they are; and the collection of families removes every family
- * whose checkout is gone, its folder deleted or a workspace forgotten whose folder lingers (a `.git` file naming a git
- * directory that is gone), its data, port claims and state with it, and keeps every family of a checkout that is one
- * (a clone's `.git` directory, a worktree's `.git` file naming its git directory, a folder under no `.git`) and every
- * family that records no checkout whole, every state of another cluster's family whole whatever it records, and every
- * family in homes it was not given whole (a second scratch home standing in for the account's). Each
- * case's families are of a case cluster's unit. Oracle: the specification, stated in the checks.
+ * started: checkouts apart are families apart, which claim ports apart even when they claim at once, each family's own
+ * ports read back as it claimed them and claimed again as they are; and the collection of families removes every
+ * family whose checkout is gone, its folder deleted or a workspace forgotten whose folder lingers (a `.git` file naming
+ * a git directory that is gone), its data (a link into memory, and the data in memory it names), port claims and state
+ * with it, and keeps every family of a checkout that is one (a clone's `.git` directory, a worktree's `.git` file
+ * naming its git directory, a folder under no `.git`) and every family that records no checkout whole, every state of
+ * another cluster's family whole whatever it records, and every family in homes it was not given whole (a second
+ * scratch home standing in for the account's). Each case's families are of a case cluster's unit. Oracle: the
+ * specification, stated in the checks.
  */
 import { Array as Arr, Effect, Order } from "effect"
 import { assert } from "#assert.ts"
@@ -169,19 +169,19 @@ export const goneFamiliesCollected = property.exhaust(
 						{
 							collected: gone,
 							left: gone
-								? { state: false, data: false, claims: 0 }
-								: { state: true, data: true, claims: 1 },
+								? { state: false, data: false, memory: false, claims: 0 }
+								: { state: true, data: true, memory: true, claims: 1 },
 							liveCollected: false,
-							liveLeft: { state: true, data: true, claims: 1 },
-							anotherLeft: { state: true, data: true, claims: 1 },
-							elsewhereLeft: { state: true, data: true, claims: 1 }
+							liveLeft: { state: true, data: true, memory: true, claims: 1 },
+							anotherLeft: { state: true, data: true, memory: true, claims: 1 },
+							elsewhereLeft: { state: true, data: true, memory: true, claims: 1 }
 						}
 					)
 				})
 			),
 		oracle: {
 			kind: "specification",
-			name: "a family whose checkout's folder is deleted, or whose .git file names a git directory that is gone, is removed whole, state, data and claims; a family of a clone, a live worktree, a plain folder or of no recorded checkout is kept whole, and so is another live family's every claim, and another cluster's family whatever its checkout, and a family of its own cluster whose checkout is gone in homes it was not given (the account's, in production) whole"
+			name: "a family whose checkout's folder is deleted, or whose .git file names a git directory that is gone, is removed whole, state, data, its data in memory and claims; a family of a clone, a live worktree, a plain folder or of no recorded checkout is kept whole, and so is another live family's every claim, and another cluster's family whatever its checkout, and a family of its own cluster whose checkout is gone in homes it was not given (the account's, in production) whole"
 		},
 		kept: [],
 		kills: [
@@ -204,6 +204,14 @@ export const goneFamiliesCollected = property.exhaust(
 				original: "\t\t\t\t\tonNone: () => Effect.succeed(false),\n",
 				replacement: "\t\t\t\t\tonNone: () => Effect.succeed(true),\n",
 				why: "A family that records no checkout, a cluster of before families still in use, is removed by any settle; the property fails."
+			},
+			{
+				file: "packages/testing/src/pg/family.ts",
+				original:
+					"\t\tyield* Effect.forEach([homes.data, homes.memory], (home) => membersRemoved(home, name), {\n",
+				replacement:
+					"\t\tyield* Effect.forEach([homes.data], (home) => membersRemoved(home, name), {\n",
+				why: "A removed family's members' data directories go and their data in memory stays: removing a member's directory removes the link the workbench's memory list made, and /dev/shm keeps every page of its data until the machine restarts; the property fails, the memory left."
 			},
 			{
 				file: "packages/testing/src/pg/family.ts",
