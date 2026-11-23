@@ -20,6 +20,7 @@ import {
 	element,
 	type Gen,
 	oneOf,
+	option,
 	string,
 	unicodeScalar
 } from "#gen.ts"
@@ -46,8 +47,8 @@ import {
 
 /**
  * Programs over the verdict cache for cache.test.ts: rounds of operations, each round's operations on distinct keys
- * and run at once, every key built from a few values of each of its fields so that keys one field apart, and edit lists
- * in another order, come up. A model (a map from each key's identity to its state) is the oracle.
+ * and run at once, every key built from a few values of each of its fields so that keys one field apart come up. A
+ * model (a map from each key's identity to its state) is the oracle.
  */
 
 /** One edit of a key, by which of three mutants it is and which of two contents its file has. */
@@ -56,15 +57,12 @@ export type EditModel = Readonly<{ mutant: Mutant; content: number }>
 /** Which of three mutants an edit is. */
 type Mutant = 0 | 1 | 2
 
-/** The mutant after each, round the three: a second edit of one key that differs from the first. */
-const NEXT: Readonly<Record<Mutant, Mutant>> = { 0: 1, 1: 2, 2: 0 }
-
-/** A key, by which of two values each field takes, its edits as listed (their order is the property's). */
+/** A key, by which of two values each field takes, and its edit, none for a search of the program as it stands. */
 export type KeyModel = Readonly<{
 	property: number
 	closure: number
 	seeds: number
-	edits: ReadonlyArray<EditModel>
+	edit: Option.Option<EditModel>
 }>
 
 /** What an operation does to its key: records a pass or a failure, reads it, or overwrites its record with another's. */
@@ -87,27 +85,19 @@ const keys: Gen<KeyModel> = (source) => ({
 	property: source.draw(element([0, 1])),
 	closure: source.draw(element([0, 1])),
 	seeds: source.draw(element([0, 1])),
-	edits: source.draw(array(edits, { min: 0, max: 2 }))
+	edit: source.draw(option(edits))
 })
 
-/** A key's identity: equal for two keys exactly when the cache must answer them alike, its edits taken as a set. */
-const identityOf = (key: KeyModel): string =>
-	`${key.property} ${key.closure} ${key.seeds} ${Arr.join(
-		Arr.dedupe(
-			Arr.sort(
-				Arr.map(key.edits, (edit) => `${edit.mutant}.${edit.content}`),
-				Str.Order
-			)
-		),
-		","
-	)}`
+/** A key's edit as its identity names it: `-` for none. */
+const editNameOf = (key: KeyModel): string =>
+	Option.match(key.edit, {
+		onNone: () => "-",
+		onSome: (edit) => `${edit.mutant}.${edit.content}`
+	})
 
-/** A key's edits as listed, which two keys of one identity may list in different orders. */
-const listedOf = (key: KeyModel): string =>
-	Arr.join(
-		Arr.map(key.edits, (edit) => `${edit.mutant}.${edit.content}`),
-		","
-	)
+/** A key's identity: equal for two keys exactly when the cache must answer them alike. */
+const identityOf = (key: KeyModel): string =>
+	`${key.property} ${key.closure} ${key.seeds} ${editNameOf(key)}`
 
 /** Up to six rounds of up to four operations, each round's keys distinct. */
 const programs: Gen<Program> = array(
@@ -180,7 +170,7 @@ const keyOf = (hashes: Hashes, key: KeyModel): VerdictKey => ({
 	property: PropertyId(`src/cache.test.ts#property${key.property}`),
 	closure: key.closure === 0 ? hashes.closures[0] : hashes.closures[1],
 	seeds: SeedPolicy(`policy ${key.seeds}`),
-	edits: Arr.map(key.edits, (edit): Edit => ({
+	edit: Option.map(key.edit, (edit): Edit => ({
 		file: `packages/testing/src/mutant${edit.mutant}.ts`,
 		content: edit.content === 0 ? hashes.contents[0] : hashes.contents[1],
 		mutated: hashes.mutated[edit.mutant]
@@ -188,12 +178,12 @@ const keyOf = (hashes: Hashes, key: KeyModel): VerdictKey => ({
 })
 
 /**
- * What one key's record holds in the model: nothing (never passed, or cleared by a failure under its own key), a pass
- * (and the edit order it was passed with), or a foreign text.
+ * What one key's record holds in the model: nothing (never passed, or cleared by a failure under its own key), a pass,
+ * or a foreign text.
  */
 export type Held =
 	| Readonly<{ kind: "absent"; why: "never" | "cleared" }>
-	| Readonly<{ kind: "passed"; listed: string }>
+	| Readonly<{ kind: "passed" }>
 	| Readonly<{ kind: "corrupt" }>
 
 /** What a read of a key answers: a pass, none, or a refusal of a record that is not its key's. */
@@ -293,23 +283,20 @@ export type CacheSituation =
 	| "a key read as none after a failure cleared its pass"
 	| "a pass read beside another pass of its property"
 	| "a corrupt record refused"
-	| "edits in another order answering as one key"
 	| "a key whose property alone differs from a pass read as none"
 	| "a key whose closure alone differs from a pass read as none"
 	| "a key whose seed policy alone differs from a pass read as none"
-	| "a key whose edits alone differ from a pass read as none"
+	| "a key whose edit alone differs from a pass read as none"
 	| "passes of distinct keys written at once"
 
-/** The one field two keys differ in, edits taken as a set; none when they differ in none or in more. */
+/** The one field two keys differ in; none when they differ in none or in more. */
 const loneFieldOf = (left: KeyModel, right: KeyModel): Option.Option<KeyField> => {
-	const [, , , leftEdits = ""] = Str.split(" ")(identityOf(left))
-	const [, , , rightEdits = ""] = Str.split(" ")(identityOf(right))
 	const differing = Arr.filter(
 		[
 			["property", left.property !== right.property],
 			["closure", left.closure !== right.closure],
 			["seeds", left.seeds !== right.seeds],
-			["edits", leftEdits !== rightEdits]
+			["edit", editNameOf(left) !== editNameOf(right)]
 		] as const,
 		([, differs]) => differs
 	)
@@ -319,14 +306,14 @@ const loneFieldOf = (left: KeyModel, right: KeyModel): Option.Option<KeyField> =
 }
 
 /** A key's fields. */
-type KeyField = "property" | "closure" | "seeds" | "edits"
+type KeyField = "property" | "closure" | "seeds" | "edit"
 
 /** The situation of reading a key that differs from a passed key in one field alone. */
 const LONE_FIELD_SITUATIONS: Readonly<Record<KeyField, CacheSituation>> = {
 	property: "a key whose property alone differs from a pass read as none",
 	closure: "a key whose closure alone differs from a pass read as none",
 	seeds: "a key whose seed policy alone differs from a pass read as none",
-	edits: "a key whose edits alone differ from a pass read as none"
+	edit: "a key whose edit alone differs from a pass read as none"
 }
 
 /** What a read of an absent key reaches, by why it is absent. */
@@ -374,11 +361,7 @@ export const roundOf = (
 						return Option.some("none")
 					}
 					case "passed":
-						situations.add(
-							state.listed === listedOf(key)
-								? "a pass read back"
-								: "edits in another order answering as one key"
-						)
+						situations.add("a pass read back")
 						if (
 							Arr.some(
 								Arr.fromIterable(held.entries()),
@@ -396,7 +379,7 @@ export const roundOf = (
 						return Option.some("corrupt")
 				}
 			case "pass":
-				after.set(identity, { key, held: { kind: "passed", listed: listedOf(key) } })
+				after.set(identity, { key, held: { kind: "passed" } })
 				return Option.none()
 			case "fail":
 				after.set(identity, {
@@ -449,27 +432,9 @@ export const performed = (
 /** A round as a report names it: each operation and its key's identity. */
 export const describedOf = (round: ReadonlyArray<Operation>): string =>
 	Arr.join(
-		Arr.map(
-			round,
-			(operation) => `${operation.action} ${identityOf(operation.key)} (${listedOf(operation.key)})`
-		),
+		Arr.map(round, (operation) => `${operation.action} ${identityOf(operation.key)}`),
 		"; "
 	)
-
-/**
- * A program that passes a key whose two edits differ and then reads it with its edits listed the other way round,
- * before rounds of its own.
- */
-const reorderedPrograms: Gen<Program> = (source) => {
-	const key = source.draw(keys)
-	const first = source.draw(edits)
-	const second: EditModel = { mutant: NEXT[first.mutant], content: first.content }
-	return [
-		[{ key: { ...key, edits: [first, second] }, action: "pass" }],
-		[{ key: { ...key, edits: [second, first] }, action: "read" }],
-		...source.draw(programs)
-	]
-}
 
 /** A program that passes a key, records a failure under it, and reads it, before rounds of its own. */
 const clearedPrograms: Gen<Program> = (source) => {
@@ -504,8 +469,8 @@ const thenRead =
 
 /**
  * Programs, aimed at what a read meets after one write of its key's property: a pass under the same key, a corrupt
- * record, a pass under a key one seed policy away, edits listed in another order, a failure after a pass, and a pass
- * read after a newer pass of its property.
+ * record, a pass under a key one seed policy away, a failure after a pass, and a pass read after a newer pass of its
+ * property.
  */
 export const aimedPrograms = aimed<Program, CacheSituation>(programs, [
 	["a pass read back", thenRead("pass", (key) => key)],
@@ -514,7 +479,6 @@ export const aimedPrograms = aimed<Program, CacheSituation>(programs, [
 		"a key whose seed policy alone differs from a pass read as none",
 		thenRead("pass", (key) => ({ ...key, seeds: 1 - key.seeds }))
 	],
-	["edits in another order answering as one key", reorderedPrograms],
 	["a key read as none after a failure cleared its pass", clearedPrograms],
 	["a pass read beside another pass of its property", keptPrograms]
 ])

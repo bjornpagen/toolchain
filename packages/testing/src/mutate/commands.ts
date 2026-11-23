@@ -38,8 +38,8 @@ import { loadPackage } from "#runner/run.ts"
 import { productOf } from "#scope.ts"
 
 /**
- * The mutator's commands, `toolchain-test kills` and `toolchain-test mutate` (runner/cli.ts's entries), run from a
- * package root inside a git checkout: the kill gate, and operator mutation, a measurement.
+ * The mutator's commands, `toolchain-test kills`, `census` and `mutate` (runner/cli.ts's entries), run from a package
+ * root inside a git checkout: the kill census, the census of caught bugs, and operator mutation, a measurement.
  */
 
 /** A command's own refusal: arguments it cannot read, or a package root in no checkout. */
@@ -114,11 +114,13 @@ const failingLine = (judged: Judged): ReadonlyArray<string> => {
 }
 
 /**
- * `kills [paths | ids]`: every kill of every property named, each applied in the checkout and the property's
- * witnesses run on workers leased for that kill alone (mutate/kills.ts), every kill at once over the pool, but a kill
- * the verdict cache answers (runner/affected.ts: it turned its property red under the same closure, kill and file
- * content) is not run again, and each judged kill's verdict is recorded. One line per property with kills, each
- * failing kill under it, each cached kill, and a summary; 1 when any kill survives or is stale.
+ * `kills [paths | ids]`, the kill census, the one command that judges a property's kills (no run does: a run answers
+ * whether the product is right, this whether each test can still catch the bug it declares): every kill of every
+ * property named, each applied in the checkout and the property's witnesses run on workers leased for that kill alone
+ * (mutate/kills.ts), every kill at once over the pool, but a kill the verdict cache answers (runner/affected.ts: it
+ * turned its property red under the same closure, kill and file content) is not run again, and each judged kill's
+ * verdict is recorded. One line per property with kills, each failing kill under it, each cached kill, and a summary;
+ * 1 when any kill survives, is stale or is unjudged.
  */
 export const killsCommand = (root: string, selected: ReadonlyArray<string>) =>
 	Effect.scoped(

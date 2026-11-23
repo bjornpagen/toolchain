@@ -12,13 +12,12 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { boolean, element, type FiniteSpace, finite } from "#gen.ts"
 
 /**
- * Consumer packages for consumer.test.ts: a tiny package with one passing property, laid out as a repository holds the
- * library (a workspace link to the library's files in the repository, as grizzle's vendor/toolchain; or installed
- * under node_modules), in a git repository or not, with a lockfile or not, with TypeScript installed or not. Each is
- * written in a scratch directory from this checkout's own library files, and run in a child process through the
- * library's loadPackage, its inline evaluator and its settledRun, so the run is the one `toolchain-test run` does, with
- * no pool nested in the case. Where no run can judge a kill (no git repository, no TypeScript) the package holds a
- * second passing property, with a kill.
+ * Consumer packages for consumer.test.ts: a tiny package with two passing properties, one of them with a kill that
+ * survives, laid out as a repository holds the library (a workspace link to the library's files in the repository, as
+ * grizzle's vendor/toolchain; or installed under node_modules), in a git repository or not, with a lockfile or not,
+ * with TypeScript installed or not. Each is written in a scratch directory from this checkout's own library files, and
+ * run in a child process through the library's loadPackage, its inline evaluator and its verdictsRecorded, so the run
+ * is the one `toolchain-test run` does, with no pool nested in the case.
  */
 
 /**
@@ -40,11 +39,11 @@ export const layouts: FiniteSpace<Layout> = finite((source) => ({
 	typescript: source.draw(boolean)
 }))
 
-/** Whether a layout's kills can be judged: it lies in a git repository and the closure hasher loads. */
-export const judgeable = (layout: Layout): boolean => layout.git && layout.typescript
-
-/** Whether a layout's properties have their verdicts recorded: kills judged, and a lockfile for the key. */
-export const keyed = (layout: Layout): boolean => judgeable(layout) && layout.lockfile
+/**
+ * Whether a layout's properties have their verdicts recorded: it lies in a git repository, the closure hasher loads, and
+ * a lockfile keys the closures.
+ */
+export const keyed = (layout: Layout): boolean => layout.git && layout.typescript && layout.lockfile
 
 /** What a layout exercises. */
 export type LayoutSituation =
@@ -180,8 +179,8 @@ export const manifestOf = (layout: Layout): string =>
 	`{ "name": "consumer", "version": "0.0.0", "private": true, "type": "module", "dependencies": { "@bjornpagen/testing": "${layout.library === "link" ? "link:vendor/testing" : "file:testing.tgz"}", "effect": "4.1.4" } }\n`
 
 /**
- * The consumer's files: its manifest, runner config, one passing property, a passing property with a kill where no kill
- * can be judged, and the script that runs them inline.
+ * The consumer's files: its manifest, runner config, a passing property, a passing property whose kill survives (its
+ * replacement is the same product), and the script that runs them inline.
  */
 export const runnerFilesOf = (layout: Layout): ConsumerFiles => {
 	const library =
@@ -196,17 +195,13 @@ export const runnerFilesOf = (layout: Layout): ConsumerFiles => {
 			"test/sums.test.ts",
 			`import { Effect } from "effect"\nimport { int } from "@bjornpagen/testing/gen"\nimport { property } from "@bjornpagen/testing/property"\n\nexport const sums = property.explore(int(0, 9), {\n\tneeds: {},\n\tsituations: [],\n\tcheck: () => (a) => (a + (9 - a) === 9 ? Effect.void : Effect.die("not nine")),\n\toracle: { kind: "specification", name: "a + (9 - a) is 9" },\n\tkept: [],\n\tkills: []\n})\n`
 		],
-		...(judgeable(layout)
-			? []
-			: [
-					[
-						"test/killed.test.ts",
-						`import { Effect } from "effect"\nimport { int } from "@bjornpagen/testing/gen"\nimport { property } from "@bjornpagen/testing/property"\n\nexport const killed = property.explore(int(0, 9), {\n\tneeds: {},\n\tsituations: [],\n\tcheck: () => (a) => (a * 0 === 0 ? Effect.void : Effect.die("not zero")),\n\toracle: { kind: "specification", name: "a * 0 is 0" },\n\tkept: [],\n\tkills: [{ file: "test/killed.test.ts", original: "a * 0 === 0", replacement: "a * 1 === 0", why: "a kill no run here can judge" }]\n})\n`
-					] as const
-				]),
+		[
+			"test/survived.test.ts",
+			`import { Effect } from "effect"\nimport { int } from "@bjornpagen/testing/gen"\nimport { property } from "@bjornpagen/testing/property"\n\nexport const survived = property.explore(int(0, 9), {\n\tneeds: {},\n\tsituations: [],\n\tcheck: () => (a) => (a * 0 === 0 ? Effect.void : Effect.die("not zero")),\n\toracle: { kind: "specification", name: "a * 0 is 0" },\n\tkept: [],\n\tkills: [{ file: "test/survived.test.ts", original: "a * 0 === 0", replacement: "0 * a === 0", why: "a kill that survives, which the kill census refuses and no run judges" }]\n})\n`
+		],
 		[
 			"run-inline.mjs",
-			`import * as NodeServices from "@effect/platform-node/NodeServices"\nimport { Effect } from "effect"\nimport { inlineRun, searchInline } from "${library}/src/runner/inline.ts"\nimport { loadPackage } from "${library}/src/runner/run.ts"\nimport { settledRun } from "${library}/src/runner/settle.ts"\n\nconst root = process.cwd()\nconst program = Effect.gen(function* () {\n\tconst { discovered } = yield* loadPackage(root, [])\n\tconst properties = yield* Effect.forEach(discovered, (found) =>\n\t\tEffect.map(Effect.scoped(searchInline(found.property, inlineRun(found.id, 1))), (verdict) => ({ id: found.id, stack: "default", label: found.id, module: found.module, kind: found.property.kind, oracle: found.property.oracle, kills: found.property.kills, verdict, millis: 0 }))\n\t)\n\tconst settled = yield* Effect.scoped(settledRun(root, [], { properties, millis: 0, workers: [] }))\n\tprocess.stdout.write(JSON.stringify({ verdicts: properties.map((ran) => ran.verdict.kind), passing: settled.passing.size }) + "\\n")\n})\nEffect.runPromise(program.pipe(Effect.provide(NodeServices.layer))).catch((cause) => {\n\tconsole.error(cause)\n\tprocess.exitCode = 1\n})\n`
+			`import * as NodeServices from "@effect/platform-node/NodeServices"\nimport { Effect } from "effect"\nimport { inlineRun, searchInline } from "${library}/src/runner/inline.ts"\nimport { loadPackage } from "${library}/src/runner/run.ts"\nimport { verdictsRecorded } from "${library}/src/runner/settle.ts"\n\nconst root = process.cwd()\nconst program = Effect.gen(function* () {\n\tconst { discovered } = yield* loadPackage(root, [])\n\tconst properties = yield* Effect.forEach(discovered, (found) =>\n\t\tEffect.map(Effect.scoped(searchInline(found.property, inlineRun(found.id, 1))), (verdict) => ({ id: found.id, stack: "default", label: found.id, module: found.module, kind: found.property.kind, oracle: found.property.oracle, verdict, millis: 0 }))\n\t)\n\tyield* Effect.scoped(verdictsRecorded(root, [], { properties, millis: 0, workers: [] }))\n\tprocess.stdout.write(JSON.stringify({ verdicts: properties.map((ran) => ran.verdict.kind) }) + "\\n")\n})\nEffect.runPromise(program.pipe(Effect.provide(NodeServices.layer))).catch((cause) => {\n\tconsole.error(cause)\n\tprocess.exitCode = 1\n})\n`
 		]
 	]
 }
@@ -263,10 +258,8 @@ export const consumerIn = Effect.fn("consumerIn")(function* (
 	}
 })
 
-/** What the consumer's inline run printed last: each property's verdict, and how many passed with their kills. */
-const Summary = Schema.fromJsonString(
-	Schema.Struct({ verdicts: Schema.Array(Schema.String), passing: Schema.Finite })
-)
+/** What the consumer's inline run printed last: each property's verdict. */
+const Summary = Schema.fromJsonString(Schema.Struct({ verdicts: Schema.Array(Schema.String) }))
 
 const decodeSummary = Schema.decodeUnknownEffect(Summary)
 

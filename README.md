@@ -14,6 +14,31 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: a run is searches only; the kill census is its own command (2026-11-23)
+
+Bjorn, 2026-11-23: the release check is searches only, and kill trials run as a separate census on each pin. A run
+answers whether the product is right; a surviving kill says a test got weak, not that the product is wrong, and every
+engine change re-judged every kill (a kill's key covers everything its property reaches): on grizzle's release check at
+8d95ede9d the kill trials were 30 of the unit tier's 47 minutes and 27 of the database tier's 55. So
+`toolchain-test run`, `affected` and the landing's run of the test files it changes judge searches alone, and a pass in
+the verdict cache is a property's search passing at its closure. The kill census is `toolchain-test kills [paths |
+ids]`: every kill each property named declares, applied in the checkout and its witnesses run under it, the kills whose
+red the cache holds at the property's closure answered from it, each judged verdict kept there under its edit (as
+`mutate` and `census` keep theirs, and read them); one line a property with its kills killed and each survivor, stale
+or unjudged kill under it, then the counts; exit 1 on any kill that did not turn its property red. No command does
+both, and none takes an option to. Before you move `vendor/toolchain` past this section:
+
+1. **Run the kill census where a run judged kills.** A script that took a run's exit as "every kill killed" (a release
+   check, a whole-tier gate) runs `toolchain-test kills` over the same paths as a step of its own, beside or after the
+   run; a database tier's census settles its family first, as its run does. A run's summary line counts search
+   failures alone; the census's last line is `<n> kills of <m> properties: <k> killed, <s> survived, <t> stale, <u>
+   unjudged, ...`.
+2. **A verdict key holds one edit or none** (runner/cache.ts VerdictKey `edit`, the record's `edit`, null for a
+   search), where it held a list: a run's key listed every kill's edit, so a stale kill left a property no key and a
+   reordered list needed sorting. Every cached verdict is new once, as at any change of the runner. `verified` and
+   `affected` no longer count a landing that changes only a file a kill edits as touching the property: the file is no
+   part of its search's verdict.
+
 ## Consumer migration: a template is kept while a checkout claims it (2026-11-21)
 
 Collection dropped every template its own run's properties did not declare, so a lane and trunk on one cluster, at two

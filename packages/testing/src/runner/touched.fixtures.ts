@@ -21,7 +21,6 @@ const touchedGen =
 		id: PropertyId(`test/p.test.ts#p${String(index)}`),
 		files: Arr.dedupe(source.draw(array(element(FILES), { min: 0, max: 3 }))),
 		packages: source.draw(boolean),
-		kills: Arr.dedupe(source.draw(array(element(FILES), { min: 0, max: 2 }))),
 		passed: source.draw(boolean)
 	})
 
@@ -37,13 +36,12 @@ const changedFile = (changed: ReadonlyArray<string>, file: string): boolean =>
 	Arr.some(changed, (path) => path === file || Str.startsWith(`${path}/`)(file))
 
 /**
- * What the gate must refuse of a landing, by the specification: each property a changed file of its closure, a changed
- * file one of its kills edits, or a changed lockfile it reads touches, and whose key holds no pass.
+ * What the gate must refuse of a landing, by the specification: each property a changed file of its closure or a
+ * changed lockfile it reads touches, and whose key holds no pass.
  */
 export const refusedOf = (landing: Landing): ReadonlyArray<PropertyId> =>
 	Arr.flatMap(landing.properties, (one) =>
 		(Arr.some(one.files, (file) => changedFile(landing.changed, file)) ||
-			Arr.some(one.kills, (file) => changedFile(landing.changed, file)) ||
 			(one.packages && Arr.contains(landing.changed, "pnpm-lock.yaml"))) &&
 		!one.passed
 			? [one.id]
@@ -54,7 +52,6 @@ export const refusedOf = (landing: Landing): ReadonlyArray<PropertyId> =>
 export type LandingSituation =
 	| "a touched property refused"
 	| "a touched property carrying its verdict"
-	| "touched through a kill alone"
 	| "touched through the lockfile alone"
 	| "touched below a gitlink"
 	| "an untouched property"
@@ -63,12 +60,11 @@ export type LandingSituation =
 export const landingSituationsOf = (landing: Landing): ReadonlyArray<LandingSituation> =>
 	Arr.flatMap(landing.properties, (one): ReadonlyArray<LandingSituation> => {
 		const byFile = Arr.some(one.files, (file) => changedFile(landing.changed, file))
-		const byKill = Arr.some(one.kills, (file) => changedFile(landing.changed, file))
 		const byLock = one.packages && Arr.contains(landing.changed, "pnpm-lock.yaml")
-		const belowLink = Arr.some([...one.files, ...one.kills], (file) =>
+		const belowLink = Arr.some(one.files, (file) =>
 			Arr.some(landing.changed, (path) => Str.startsWith(`${path}/`)(file))
 		)
-		const touched = byFile || byKill || byLock
+		const touched = byFile || byLock
 		return [
 			...(touched
 				? [
@@ -77,8 +73,7 @@ export const landingSituationsOf = (landing: Landing): ReadonlyArray<LandingSitu
 							: ("a touched property refused" as const)
 					]
 				: ["an untouched property" as const]),
-			...(byKill && !byFile && !byLock ? ["touched through a kill alone" as const] : []),
-			...(byLock && !byFile && !byKill ? ["touched through the lockfile alone" as const] : []),
+			...(byLock && !byFile ? ["touched through the lockfile alone" as const] : []),
 			...(belowLink ? ["touched below a gitlink" as const] : [])
 		]
 	})

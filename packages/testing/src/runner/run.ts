@@ -17,13 +17,7 @@ import {
 import type { Oracle } from "#explore.ts"
 import { failureText } from "#failure.ts"
 import { liveMillis } from "#live.ts"
-import {
-	type Kill,
-	type Property,
-	type PropertyId,
-	type PropertyKind,
-	runNeedsOf
-} from "#property.ts"
+import { type Property, type PropertyId, type PropertyKind, runNeedsOf } from "#property.ts"
 import { PgCluster } from "#resources/cluster.ts"
 import { collect, templatesOf } from "#resources/collect.ts"
 import type { DatabaseTemplate } from "#resources/template.ts"
@@ -53,12 +47,12 @@ import { runWorkers } from "#workers.ts"
 /**
  * A run of a package's properties on the pool, as every command reads it: which properties, by identity or module, at
  * what reach and on what run seed; and what each property's search concluded. `toolchain-test run` prints it; a
- * command that judges kills or caches verdicts reads the same results.
+ * command that caches verdicts reads the same results.
  */
 
 /**
  * One property's run: its identity, the stack it ran on and the label that names both (`<id>`, or `<id>@small-stack`),
- * its module, its kind, its oracle and kills, its verdict and its wall time.
+ * its module, its kind, its oracle, its verdict and its wall time.
  */
 export type PropertyRun = Readonly<{
 	id: PropertyId
@@ -67,7 +61,6 @@ export type PropertyRun = Readonly<{
 	module: string
 	kind: PropertyKind
 	oracle: Oracle
-	kills: ReadonlyArray<Kill>
 	verdict: Verdict
 	millis: number
 }>
@@ -91,35 +84,6 @@ export const searchedPassed = (outcome: RunOutcome, id: PropertyId): boolean => 
 	return (
 		Arr.isReadonlyArrayNonEmpty(runs) && Arr.every(runs, (ran) => ran.verdict.kind !== "failed")
 	)
-}
-
-/**
- * What a run settles to: a line for each kill (judged now, a cached verdict, or one no run could judge), and the
- * properties that passed with every kill turning them red.
- */
-export type Settled = Readonly<{ lines: ReadonlyArray<string>; passing: ReadonlySet<PropertyId> }>
-
-/**
- * A run that can judge no kill, for `why` (its package lies in no git repository, the closure hasher did not load):
- * every kill unjudged, a line each saying why, so a property with kills fails whatever its searches did, as any
- * unjudged kill fails it, and a property with none passes as its searches did; it says once that no verdict is recorded.
- */
-export const unjudgeable = (outcome: RunOutcome, why: string): Effect.Effect<Settled> => {
-	const runs = Arr.dedupeWith(outcome.properties, (one, other) => one.id === other.id)
-	const settled: Settled = {
-		lines: Arr.flatMap(runs, (ran) =>
-			Arr.map(
-				ran.kills,
-				(kill) => `${ran.id}: UNJUDGED: ${kill.why}, since no kill can be judged: ${why}`
-			)
-		),
-		passing: new Set(
-			Arr.flatMap(runs, (ran) =>
-				searchedPassed(outcome, ran.id) && !Arr.isReadonlyArrayNonEmpty(ran.kills) ? [ran.id] : []
-			)
-		)
-	}
-	return Effect.as(Console.log(`kills not judged and verdicts not recorded: ${why}`), settled)
 }
 
 /**
@@ -388,8 +352,7 @@ export const runSeedLogged: Effect.Effect<RunSeed, Config.ConfigError | Schema.S
  * cores, and never more workers than the run has properties, runWorkers, so a run opens no connection it has no work
  * for, under this process's flags, the hardened flags and the config's conditions among them), and gives each
  * property's verdict. The pool is closed before it returns, every worker ended and what its needs held released (a
- * seat's clone, an owner's session), so what the caller runs next (the kills' trials of `run` and `affected`, on
- * workers of their own) never runs beside idle workers that still hold them.
+ * seat's clone, an owner's session), so nothing the caller runs next runs beside idle workers that still hold them.
  */
 export const runPackage = (
 	request: RunRequest
@@ -494,7 +457,6 @@ export const runPackage = (
 									module: found.module,
 									kind: found.property.kind,
 									oracle: found.property.oracle,
-									kills: found.property.kills,
 									verdict,
 									millis: end - start
 								}

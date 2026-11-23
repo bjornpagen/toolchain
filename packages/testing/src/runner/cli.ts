@@ -22,22 +22,22 @@ import { keptValuesAt, requiredFlagsAt } from "#runner/load.ts"
 import { type LoadKeying, loadCommand } from "#runner/loads.ts"
 import { failureLines, lineOf } from "#runner/report.ts"
 import { loadPackage, replayToken, runPackage, runSeedLogged, translateToken } from "#runner/run.ts"
-import { affectedModule, settledRun } from "#runner/settle.ts"
+import { affectedModule, verdictsRecorded } from "#runner/settle.ts"
 import { reportOf, type UsageReport, usageJson, usageLines } from "#runner/usage.ts"
 
 /**
  * `toolchain-test`, the runner's command, run from a package's root (its test.config.ts):
  *
- *   toolchain-test run [paths | property ids]   every property (or those named), at full width, and the kills of each
- *                                               that passed, every verdict cached; exit 1 on any failure or survivor
+ *   toolchain-test run [paths | property ids]   every property (or those named), its search at full width, every
+ *                                               verdict cached; exit 1 on any failure. A run judges no kill
  *   toolchain-test replay <token>               the one case a failure printed, as it ran
  *   toolchain-test census [paths | property ids] whether each property caught a bug: a kill or an operator mutant of
  *                                               product source turns it red (mutate/census.ts); exit 1 on any that
  *                                               never did or cannot be judged
- *   toolchain-test kills [paths | property ids] each property's kills turn its witnesses red; exit 1 on any survivor
- *                                               or stale kill (mutate/commands.ts)
+ *   toolchain-test kills [paths | property ids] the kill census: every kill of each property turns its witnesses red;
+ *                                               exit 1 on any survivor, stale or unjudged kill (mutate/commands.ts)
  *   toolchain-test mutate <file>... [options]  operator mutation of the files, a measurement (mutate/commands.ts)
- *   toolchain-test affected <ref>               the push gate: every property with no cached pass, and its kills
+ *   toolchain-test affected <ref>               the push gate: every property with no cached pass, its search
  *   toolchain-test verified <ref>               the push gate of a repository whose gate runs no property: every
  *                                               property the landing touched carries a green verdict at its closure
  *   toolchain-test fuzz <fuzztime> [paths | ids] the scheduled fuzz budget: fresh seeds round after round
@@ -46,8 +46,10 @@ import { reportOf, type UsageReport, usageJson, usageLines } from "#runner/usage
  *                                               (71eb30f), rewritten in their modules as they are written now, once
  *
  * A run prints its seed first (TEST_SEED reproduces the run), then one line per property the moment its verdict lands
- * (a failure's case, failure and replay token under it), then, once every search has ended, each kill's line, each
- * failure again, the run's CPU and its properties' wall time, the longest first. Every process of the run, this one
+ * (a failure's case, failure and replay token under it), then, once every search has ended, each failure again, the
+ * run's CPU and its properties' wall time, the longest first. A run answers whether the product is right: its searches.
+ * Whether each test can still catch the bug it declares is the kill census's (`kills`), a command of its own, so no
+ * command does both. Every process of the run, this one
  * and its workers, runs under the hardened flags and the config's export conditions: when this process was started
  * without them it starts itself again with them. A command is an entry of `commands`; a lane adds its own (affected, kills, mutate, fuzz) there,
  * reading runPackage's results.
@@ -75,11 +77,10 @@ const usageWritten = (packageRoot: string, seed: number, millis: number, usage: 
 	})
 
 /**
- * `run [paths | ids]`, the full run per production version: every property named, reading no cached pass; then the
- * kills of each whose searches passed, and every verdict recorded in the verdict cache (settle.ts settledRun); each
- * run's line as it lands (runPackage), and the run's JSON record once every search has ended, before the kills are
- * judged, which can take longer than the searches; then every kill's line, every failure and the run's usage; 1 when
- * any search failed or any kill did not turn its property red, judged or not.
+ * `run [paths | ids]`, the full run per production version: every property named, its search reading no cached pass,
+ * each run's line as it lands (runPackage); then the run's JSON record, every verdict recorded in the verdict cache
+ * (settle.ts verdictsRecorded), every failure and the run's usage; 1 when any search failed. It judges no kill: that is
+ * the kill census (`kills`).
  */
 const run = (selected: ReadonlyArray<string>) =>
 	Effect.scoped(
@@ -88,19 +89,12 @@ const run = (selected: ReadonlyArray<string>) =>
 			const outcome = yield* runPackage({ root, seed, reach: "full", selected })
 			const usage = reportOf(outcome.usage, outcome.properties)
 			const written = yield* usageWritten(root, seed, outcome.millis, usage)
-			yield* Console.log(
-				`every search ended in ${Math.round(outcome.millis)} ms, their CPU and wall time, every property's, as JSON: ${written}; the kills next`
-			)
-			const { lines, passing } = yield* settledRun(root, selected, outcome)
+			yield* verdictsRecorded(root, selected, outcome)
 			const failed = Arr.filter(outcome.properties, (ran) => ran.verdict.kind === "failed")
-			const failing = Arr.filter(
-				Arr.dedupe(Arr.map(outcome.properties, (ran) => ran.id)),
-				(id) => !passing.has(id)
-			).length
+			const failing = Arr.dedupe(Arr.map(failed, (ran) => ran.id)).length
 			yield* Console.log(
 				Arr.join(
 					[
-						...lines,
 						...Arr.flatMap(failed, (ran) => ["", `${ran.label}:`, ...failureLines(ran.verdict)]),
 						"",
 						...usageLines(usage),

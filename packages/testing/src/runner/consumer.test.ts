@@ -6,7 +6,6 @@ import { Scratch } from "#resources/scratch.ts"
 import {
 	consumerIn,
 	consumerRun,
-	judgeable,
 	keyed,
 	layoutSituationsOf,
 	layouts,
@@ -16,13 +15,12 @@ import {
 /**
  * A package that holds the library runs its properties in every layout a repository gives it: the library a workspace
  * link (its files in the repository, as grizzle's vendor/toolchain) or installed under node_modules, in a git
- * repository or not, with a lockfile or not, with TypeScript or not. Its run passes the properties that pass, records
- * their verdicts exactly when it has a verdict key (a git repository and its lockfile, and the closure hasher, which
- * needs TypeScript), and otherwise says once why nothing was recorded; nothing passing fails for its layout. Where no
- * kill can be judged (no git repository, no TypeScript), a property with a kill fails, its searches passing: an
- * unjudged kill is no pass. Each layout is written in the case's scratch directory and run in a child process through
- * the library's loadPackage, its inline evaluator and settledRun, as `toolchain-test run` runs them. Oracle: the
- * specification, stated per layout.
+ * repository or not, with a lockfile or not, with TypeScript or not. Its run passes the properties whose searches pass,
+ * records their verdicts exactly when it has a verdict key (a git repository and its lockfile, and the closure hasher,
+ * which needs TypeScript), and otherwise says once why nothing was recorded; nothing passing fails for its layout. A run
+ * judges no kill: a property whose kill survives passes as its search does, and its kill leaves no verdict. Each layout
+ * is written in the case's scratch directory and run in a child process through the library's loadPackage, its inline
+ * evaluator and verdictsRecorded, as `toolchain-test run` runs them. Oracle: the specification, stated per layout.
  */
 export const consumersRunInEveryLayout = property.exhaust(layouts, {
 	box: "every layout: the library linked or installed, in a git repository or not, with a lockfile or not, with TypeScript or not",
@@ -50,9 +48,8 @@ export const consumersRunInEveryLayout = property.exhaust(layouts, {
 							"the specification",
 							{
 								exitCode: 0,
-								verdicts: Option.some(judgeable(layout) ? ["explored"] : ["explored", "explored"]),
-								passing: Option.some(1),
-								recorded: keyed(layout) ? 1 : 0,
+								verdicts: Option.some(["explored", "explored"]),
+								recorded: keyed(layout) ? 2 : 0,
 								said: keyed(layout) ? 0 : 1
 							}
 						],
@@ -61,7 +58,6 @@ export const consumersRunInEveryLayout = property.exhaust(layouts, {
 							{
 								exitCode: ran.exitCode,
 								verdicts: Option.map(ran.summary, (summary) => summary.verdicts),
-								passing: Option.map(ran.summary, (summary) => summary.passing),
 								recorded: ran.recorded,
 								said: ran.said.length
 							}
@@ -72,7 +68,7 @@ export const consumersRunInEveryLayout = property.exhaust(layouts, {
 			}),
 	oracle: {
 		kind: "specification",
-		name: "a consumer's run passes its passing properties in every layout, fails one whose kill it cannot judge, and records its verdicts exactly when it has a verdict key"
+		name: "a consumer's run passes its passing properties in every layout, judges no kill, and records their verdicts exactly when it has a verdict key"
 	},
 	kept: [],
 	kills: [
@@ -92,31 +88,22 @@ export const consumersRunInEveryLayout = property.exhaust(layouts, {
 		},
 		{
 			file: "packages/testing/src/runner/affected.ts",
-			original:
-				"const weighing = yield* Effect.result(\n\t\t\tweighingOf(grounds.packageRoot, repository, config, discovered)\n\t\t)",
-			replacement:
-				"const weighing = Result.succeed(\n\t\t\tyield* weighingOf(grounds.packageRoot, repository, config, discovered)\n\t\t)",
-			why: "a package with no lockfile fails its run"
-		},
-		{
-			file: "packages/testing/src/runner/run.ts",
-			original:
-				"searchedPassed(outcome, ran.id) && !Arr.isReadonlyArrayNonEmpty(ran.kills) ? [ran.id] : []",
-			replacement: "searchedPassed(outcome, ran.id) ? [ran.id] : []",
-			why: "a property whose kills no run can judge passes as its searches did, beside its UNJUDGED lines"
+			original: "const weighing = yield* Effect.result(\n\t\t\tEffect.flatMap(",
+			replacement: "const weighing = yield* Effect.map(Result.succeed)(\n\t\t\tEffect.flatMap(",
+			why: "a package with no lockfile, or in no git repository, fails its run, where it records nothing and says why"
 		},
 		{
 			file: "packages/testing/src/runner/affected.ts",
-			original: "return yield* unjudgeable(",
-			replacement: "return { lines: [], passing: passingOf(outcome, ids, []) } || unjudgeable(",
-			why: "a package in no git repository passes a property whose kills it never judged"
+			original:
+				'(one) => cache.record(one.key, searchedPassed(outcome, one.found.id) ? "passed" : "failed"),',
+			replacement: '(one) => cache.record(one.key, "failed"),',
+			why: "a run records no pass for a property whose search passed, so a key that holds a verdict never holds it"
 		},
 		{
 			file: "packages/testing/src/runner/settle.ts",
-			original: "onFailure: (unloaded) => unjudgeable(outcome, unloaded.message)",
-			replacement:
-				"onFailure: () => Effect.succeed({ lines: [], passing: new Set(outcome.properties.map((ran) => ran.id)) })",
-			why: "a run whose closure hasher did not load (no TypeScript) passes a property whose kills it never judged, as `toolchain-test run` did"
+			original: "onFailure: (unloaded) => Console.log(",
+			replacement: "onFailure: (unloaded) => Effect.die(unloaded) || Console.log(",
+			why: "a run whose closure hasher did not load (no TypeScript) fails, where its verdict is its searches' and it only records nothing"
 		}
 	]
 })
