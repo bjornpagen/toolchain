@@ -244,7 +244,7 @@ export const derivedTemplate = (origin: DatabaseTemplate, token: string) =>
 export const derivedMarksTemplate = (token: string) => derivedTemplate(marksTemplate, token)
 
 /**
- * The statements of the seat template: items with an identity, which the seat's reset truncates, and a ledger it does
+ * The statements of the seat template: items with an identity, which the seat's reset empties, and a ledger it does
  * not, holding one seed row, and a sequence of its own advanced once.
  */
 const seatSchema = [
@@ -325,8 +325,8 @@ export const freshTemplate = (locale: string, token: string) =>
 		build: building([])
 	})
 
-/** The seat's reset: the items, and their identity, as the template has them. */
-export const seatReset = ["TRUNCATE public.items RESTART IDENTITY"] as const
+/** The seat's tables: the items, emptied after each case; their identity is put back with every sequence. */
+export const seatTables = ["public.items"] as const
 
 /** A template of one table whose identity is `token`, unique to the case that declares it, built by `build`. */
 export const tokenTemplate = (

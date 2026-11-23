@@ -1,4 +1,5 @@
 import {
+	Array as Arr,
 	Cause,
 	Deferred,
 	Effect,
@@ -305,16 +306,45 @@ const hold = (
 	})
 
 /**
- * After a case on a held clone: the form's reset, the sequences put back, and the fingerprint read again. A clone whose
- * fingerprint is its baseline is kept for the next case. Any other is dropped and a new clone held in its place (or the
- * failure to hold one, which the next case meets and tries again), and the case fails: it left behind what its form
- * does not let a case leave, and no later case sees it.
+ * The statements that empty `tables` (each schema-qualified and quoted) of every row: one READ COMMITTED transaction of
+ * their own, under the replica role, deleting each table's rows in one DO block; none for no table. The reset of every
+ * case that commits, a seat's (Database.seat) and any a caller runs between the cases it commits, never a TRUNCATE. A
+ * TRUNCATE gives each table and each of its indexes a new relation file, and its commit drops the old files' pages by a
+ * scan of every shared buffer: 16 clients on one server reset 117 cases a second by TRUNCATE, 2,662 by this deletion
+ * and 18,517 by a rollback (grizzle's factory, 2026-11-23, over grizzle's pg tier at f87b2aaab). Under the replica role no trigger fires, neither a foreign key's nor any of the schema's own, so
+ * no order of deletion is refused and none of the tables' rules judges a reset, as none judges a TRUNCATE, which fires
+ * no row trigger; each table of `tables` is emptied, so no reference among them is left dangling, and a table outside
+ * them that references one is the caller's to name. A READ COMMITTED transaction holds no SIREAD lock and is no
+ * serializable transaction's, so no SERIALIZABLE transaction after it counts a conflict with what it deleted, and its
+ * DELETE never fails with 40001. The deleted versions stay until a vacuum: a case meets them as dead rows, which change
+ * what a plan reads, never what a statement answers. The session's role must be able to SET session_replication_role:
+ * a cluster owner holds it where its spec's ownerParameters name it (pg/spec.ts).
+ */
+export const rowsEmptied = (tables: ReadonlyArray<string>): ReadonlyArray<string> =>
+	Arr.match(tables, {
+		onEmpty: () => [],
+		onNonEmpty: (named) => [
+			"BEGIN ISOLATION LEVEL READ COMMITTED",
+			"SET LOCAL session_replication_role = replica",
+			`DO $reset$\nBEGIN\n${Arr.join(
+				Arr.map(named, (table) => `\tDELETE FROM ${table};`),
+				"\n"
+			)}\nEND\n$reset$`,
+			"COMMIT"
+		]
+	})
+
+/**
+ * After a case on a held clone: the form's tables emptied (rowsEmptied), the sequences put back, and the fingerprint
+ * read again. A clone whose fingerprint is its baseline is kept for the next case. Any other is dropped and a new clone
+ * held in its place (or the failure to hold one, which the next case meets and tries again), and the case fails: it
+ * left behind what its form does not let a case leave, and no later case sees it.
  */
 const settle = (
 	held: Ref.Ref<Result.Result<Held, NeedFailed>>,
 	opened: Opened<Database>,
 	parent: Scope.Scope,
-	reset: ReadonlyArray<string>,
+	tables: ReadonlyArray<string>,
 	form: string
 ): Effect.Effect<void, never, PgCluster> =>
 	Effect.gen(function* () {
@@ -328,7 +358,7 @@ const settle = (
 			Effect.scoped(
 				Effect.gen(function* () {
 					const session = yield* cluster.connect(current.database.member, current.database.name)
-					yield* Effect.forEach(reset, (statement) => run(session, statement, []), {
+					yield* Effect.forEach(rowsEmptied(tables), (statement) => run(session, statement, []), {
 						discard: true
 					})
 					if (current.sequences !== null) {
@@ -363,14 +393,14 @@ const settle = (
 
 /**
  * A need whose cases share one clone per worker, one case at a time (a worker evaluates its cases one after another),
- * each case's clone checked back to its template after the case (settle). The worker holds its clone, or why it could
- * not hold a new one, which the next case meets by trying once more. `take` gives one case its resource over the held
- * clone, in the case's scope.
+ * each case's clone checked back to its template after the case (settle), once `tables` are emptied. The worker holds
+ * its clone, or why it could not hold a new one, which the next case meets by trying once more. `take` gives one case
+ * its resource over the held clone, in the case's scope.
  */
 const heldNeed = <A>(
 	key: string,
 	template: DatabaseTemplate,
-	reset: ReadonlyArray<string>,
+	tables: ReadonlyArray<string>,
 	take: (held: Held) => Effect.Effect<A, NeedFailed, Scope.Scope | PgCluster>
 ): DatabaseNeed<A> => ({
 	key,
@@ -399,7 +429,7 @@ const heldNeed = <A>(
 						: yield* Effect.tap(hold(opened, parent), (again) =>
 								Ref.set(held, Result.succeed(again))
 							)
-					yield* Effect.addFinalizer(() => settle(held, opened, parent, reset, key))
+					yield* Effect.addFinalizer(() => settle(held, opened, parent, tables, key))
 					return yield* take(current)
 				}),
 				PgCluster,
@@ -409,17 +439,19 @@ const heldNeed = <A>(
 })
 
 /**
- * Each case on the worker's own clone of `template`, which it may commit to, `reset` (statements run on an owner
- * session in the clone after the case, such as TRUNCATE ... RESTART IDENTITY over the tables the case writes) returning
- * it to the template: after the reset, every sequence is put back and the clone must have its template's fingerprint
- * again, or it is replaced and the case fails. For many fast cases that commit into one installed schema, where a clone
- * per case would cost more than the cases.
+ * Each case on the worker's own clone of `template`, which it may commit to, `tables` (each schema-qualified and
+ * quoted: the tables the case writes) emptied after it on an owner session in the clone (rowsEmptied), which returns
+ * it to the template: then every sequence is put back, an identity's among them, and the clone must have its
+ * template's fingerprint again, or it is replaced and the case fails. For many fast cases that commit into one
+ * installed schema, where a clone per case would cost more than the cases; a case that commits nothing takes
+ * Database.transaction, whose reset is a rollback. A seat of no table is reset by the caller between its cases, in its
+ * own sessions, and only checked here.
  */
-const seat = (template: DatabaseTemplate, reset: ReadonlyArray<string>): DatabaseNeed<Database> =>
+const seat = (template: DatabaseTemplate, tables: ReadonlyArray<string>): DatabaseNeed<Database> =>
 	heldNeed(
-		`@bjornpagen/testing/resources Database.seat ${template.key} ${canonicalText(reset)}`,
+		`@bjornpagen/testing/resources Database.seat ${template.key} ${canonicalText(tables)}`,
 		template,
-		reset,
+		tables,
 		(held) => Effect.succeed(held.database)
 	)
 

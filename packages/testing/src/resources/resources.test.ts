@@ -54,7 +54,7 @@ import {
 	marksTemplate,
 	ownCluster,
 	runsOf,
-	seatReset,
+	seatTables,
 	seatTemplate,
 	services,
 	superuserSessionIn,
@@ -966,7 +966,7 @@ export const seatOverUnpopulatedView = property.exhaust(finite(boolean), {
 				const seen = yield* Effect.provideContext(
 					Effect.scoped(
 						Effect.gen(function* () {
-							const take = yield* Database.seat(unpopulatedViewTemplate, seatReset).open
+							const take = yield* Database.seat(unpopulatedViewTemplate, seatTables).open
 							const first = yield* Scope.make()
 							const database = yield* Scope.provide(take, first)
 							yield* inDatabase(database, "INSERT INTO public.items (value) VALUES (1)", [])
@@ -1029,7 +1029,7 @@ export const seatSettles = property.explore(
 					const outcome = yield* Effect.provideContext(
 						Effect.scoped(
 							Effect.gen(function* () {
-								const take = yield* Database.seat(seatTemplate, seatReset).open
+								const take = yield* Database.seat(seatTemplate, seatTables).open
 								const first = yield* Scope.make()
 								const database = yield* Scope.provide(take, first)
 								yield* Effect.forEach(

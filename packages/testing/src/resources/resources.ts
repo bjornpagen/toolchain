@@ -16,6 +16,7 @@ export {
 export {
 	Database,
 	type DatabaseNeed,
+	rowsEmptied,
 	type TemplateDatabase,
 	type Transaction
 } from "#resources/database.ts"
