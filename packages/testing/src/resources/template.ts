@@ -172,19 +172,22 @@ const originKey = (origin: Origin): string => {
 }
 
 /**
- * The clone strategies PostgreSQL offers (CREATE DATABASE ... STRATEGY), and the one a member clones with, by its
- * fsync: WAL_LOG where fsync is on, FILE_COPY where it is off. Measured on cassowary's PostgreSQL 19rc2 (a private
- * family of four members of grizzle's scripts/pg/init.sh, 2026-11-16 00:53 to 01:35 UTC; the probe and every sample in
- * ~/.cache/grizzle-release/TESTSYS/RESOURCES/measure/: clone.mjs, its rows in rate*.jsonl, family*.jsonl,
- * crossover.jsonl and nofsync*.jsonl, summarize.cjs): with fsync on, FILE_COPY's checkpoints before and after each copy
- * hold the whole machine at 27 to 30 create-and-drop cycles a second at 64 clients, one member or four, while WAL_LOG,
- * whose WAL is the template's size, made 113 to 131 a second of an 8 MB template over the family and 47 of a 26 MB one,
- * ahead at every size measured; with fsync off a checkpoint flushes nothing, and FILE_COPY made 1,335 a second over the
- * family against WAL_LOG's 760, and led at every size from 8 MB to 119 MB on one member.
+ * The strategy every template and clone is copied with, CREATE DATABASE ... STRATEGY WAL_LOG, which copies the source's
+ * blocks through WAL and forces no checkpoint, where FILE_COPY forces two, before and after its copy of the files
+ * (PostgreSQL 19.0 dbcommands.c CreateDatabaseUsingFileCopy, RequestCheckpoint at L577 and L680), each waited for on
+ * the member's one checkpointer, whatever fsync (a DROP DATABASE forces one more either way, dropdb L1885). Measured on a real
+ * tier, lane PGFAMILY's arms (~/.cache/toolchain/PGFAMILY/packages/testing/out/pgfamily/ckpt: run-*.log, *.ckpt and
+ * *.waits sampled every 30 s and 2 s by sample.sh, final-*.txt): grizzle c2e208938's 13 test/pg/laws files of two
+ * properties or more, 73 properties at 32 workers on a family of its own of 2 members (fsync off), TEST_SEED=2219874524,
+ * four runs at once on cassowary (64 cores, load about 350, IO pressure about 44%), 2026-11-23 01:10 to 02:05 UTC.
+ * FILE_COPY: 40.0 min of the runner's properties, 2,596 and 2,930 forced checkpoints a member, 11.3% of the members'
+ * busy backends waiting on CheckpointDone. WAL_LOG: 37.4 min, 860 and 771 forced checkpoints, 6.8%, 0 failed either way.
+ * Where FILE_COPY was chosen with fsync off (1,335 clones a second against WAL_LOG's 760 on a private family of four
+ * idle members, 2026-11-16), it measured a probe's clones alone, never a tier's checkpointer backlog behind them
+ * (grizzle-test-1, 2026-11-22: 187,335 forced checkpoints, a DROP DATABASE 48 s on CheckpointDone). Unmeasured: a
+ * member on memory-backed storage, where a checkpoint costs no disk.
  */
-type Strategy = "WAL_LOG" | "FILE_COPY"
-
-const strategyOf = (fsync: string | null): Strategy => (fsync === "off" ? "FILE_COPY" : "WAL_LOG")
+const strategy = "WAL_LOG"
 
 /** The settings whose stored value is a list of quoted names, which a replay writes as it is stored (pg_dump's own list). */
 const listQuoted: ReadonlySet<string> = new Set([
@@ -403,8 +406,7 @@ const createdFresh = (
 	gate: Parameters<typeof run>[0],
 	template: DatabaseTemplate,
 	name: DatabaseName,
-	locale: string,
-	strategy: Strategy
+	locale: string
 ): Effect.Effect<void, NeedFailed> =>
 	Effect.gen(function* () {
 		const known = yield* single(
@@ -424,6 +426,59 @@ const createdFresh = (
 			[]
 		)
 	})
+
+/**
+ * `database` on `member` with no backend left in it but none: every backend in it terminated, on a session of the
+ * member's bootstrap superuser in the owner's database (cluster.ts superuser), who may end any of them (a session a
+ * build left open, a backend of one it closed that is still exiting, an autovacuum worker, which PostgreSQL 19 lets in
+ * whatever ALLOW_CONNECTIONS says, a superuser's), and each waited for until it has exited, on PostgreSQL's own wait
+ * (pg_terminate_backend's timeout, signalfuncs.c pg_wait_until_termination, its latch), at most terminateWaitOf
+ * `template` apiece; one still there past it fails the need, naming its process. Run just before the build database is
+ * copied into its template, whose CREATE DATABASE refuses a source any other backend is in once its own five seconds of
+ * waiting end (dbcommands.c, CountOtherDBBackends: grizzle's network tier, 2026-11-22, fin/scale.test, 55006 "source
+ * database gz_tpb_... is being accessed by other users"); an autovacuum worker that enters after it is one CREATE
+ * DATABASE signals itself.
+ */
+const emptied = (
+	cluster: PgClusterShape,
+	member: PgMember,
+	database: DatabaseName,
+	template: DatabaseTemplate
+): Effect.Effect<void, NeedFailed> =>
+	Effect.scoped(
+		Effect.gen(function* () {
+			const superuser = yield* cluster.superuser(member, cluster.maintenance)
+			const left = yield* run(
+				superuser,
+				"WITH there AS MATERIALIZED (SELECT pid FROM pg_catalog.pg_stat_activity WHERE datname = $1 AND pid <> pg_catalog.pg_backend_pid()) SELECT pid::text FROM there WHERE NOT pg_catalog.pg_terminate_backend(pid, $2::int8)",
+				[database, `${terminateWaitOf(template)}`]
+			)
+			if (Arr.isReadonlyArrayNonEmpty(left)) {
+				return yield* NeedFailed.make({
+					need: template.key,
+					message: `template ${template.name}'s build database ${database} still holds the backends ${Arr.join(
+						Arr.map(left, ([pid]) => pid ?? "?"),
+						", "
+					)} past ${terminateWaitOf(template)} ms of their termination: its copy would be refused`
+				})
+			}
+		})
+	)
+
+/**
+ * How long, in milliseconds of wall time, the build of `template` waits for one backend left in its build database to
+ * exit once terminated (emptied): as long as the build may spend of CPU, its budget, the bound the template states for
+ * its whole open.
+ *
+ * @limitKind derived
+ * @owner the testing library's database templates (resources/template.ts, ensureBuilt)
+ * @unit milliseconds
+ * @scope the wait for one terminated backend of one template's build database to exit, before its copy
+ * @derivation a backend that SIGTERM ends exits within moments of being scheduled; one still there after the build's
+ *   whole budget has passed is a backend PostgreSQL itself cannot end, which the build reports rather than waits on
+ * @from the template's `budget` (Template.database), the milliseconds of CPU its open may spend
+ */
+const terminateWaitOf = (template: DatabaseTemplate): number => template.budget
 
 /**
  * Makes sure the identified template is built on `member`. A built template (a template refusing connections) is
@@ -447,19 +502,20 @@ const createdFresh = (
  * refused when it has not (CountOtherDBBackends: metis's 5451, 2026-11-20, sixteen copies refused, a worker held 11.5 s
  * by another drop's ProcSignalBarrier). A copy no session has entered has no statistics, and autovacuum leaves it alone
  * but for wraparound, past autovacuum_freeze_max_age of its frozen transaction id (PostgreSQL 19: neither strategy of
- * CREATE DATABASE, of the template or from it, gives the copy statistics). A session the build left open fails the
- * copy, once PostgreSQL's own wait for it ends.
+ * CREATE DATABASE, of the template or from it, gives the copy statistics). Before the copy the build database is emptied
+ * of every backend still in it (emptied): a session the build left open, a backend of one it closed that is still
+ * exiting, an autovacuum worker, which enters the build database whatever its ALLOW_CONNECTIONS, since the build gave it
+ * statistics.
  */
 const ensureBuilt = (
 	cluster: PgClusterShape,
 	identified: Identified,
-	member: PgMember,
-	strategy: Strategy
+	member: PgMember
 ): Effect.Effect<void, NeedFailed, NeedContext> =>
 	Effect.gen(function* () {
 		const { template, name, digest, closure } = identified
 		if (Option.isSome(identified.origin)) {
-			yield* ensureBuilt(cluster, identified.origin.value, member, strategy)
+			yield* ensureBuilt(cluster, identified.origin.value, member)
 		}
 		const owner = yield* cluster.owner(member)
 		if ((yield* single(owner.session, stateQuery, [name])) === "ready") {
@@ -483,7 +539,7 @@ const ensureBuilt = (
 				yield* Option.match(identified.origin, {
 					onNone: () =>
 						template.from.kind === "fresh"
-							? createdFresh(gate, template, building, template.from.locale, strategy)
+							? createdFresh(gate, template, building, template.from.locale)
 							: run(
 									gate,
 									`CREATE DATABASE ${quoteIdent(building)} TEMPLATE ${quoteIdent(cluster.base)} STRATEGY ${strategy}`,
@@ -505,6 +561,7 @@ const ensureBuilt = (
 					onSome: (origin) => replayed(origin.name, building)
 				})
 				yield* Effect.scoped(template.build({ member, name: building }))
+				yield* emptied(cluster, member, building, template)
 				yield* run(
 					gate,
 					`CREATE DATABASE ${quoteIdent(name)} TEMPLATE ${quoteIdent(building)} STRATEGY ${strategy}`,
@@ -586,8 +643,8 @@ type BuiltTemplate = Readonly<{
 
 /**
  * Opens `template` on the worker's member: the cluster and the closure hashes from the run, the member the worker
- * reaches, the template held in use for the worker's life (holdInUse) and built there once (ensureBuilt), the strategy
- * the member clones with, and what each clone gets again. A clone is created in the caller's scope, which drops it when
+ * reaches, the template held in use for the worker's life (holdInUse) and built there once (ensureBuilt), and what
+ * each clone gets again. A clone is created in the caller's scope, which drops it when
  * it closes, then given its template's privileges and settings, and refused unless they are the template's. The drop
  * ends no session: the case's own sessions in the clone were closed before it, so it waits only for their backends to
  * leave (dbcommands.c dropdb, CountOtherDBBackends, five seconds at most), and a session the case leaked is the case's
@@ -608,11 +665,9 @@ const openDatabaseTemplate = (
 		const worker = yield* WorkerIndex
 		const member = yield* cluster.memberOf(worker)
 		const owner = yield* cluster.owner(member)
-		const fsync = yield* single(owner.session, "SELECT pg_catalog.current_setting('fsync')", [])
-		const strategy = strategyOf(fsync)
 		const identified = yield* identify(cluster, closures, owner.session, template)
 		yield* holdInUse(owner, identified)
-		yield* ensureBuilt(cluster, identified, member, strategy)
+		yield* ensureBuilt(cluster, identified, member)
 		const checkout = yield* cluster.checkout
 		yield* claimed(owner, identified, checkout)
 		const name = identified.name

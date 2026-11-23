@@ -24,6 +24,7 @@ import {
 	Scope,
 	String as Str
 } from "effect"
+import { ChildProcessSpawner } from "effect/process"
 import { assert } from "#assert.ts"
 import { awaitFact } from "#fact.ts"
 import type { Reached } from "#features.ts"
@@ -1697,6 +1698,84 @@ export const roleSettingCloned = property.explore(int(0, 3), {
 				"\t\t\t\t\tEffect.flatMap(cluster.superuser(member, cluster.maintenance), (superuser) =>\n",
 			replacement: "\t\t\t\t\tEffect.flatMap(Effect.succeed(session), (superuser) =>\n",
 			why: "A clone's role settings are made again on the owner's session, as they were: a role the build's superuser made is none the owner holds the ADMIN option on, and the server refuses its setting, so every clone of the template fails (5442, 2026-11-20: grizzle's laws/families and laws/projections, 42501); the property fails."
+		}
+	]
+})
+
+export const buildLeftSessionsEmptied = property.exhaust(finite(int(1, 3)), {
+	box: "a template whose build leaves one to three sessions of the bootstrap superuser open in its build database past its end",
+	needs: { services },
+	situations: [],
+	check:
+		({ services: context }) =>
+		(leftOpen) =>
+			Effect.flatMap(context, (ctx) =>
+				Effect.provideContext(
+					Effect.scoped(
+						Effect.gen(function* () {
+							const outer = yield* Effect.scope
+							const cluster = yield* PgCluster
+							const member = yield* Effect.map(cluster.members, Arr.headNonEmpty)
+							const token = yield* Effect.scoped(
+								Effect.flatMap(cluster.connect(member, cluster.maintenance), (session) =>
+									single(session, freshHex, [])
+								)
+							)
+							const inBuild = yield* Effect.context<
+								ChildProcessSpawner.ChildProcessSpawner | PgCluster
+							>()
+							const template = tokenTemplate(`left open ${token ?? ""}`, (target) =>
+								Effect.provideContext(
+									Effect.asVoid(
+										Effect.andThen(
+											Effect.forEach(
+												Array.from({ length: leftOpen }),
+												() => Effect.orDie(Scope.provide(outer)(superuserSessionIn(target))),
+												{ discard: true }
+											),
+											awaitFact(
+												Effect.map(superuserSessions(target), (held) =>
+													held >= leftOpen ? Option.some(held) : Option.none()
+												)
+											)
+										)
+									),
+									inBuild
+								)
+							)
+							const opened = yield* Effect.result(
+								Effect.scoped(
+									Effect.gen(function* () {
+										const built = yield* template.open
+										const clone = yield* built.clone
+										return clone.template
+									})
+								)
+							)
+							if (opened._tag === "Success") {
+								yield* dropTemplate({ member, name: opened.success })
+							}
+							assert.deepEqual(
+								{ opened: opened._tag },
+								{ opened: "Success" },
+								`a template whose build left ${leftOpen} sessions in its build database opens: ${opened._tag === "Failure" ? opened.failure.message : ""}`
+							)
+						})
+					),
+					ctx
+				)
+			),
+	oracle: {
+		kind: "specification",
+		name: "a template whose build leaves sessions open in its build database is copied into its template: every backend still there is ended before the copy, which PostgreSQL refuses while any is"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/resources/template.ts",
+			original: "\t\t\t\tyield* emptied(cluster, member, building, template)\n",
+			replacement: "",
+			why: "The build database is copied with the build's sessions still in it, so CREATE DATABASE waits its five seconds and refuses the copy (55006, grizzle's network tier, 2026-11-22: fin/scale.test, source database gz_tpb_... is being accessed by other users); the property fails."
 		}
 	]
 })
