@@ -27,6 +27,7 @@ export default defineRunner({
 		"src/resources/scratch.test.ts",
 		"src/resources/resources.test.ts",
 		"src/pg/settle.test.ts",
+		"src/pg/hold.test.ts",
 		"src/pg/monitor.test.ts",
 		"src/pg/family.test.ts",
 		"src/pg/settings.test.ts",

@@ -196,9 +196,9 @@ verdict and record none.
 
 The testing library's database resources (`@bjornpagen/testing/resources`) are proven against a real PostgreSQL:
 `packages/testing/test.config.ts`'s layer provides their cluster (`resources.fixtures.ts`), the testing package's own
-local cluster (`packages/testing/pg.config.ts`), as units of the workbench's PostgreSQL (`src/pg`). A run only reads
-it: from `packages/testing`, `pnpm exec toolchain-pg settle` (it runs as a unit of its own) gives this checkout's
-family its spec first, and `pnpm pg check` reads it as a run does.
+local cluster (`packages/testing/pg.config.ts`), as units of the workbench's PostgreSQL (`src/pg`). A run's workers
+hold it and bring up its member on their first need, and it stops once the run ends; `pnpm pg check` reads what runs as
+a run does, and `pnpm pg psql` holds it for its session.
 
 The properties make databases only under the prefix `tc_` (templates `tc_tpl_<digest>`, clones `tc_c_<owner>_<n>`)
 and, for the property about collection, a prefix of each case's own (`tcs<hex>_`); each case drops what it made, and
@@ -223,15 +223,29 @@ once and 16 twice 4's, for 40 to 47% more of the family in memory (grizzle's pg.
 The testing package's own cluster stays `one`: its resource properties read the databases of the one member, and 7 of
 their 23 fail with a member a worker.
 
+- A member runs exactly as long as some process that needs it (`src/pg/hold.ts`). It runs under its lease,
+  `<member>-lease.service`, a transient unit that runs nothing, PropagatesStopTo= the member and StopWhenUnneeded=,
+  and is started and restarted only by a transient oneshot that requires the lease active (Requisite=), which systemd
+  refuses where the lease is stopped and which keeps the lease while it runs; the lease depends on the member in no way,
+  so a member's restart is one restart, never a stop that takes a member in memory's data. What wants a lease is a hold, `<family>-hold-<random>.scope`, which each process that
+  needs the family makes for as long as it needs it (`familyHeld`), its one process a shell reading a pipe only the
+  holding process writes, so the hold ends with that process however it ends, a SIGKILL to its unit included. A run's
+  worker holds its family from its first need to its end; a member's settle while it settles; `toolchain-pg settle`,
+  `psql`, `admin` and `run` while they run. systemd counts the holds: the last one's end stops every lease no hold
+  wants, and each lease its member. The workbench's postgres@ unit takes no dependency at run time (`systemctl
+  set-property` refuses BindsTo= on a loaded unit), so the dependency lives in the lease; and a hold binds to a
+  process, never to the unit it runs in, since a terminal's scope lives for days and a service may run many runs.
+  Before leases, a run that ended, failed or was killed left its members running: on 2026-11-24 379 of grizzle's
+  members held 88 GB of /dev/shm's 124.
 - `toolchain-pg settle` settles the working directory's family's state (its password, hba file and CA, the ports of
   all the members its width gives, and that width, recorded last in `<state>/width`) and its first member, as the unit
-  `<family>-settle`. Trunk's script and a lane run it before any pg run. A run's worker brings up the member it reaches
-  on its first need, and no other: where the family's state records another width than the run's, or none, it is
-  settled first as the unit `<family>-settle`; where the member is absent or not as its width's spec states it is
-  settled as the unit `<family>-<i>-settle` (`toolchain-pg settle <i>`), a second asker joining either unit's start,
-  and a settle that fails is that worker's failure. So a family runs the members its runs reached: a run of one
-  worker, one member. A fresh member takes a few seconds (initdb, its owner, template and extensions, a restart); a
-  read of a settled one starts nothing.
+  `<family>-settle`, and leaves nothing running. A run's worker brings up the member it reaches on its first need, and
+  no other: where the family's state records another width than the run's, or none, it is settled first as the unit
+  `<family>-settle`; where the member is absent or not as its width's spec states it is settled as the unit
+  `<family>-<i>-settle` (`toolchain-pg settle <i>`), a second asker joining either unit's start, and a settle that fails
+  is that worker's failure. So a family runs the members its live runs reached: a run of one worker, one member. A fresh
+  member takes a few seconds (initdb, its owner, template and extensions, a restart), and every run makes again the
+  members it reaches; a read of a running one starts nothing.
 - A run's width is its testWorkers (`packages/testing/src/workers.ts`), half its CPU allowance: the CPUs its affinity
   names, never more than the tightest cpu.max quota of any cgroup from its own to the hierarchy's root (`allowanceOf`;
   Node 26.13.1's `availableParallelism()` reads a slice's quota in place of a tighter one of the unit's own: a unit with
@@ -241,8 +255,9 @@ their 23 fail with a member a worker.
   allowance than its starter's, so it never reads its own: it is given the width of the family it settles
   (`TOOLCHAIN_PG_SETTLE_WIDTH`, settle.ts `settleEnvironment`, beside the checkout) and sizes the family for that. A
   family settled for one width and reached by a run of another is refused by every read of that run until its first need
-  settles it at its own; a person's `check`, `psql`, `admin` and `env`, which run no workers, read it at the width its
-  state records (`familyAsSettled`), and so does collection. Neither variable is a person's option: each is the
+  settles it at its own; a person's `check`, `psql`, `admin` and `run`, which run no workers, read it at the width its
+  state records (`familyAsSettled`; `psql`, `admin` and `run` at their own where it records none), and so does
+  collection. Neither variable is a person's option: each is the
   toolchain's plumbing between its own processes, and a process no run started reads its own.
 - Over TLS a family's members claim their ports: the lowest from the spec's `from` that no family claims and nothing
   listens at, each claim a file `~/.local/state/toolchain-pg/ports/<port>` naming its family, created with O_EXCL, so two
@@ -255,12 +270,12 @@ their 23 fail with a member a worker.
 - Every settle first collects its cluster's families whose checkout is gone: the folder deleted, or a workspace
   forgotten whose folder lingers (its `.git` file names a git directory that `jj workspace forget` or `git worktree
   prune` removed). Their units are stopped, and their data, claims and state removed. It reads only its own cluster's
-  families (`<unit>-<8 hex digits>`) and never a cluster made before families. A live checkout's family stays running
-  between runs, its templates kept.
+  families (`<unit>-<8 hex digits>`) and never a cluster made before families. A live checkout's family keeps its state
+  between runs; its members stop with their last run.
 - A member whose name a pattern of `~/.config/postgres/memory` matches (the workbench's postgres part) is running or
   absent: its data is in `/dev/shm/postgres/<member>`, its data directory a link there, and the workbench's postgres@
-  unit removes both as it stops, but not as it restarts (`postgres-cluster --stopped`). Stop a family no run uses
-  (`systemctl --user stop 'postgres@<family>-*'`) and its memory is free; the next settle makes it again in seconds.
+  unit removes both as it stops, but not as it restarts (`postgres-cluster --stopped`). A family no process holds runs
+  nothing, so its memory is free; the next run's settles make its members again in seconds.
 - A throwaway member logs no test's errors: a client backend's ERROR, WARNING and NOTICE go to the test that provoked
   them, and its log is its unit's journal, whose rate limit dropped other units' lines when test servers logged tens of
   thousands of lines a member (settings.ts ofDurability).

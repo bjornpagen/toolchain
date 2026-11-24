@@ -14,6 +14,46 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: a member runs only while a process holds its family (2026-11-24)
+
+toolchain-pg started each member as `postgres@<family>-<i>`, a unit of its own, so a run that ended, failed or was
+killed left its members running: 379 of grizzle's members sat idle in /dev/shm (88 GB of its 124), a run of another
+repository failed "Disk quota exceeded" and grizzle's runs failed at CREATE DATABASE, and metis found its members idle 3
+to 40 hours after their runs. A member now runs exactly as long as some process that needs it, by construction
+(`pg/hold.ts`):
+
+- **A member runs under its lease**, `<member>-lease.service`, a transient unit that runs nothing: PropagatesStopTo= the
+  member and StopWhenUnneeded=, so systemd stops the lease, and the member with it, once no active unit wants it. A
+  settle starts and restarts a member only by a transient oneshot that requires the lease active (Requisite=), so
+  systemd refuses the start where the lease is stopped and keeps the lease while the start or restart runs.
+- **A process that needs a family holds it**: `familyHeld(family)` makes `<family>-hold-<random>.scope`, wanting every
+  member's lease, whose one process reads a pipe only the holding process writes, so the hold ends as that process
+  ends, however it ends, a SIGKILL to its unit included. A run's worker holds its family from its first need to its
+  end, a member's settle while it settles, and `toolchain-pg settle`, `psql`, `admin` and `run` while they run.
+  systemd counts the holds: the last one's end stops every member, a member in memory taking its data with it.
+- **`memberBroughtUp` takes a `HeldFamily`** (`familyHeld`'s), so no process brings up a member it does not hold;
+  `memberRead`, `memberAtPort` and `membersRunning` read what runs and start nothing, as before.
+- **`toolchain-pg env` is gone**: the member it printed would stop as it exited. `toolchain-pg run [--] <command>` runs
+  the command with the first member's facts in its environment (`TOOLCHAIN_PG_PORT`, `_HOST`, `_SOCKET`, `_OWNER`,
+  `_TEMPLATE`, `_CA` over TLS, `_PASSWORD_FILE`), the member held for as long as the command runs. `psql`, `admin` and
+  `run` bring the first member up themselves, at the width the family's state records, else their own.
+- **`toolchain-pg settle` leaves nothing running**: it settles the family's state and checks its first member, then
+  lets go. A run settles what its workers reach on its own; nothing needs a settle before it.
+
+Each run now makes the members it reaches again, from the family's settled state (3 to 4 s a member alone, the members
+in parallel), and builds again the templates its cases need on them.
+
+Before you move `vendor/toolchain` past this section, in the same commit:
+
+1. **Replace every `toolchain-pg env`**: `eval "$(toolchain-pg env)"` followed by commands becomes `toolchain-pg run --
+   <script>`, the script reading the `TOOLCHAIN_PG_*` variables from its environment.
+2. **Hold before you bring up**: a process that is no run's worker and reaches a member (a bench, a script, a command
+   line child that no parent lent a member) holds the family for its life and brings the member up:
+   `Effect.flatMap(familyHeld(family), (held) => memberBroughtUp(held, 0, unitSettler))` in a scope that lasts as long
+   as it needs the member, where it read `memberRead(family, 0)` of a member a settle left running.
+3. **Stop expecting members after a run**: a script that read a member a run or a settle left running holds the
+   family itself (2).
+
 ## Consumer migration: one width, the run's CPU allowance, from the run to its clusters (2026-11-24)
 
 A run's width and its clusters' sizing came from different sources, so they disagreed whenever a run held fewer CPUs

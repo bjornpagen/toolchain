@@ -12,11 +12,11 @@ import {
 	Scope,
 	String as Str
 } from "effect"
-import { checkoutHere, familyOf, homesHere } from "#pg/family.ts"
+import { checkoutHere, familyOf, homesHere, memberNames } from "#pg/family.ts"
+import { familyHeld } from "#pg/hold.ts"
 import {
 	familyAsSettled,
 	memberBroughtUp,
-	memberNames,
 	membersRunning,
 	type PgMember,
 	type Platform,
@@ -125,8 +125,9 @@ export type PgClusterShape = Readonly<{
 	superuser: PgClusterSpec["superuser"]
 	/**
 	 * Member `index` mod the family's member count, brought up the first time a need asks (pg/settle.ts memberBroughtUp:
-	 * read, and where it is absent or not as its spec states settled by its own unit, then read again), once a process:
-	 * so a run starts the members its workers reach, and no other.
+	 * read, and where it is absent or not as its spec states settled by its own unit, then read again), once a process,
+	 * the family held by the worker from that first need to its end (pg/hold.ts familyHeld): so a run starts the members
+	 * its workers reach, and no other, and each stops once the last worker holding it has ended, however it ended.
 	 */
 	memberAt: (index: number) => Effect.Effect<PgMember, NeedFailed>
 	/** The member a worker reaches: worker i on member i mod the members' count (memberAt), so a run's workers spread over them. */
@@ -306,9 +307,9 @@ export class PgCluster extends Context.Service<PgCluster, PgClusterShape>()(
 	 * The service a repository's runner config provides (its `layer`), built once per worker the first time a case
 	 * there opens a need: it reads nothing then, so a worker whose needs use no database never reaches the cluster; the
 	 * run's checkout and the account's homes are read once the first time a need asks (pg/family.ts checkoutHere,
-	 * homesHere), and the member a need asks for brought up then, once (memberAt), and an owner per member opened when
-	 * the worker first reaches it, held until the worker ends. Nothing admits a worker or
-	 * makes it wait: a member past its capacity refuses a connection.
+	 * homesHere), the family held then for the worker's life (pg/hold.ts familyHeld), and the member a need asks for
+	 * brought up then, once (memberAt), and an owner per member opened when the worker first reaches it, held until the
+	 * worker ends. Nothing admits a worker or makes it wait: a member past its capacity refuses a connection.
 	 */
 	static readonly layer = (
 		spec: PgClusterSpec
@@ -333,9 +334,14 @@ export class PgCluster extends Context.Service<PgCluster, PgClusterShape>()(
 						})
 					)
 				)
+				const held = yield* Effect.cached(
+					Effect.flatMap(family, (reached) =>
+						Effect.mapError(Scope.provide(familyHeld(reached), scope), clusterFailed)
+					)
+				)
 				const brought = new Map<number, Deferred.Deferred<PgMember, NeedFailed>>()
 				const memberAt = (index: number): Effect.Effect<PgMember, NeedFailed> =>
-					Effect.flatMap(family, (reached) => {
+					Effect.flatMap(held, (reached) => {
 						const at = index % memberNames(reached).length
 						return Option.match(Option.fromUndefinedOr(brought.get(at)), {
 							onSome: Deferred.await,

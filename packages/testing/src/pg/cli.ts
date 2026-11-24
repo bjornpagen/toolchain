@@ -1,32 +1,25 @@
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime"
 import * as NodeServices from "@effect/platform-node/NodeServices"
 import { regex } from "arkregex"
-import {
-	Array as Arr,
-	Config,
-	Console,
-	Effect,
-	Option,
-	Path,
-	type PlatformError,
-	Redacted,
-	Schema
-} from "effect"
-import { ChildProcessSpawner } from "effect/process"
+import { Array as Arr, Config, Console, Effect, Option, type PlatformError, Redacted } from "effect"
+import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { failureText } from "#failure.ts"
+import { specAt } from "#pg/config-file.ts"
 import {
 	type Checkout,
 	type CheckoutFamily,
 	checkoutHere,
 	familyOf,
 	type Homes,
-	homesHere
+	homesHere,
+	memberNames
 } from "#pg/family.ts"
+import { familyHeld } from "#pg/hold.ts"
 import { bootstrapSuperuser, type ClusterFailed, psql, serverBin } from "#pg/server.ts"
 import {
 	familyAsSettled,
-	memberNames,
-	memberRead,
+	familyReached,
+	memberBroughtUp,
 	memberSettled,
 	membersRunning,
 	type PgMember,
@@ -36,95 +29,96 @@ import {
 	settleWidthVariable,
 	unitSettler
 } from "#pg/settle.ts"
-import { LocalCluster } from "#pg/spec.ts"
+import type { LocalCluster } from "#pg/spec.ts"
 import { testWorkers } from "#workers.ts"
 
-/** The file a package's cluster is stated in, at the root the command runs from. */
-const configFile = "pg.config.ts"
-
-/** pg.config.ts could not be loaded as a cluster's spec, and why. */
-class SpecUnloaded extends Schema.TaggedError<SpecUnloaded, { readonly brand: unique symbol }>()(
-	"SpecUnloaded",
-	{ message: Schema.String }
-) {}
-
-/** Whether a module's default export is a cluster's spec, made by localCluster: an instance of its class. */
-const isLocalCluster = Schema.is(Schema.instanceOf(LocalCluster))
-
-/** The cluster the package at the working directory states: its pg.config.ts's default export, a LocalCluster. */
-const specOf: Effect.Effect<LocalCluster, SpecUnloaded, Path.Path> = Effect.gen(function* () {
-	const paths = yield* Path.Path
-	const url = yield* Effect.mapError(paths.toFileUrl(paths.resolve(configFile)), (bad) =>
-		SpecUnloaded.make({ message: `${configFile} has no file URL: ${bad.message}` })
-	)
-	const namespace = yield* Effect.tryPromise({
-		try: (): Promise<unknown> => import(url.href),
-		catch: (cause) => SpecUnloaded.make({ message: `${configFile} did not load: ${String(cause)}` })
-	})
-	const spec: unknown =
-		typeof namespace === "object" && namespace !== null
-			? Reflect.get(namespace, "default")
-			: undefined
-	return isLocalCluster(spec)
-		? spec
-		: yield* SpecUnloaded.make({
-				message: `${configFile} must export localCluster({ ... }) (@bjornpagen/testing/pg) as its default`
-			})
+/** A member's facts as `run` gives its command them, by variable. */
+const factsOf = (member: PgMember, template: string): Readonly<Record<string, string>> => ({
+	TOOLCHAIN_PG_PORT: `${member.port}`,
+	TOOLCHAIN_PG_HOST: member.tls.kind === "tls" ? "localhost" : member.socket,
+	TOOLCHAIN_PG_SOCKET: member.socket,
+	TOOLCHAIN_PG_OWNER: member.owner,
+	TOOLCHAIN_PG_TEMPLATE: template,
+	...(member.tls.kind === "tls" ? { TOOLCHAIN_PG_CA: member.tls.caFile } : {}),
+	TOOLCHAIN_PG_PASSWORD_FILE: member.passwordFile
 })
 
-/** A member's facts as `env` prints them, one `NAME=value` line each. */
-const envLines = (member: PgMember, template: string): ReadonlyArray<string> => [
-	`TOOLCHAIN_PG_PORT=${member.port}`,
-	`TOOLCHAIN_PG_HOST=${member.tls.kind === "tls" ? "localhost" : member.socket}`,
-	`TOOLCHAIN_PG_SOCKET=${member.socket}`,
-	`TOOLCHAIN_PG_OWNER=${member.owner}`,
-	`TOOLCHAIN_PG_TEMPLATE=${template}`,
-	...(member.tls.kind === "tls" ? [`TOOLCHAIN_PG_CA=${member.tls.caFile}`] : []),
-	`TOOLCHAIN_PG_PASSWORD_FILE=${member.passwordFile}`
-]
-
-/** The first of a family's members, as a run reads it, which `toolchain-pg settle` brings up. */
-const firstMember = (family: CheckoutFamily) => memberRead(family, 0)
+/**
+ * `use` of the first of `family`'s members, the family held by this command for as long as `use` runs (hold.ts
+ * familyHeld) and its first member brought up as a worker brings up its own (memberBroughtUp, by its settle unit): so
+ * the member runs while the command needs it, and stops with the command's end, however it ends, unless another hold of
+ * the family lasts.
+ */
+const withFirstMember = <A, E, R>(
+	family: CheckoutFamily,
+	use: (member: PgMember) => Effect.Effect<A, E, R>
+) =>
+	Effect.scoped(
+		Effect.flatMap(
+			Effect.flatMap(familyHeld(family), (held) => memberBroughtUp(held, 0, unitSettler)),
+			use
+		)
+	)
 
 /** psql on the first member with this terminal's stdin, stdout and stderr, its exit status this command's. */
 const interactive = (family: CheckoutFamily, as: "owner" | "admin", args: ReadonlyArray<string>) =>
-	Effect.gen(function* () {
-		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-		const member = yield* firstMember(family)
-		const bin = yield* serverBin({ cluster: family.name, doing: "running psql" })
-		const [database, ...rest] = args
-		const stdio = { stdin: "inherit", stdout: "inherit", stderr: "inherit" } as const
-		const command =
-			as === "owner"
-				? psql(
-						bin,
-						[
-							"-X",
-							member.tls.kind === "tls"
-								? `host=localhost port=${member.port} dbname=${database ?? member.owner} user=${member.owner} sslmode=verify-full sslrootcert=${member.tls.caFile}`
-								: `host=${member.socket} port=${member.port} dbname=${database ?? member.owner} user=${member.owner}`,
-							...rest
-						],
-						{ ...stdio, env: { PGPASSWORD: Redacted.value(member.password) }, extendEnv: true }
-					)
-				: psql(
-						bin,
-						[
-							"-X",
-							"-h",
-							member.socket,
-							"-p",
-							`${member.port}`,
-							"-U",
-							bootstrapSuperuser(),
-							"-d",
-							database ?? "postgres",
-							...rest
-						],
-						stdio
-					)
-		return yield* spawner.exitCode(command)
-	})
+	withFirstMember(family, (member) =>
+		Effect.gen(function* () {
+			const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+			const bin = yield* serverBin({ cluster: family.name, doing: "running psql" })
+			const [database, ...rest] = args
+			const stdio = { stdin: "inherit", stdout: "inherit", stderr: "inherit" } as const
+			const command =
+				as === "owner"
+					? psql(
+							bin,
+							[
+								"-X",
+								member.tls.kind === "tls"
+									? `host=localhost port=${member.port} dbname=${database ?? member.owner} user=${member.owner} sslmode=verify-full sslrootcert=${member.tls.caFile}`
+									: `host=${member.socket} port=${member.port} dbname=${database ?? member.owner} user=${member.owner}`,
+								...rest
+							],
+							{ ...stdio, env: { PGPASSWORD: Redacted.value(member.password) }, extendEnv: true }
+						)
+					: psql(
+							bin,
+							[
+								"-X",
+								"-h",
+								member.socket,
+								"-p",
+								`${member.port}`,
+								"-U",
+								bootstrapSuperuser(),
+								"-d",
+								database ?? "postgres",
+								...rest
+							],
+							stdio
+						)
+			return yield* spawner.exitCode(command)
+		})
+	)
+
+/**
+ * `command` with this terminal's stdin, stdout and stderr and the first member's facts in its environment (factsOf),
+ * the member held up for as long as it runs (withFirstMember), its exit status this command's.
+ */
+const ranWithFirstMember = (family: CheckoutFamily, command: Arr.NonEmptyReadonlyArray<string>) =>
+	withFirstMember(family, (member) =>
+		Effect.flatMap(ChildProcessSpawner.ChildProcessSpawner, (spawner) =>
+			spawner.exitCode(
+				ChildProcess.make(Arr.headNonEmpty(command), Arr.tailNonEmpty(command), {
+					stdin: "inherit",
+					stdout: "inherit",
+					stderr: "inherit",
+					env: factsOf(member, family.cluster.template),
+					extendEnv: true
+				})
+			)
+		)
+	)
 
 /** The usage this command prints for anything else. */
 const usage = Arr.join(
@@ -133,11 +127,16 @@ const usage = Arr.join(
 		"  settle                             remove the cluster's families whose checkout is gone, settle the family's state",
 		"                                     and its first member (postgres@<family>-0), as the unit <family>-settle: a",
 		"                                     second settle of the family is refused; a run's worker brings up its own member",
-		"  settle <member>                    start that member's unit and give it its spec, as the unit <family>-<member>-settle",
+		"  settle <member>                    start that member by its lease and give it its spec, as the unit",
+		"                                     <family>-<member>-settle",
 		"  check                              read every member that runs, as a run reads it, writing nothing",
 		"  psql [database] [psql args...]     the owner, on the first member",
 		"  admin [database] [psql args...]    the bootstrap superuser (this account) over the socket, on the first member",
-		"  env                                the first member's facts, one NAME=value line each"
+		"  run [--] <command> [args...]       the command, the first member's facts in its environment (TOOLCHAIN_PG_PORT,",
+		"                                     _HOST, _SOCKET, _OWNER, _TEMPLATE, _CA over TLS, _PASSWORD_FILE)",
+		"",
+		"A member runs only while a process holds its family: a run's worker, a settle while it settles, and psql, admin",
+		"and run while they run. Each stops once the last of them has ended, however it ended."
 	],
 	"\n"
 )
@@ -192,8 +191,9 @@ const settleWidth: Effect.Effect<Option.Option<number>> = Effect.map(
 /**
  * The commands, by name, each from its arguments to its exit status, over `cluster`'s family at this process's checkout
  * in its account's homes: `settle` at the width a settle unit was given, else at this process's own run width
- * (testWorkers), which it gives the unit it starts; every other command at the width the family's state was last
- * settled for (familyAsSettled), since a person's command runs no workers.
+ * (testWorkers), which it gives the unit it starts; `check` at the width the family's state was last settled for
+ * (familyAsSettled), since a person's command runs no workers; and `psql`, `admin` and `run`, which bring up the first
+ * member, at that width where its state records one, else at this process's own (familyReached).
  */
 const commands = (
 	cluster: LocalCluster,
@@ -212,6 +212,7 @@ const commands = (
 	>
 > => {
 	const asSettled = familyAsSettled(cluster, checkout, homes)
+	const reached = familyReached(cluster, checkout, homes)
 	return {
 		settle: (args) =>
 			Effect.flatMap(
@@ -255,17 +256,14 @@ const commands = (
 				),
 				0
 			),
-		psql: (args) => Effect.flatMap(asSettled, (family) => interactive(family, "owner", args)),
-		admin: (args) => Effect.flatMap(asSettled, (family) => interactive(family, "admin", args)),
-		env: () =>
-			Effect.flatMap(Effect.flatMap(asSettled, firstMember), (member) =>
-				Effect.as(
-					Effect.forEach(envLines(member, cluster.template), (line) => Console.log(line), {
-						discard: true
-					}),
-					0
-				)
-			)
+		psql: (args) => Effect.flatMap(reached, (family) => interactive(family, "owner", args)),
+		admin: (args) => Effect.flatMap(reached, (family) => interactive(family, "admin", args)),
+		run: (args) =>
+			Arr.match(Option.contains(Arr.head(args), "--") ? Arr.drop(args, 1) : args, {
+				onEmpty: () => Effect.as(Console.error(usage), 2),
+				onNonEmpty: (command) =>
+					Effect.flatMap(reached, (family) => ranWithFirstMember(family, command))
+			})
 	}
 }
 
@@ -275,7 +273,7 @@ const commands = (
  */
 const main = Effect.gen(function* () {
 	const [name, ...args] = Arr.drop(process.argv, 2)
-	const cluster = yield* specOf
+	const cluster = yield* specAt(".")
 	const checkout = yield* checkoutHere
 	const homes = yield* homesHere
 	const all = commands(cluster, checkout, homes)

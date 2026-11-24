@@ -21,15 +21,17 @@ import {
 	familyOf,
 	type Homes,
 	holderText,
-	memberNamesOf,
+	memberNames,
 	portHolders,
 	portsClaimed,
 	portsHeld,
+	sliceOf,
 	stateOf,
 	stateWidth,
 	unitOf,
 	widthRecorded
 } from "#pg/family.ts"
+import { familyHeld, type HeldFamily, leaseRestarted, leaseStarted } from "#pg/hold.ts"
 import {
 	adminSql,
 	ClusterFailed,
@@ -50,17 +52,19 @@ import {
 	sizedSettings
 } from "#pg/settings.ts"
 import type { LocalCluster } from "#pg/spec.ts"
+import { testWorkers } from "#workers.ts"
 
 /**
  * A repository's cluster at a checkout (family.ts CheckoutFamily) as units of the workbench's PostgreSQL
  * (~/Documents/beefy-workspace/workbench/parts/postgres): member i of a family is the unit `postgres@<family>-<i>`,
  * which systemd makes on its first start (initdb, trust for the account) and runs, its data and its socket the unit's.
  * Nothing here makes, starts or stops a server by its own programs: a member's settle (memberSettled, its unit's
- * `toolchain-pg settle <index>`) starts the member's unit and gives it what the spec states, by ALTER SYSTEM and the
- * bootstrap superuser's statements, restarting the unit only when a setting it changed waits for one. `toolchain-pg
- * settle` (settled) settles the family's state and its first member; a run's worker brings up the member it reaches on
- * its first need (memberBroughtUp), and no other, so a family runs the members its runs reached, or none once stopped.
- * A read (memberRead) starts nothing, and refuses a member that is not as its spec states, naming the command.
+ * `toolchain-pg settle <index>`) starts the member by its lease (hold.ts leaseStarted) and gives it what the spec
+ * states, by ALTER SYSTEM and the bootstrap superuser's statements, restarting the unit only when a setting it changed
+ * waits for one. `toolchain-pg settle` (settled) settles the family's state and its first member; a run's worker holds
+ * its family (hold.ts familyHeld) and brings up the member it reaches on its first need (memberBroughtUp), and no
+ * other, so a family runs the members its live holders reached, and none once the last of them has ended. A read
+ * (memberRead) starts nothing, and refuses a member that is not as its spec states, naming the command.
  */
 
 /** The platform a cluster's settling and reading run on: its processes and its files. */
@@ -96,13 +100,6 @@ export type PgMember = Readonly<{
  * which every verify-full client of a member reads.
  */
 export const caVariable = "PGSSLROOTCERT"
-
-/**
- * The names of `family`'s members, `<family>-<i>` for each of the members its sizing gives a run of its width
- * (settings.ts membersOf).
- */
-export const memberNames = (family: CheckoutFamily): Arr.NonEmptyReadonlyArray<string> =>
-	memberNamesOf(family, membersOf(family.cluster.sizing, family.width))
 
 /** A member's socket directory, its unit's runtime directory: `$XDG_RUNTIME_DIR/postgresql-<name>`. */
 const socketOf = (name: string): Effect.Effect<string, ClusterFailed> =>
@@ -347,15 +344,6 @@ const blockSizeOf = (bin: string, at: SocketAt, step: Step) =>
 				Effect.fromOption(Option.filter(Option.map(Arr.head(lines), Number), Number.isInteger)),
 				() => failed(step, `SHOW block_size printed [${Arr.join(lines, "\n")}]`)
 			)
-	)
-
-/** `systemctl --user <verb> <unit>` for `step`, to its end: systemd starts a member's unit once it is ready (Type=notify). */
-const systemctl = (verb: "start" | "restart", name: string, step: Step) =>
-	Effect.asVoid(
-		succeeded(
-			{ ...step, doing: `${step.doing}: systemctl --user ${verb} ${unitOf(name)}` },
-			ChildProcess.make("systemctl", ["--user", verb, unitOf(name)])
-		)
 	)
 
 /** A file of a cluster's state written, this account's alone. */
@@ -761,62 +749,68 @@ export const familySettled = (
 
 /**
  * Member `index` of `family` settled in this process from its family's state (familyState, which a family never settled
- * lacks): over TLS its port refused where another listener holds it (portFree), a freed member's link to nothing
- * removed (freedForgotten), its unit started (systemd makes it on its first start, and again after it was freed), every
- * setting its spec states written by ALTER SYSTEM and read again (pg_reload_conf), what the bootstrap superuser makes in
- * it (owned), and its unit restarted when a setting it changed waits for a restart (pg_settings' pending_restart),
- * which only a fresh member, a change of the spec or of the machine's memory makes; then it is read as a run reads it
- * (memberRead), which fails if it is still not as its spec states. What the member's settle unit runs (settleUnit,
- * `toolchain-pg settle <index>`), so a member has one settle at a time.
+ * lacks), the family held by this process while it settles (hold.ts familyHeld): over TLS its port refused where
+ * another listener holds it (portFree), a freed member's link to nothing removed (freedForgotten), its unit started by
+ * its lease (hold.ts leaseStarted: systemd makes it on its first start, and again after it was freed), every setting its
+ * spec states written by ALTER SYSTEM and read again (pg_reload_conf), what the bootstrap superuser makes in it (owned),
+ * and its unit restarted when a setting it changed waits for a restart (pg_settings' pending_restart), which only a
+ * fresh member, a change of the spec or of the machine's memory makes, while its lease holds it (hold.ts
+ * leaseRestarted); then it is read as a run reads it (memberRead),
+ * which fails if it is still not as its spec states. What the member's settle unit runs (settleUnit, `toolchain-pg
+ * settle <index>`), so a member has one settle at a time. The member stays up after it only while another hold of its
+ * family lasts: the asker's, a worker's that reached it.
  */
 export const memberSettled = (
 	family: CheckoutFamily,
 	index: number
 ): Effect.Effect<PgMember, ClusterFailed, Platform> =>
-	Effect.gen(function* () {
-		const { cluster } = family
-		const at: Step = { cluster: family.name, doing: `settling its member ${index}` }
-		const state = yield* familyState(family, at)
-		const [name, port] = yield* memberIn(state, index, at)
-		const { bin, files, password } = state
-		if (cluster.network.kind === "tls") {
-			yield* portFree(name, port, at)
-		}
-		yield* freedForgotten(family.homes.data, name, at)
-		yield* systemctl("start", name, at)
-		const socket = yield* socketNow(name, at)
-		const blockSize = yield* blockSizeOf(bin, socket, at)
-		const expected = expectedSettings(family, port, files.hba, blockSize)
-		const changed = yield* differing(bin, socket, expected, at)
-		yield* Arr.match(changed, {
-			onEmpty: () => Effect.void,
-			onNonEmpty: (settings) =>
-				Effect.asVoid(
-					adminSql(
-						bin,
-						socket,
-						"postgres",
-						Arr.append(
-							Arr.map(settings, (drift) => undone(drift, expected)),
-							"SELECT pg_catalog.pg_reload_conf()"
-						),
-						{ ...at, doing: `${at.doing}: ALTER SYSTEM` }
+	Effect.scoped(
+		Effect.gen(function* () {
+			const { cluster } = family
+			const at: Step = { cluster: family.name, doing: `settling its member ${index}` }
+			const state = yield* familyState(family, at)
+			const [name, port] = yield* memberIn(state, index, at)
+			const { bin, files, password } = state
+			if (cluster.network.kind === "tls") {
+				yield* portFree(name, port, at)
+			}
+			yield* familyHeld(family)
+			yield* freedForgotten(family.homes.data, name, at)
+			yield* leaseStarted(family, name, at)
+			const socket = yield* socketNow(name, at)
+			const blockSize = yield* blockSizeOf(bin, socket, at)
+			const expected = expectedSettings(family, port, files.hba, blockSize)
+			const changed = yield* differing(bin, socket, expected, at)
+			yield* Arr.match(changed, {
+				onEmpty: () => Effect.void,
+				onNonEmpty: (settings) =>
+					Effect.asVoid(
+						adminSql(
+							bin,
+							socket,
+							"postgres",
+							Arr.append(
+								Arr.map(settings, (drift) => undone(drift, expected)),
+								"SELECT pg_catalog.pg_reload_conf()"
+							),
+							{ ...at, doing: `${at.doing}: ALTER SYSTEM` }
+						)
 					)
-				)
+			})
+			yield* owned(cluster, bin, socket, password, at)
+			const [pending = "0"] = yield* adminSql(
+				bin,
+				socket,
+				"postgres",
+				["SELECT pg_catalog.count(*) FROM pg_catalog.pg_settings WHERE pending_restart"],
+				{ ...at, doing: `${at.doing}: reading what waits for a restart` }
+			)
+			if (pending !== "0") {
+				yield* leaseRestarted(family, name, at)
+			}
+			return yield* memberReadIn(family, state, index)
 		})
-		yield* owned(cluster, bin, socket, password, at)
-		const [pending = "0"] = yield* adminSql(
-			bin,
-			socket,
-			"postgres",
-			["SELECT pg_catalog.count(*) FROM pg_catalog.pg_settings WHERE pending_restart"],
-			{ ...at, doing: `${at.doing}: reading what waits for a restart` }
-		)
-		if (pending !== "0") {
-			yield* systemctl("restart", name, at)
-		}
-		return yield* memberReadIn(family, state, index)
-	})
+	)
 
 /**
  * How a family is settled where a worker's first need finds what it reaches not as its run's width states it
@@ -833,8 +827,9 @@ export type Settler = Readonly<{
 export const processSettler: Settler = { family: familySettled, member: memberSettled }
 
 /**
- * Member `index` of `family` as a worker's first need reaches it: read (memberRead), and where the read refuses it
- * settled by `settle` and read again: first the family's state, where it records another width than the family's or
+ * Member `index` of `family`, which this process holds (hold.ts HeldFamily), so the member a settle starts stays up for
+ * the read after it and for as long as the hold lasts, as a worker's first need reaches it: read (memberRead), and
+ * where the read refuses it settled by `settle` and read again: first the family's state, where it records another width than the family's or
  * none (a run of another width's, or a family never settled), then the member (absent, freed by its stop, or not as its
  * width's spec states). So a run brings up the members its workers reach and no other, each by the worker that
  * reaches it, at the run's own width whatever width settled them before: a family of another width is settled at the
@@ -846,7 +841,7 @@ export const processSettler: Settler = { family: familySettled, member: memberSe
  * what the member's settle said, else the state's; one that succeeds is answered by the read after it.
  */
 export const memberBroughtUp = (
-	family: CheckoutFamily,
+	family: HeldFamily,
 	index: number,
 	settle: Settler
 ): Effect.Effect<PgMember, ClusterFailed, Platform> =>
@@ -869,20 +864,25 @@ export const memberBroughtUp = (
 
 /**
  * Settles `family` as `toolchain-pg settle` does: its state for its width (familySettled), then its first member, the
- * one `env`, `psql` and `admin` reach, brought up as a worker brings up its own (memberBroughtUp, by `settle`). Its
- * other members its runs' workers bring up, each the one it reaches, on its first need.
+ * one `psql`, `admin` and `run` reach, brought up as a worker brings up its own (memberBroughtUp, by `settle`), the
+ * family held by this process while it does (hold.ts familyHeld). The member it answers stays up after only while
+ * another hold of the family lasts; its other members its runs' workers bring up, each the one it reaches, on its
+ * first need.
  */
 export const settled = (
 	family: CheckoutFamily,
 	settle: Settler
 ): Effect.Effect<PgMember, ClusterFailed, Platform> =>
-	Effect.andThen(familySettled(family), memberBroughtUp(family, 0, settle))
+	Effect.andThen(
+		familySettled(family),
+		Effect.scoped(Effect.flatMap(familyHeld(family), (held) => memberBroughtUp(held, 0, settle)))
+	)
 
 /**
  * `cluster`'s family at `checkout` in `homes` as its state was last settled (familySettled): at the width its state
- * records (family.ts stateWidth), what a command of no width of its own reads (`toolchain-pg check`, `psql`, `admin`,
- * `env`; collection, which reads the members that run), where a run reads it at its own. A family whose state records
- * no width fails, naming `toolchain-pg settle`.
+ * records (family.ts stateWidth), what a command of no width of its own reads (`toolchain-pg check`; collection, which
+ * reads the members that run), where a run reads it at its own. A family whose state records no width fails, naming
+ * `toolchain-pg settle`.
  */
 export const familyAsSettled = (
 	cluster: LocalCluster,
@@ -903,6 +903,26 @@ export const familyAsSettled = (
 					)
 				)
 		})
+	)
+
+/**
+ * `cluster`'s family at `checkout` in `homes` as a process that brings up its first member and runs no workers reaches
+ * it (`toolchain-pg psql`, `admin` and `run`; a repository's bench or script): at the width its state records (family.ts
+ * stateWidth), so the members a run of that width holds are never settled at another under it, else, where it records
+ * none, at this process's own (testWorkers).
+ */
+export const familyReached = (
+	cluster: LocalCluster,
+	checkout: Checkout,
+	homes: Homes
+): Effect.Effect<CheckoutFamily, never, FileSystem.FileSystem> =>
+	Effect.map(stateWidth(cluster, checkout, homes), (recorded) =>
+		familyOf(
+			cluster,
+			checkout,
+			homes,
+			Option.getOrElse(recorded, () => testWorkers)
+		)
 	)
 
 /** What a settle unit settles: a family's state and its first member (settled), or one member (memberSettled). */
@@ -958,7 +978,6 @@ export const settleUnit = (
 ): Readonly<{ unit: string; command: ChildProcess.Command }> => {
 	const named = target.kind === "family" ? family.name : `${family.name}-${target.index}`
 	const unit = `${named}-settle`
-	const slice = `${Option.getOrElse(Arr.head(Str.split(family.cluster.unit, "-")), () => family.cluster.unit)}.slice`
 	return {
 		unit,
 		command: ChildProcess.make(
@@ -968,7 +987,7 @@ export const settleUnit = (
 				"-d",
 				"-u",
 				unit,
-				`--slice=${slice}`,
+				`--slice=${sliceOf(family.cluster)}`,
 				"-p",
 				"Type=oneshot",
 				"--wait",

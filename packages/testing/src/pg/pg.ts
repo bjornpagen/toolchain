@@ -6,7 +6,8 @@
  * command of the checkout reaches, and no other checkout's; the family's settling (settled: every family of a checkout
  * gone removed, then its state and its first member, which `toolchain-pg settle` runs as a unit of its own;
  * memberBroughtUp: the member a worker reaches, settled at the run's width by its own unit where it is absent or of
- * another width, unitSettler) and its reading (memberRead: what a run reads, writing nothing; memberAtPort: the one at a
+ * another width, unitSettler, its family held by the process that reaches it, familyHeld, every member started by its
+ * lease alone, so it runs only while some holder lives) and its reading (memberRead: what a run reads, writing nothing; memberAtPort: the one at a
  * port; membersRunning: every member that runs); and the client check interval every member holds
  * (clientCheckInterval), which bounds how long a backend outlives its client.
  */
@@ -19,17 +20,19 @@ export {
 	familyRemoved,
 	type Homes,
 	homesHere,
+	memberNames,
 	unitOf
 } from "#pg/family.ts"
+export { familyHeld, type HeldFamily, leaseOf } from "#pg/hold.ts"
 export { ClusterFailed, bootstrapSuperuser } from "#pg/server.ts"
 export { clientCheckInterval } from "#pg/settings.ts"
 export {
 	caVariable,
 	familyAsSettled,
+	familyReached,
 	type MemberTls,
 	memberAtPort,
 	memberBroughtUp,
-	memberNames,
 	memberRead,
 	membersRunning,
 	type PgMember,

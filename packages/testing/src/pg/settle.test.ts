@@ -12,14 +12,17 @@
  * its own, where one a live case holds is kept; a family settled for one run's width and reached by a run of another is
  * refused by every read until that run's first need settles it at its own width, its state and each member it reaches,
  * where it would have been refused for good or read as the other width's, and a family's settle unit settles at the
- * width it is given, never at the width of its own place. Each case's cluster is a unit name of its own, its family at a checkout of the case's own, its units stopped
- * and its data, claims and state removed when the case ends. Oracle: the specification, stated in the checks.
+ * width it is given, never at the width of its own place. Each case holds its family while it reads it (hold.ts
+ * familyHeld), as a run's worker does, so the members its settles start stay up for its reads. Each case's cluster is a
+ * unit name of its own, its family at a checkout of the case's own, its units stopped and its data, claims and state
+ * removed when the case ends. Oracle: the specification, stated in the checks.
  */
 import { Array as Arr, Effect, FileSystem, Option, String as Str } from "effect"
 import { assert } from "#assert.ts"
 import { boolean, finite, int } from "#gen.ts"
 import { Checkout } from "#mutate/checkout.ts"
-import { familyOf, portsHeld, stateWidth } from "#pg/family.ts"
+import { familyOf, memberNames, portsHeld, stateWidth } from "#pg/family.ts"
+import { familyHeld } from "#pg/hold.ts"
 import { adminSql, serverBin } from "#pg/server.ts"
 import {
 	clusterOf,
@@ -46,7 +49,6 @@ import {
 	familySettled,
 	memberAtPort,
 	memberBroughtUp,
-	memberNames,
 	memberRead,
 	memberSettled,
 	membersRunning,
@@ -230,6 +232,7 @@ export const aReadStartsNothingANeedItsOwnMember = property.exhaust(finite(shape
 				const cluster = yield* clusterOf(shape)
 				yield* removedAtEnd(cluster)
 				const family = yield* familyIn(cluster, testWorkers)
+				const held = yield* familyHeld(family)
 				const names = memberNames(family)
 				const refused = yield* Effect.forEach(names, (_, index) =>
 					failedOf(memberRead(family, index))
@@ -241,7 +244,7 @@ export const aReadStartsNothingANeedItsOwnMember = property.exhaust(finite(shape
 				yield* settled(family, processSettler)
 				yield* Effect.forEach(names, memberStopped, { discard: true })
 				const last = names.length - 1
-				yield* memberBroughtUp(family, last, processSettler)
+				yield* memberBroughtUp(held, last, processSettler)
 				const activeAfterNeed = yield* Effect.forEach(names, unitActive)
 				assert.deepEqual(
 					{ refused, active, data, activeAfterNeed },
@@ -264,7 +267,7 @@ export const aReadStartsNothingANeedItsOwnMember = property.exhaust(finite(shape
 			file: "packages/testing/src/pg/settle.ts",
 			original: "\t\tconst recorded = yield* stateWidth(cluster, family.checkout, family.homes)\n",
 			replacement:
-				'\t\tyield* Effect.forEach(memberNames(family), (name) => systemctl("start", name, step), { discard: true })\n\t\tconst recorded = yield* stateWidth(cluster, family.checkout, family.homes)\n',
+				"\t\tyield* Effect.forEach(memberNames(family), (name) => leaseStarted(family, name, step), { discard: true })\n\t\tconst recorded = yield* stateWidth(cluster, family.checkout, family.homes)\n",
 			why: "A read starts each member's unit, as the old harness's need made and started its cluster, so a run changes a server every run shares; the property fails, the units started."
 		},
 		{
@@ -292,11 +295,12 @@ export const aFamilyOfAnotherWidthIsSettledAtTheRuns = property.exhaust(finite(w
 				yield* settledWhole(settledFor)
 				const reached = familyOf(cluster, settledFor.checkout, settledFor.homes, after)
 				const names = memberNames(reached)
+				const held = yield* familyHeld(reached)
 				const refusedBefore = yield* Effect.forEach(names, (_, index) =>
 					failedOf(memberRead(reached, index))
 				)
 				const brought = yield* Effect.forEach(names, (_, index) =>
-					memberBroughtUp(reached, index, joinedSettler)
+					memberBroughtUp(held, index, joinedSettler)
 				)
 				const recorded = yield* stateWidth(cluster, reached.checkout, reached.homes)
 				const refusedAfter = yield* Effect.forEach(names, (_, index) =>
@@ -360,6 +364,7 @@ export const aSettleUnitSettlesAtTheWidthItIsGiven = property.exhaust(finite(int
 				yield* removedAtEnd(cluster)
 				const family = yield* familyIn(cluster, widths.wide)
 				yield* familySettled(family)
+				yield* familyHeld(family)
 				yield* settledAsItsUnit(family, index, 2 * (widths.wide + 1))
 				const read = yield* memberRead(family, index)
 				assert.deepEqual(read.name, Arr.getUnsafe(memberNames(family), index))

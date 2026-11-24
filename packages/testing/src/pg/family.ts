@@ -11,6 +11,7 @@ import {
 } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { ClusterFailed, failed, type Step, succeeded } from "#pg/server.ts"
+import { membersOf } from "#pg/settings.ts"
 import { type LocalCluster, UnitName } from "#pg/spec.ts"
 
 /**
@@ -184,18 +185,28 @@ export const familyOf = (
 	width: number
 ): CheckoutFamily => ({ cluster, checkout, name: familyNameOf(cluster, checkout), homes, width })
 
-/** The family's members' unit instance names, `<family>-<index>` for each of `count`. */
-export const memberNamesOf = (
-	family: CheckoutFamily,
-	count: number
-): Arr.NonEmptyReadonlyArray<string> =>
-	Arr.prepend(
+/**
+ * The names of `family`'s members, its members' unit instance names, `<family>-<i>` for each of the members its sizing
+ * gives a run of its width (settings.ts membersOf).
+ */
+export const memberNames = (family: CheckoutFamily): Arr.NonEmptyReadonlyArray<string> => {
+	const count = membersOf(family.cluster.sizing, family.width)
+	return Arr.prepend(
 		Array.from({ length: Math.max(0, count - 1) }, (_, at) => `${family.name}-${at + 1}`),
 		`${family.name}-0`
 	)
+}
 
 /** A member's unit, as systemctl names it. */
 export const unitOf = (name: string): string => `postgres@${name}.service`
+
+/**
+ * The slice every unit the toolchain starts for `cluster` runs in, its repository's: the first word of its unit name
+ * (`grizzle-test` in grizzle.slice), so a family's settles, holds and leases are weighed with the rest of its
+ * repository's work.
+ */
+export const sliceOf = (cluster: LocalCluster): string =>
+	`${Option.getOrElse(Arr.head(Str.split(cluster.unit, "-")), () => cluster.unit)}.slice`
 
 /**
  * The name of the directory of port claims in the states home: a file a claimed port, `<port>`, holding the family that

@@ -178,10 +178,10 @@ export default defineConfig(
 				})
 			},
 			{
-				files: ["packages/testing/src/pg/cli.ts"],
+				files: ["packages/testing/src/pg/config-file.ts"],
 				rules: active({
-					/** toolchain-pg's one load of a package's pg.config.ts, whose path it learns only at run time, as the
-					 * runner loads test.config.ts (lane CLUSTERPORT, 2026-11-18). */
+					/** The one load of a package's pg.config.ts, whose path toolchain-pg and the hold properties' run program
+					 * learn only at run time, as the runner loads test.config.ts (lane CLUSTERPORT, 2026-11-18). */
 					"devtools/no-dynamic-imports": "off"
 				})
 			},

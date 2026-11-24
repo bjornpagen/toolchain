@@ -12,11 +12,18 @@ import {
 } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { boolean, element, type Gen } from "#gen.ts"
-import { type CheckoutFamily, checkoutAt, familyOf, homesHere, unitOf } from "#pg/family.ts"
+import {
+	type CheckoutFamily,
+	checkoutAt,
+	familyOf,
+	homesHere,
+	memberNames,
+	unitOf
+} from "#pg/family.ts"
+import { familyHeld } from "#pg/hold.ts"
 import { failed, succeeded } from "#pg/server.ts"
 import {
 	familySettled,
-	memberNames,
 	memberSettled,
 	processSettler,
 	type Settler,
@@ -173,10 +180,11 @@ const namesIn = (directory: string) =>
 
 /**
  * Case cluster `unit` gone, whatever is left of it: its members' units stopped (`postgres@<unit>-*`, systemctl's
- * pattern over the units it has loaded, every family's) and their failures forgotten, then every member's data
- * directory (`<data>/<unit>-*`, the workbench's) removed: a member in memory (the workbench's memory list names
- * `tcs-*`) takes its data with its unit's stop. Its families' state and claims are in the case's scratch directory,
- * gone with it.
+ * pattern over the units it has loaded, every family's), and every other unit named after it (`<unit>-*`: its
+ * families' holds, leases and settles, a hold property's runs, which a kill trial's mutant may leave running), and
+ * their failures forgotten, then every member's data directory (`<data>/<unit>-*`, the workbench's) removed: a member
+ * in memory (the workbench's memory list names `tcs-*`) takes its data with its unit's stop. Its families' state and
+ * claims are in the case's scratch directory, gone with it.
  */
 const clusterRemoved = (unit: string) =>
 	Effect.gen(function* () {
@@ -186,7 +194,9 @@ const clusterRemoved = (unit: string) =>
 			["stop", "reset-failed"],
 			(verb) =>
 				Effect.ignore(
-					spawner.exitCode(ChildProcess.make("systemctl", ["--user", verb, unitOf(`${unit}-*`)]))
+					spawner.exitCode(
+						ChildProcess.make("systemctl", ["--user", verb, unitOf(`${unit}-*`), `${unit}-*`])
+					)
 				),
 			{ discard: true }
 		)
@@ -353,7 +363,7 @@ export const joinedSettler: Settler = {
  * as its default export (localCluster of its fields, @bjornpagen/testing/pg by this module's file), so `toolchain-pg`
  * run in the checkout reads the case's cluster.
  */
-const specWritten = (family: CheckoutFamily) =>
+export const specWritten = (family: CheckoutFamily) =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem
 		const json = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))
@@ -417,11 +427,13 @@ export const familyIn = (cluster: LocalCluster, width: number) =>
 	})
 
 /**
- * `family` settled whole in this process: its state and its first member (settled, the member settled here as its unit
- * would, processSettler), then every other member, in member order (memberSettled); each as a run reads it.
+ * `family` settled whole in this process and held by it for the enclosing scope (hold.ts familyHeld), as a run's
+ * workers hold what they reach: its state and its first member (settled, the member settled here as its unit would,
+ * processSettler), then every other member, in member order (memberSettled); each as a run reads it.
  */
 export const settledWhole = (family: CheckoutFamily) =>
 	Effect.gen(function* () {
+		yield* familyHeld(family)
 		const first = yield* settled(family, processSettler)
 		const rest = yield* Effect.forEach(Arr.drop(memberNames(family), 1), (_, at) =>
 			memberSettled(family, at + 1)
@@ -484,9 +496,9 @@ export const lefts: Gen<Left> = (source) => ({
 
 /**
  * A settled family of a case cluster of `left`'s shape, removed as the enclosing scope closes. Where its process is not
- * `alive` its hold is let go once it is settled, its units, data and state left as they are, as a process that ended
- * with its scope open leaves them: the kernel frees the hold's name either way. Its checkout lives for the enclosing
- * scope.
+ * `alive` its holds are let go once it is settled, the cluster's name's and the family's (its members stopping with
+ * the family's, as with an ended process's), its data and state left as they are, as a process that ended with its
+ * scope open leaves them: the kernel frees both either way. Its checkout lives for the enclosing scope.
  */
 export const leftCluster = (left: Left) =>
 	Effect.gen(function* () {
@@ -497,7 +509,7 @@ export const leftCluster = (left: Left) =>
 		)
 		yield* removedAtEnd(cluster)
 		const family = yield* familyIn(cluster, testWorkers)
-		yield* settledWhole(family)
+		yield* Scope.provide(holding)(settledWhole(family))
 		if (!left.alive) {
 			yield* Scope.close(holding, Exit.void)
 		}
