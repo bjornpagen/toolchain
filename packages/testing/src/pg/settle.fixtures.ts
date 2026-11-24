@@ -13,11 +13,13 @@ import {
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { boolean, element, type Gen } from "#gen.ts"
 import { type CheckoutFamily, checkoutAt, familyOf, homesHere, unitOf } from "#pg/family.ts"
-import { succeeded } from "#pg/server.ts"
+import { failed, succeeded } from "#pg/server.ts"
 import {
+	familySettled,
 	memberNames,
 	memberSettled,
 	processSettler,
+	type Settler,
 	settleArgv,
 	settled,
 	settleEnvironment
@@ -327,6 +329,26 @@ export const widthCluster = (kind: WidthCase["family"]) =>
 	)
 
 /**
+ * A family's settles run in this process as a worker that finds its family's settle unit running runs them
+ * (settle.ts unitSettler): the family's state settled, as the first asker's unit settles it, and then refused, as
+ * systemd refuses to start that unit again while it runs and the joiner's wait answers nothing of how it ended; and the
+ * member settled here (memberSettled).
+ */
+export const joinedSettler: Settler = {
+	family: (family) =>
+		Effect.andThen(
+			familySettled(family),
+			Effect.fail(
+				failed(
+					{ cluster: family.name, doing: `settling it as ${family.name}-settle` },
+					`Unit ${family.name}-settle.service was already loaded or has a fragment file`
+				)
+			)
+		),
+	member: memberSettled
+}
+
+/**
  * `family`'s cluster stated as a package's pg.config.ts states it, in its checkout, `<checkout>/pg.config.ts`: its spec
  * as its default export (localCluster of its fields, @bjornpagen/testing/pg by this module's file), so `toolchain-pg`
  * run in the checkout reads the case's cluster.
@@ -350,7 +372,9 @@ const specWritten = (family: CheckoutFamily) =>
  * unit is given (settleEnvironment), in the checkout, whose pg.config.ts states the case's cluster (specWritten), as a
  * child of this process rather than a unit of systemd's: its states home the family's (XDG_STATE_HOME, family.ts
  * homesHere), and its own CPU allowance `own` (workers.ts allowanceVariable), standing in for the slice a unit runs in,
- * whose run's width is not the family's. Its stdout, or its failure with what it printed.
+ * whose run's width is not the family's. Its stdout, or its failure with what it printed. The command is the one the
+ * loaded settle.ts names, so a property that runs it needs Checkout.dir: its kills then run in a worker tree, whose
+ * command on disk holds the kill's edit, where the module hook would serve it to the worker alone.
  */
 export const settledAsItsUnit = (family: CheckoutFamily, index: number, own: number) =>
 	Effect.gen(function* () {

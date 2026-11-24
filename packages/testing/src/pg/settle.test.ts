@@ -18,6 +18,7 @@
 import { Array as Arr, Effect, FileSystem, Option, String as Str } from "effect"
 import { assert } from "#assert.ts"
 import { boolean, finite, int } from "#gen.ts"
+import { Checkout } from "#mutate/checkout.ts"
 import { familyOf, portsHeld, stateWidth } from "#pg/family.ts"
 import { adminSql, serverBin } from "#pg/server.ts"
 import {
@@ -31,6 +32,7 @@ import {
 	memberStopped,
 	portHeldHere,
 	presenceOf,
+	joinedSettler,
 	removedAtEnd,
 	settledAsItsUnit,
 	settledWhole,
@@ -267,16 +269,16 @@ export const aReadStartsNothingANeedItsOwnMember = property.exhaust(finite(shape
 		},
 		{
 			file: "packages/testing/src/pg/settle.ts",
-			original: "\t\t\t\t\tsettle.member(family, index)\n",
+			original: "\t\t\tconst ofMember = yield* Effect.result(settle.member(family, index))\n",
 			replacement:
-				"\t\t\t\t\tEffect.forEach(memberNames(family), (_, other) => settle.member(family, other))\n",
+				"\t\t\tconst ofMember = yield* Effect.result(Effect.forEach(memberNames(family), (_, other) => settle.member(family, other)))\n",
 			why: "A worker's first need brings up every member of its family, as a settle of the whole family did, so a run of one worker starts every server of it (FAMILYFREE, 2026-11-23: grizzle's union-import by path, one worker, 32 members and 2.2 GiB of /dev/shm); the property fails, the member no worker reached started."
 		}
 	]
 })
 
 export const aFamilyOfAnotherWidthIsSettledAtTheRuns = property.exhaust(finite(widthCases), {
-	box: "a family settled whole for a run of one worker and reached by a run of two, or the other way, spread a member a worker over TLS or of one member over its socket",
+	box: "a family settled whole for a run of one worker and reached by a run of two, or the other way, spread a member a worker over TLS or of one member over its socket, each member brought up as a worker that found the family's settle unit running and joined it",
 	needs: {},
 	situations: [],
 	check: () => (width) =>
@@ -294,7 +296,7 @@ export const aFamilyOfAnotherWidthIsSettledAtTheRuns = property.exhaust(finite(w
 					failedOf(memberRead(reached, index))
 				)
 				const brought = yield* Effect.forEach(names, (_, index) =>
-					memberBroughtUp(reached, index, processSettler)
+					memberBroughtUp(reached, index, joinedSettler)
 				)
 				const recorded = yield* stateWidth(cluster, reached.checkout, reached.homes)
 				const refusedAfter = yield* Effect.forEach(names, (_, index) =>
@@ -321,7 +323,7 @@ export const aFamilyOfAnotherWidthIsSettledAtTheRuns = property.exhaust(finite(w
 		),
 	oracle: {
 		kind: "specification",
-		name: "a family whose state and members were settled for a run of another width is refused by every read of a run of this width, even where each of its members' settings is the same at both, and a worker's first need settles it at this width, its state recording it and claiming the ports of this width's members, and each member it reaches as this width's spec states; read again, every member it reached is read, and a read at the other width is refused in turn"
+		name: "a family whose state and members were settled for a run of another width is refused by every read of a run of this width, even where each of its members' settings is the same at both, and a worker's first need settles it at this width, its state recording it and claiming the ports of this width's members, and each member it reaches as this width's spec states, though its own start of the family's settle was refused as another asker's ran; read again, every member it reached is read, and a read at the other width is refused in turn"
 	},
 	kept: [],
 	kills: [
@@ -333,16 +335,23 @@ export const aFamilyOfAnotherWidthIsSettledAtTheRuns = property.exhaust(finite(w
 		},
 		{
 			file: "packages/testing/src/pg/settle.ts",
-			original: "\t\t\t\t\t\t\t(recorded) => !Option.contains(recorded, family.width)\n",
-			replacement: "\t\t\t\t\t\t\t() => false\n",
+			original: "\t\t\tconst ofState = Option.contains(recorded, family.width)\n",
+			replacement: "\t\t\tconst ofState = true\n",
 			why: "A worker's first need settles only the member it reaches, never its family's state, so a family another width settled is refused for good, as a member's settle requires its family's state of its own width, and a run of more workers finds fewer ports claimed than it has members (lane METISREDS, 2026-11-24: settled in metis.slice, refused in grizzle.slice); the property fails, the bring-up refused."
+		},
+		{
+			file: "packages/testing/src/pg/settle.ts",
+			original: "\t\t\tconst ofMember = yield* Effect.result(settle.member(family, index))\n",
+			replacement:
+				"\t\t\tconst ofMember = Result.isFailure(ofState) ? ofState : yield* Effect.result(settle.member(family, index))\n",
+			why: "A worker whose start of its family's settle unit was refused settles no member, as when its two steps were one chain: every worker but the first finds the unit running and joins it, its own start refused, so only one worker's member is ever settled (a grizzle pg run of 8 workers, 2026-11-24: 62 of 63 properties failed, their members never settled); the property fails, the member's read refused."
 		}
 	]
 })
 
 export const aSettleUnitSettlesAtTheWidthItIsGiven = property.exhaust(finite(int(0, 1)), {
 	box: "each member of a family spread a member a worker over TLS, its state settled for a run of two workers, settled by its settle unit's own command and environment under the CPU allowance of a run of three",
-	needs: {},
+	needs: { checkout: Checkout.dir },
 	situations: [],
 	check: () => (index) =>
 		Effect.scoped(

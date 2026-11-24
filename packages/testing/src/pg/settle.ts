@@ -838,8 +838,12 @@ export const processSettler: Settler = { family: familySettled, member: memberSe
  * none (a run of another width's, or a family never settled), then the member (absent, freed by its stop, or not as its
  * width's spec states). So a run brings up the members its workers reach and no other, each by the worker that
  * reaches it, at the run's own width whatever width settled them before: a family of another width is settled at the
- * run's, never refused. A settle that fails is the worker's failure, with what the settle said; one that succeeds is
- * answered by the read after it.
+ * run's, never refused. Each step runs whatever the one before it answered, and the read after them decides: every
+ * worker of a run finds the family's state of another width at once, and all but the first find its settle unit
+ * running, which systemd refuses to start again and which each then joins, its own start's refusal all it answers
+ * however the first asker's settle ended (a grizzle pg run of 8 workers, 2026-11-24: 62 of 63 properties failed, each
+ * worker's member never settled behind its family step's refusal). A settle that fails is the worker's failure, with
+ * what the member's settle said, else the state's; one that succeeds is answered by the read after it.
  */
 export const memberBroughtUp = (
 	family: CheckoutFamily,
@@ -847,24 +851,20 @@ export const memberBroughtUp = (
 	settle: Settler
 ): Effect.Effect<PgMember, ClusterFailed, Platform> =>
 	Effect.catch(memberRead(family, index), () =>
-		Effect.flatMap(
-			Effect.result(
-				Effect.andThen(
-					Effect.when(
-						settle.family(family),
-						Effect.map(
-							stateWidth(family.cluster, family.checkout, family.homes),
-							(recorded) => !Option.contains(recorded, family.width)
-						)
-					),
-					settle.member(family, index)
-				)
-			),
-			(settling) =>
-				Effect.mapError(memberRead(family, index), (refused) =>
-					Result.isFailure(settling) ? settling.failure : refused
-				)
-		)
+		Effect.gen(function* () {
+			const recorded = yield* stateWidth(family.cluster, family.checkout, family.homes)
+			const ofState = Option.contains(recorded, family.width)
+				? Result.void
+				: yield* Effect.result(settle.family(family))
+			const ofMember = yield* Effect.result(settle.member(family, index))
+			return yield* Effect.mapError(memberRead(family, index), (refused) =>
+				Result.isFailure(ofMember)
+					? ofMember.failure
+					: Result.isFailure(ofState)
+						? ofState.failure
+						: refused
+			)
+		})
 	)
 
 /**
