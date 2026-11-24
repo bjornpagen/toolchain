@@ -175,10 +175,22 @@ age or by property; a record whose closure no live tree can produce is the only 
 to a temporary file beside the record and are renamed into place, so no lock is needed. A record is safe to delete at any
 time.
 
-A kill's verdict is a record of the same cache: its key is the property's joint closure, the kill as the one edit it
-makes (the file, the content hash of its text and of its text with the kill applied), and the seed policy of witnesses
-under an edit, which an operator mutant's verdict shares. A kill that turned its property red is a known answer that
-`kills` and `census` do not judge again; a changed property, kill or file makes its key new.
+A kill's verdict is a record of the same cache: its key is the property's joint closure joined with the closure of the
+file the kill edits, the kill as the one edit it makes (the file, the content hash of its text and of its text with the
+kill applied), and the seed policy of witnesses under an edit, which an operator mutant's verdict shares
+(`runner/affected.ts` editKeyOf). A kill that turned its property red is a known answer that `kills` and `census` do
+not judge again; a changed property, kill, file or module the file loads makes its key new. The file's closure is in
+the key whether or not the property's closure holds the file: a check that runs it in a child process or reads it at
+run time was keyed by the file's bytes alone, and kept a red that a module the file loads had since taken away
+(grizzle, 2026-11-23: 58 of its 1,017 kills' files lay outside their property's closure). An edit whose text loads a
+module its file's text does not keys nothing (`runner/cache.ts` editOf), since no closure the key joins holds that
+module: it is judged on every run.
+
+The runner that runs is part of every key, so it must be one the repository's closures hold (`runner/affected.ts`
+runnerRootsIn): a file of the repository, whose entry modules are roots, or installed in its node_modules, which the
+config's closure holds by its lockfile entry. Another checkout's runner run in this one (its binary named by path from
+the wrong directory) keys nothing: `affected` and `verified` refuse, and `kills`, `mutate` and `census` judge every
+verdict and record none.
 
 ### Properties that need a database
 

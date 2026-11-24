@@ -34,7 +34,8 @@ import type { Subject } from "#mutate/schedule.ts"
 import { treesOf } from "#mutate/tree.ts"
 import { property, PropertyId, ReplayToken } from "#property.ts"
 import { noVerdicts } from "#runner/affected.ts"
-import { digests } from "#runner/cache.fixtures.ts"
+import { hashing } from "#runner/closure.fixtures.ts"
+import { ModuleSyntax } from "#runner/closure.ts"
 import { runnerLimits } from "#runner/limits.ts"
 import { productOf } from "#scope.ts"
 
@@ -44,7 +45,7 @@ export const censusOfChecks = property.explore(
 		loading: source.draw(element(["in-process", "tree"] as const))
 	}),
 	{
-		needs: { checkout: Checkout.dir, digest: digests },
+		needs: { checkout: Checkout.dir, hashing },
 		situations: [
 			"catches by kill",
 			"catches by mutant",
@@ -54,10 +55,10 @@ export const censusOfChecks = property.explore(
 			"a kept case that caught nothing"
 		],
 		check:
-			({ digest }, c) =>
+			({ hashing: services }, c) =>
 			(census) =>
 				Effect.gen(function* () {
-					const sha = yield* digest
+					const { syntax, digest } = yield* services
 					const checkout = yield* checkoutOf(census)
 					const pool = yield* processPool
 					const trees = yield* treesOf(checkout)
@@ -87,7 +88,10 @@ export const censusOfChecks = property.explore(
 						edits: noVerdicts.edits,
 						reading: { kind: "places" },
 						settled: () => Effect.void
-					}).pipe(Effect.provideService(Digest.Digest, sha))
+					}).pipe(
+						Effect.provideService(Digest.Digest, digest),
+						Effect.provideService(ModuleSyntax, syntax)
+					)
 					const reported = Arr.map(counted, reportOf)
 					c.noteAll(reported)
 					for (const [check, report] of Arr.zip(census.checks, reported)) {
@@ -160,13 +164,13 @@ export const censusOfForeignModules = property.explore(
 		loading: "tree"
 	}),
 	{
-		needs: { checkout: Checkout.dir, digest: digests },
+		needs: { checkout: Checkout.dir, hashing },
 		situations: ["catches by mutant", "never-caught", "unjudged"],
 		check:
-			({ digest }, c) =>
+			({ hashing: services }, c) =>
 			(census) =>
 				Effect.gen(function* () {
-					const sha = yield* digest
+					const { syntax, digest } = yield* services
 					const checkout = yield* checkoutOf(census)
 					const trees = yield* treesOf(checkout)
 					const images = yield* imagesOf(checkout, trees)
@@ -190,7 +194,10 @@ export const censusOfForeignModules = property.explore(
 							reading: { kind: "files", importClosure: () => IMPORTED },
 							settled: () => Effect.void
 						}
-					).pipe(Effect.provideService(Digest.Digest, sha))
+					).pipe(
+						Effect.provideService(Digest.Digest, digest),
+						Effect.provideService(ModuleSyntax, syntax)
+					)
 					const reported = Arr.map(counted, reportOf)
 					for (const report of reported) {
 						if (report !== "catches by kill") {

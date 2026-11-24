@@ -31,6 +31,7 @@ import { treesOf } from "#mutate/tree.ts"
 import { unjudgedText } from "#mutate/verdict.ts"
 import { importClosuresAt, noVerdicts, trackedIn, verdictsAt } from "#runner/affected.ts"
 import { editOf } from "#runner/cache.ts"
+import { moduleSyntax } from "#runner/closure.ts"
 import type { Mutation, RunnerConfig } from "#runner/config.ts"
 import { runnerLimits } from "#runner/limits.ts"
 import { type Discovered, statedConfigOf } from "#runner/load.ts"
@@ -129,7 +130,7 @@ export const killsCommand = (root: string, selected: ReadonlyArray<string>) =>
 			const checkout = yield* checkoutOf(root)
 			const packageRoot = yield* realPathOf(root)
 			const { config, discovered } = yield* loadPackage(root, selected)
-			const verdicts = (yield* verdictsAt(root, config, discovered)).kills
+			const verdicts = (yield* verdictsAt(root, config, discovered, [])).kills
 			const { fresh, cached } = yield* verdicts.split(
 				Arr.filter(discovered, (found) => Arr.isReadonlyArrayNonEmpty(found.property.kills))
 			)
@@ -358,18 +359,21 @@ export const mutateCommand = (root: string, args: ReadonlyArray<string>) =>
 				operators: new Set(operators),
 				choice: parsed.choice
 			})
-			const { edits } = yield* verdictsAt(root, config, discovered)
-			const digest = yield* Layer.build(layerDigest)
+			const { edits } = yield* verdictsAt(root, config, discovered, files)
+			const hashing = yield* Layer.build(Layer.merge(moduleSyntax, layerDigest))
 			yield* Effect.forEach(
 				judged,
 				({ mutant, verdict }) =>
 					verdict.kind === "killed"
 						? Effect.flatMap(editOf(mutant.file, mutant.source, applied(mutant)), (edit) =>
-								edits.record(verdict.property, edit, true)
+								Option.match(edit, {
+									onNone: () => Effect.void,
+									onSome: (one) => edits.record(verdict.property, one, true)
+								})
 							)
 						: Effect.void,
 				{ discard: true }
-			).pipe(Effect.provide(digest))
+			).pipe(Effect.provide(hashing))
 			const ended = yield* liveMillis
 			const count = (kind: MutantJudged<string>["verdict"]["kind"]) =>
 				Arr.filter(judged, ({ verdict }) => verdict.kind === kind).length
@@ -542,9 +546,6 @@ export const censusCommand = (root: string, args: ReadonlyArray<string>) =>
 				onNone: () => Effect.succeed<Mutation>({ families: [], equivalent: [] }),
 				onSome: loadedMutation
 			})
-			const verdicts = Option.isSome(config)
-				? yield* verdictsAt(root, config.value, properties)
-				: noVerdicts
 			const tracked = yield* Effect.mapError(trackedIn(checkout), (refused) =>
 				MutatorRefused.make({ message: refused.message })
 			)
@@ -555,9 +556,12 @@ export const censusCommand = (root: string, args: ReadonlyArray<string>) =>
 				(file) =>
 					product(file) && isMutable(file) && (within === "" || Str.startsWith(`${within}/`)(file))
 			)
+			const verdicts = Option.isSome(config)
+				? yield* verdictsAt(root, config.value, properties, sources)
+				: noVerdicts
 			const trees = yield* treesOf(checkout)
 			const images = yield* imagesOf(checkout, trees)
-			const digest = yield* Layer.build(layerDigest)
+			const hashing = yield* Layer.build(Layer.merge(moduleSyntax, layerDigest))
 			const spawner = yield* Effect.context<ChildProcessSpawner.ChildProcessSpawner>()
 			const settled = (one: Counted) => {
 				const { by, why } = shownBy(one.standing)
@@ -579,7 +583,7 @@ export const censusCommand = (root: string, args: ReadonlyArray<string>) =>
 					edits: verdicts.edits,
 					reading,
 					settled
-				}).pipe(Effect.provide(digest))
+				}).pipe(Effect.provide(hashing))
 			const pool = yield* mutatorPool(checkout, packageRoot)
 			const ofProperties = yield* census(pool, subjectsOf(properties), { kind: "places" })
 			const ofForeign = yield* Option.match(parsed.foreign, {

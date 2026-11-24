@@ -1,16 +1,16 @@
-import { Brand, Effect, FileSystem, Option, Schema, String as Str } from "effect"
+import { Array as Arr, Brand, Effect, FileSystem, Option, Schema, String as Str } from "effect"
 import { Digest } from "effect/crypto"
 import type { PropertyId } from "#property.ts"
 import type { ClosureHash } from "#runner/closure-hash.ts"
-import { type ContentHash, contentHashOf } from "#runner/closure.ts"
+import { type ContentHash, contentHashOf, repoPathOf, specifiersOf } from "#runner/closure.ts"
 
 /**
  * The verdict cache: which properties passed, keyed by everything their verdict depends on, so a pass is a known answer
  * for as long as its key stands and is never recomputed. A key is a property's identity, the closure hash of its module
- * (closure.ts), how the run seeded its cases, and the edit it ran under, none for its search of the program as it
- * stands: a file, its own bytes and its bytes edited (a kill applied, or an operator mutant). Only passes are
- * stored, as files named by the hash of their key: a failure removes the pass its own key held and writes nothing, so a
- * failure is never read as a pass.
+ * (closure.ts; under an edit, joined with the edited file's, runner/affected.ts editKeyOf), how the run seeded its
+ * cases, and the edit it ran under, none for its search of the program as it stands: a file, its own bytes and its
+ * bytes edited (a kill applied, or an operator mutant). Only passes are stored, as files named by the hash of their
+ * key: a failure removes the pass its own key held and writes nothing, so a failure is never read as a pass.
  *
  * Records are content-addressed and immutable: every pass is kept under its own key, so lanes that push different
  * trees one after another each find the passes of the trees before theirs, and no write removes another key's record.
@@ -40,23 +40,37 @@ export const SeedPolicy = Brand.nominal<SeedPolicy>()
 /**
  * An edit of one file as a verdict depends on it: the file, the hash of its own bytes, and the hash of its bytes with the
  * edit applied. A kill (its original replaced where it stands once) and an operator mutant (its span replaced) are both
- * edits, and two that make one text are one edit: the program the property runs under it is the same.
+ * edits, and two that make one text are one edit: the program the property runs under it is the same. A verdict under
+ * an edit is keyed by the closure of the property joined with the edited file's own (runner/affected.ts editKeyOf), so
+ * an edit loads nothing its file's text does not: every module the edited program loads is in that closure.
  */
 export type Edit = Readonly<{ file: string; content: ContentHash; mutated: ContentHash }>
 
-/** The edit that makes `own`, the text of `file` (a path from the repository root), into `mutated`. */
-export const editOf = (
-	file: string,
-	own: string,
-	mutated: string
-): Effect.Effect<Edit, never, Digest.Digest> =>
-	Effect.map(
-		Effect.all([
-			contentHashOf(new TextEncoder().encode(own)),
-			contentHashOf(new TextEncoder().encode(mutated))
-		]),
-		([content, edited]): Edit => ({ file, content, mutated: edited })
+/**
+ * The edit that makes `own`, the text of `file` (a path from the repository root), into `mutated`; none when the edited
+ * text loads a module the file's own does not (a runtime specifier its text names and the file's does not, as the
+ * closure reads them, closure.ts specifiersOf), since that module is in no closure the edit's key joins, nor when
+ * either text cannot be read for its specifiers: such an edit keys no verdict, and is judged on every run. An edited
+ * text that loads less than the file's does is an edit: what it no longer loads is still in the file's closure.
+ */
+export const editOf = Effect.fn("editOf")(function* (file: string, own: string, mutated: string) {
+	const ownBytes = new TextEncoder().encode(own)
+	const editedBytes = new TextEncoder().encode(mutated)
+	const content = yield* contentHashOf(ownBytes)
+	const edited = yield* contentHashOf(editedBytes)
+	const loads = yield* Effect.option(
+		Effect.transposeOption(
+			Option.map(repoPathOf(file), (path) =>
+				Effect.all([specifiersOf(path, content, ownBytes), specifiersOf(path, edited, editedBytes)])
+			)
+		)
 	)
+	return Option.flatMap(Option.flatten(loads), ([before, after]) =>
+		Arr.every(after, (specifier) => Arr.contains(before, specifier))
+			? Option.some<Edit>({ file, content, mutated: edited })
+			: Option.none()
+	)
+})
 
 /**
  * What a cached verdict answers for: a property's search of the program as it stands (no edit), or its witnesses run

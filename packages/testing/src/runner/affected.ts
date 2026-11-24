@@ -64,7 +64,9 @@ import {
  * version, and the seed policy of a gate run (RUN_SEEDS), under no edit. So an edit to a module a property loads, to
  * the runner, to the config or to a lockfile entry a closure holds makes its key new, and the property runs; nothing
  * else does. What a property reads at run time without importing it (a fixture file, a child process's code) is
- * outside its closure: a full run per production version covers it.
+ * outside its closure: a full run per production version covers it. The runner that runs must be the repository's own
+ * or installed in it (runnerRootsIn): another checkout's runner keys nothing. A verdict under an edit joins the closure
+ * of the edited file (editKeyOf), and an edit that loads a module its file does not keys nothing (cache.ts editOf).
  *
  * `<ref>` (any tree-ish: the commit the remote held, or the empty tree for a new branch) names what the report counts
  * against: a property run is "changed since <ref>" when a file of its closure differs from `<ref>`, else "not
@@ -176,17 +178,21 @@ export const isChanged = (changed: ReadonlySet<string>, file: string): boolean =
 
 /**
  * A kill as the edit it makes of its file (cache.ts Edit): none when the file is not there or the kill's original does
- * not stand once in it, so a stale kill keys nothing and the kill census judges it, and refuses it, again.
+ * not stand once in it, so a stale kill keys nothing and the kill census judges it, and refuses it, again; none too
+ * when the kill's text loads a module its file does not (cache.ts editOf), so its verdict is judged on every run.
  */
 const editOfKill = (tree: Files, kill: Kill) =>
 	Effect.flatMap(Effect.transposeOption(Option.map(repoPathOf(kill.file), tree.read)), (read) =>
-		Effect.transposeOption(
-			Option.flatMap(Option.flatten(read), (bytes) => {
-				const own = new TextDecoder().decode(bytes)
-				return Option.map(Result.getSuccess(killApplied(kill, own)), (mutated) =>
-					editOf(kill.file, own, mutated)
-				)
-			})
+		Effect.map(
+			Effect.transposeOption(
+				Option.flatMap(Option.flatten(read), (bytes) => {
+					const own = new TextDecoder().decode(bytes)
+					return Option.map(Result.getSuccess(killApplied(kill, own)), (mutated) =>
+						editOf(kill.file, own, mutated)
+					)
+				})
+			),
+			Option.flatten
 		)
 	)
 
@@ -250,35 +256,66 @@ const groundsOf = (root: string) =>
 
 /**
  * A package weighed for the verdict cache: its repository and package root (real paths), the repository's verdict
- * cache, and each property discovered with its joint closure and key.
+ * cache, each property discovered with its joint closure and key, and the key of a property's witnesses under an edit
+ * (editKeyOf), none when the weighing did not hash the edited file.
  */
 type Weighing = Readonly<{
 	repository: string
 	packageRoot: string
 	cache: VerdictCache
 	weighed: ReadonlyArray<Weighed>
+	keyUnder: (one: Weighed, edit: Edit) => Effect.Effect<Option.Option<VerdictKey>>
 }>
 
 /**
- * The runner's own entry modules as roots of every verdict key, when they are files of the repository (the toolchain's
- * own packages, a workspace link such as grizzle's vendor/toolchain): the CLI, which reaches the search, its limits and
- * the pool, and the worker, which the pool forks by path. An installed runner (under node_modules, or outside the
- * repository) is no root: the package's test.config.ts imports it, and its closure holds it as every external package
- * is held, by its lockfile entry.
+ * The runner's own entry modules (`entries`, real paths: the CLI, which reaches the search, its limits and the pool,
+ * and the worker, which the pool forks by path) as roots of every verdict key of `repository`, by where the runner that
+ * runs lies. A file of the repository (the toolchain's own packages, a workspace link such as grizzle's
+ * vendor/toolchain): each a root. Installed in the repository's node_modules: no root, since the package's
+ * test.config.ts imports it and its closure holds it as every external package is held, by its lockfile entry.
+ * Anywhere else, another checkout's runner run in this one: refused, since no closure of this repository holds the
+ * runner that judges, so no key of it answers for what that runner judged, and its verdicts key nothing.
  */
+export const runnerRootsIn = (
+	repository: string,
+	entries: ReadonlyArray<string>
+): Result.Result<ReadonlyArray<RepoPath>, AffectedRefused> => {
+	const within = Arr.map(entries, (real) =>
+		Str.startsWith(`${repository}/`)(real)
+			? Option.some(Str.slice(repository.length + 1)(real))
+			: Option.none()
+	)
+	const relative = Option.all(within)
+	if (Option.isNone(relative)) {
+		return Result.fail(
+			AffectedRefused.make({
+				message: `the runner at ${Arr.join(entries, ", ")} lies outside ${repository}: another checkout's runner keys no verdict of this repository`
+			})
+		)
+	}
+	if (
+		Arr.some(
+			relative.value,
+			(path) => Str.startsWith("node_modules/")(path) || Str.includes("/node_modules/")(path)
+		)
+	) {
+		return Result.succeed([])
+	}
+	return Result.fromOption(Option.all(Arr.map(relative.value, repoPathOf)), () =>
+		AffectedRefused.make({
+			message: `the runner at ${Arr.join(entries, ", ")} names no file of ${repository}`
+		})
+	)
+}
+
+/** The roots of every verdict key of `repository` that the runner running this process gives (runnerRootsIn). */
 const runnerRootsOf = (repository: string) =>
-	Effect.gen(function* () {
-		const fs = yield* FileSystem.FileSystem
-		const entries = yield* Effect.forEach(
-			[`${import.meta.dirname}/cli-entry.ts`, WORKER_ENTRY],
-			(file) => fs.realPath(file)
-		)
-		const own = Arr.every(
-			entries,
-			(real) => Str.startsWith(`${repository}/`)(real) && !Str.includes("/node_modules/")(real)
-		)
-		return own ? yield* Effect.forEach(entries, (real) => underRepository(repository, real)) : []
-	})
+	Effect.flatMap(
+		Effect.forEach([`${import.meta.dirname}/cli-entry.ts`, WORKER_ENTRY], (file) =>
+			Effect.flatMap(FileSystem.FileSystem, (fs) => fs.realPath(file))
+		),
+		(entries) => Effect.fromResult(runnerRootsIn(repository, entries))
+	)
 
 /** The repository's identity: its origin remote's URL, else its common git directory. */
 const identityOf = (repository: string) =>
@@ -295,17 +332,68 @@ const identityOf = (repository: string) =>
 	)
 
 /**
+ * What a package's verdict keys are hashed from: its tree, the runner config's conditions, the runtime, the runner's
+ * roots (its own entry modules, runnerRootsIn, and the package's test.config.ts), its test modules, and the files an
+ * edit a verdict is judged under may touch (a kill's file, an operator mutant's).
+ */
+export type ClosuresInput = Readonly<{
+	tree: Files
+	conditions: ReadonlyArray<string>
+	runtime: string
+	runner: ReadonlyArray<RepoPath>
+	modules: ReadonlyArray<RepoPath>
+	edited: ReadonlyArray<RepoPath>
+}>
+
+/**
+ * The closures a package's verdicts are keyed by: each test module's joint closure with the runner's roots, a search's
+ * (searchKeyOf), and each edited file's own, which the key of a verdict under an edit of it joins (editKeyOf); none for
+ * a path the input did not name.
+ */
+type Closures = Readonly<{
+	jointOf: (module: RepoPath) => Option.Option<Closure>
+	editedOf: (file: RepoPath) => Option.Option<Closure>
+}>
+
+/** A package's closures (Closures), walked once for every root, under the input's conditions and runtime. */
+export const closuresWeighedOf = Effect.fn("closuresWeighedOf")(function* (input: ClosuresInput) {
+	const closures = yield* closuresOf({
+		tree: input.tree,
+		conditions: input.conditions,
+		runtime: input.runtime,
+		roots: [...input.runner, ...input.modules, ...input.edited]
+	})
+	const closureOf = (path: RepoPath) => Option.fromUndefinedOr(closures.get(path))
+	const shared = Arr.getSomes(Arr.map(input.runner, closureOf))
+	const owned = Arr.getSomes(
+		Arr.map(input.modules, (module) =>
+			Option.map(closureOf(module), (own) => [module, own] as const)
+		)
+	)
+	const joined = yield* Effect.forEach(owned, ([module, own]) =>
+		Effect.map(jointClosureOf([own, ...shared]), (joint) => [module, joint] as const)
+	)
+	const joints = new Map(joined)
+	return {
+		jointOf: (module) => Option.fromUndefinedOr(joints.get(module)),
+		editedOf: closureOf
+	} satisfies Closures
+})
+
+/**
  * A package's test modules as every cached answer of the repository weighs them: the working tree, the closure
- * hasher, the repository's cache directory (`<toolchain-test cache>/<repository key>`), and each module's joint
- * closure with the package's test.config.ts and the runner's own entry modules (runnerRootsOf), hashed under the
- * config's conditions and this Node's version, so an edit to anything a module, the config or the runner loads makes
+ * hasher, the repository's cache directory (`<toolchain-test cache>/<repository key>`), each module's joint closure
+ * with the package's test.config.ts and the runner's own entry modules (runnerRootsOf), and the closure of each file of
+ * `edited` (paths from the repository root) the tree holds, hashed under the config's conditions and this Node's
+ * version (closuresWeighedOf), so an edit to anything a module, the config, the runner or an edited file loads makes
  * its closure new.
  */
 const modulesWeighedOf = (
 	packageRoot: string,
 	repository: string,
 	config: RunnerConfig,
-	modules: ReadonlyArray<string>
+	modules: ReadonlyArray<string>,
+	edited: ReadonlyArray<string>
 ) =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem
@@ -318,52 +406,80 @@ const modulesWeighedOf = (
 		const configRoot = yield* Effect.flatMap(fs.realPath(`${packageRoot}/test.config.ts`), (real) =>
 			underRepository(repository, real)
 		)
-		const runner = [...runnerRoots, configRoot]
 		const pathEntries = yield* Effect.forEach(Arr.dedupe(modules), (module) =>
 			Effect.map(packageFile(module), (path) => [module, path] as const)
 		)
 		const paths = new Map(pathEntries)
-		const closures = yield* closuresOf({
+		const held = yield* Effect.forEach(
+			Arr.getSomes(Arr.map(Arr.dedupe(edited), repoPathOf)),
+			(path) => Effect.map(tree.read(path), (bytes) => Option.as(bytes, path))
+		)
+		const closures = yield* closuresWeighedOf({
 			tree,
 			conditions: config.conditions,
 			runtime: process.version,
-			roots: [...runner, ...paths.values()]
+			runner: [...runnerRoots, configRoot],
+			modules: [...paths.values()],
+			edited: Arr.getSomes(held)
 		}).pipe(Effect.provide(hashing))
-		const closureOf = (path: RepoPath) =>
-			Effect.mapError(Effect.fromOption(Option.fromUndefinedOr(closures.get(path))), () =>
-				AffectedRefused.make({ message: `${path} has no closure` })
-			)
-		const shared = yield* Effect.forEach(runner, closureOf)
 		const repositoryKey = yield* repositoryKeyOf(identity).pipe(Effect.provide(hashing))
 		return {
 			tree,
 			hashing,
 			home: `${cache}/${repositoryKey}`,
+			editedOf: (file: string) => Option.flatMap(repoPathOf(file), closures.editedOf),
 			jointOf: (module: string) =>
-				Effect.gen(function* () {
-					const path = yield* Effect.mapError(
-						Effect.fromOption(Option.fromUndefinedOr(paths.get(module))),
-						() => AffectedRefused.make({ message: `${module} was not hashed` })
-					)
-					const own = yield* closureOf(path)
-					return yield* jointClosureOf([own, ...shared]).pipe(Effect.provide(hashing))
-				})
+				Effect.mapError(
+					Effect.fromOption(
+						Option.flatMap(Option.fromUndefinedOr(paths.get(module)), closures.jointOf)
+					),
+					() => AffectedRefused.make({ message: `${module} was not hashed` })
+				)
 		}
 	})
 
-/** Weighs the properties `discovered` of a package of a repository: their closures, keys and the repository's cache. */
+/** The key of a property's search of the program as it stands: its identity and joint closure, a gate run's seeds. */
+export const searchKeyOf = (property: PropertyId, searched: Closure): VerdictKey => ({
+	property,
+	closure: searched.hash,
+	seeds: RUN_SEEDS,
+	edit: Option.none()
+})
+
+/**
+ * The key of a property's witnesses run under an edit: its identity, its joint closure (`searched`, a search's) joined
+ * with the closure of the edited file as the tree holds it (`edited`), the seeds of witnesses under an edit, and the
+ * edit. So the key holds every module the edited program loads (those the property loads, and those the edited file
+ * loads, to which an edit adds none, cache.ts editOf) whether or not the property's own closure holds the file: a check
+ * that runs it in a child process, or reads it at run time, keyed by the file's bytes alone, kept a red the file's
+ * imports had since taken away (grizzle's type properties and its CLI's, 58 of its 1,017 kills' files on 2026-11-23).
+ */
+export const editKeyOf = (property: PropertyId, searched: Closure, edited: Closure, edit: Edit) =>
+	Effect.map(jointClosureOf([searched, edited]), (joint): VerdictKey => ({
+		property,
+		closure: joint.hash,
+		seeds: EDIT_SEEDS,
+		edit: Option.some(edit)
+	}))
+
+/**
+ * Weighs the properties `discovered` of a package of a repository: their closures, keys and the repository's cache,
+ * and the closures of the files of `edited` (paths from the repository root) that edits judged under it may touch.
+ */
 const weighingOf = (
 	packageRoot: string,
 	repository: string,
 	config: RunnerConfig,
-	discovered: ReadonlyArray<Discovered>
+	discovered: ReadonlyArray<Discovered>,
+	edited: ReadonlyArray<string>
 ) =>
 	Effect.gen(function* () {
 		const weighed = yield* modulesWeighedOf(
 			packageRoot,
 			repository,
 			config,
-			Arr.map(discovered, (found) => found.module)
+			Arr.map(discovered, (found) => found.module),
+			edited
 		)
 		const properties = yield* Effect.forEach(discovered, (found) =>
 			Effect.gen(function* () {
@@ -371,20 +487,25 @@ const weighingOf = (
 				const edits = yield* Effect.forEach(found.property.kills, (kill) =>
 					editOfKill(weighed.tree, kill)
 				).pipe(Effect.provide(weighed.hashing))
-				const key: VerdictKey = {
-					property: found.id,
-					closure: closure.hash,
-					seeds: RUN_SEEDS,
-					edit: Option.none()
-				}
 				const killEdits = Arr.zip(found.property.kills, edits)
-				return { found, closure, key, killEdits } satisfies Weighed
+				return { found, closure, key: searchKeyOf(found.id, closure), killEdits } satisfies Weighed
 			})
 		)
 		const verdicts = yield* verdictCacheAt(`${weighed.home}/verdicts`).pipe(
 			Effect.provide(weighed.hashing)
 		)
-		return { repository, packageRoot, cache: verdicts, weighed: properties } satisfies Weighing
+		return {
+			repository,
+			packageRoot,
+			cache: verdicts,
+			weighed: properties,
+			keyUnder: (one, edit) =>
+				Effect.transposeOption(
+					Option.map(weighed.editedOf(edit.file), (file) =>
+						editKeyOf(one.found.id, one.closure, file, edit)
+					)
+				).pipe(Effect.provide(weighed.hashing))
+		} satisfies Weighing
 	})
 
 /**
@@ -408,7 +529,7 @@ export const loadKeyingAt = (
 			const repository = yield* Effect.mapError(Effect.fromOption(grounds.repository), () =>
 				AffectedRefused.make({ message: `${root} lies in no git repository` })
 			)
-			const weighed = yield* modulesWeighedOf(grounds.packageRoot, repository, config, modules)
+			const weighed = yield* modulesWeighedOf(grounds.packageRoot, repository, config, modules, [])
 			const keys = yield* Effect.forEach(modules, (module) =>
 				Effect.map(weighed.jointOf(module), (closure) => ({
 					module,
@@ -476,23 +597,25 @@ export const withKills = (property: Property, kills: ReadonlyArray<Kill>): Prope
 
 /** The verdicts under edits of a weighing, or none to keep. */
 const editVerdictsOf = (weighing: Option.Option<Weighing>): EditVerdicts => {
-	const keyOf = (id: PropertyId, edit: Edit): Option.Option<VerdictKey> =>
-		Option.flatMap(weighing, (weighed) =>
-			Option.map(
-				Arr.findFirst(weighed.weighed, (one) => one.found.id === id),
-				(one): VerdictKey => ({
-					property: id,
-					closure: one.closure.hash,
-					seeds: EDIT_SEEDS,
-					edit: Option.some(edit)
-				})
-			)
-		)
+	const keyOf = (id: PropertyId, edit: Edit) =>
+		Option.match(weighing, {
+			onNone: () => Effect.succeedNone,
+			onSome: (weighed) =>
+				Effect.map(
+					Effect.transposeOption(
+						Option.map(
+							Arr.findFirst(weighed.weighed, (one) => one.found.id === id),
+							(one) => weighed.keyUnder(one, edit)
+						)
+					),
+					Option.flatten
+				)
+		})
 	const cache = Option.map(weighing, (weighed) => weighed.cache)
 	return {
 		red: (id, edit) =>
 			Effect.gen(function* () {
-				const key = keyOf(id, edit)
+				const key = yield* keyOf(id, edit)
 				if (Option.isNone(key) || Option.isNone(cache)) {
 					return false
 				}
@@ -502,7 +625,7 @@ const editVerdictsOf = (weighing: Option.Option<Weighing>): EditVerdicts => {
 			}),
 		record: (id, edit, red) =>
 			Effect.gen(function* () {
-				const key = keyOf(id, edit)
+				const key = yield* keyOf(id, edit)
 				if (Option.isSome(key) && Option.isSome(cache)) {
 					yield* cache.value.record(key.value, red ? "passed" : "failed")
 				}
@@ -572,19 +695,25 @@ export const noVerdicts: Readonly<{ kills: KillVerdicts; edits: EditVerdicts }> 
 /**
  * The verdicts under edits of the package at `root`, for the properties `discovered` of it under `config`, for a
  * command that judges kills or mutants itself (`toolchain-test kills`, `mutate` and `census`): its kills' and its
- * edits', none kept when the package has no verdict key.
+ * edits', none kept when the package has no verdict key. Each kill's file and each of `mutated` (the files the
+ * command's operator mutants edit, paths from the repository root) is weighed for the keys of edits of it.
  */
 export const verdictsAt = (
 	root: string,
 	config: RunnerConfig,
-	discovered: ReadonlyArray<Discovered>
+	discovered: ReadonlyArray<Discovered>,
+	mutated: ReadonlyArray<string>
 ) =>
 	Effect.gen(function* () {
 		const grounds = yield* groundsOf(root)
+		const edited = [
+			...Arr.flatMap(discovered, (found) => Arr.map(found.property.kills, (kill) => kill.file)),
+			...mutated
+		]
 		const weighing = yield* Option.match(grounds.repository, {
 			onNone: () => Effect.succeedNone,
 			onSome: (repository) =>
-				Effect.option(weighingOf(grounds.packageRoot, repository, config, discovered))
+				Effect.option(weighingOf(grounds.packageRoot, repository, config, discovered, edited))
 		})
 		return { kills: killVerdictsOf(weighing), edits: editVerdictsOf(weighing) }
 	})
@@ -620,7 +749,7 @@ export const recordedRun = (root: string, selected: ReadonlyArray<string>, outco
 				Effect.mapError(Effect.fromOption(grounds.repository), () =>
 					AffectedRefused.make({ message: `${root} lies in no git repository` })
 				),
-				(repository) => weighingOf(grounds.packageRoot, repository, config, discovered)
+				(repository) => weighingOf(grounds.packageRoot, repository, config, discovered, [])
 			)
 		)
 		yield* Result.match(weighing, {
@@ -646,7 +775,7 @@ export const affected = (root: string, args: ReadonlyArray<string>) =>
 				AffectedRefused.make({ message: `${root} lies in no git repository` })
 			)
 			const { config, discovered } = yield* loadPackage(grounds.packageRoot, [])
-			const weighing = yield* weighingOf(grounds.packageRoot, repository, config, discovered)
+			const weighing = yield* weighingOf(grounds.packageRoot, repository, config, discovered, [])
 			const base = yield* required(
 				weighing.repository,
 				["rev-parse", "--verify", "--quiet", `${ref}^{tree}`],
@@ -724,7 +853,7 @@ export const verified = (root: string, args: ReadonlyArray<string>) =>
 				AffectedRefused.make({ message: `${root} lies in no git repository` })
 			)
 			const { config, discovered } = yield* loadPackage(grounds.packageRoot, [])
-			const weighing = yield* weighingOf(grounds.packageRoot, repository, config, discovered)
+			const weighing = yield* weighingOf(grounds.packageRoot, repository, config, discovered, [])
 			const base = yield* required(
 				weighing.repository,
 				["rev-parse", "--verify", "--quiet", `${ref}^{tree}`],

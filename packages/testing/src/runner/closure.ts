@@ -842,7 +842,7 @@ export type Walk = Readonly<{
 
 /** The specifiers a module of `path` with these bytes loads at run time, each once, in its text's order: a code file's
  * runtime specifiers, and none for any other file, which is content alone. */
-const specifiersOf = (
+export const specifiersOf = (
 	path: RepoPath,
 	content: ContentHash,
 	bytes: Uint8Array

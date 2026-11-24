@@ -300,10 +300,10 @@ export type Touch =
 	| Readonly<{ kind: "lock"; external: External }>
 
 /** A workspace and one touch of it. */
-export type Touched = Readonly<{ workspace: Workspace; touch: Touch }>
+export type TouchedWorkspace = Readonly<{ workspace: Workspace; touch: Touch }>
 
 /** A workspace and a touch drawn for it. */
-export const touchedWorkspaces: Gen<Touched> = (source) => {
+export const touchedWorkspaces: Gen<TouchedWorkspace> = (source) => {
 	const workspace = source.draw(workspaces)
 	const touch = source.draw(
 		oneOf<Touch>([

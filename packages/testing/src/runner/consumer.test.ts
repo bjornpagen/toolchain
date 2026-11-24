@@ -74,8 +74,9 @@ export const consumersRunInEveryLayout = property.exhaust(layouts, {
 	kills: [
 		{
 			file: "packages/testing/src/runner/affected.ts",
-			original: '&& !Str.includes("/node_modules/")(real)',
-			replacement: "&& true",
+			original:
+				'(path) => Str.startsWith("node_modules/")(path) || Str.includes("/node_modules/")(path)',
+			replacement: "(path) => false",
 			why: "an installed runner weighed as repository files: its imports resolve against the consumer's importers, and nothing is recorded where a key exists"
 		},
 		{

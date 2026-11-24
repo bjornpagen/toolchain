@@ -17,6 +17,7 @@ export default defineRunner({
 		"src/runner/closure.test.ts",
 		"src/runner/keep.test.ts",
 		"src/runner/cache.test.ts",
+		"src/runner/keys.test.ts",
 		"src/runner/compile-cache.test.ts",
 		"src/runner/consumer.test.ts",
 		"src/runner/named.test.ts",
