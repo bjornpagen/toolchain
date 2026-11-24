@@ -6,23 +6,29 @@ import {
 	Effect,
 	FileSystem,
 	Option,
+	Record as Rec,
 	Redacted,
 	Result,
 	String as Str
 } from "effect"
 import { ChildProcess, type ChildProcessSpawner } from "effect/process"
 import {
+	type Checkout,
 	type CheckoutFamily,
 	checkoutRecorded,
 	checkoutVariable,
 	familiesCollected,
+	familyOf,
+	type Homes,
 	holderText,
 	memberNamesOf,
 	portHolders,
 	portsClaimed,
 	portsHeld,
 	stateOf,
-	unitOf
+	stateWidth,
+	unitOf,
+	widthRecorded
 } from "#pg/family.ts"
 import {
 	adminSql,
@@ -44,7 +50,6 @@ import {
 	sizedSettings
 } from "#pg/settings.ts"
 import type { LocalCluster } from "#pg/spec.ts"
-import { testWorkers } from "#workers.ts"
 
 /**
  * A repository's cluster at a checkout (family.ts CheckoutFamily) as units of the workbench's PostgreSQL
@@ -93,11 +98,11 @@ export type PgMember = Readonly<{
 export const caVariable = "PGSSLROOTCERT"
 
 /**
- * The names of `family`'s members, `<family>-<i>` for each of the members its sizing gives a full-width run
+ * The names of `family`'s members, `<family>-<i>` for each of the members its sizing gives a run of its width
  * (settings.ts membersOf).
  */
 export const memberNames = (family: CheckoutFamily): Arr.NonEmptyReadonlyArray<string> =>
-	memberNamesOf(family, membersOf(family.cluster.sizing, testWorkers))
+	memberNamesOf(family, membersOf(family.cluster.sizing, family.width))
 
 /** A member's socket directory, its unit's runtime directory: `$XDG_RUNTIME_DIR/postgresql-<name>`. */
 const socketOf = (name: string): Effect.Effect<string, ClusterFailed> =>
@@ -200,22 +205,24 @@ const caFileOf = (step: Step): Effect.Effect<string, ClusterFailed> =>
 	)
 
 /**
- * The settings a member of `cluster` at `port` holds exactly, on a server of `blockSize` bytes a page: every member's
- * (fixedSettings), its sizing's over the machine's memory (sizedSettings), its hba file, and over TLS its port (its
- * family's claim) and localhost's listener, which its unit opts into by them (the workbench's postgres@ part listens on
- * no network until a cluster's own postgresql.auto.conf says so) and TLS on, which the part's included tls.conf gives
- * every member, with the server certificate its CA (caVariable) signed.
+ * The settings a member of `family` at `port` holds exactly, on a server of `blockSize` bytes a page: every member's
+ * (fixedSettings), its sizing's for the family's width over the machine's memory (sizedSettings: its members among
+ * that many workers and its share of them), its hba file, and over TLS its port (its family's claim) and localhost's
+ * listener, which its unit opts into by them (the workbench's postgres@ part listens on no network until a cluster's own
+ * postgresql.auto.conf says so) and TLS on, which the part's included tls.conf gives every member, with the server
+ * certificate its CA (caVariable) signed.
  */
 const expectedSettings = (
-	cluster: LocalCluster,
+	family: CheckoutFamily,
 	port: number,
 	hba: string,
 	blockSize: number
 ): ReadonlyArray<Setting> => {
-	const members = membersOf(cluster.sizing, testWorkers)
+	const { cluster, width } = family
+	const members = membersOf(cluster.sizing, width)
 	return [
 		...fixedSettings(cluster),
-		...sizedSettings(cluster, members, shareOf(testWorkers, members), totalmem(), blockSize),
+		...sizedSettings(cluster, members, shareOf(width, members), totalmem(), blockSize),
 		["hba_file", hba],
 		...(cluster.network.kind === "tls"
 			? ([
@@ -517,8 +524,9 @@ const freedForgotten = (data: string, name: string, step: Step) =>
  * What every read and every member's settle of `family` takes from its state, writing nothing: its owner's password,
  * its state's files (stateFiles), how a client verifies its members (over TLS the CA the workbench's part names,
  * caVariable, and the family's unrelated CA), each member's name and port (its family's claim, over TLS) in member
- * order, and the server's bin directory. A family whose state lacks any of them, never settled, fails, naming
- * `toolchain-pg settle`.
+ * order, and the server's bin directory. A family whose state lacks any of them, never settled, or whose state was
+ * settled for another width than the family's (family.ts widthRecorded), fails, naming `toolchain-pg settle`: a run's
+ * first need settles its own width's state there (memberBroughtUp).
  */
 type FamilyState = Readonly<{
 	password: string
@@ -547,6 +555,16 @@ const familyState = (
 		const { cluster } = family
 		const unsettled = unsettledOf(family, step)
 		const files = stateFiles(stateOf(family))
+		const recorded = yield* stateWidth(cluster, family.checkout, family.homes)
+		if (!Option.contains(recorded, family.width)) {
+			return yield* unsettled(
+				Option.match(recorded, {
+					onNone: () => `${stateOf(family)} records no width its state was settled for`,
+					onSome: (width) =>
+						`its state was settled for a run of ${width} workers, where this process's run has ${family.width}`
+				})
+			)
+		}
 		const keptPassword = yield* readIfThere(files.password)
 		const password = yield* Effect.mapError(Effect.fromOption(keptPassword), () =>
 			unsettled(`${files.password} holds no owner password`)
@@ -608,7 +626,7 @@ const memberReadIn = (
 		const differs = yield* differing(
 			state.bin,
 			socket,
-			expectedSettings(cluster, port, state.files.hba, blockSize),
+			expectedSettings(family, port, state.files.hba, blockSize),
 			step
 		)
 		if (Arr.isReadonlyArrayNonEmpty(differs)) {
@@ -705,12 +723,16 @@ export const membersRunning = (
 	})
 
 /**
- * `family`'s state settled, its members' own parts aside (memberSettled): first every family of its cluster whose
- * checkout is gone removed (family.ts familiesCollected), then its state (the checkout it records; the owner's
- * password, kept once made; its hba file; its unrelated CA) and the ports of all its members (portsOf), claimed at once,
- * so each member's port stays its own however many of them run.
+ * `family`'s state settled for its width, its members' own parts aside (memberSettled): first every family of its
+ * cluster whose checkout is gone removed (family.ts familiesCollected), then its state (the checkout it records; the
+ * owner's password, kept once made; its hba file; its unrelated CA) and the ports of all the members its width gives
+ * (portsOf), claimed at once, so each member's port stays its own however many of them run, and last the width it is
+ * settled for (family.ts widthRecorded), which every read then requires of its own family. A state settled for a
+ * wider run keeps the ports it claimed past this width's members, which a wider run's members take again.
  */
-const familySettled = (family: CheckoutFamily): Effect.Effect<void, ClusterFailed, Platform> =>
+export const familySettled = (
+	family: CheckoutFamily
+): Effect.Effect<void, ClusterFailed, Platform> =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem
 		const { cluster } = family
@@ -734,6 +756,7 @@ const familySettled = (family: CheckoutFamily): Effect.Effect<void, ClusterFaile
 			yield* written(step, files.wrongCa, pem)
 		}
 		yield* portsOf(family, memberNames(family).length, step)
+		yield* widthRecorded(family, step)
 	})
 
 /**
@@ -763,7 +786,7 @@ export const memberSettled = (
 		yield* systemctl("start", name, at)
 		const socket = yield* socketNow(name, at)
 		const blockSize = yield* blockSizeOf(bin, socket, at)
-		const expected = expectedSettings(cluster, port, files.hba, blockSize)
+		const expected = expectedSettings(family, port, files.hba, blockSize)
 		const changed = yield* differing(bin, socket, expected, at)
 		yield* Arr.match(changed, {
 			onEmpty: () => Effect.void,
@@ -796,44 +819,91 @@ export const memberSettled = (
 	})
 
 /**
- * How a member of a family is settled where a worker's first need finds it absent or not as its spec states
- * (memberBroughtUp): by its settle unit (unitSettled), or, in a test of a case's cluster, which no package's
- * pg.config.ts states, in the case's own process (memberSettled).
+ * How a family is settled where a worker's first need finds what it reaches not as its run's width states it
+ * (memberBroughtUp): its state for that width (familySettled, `family`), and one member (memberSettled, `member`), each
+ * by its settle unit (unitSettler), or, in a test of a case's cluster, which no package's pg.config.ts states, in the
+ * case's own process (processSettler).
  */
-export type MemberSettle = (
-	family: CheckoutFamily,
-	index: number
-) => Effect.Effect<unknown, ClusterFailed, Platform>
+export type Settler = Readonly<{
+	family: (family: CheckoutFamily) => Effect.Effect<unknown, ClusterFailed, Platform>
+	member: (family: CheckoutFamily, index: number) => Effect.Effect<unknown, ClusterFailed, Platform>
+}>
+
+/** A family's settles run in this process: its state's (familySettled) and a member's (memberSettled). */
+export const processSettler: Settler = { family: familySettled, member: memberSettled }
 
 /**
  * Member `index` of `family` as a worker's first need reaches it: read (memberRead), and where the read refuses it
- * (absent, freed by its stop, or not as its spec states) settled by `settle` and read again. So a run brings up the
- * members its workers reach and no other, each by the worker that reaches it. A settle that fails is the worker's
- * failure, with what the settle said; one that succeeds is answered by the read after it.
+ * settled by `settle` and read again: first the family's state, where it records another width than the family's or
+ * none (a run of another width's, or a family never settled), then the member (absent, freed by its stop, or not as its
+ * width's spec states). So a run brings up the members its workers reach and no other, each by the worker that
+ * reaches it, at the run's own width whatever width settled them before: a family of another width is settled at the
+ * run's, never refused. A settle that fails is the worker's failure, with what the settle said; one that succeeds is
+ * answered by the read after it.
  */
 export const memberBroughtUp = (
 	family: CheckoutFamily,
 	index: number,
-	settle: MemberSettle
+	settle: Settler
 ): Effect.Effect<PgMember, ClusterFailed, Platform> =>
 	Effect.catch(memberRead(family, index), () =>
-		Effect.flatMap(Effect.result(settle(family, index)), (settling) =>
-			Effect.mapError(memberRead(family, index), (refused) =>
-				Result.isFailure(settling) ? settling.failure : refused
-			)
+		Effect.flatMap(
+			Effect.result(
+				Effect.andThen(
+					Effect.when(
+						settle.family(family),
+						Effect.map(
+							stateWidth(family.cluster, family.checkout, family.homes),
+							(recorded) => !Option.contains(recorded, family.width)
+						)
+					),
+					settle.member(family, index)
+				)
+			),
+			(settling) =>
+				Effect.mapError(memberRead(family, index), (refused) =>
+					Result.isFailure(settling) ? settling.failure : refused
+				)
 		)
 	)
 
 /**
- * Settles `family` as `toolchain-pg settle` does: its state (familySettled), then its first member, the one `env`,
- * `psql` and `admin` reach, brought up as a worker brings up its own (memberBroughtUp, by `settle`). Its other members
- * its runs' workers bring up, each the one it reaches, on its first need. A run never settles a family's state.
+ * Settles `family` as `toolchain-pg settle` does: its state for its width (familySettled), then its first member, the
+ * one `env`, `psql` and `admin` reach, brought up as a worker brings up its own (memberBroughtUp, by `settle`). Its
+ * other members its runs' workers bring up, each the one it reaches, on its first need.
  */
 export const settled = (
 	family: CheckoutFamily,
-	settle: MemberSettle
+	settle: Settler
 ): Effect.Effect<PgMember, ClusterFailed, Platform> =>
 	Effect.andThen(familySettled(family), memberBroughtUp(family, 0, settle))
+
+/**
+ * `cluster`'s family at `checkout` in `homes` as its state was last settled (familySettled): at the width its state
+ * records (family.ts stateWidth), what a command of no width of its own reads (`toolchain-pg check`, `psql`, `admin`,
+ * `env`; collection, which reads the members that run), where a run reads it at its own. A family whose state records
+ * no width fails, naming `toolchain-pg settle`.
+ */
+export const familyAsSettled = (
+	cluster: LocalCluster,
+	checkout: Checkout,
+	homes: Homes
+): Effect.Effect<CheckoutFamily, ClusterFailed, FileSystem.FileSystem> =>
+	Effect.flatMap(stateWidth(cluster, checkout, homes), (recorded) =>
+		Option.match(recorded, {
+			onSome: (width) => Effect.succeed(familyOf(cluster, checkout, homes, width)),
+			onNone: () =>
+				Effect.fail(
+					failed(
+						{
+							cluster: cluster.unit,
+							doing: "reading the width its family's state was settled for"
+						},
+						`the family at ${checkout} records no width its state was settled for: run \`pnpm exec toolchain-pg settle\` (as a unit) in ${checkout} to give its family its spec`
+					)
+				)
+		})
+	)
 
 /** What a settle unit settles: a family's state and its first member (settled), or one member (memberSettled). */
 export type SettleTarget =
@@ -841,11 +911,15 @@ export type SettleTarget =
 	| Readonly<{ kind: "member"; index: number }>
 
 /**
- * The variable a settle unit runs its settle with: present, `toolchain-pg settle` settles in its own process; absent, it
- * starts the settle's unit (settleUnit) and waits on it, so every settle of a family, and every settle of a member,
- * runs as the one unit its name gives.
+ * The variable a settle unit is given the width of the family it settles in, the width of the process that started it
+ * (its run's testWorkers, workers.ts): present, `toolchain-pg settle` settles in its own process, the family at that
+ * width, and measures nothing of its own (its unit runs in its cluster's repository's slice, under another CPU allowance
+ * than its starter's, which sized a family no run of its starter's width reads, lane METISREDS, 2026-11-24: settled in
+ * metis.slice, refused in grizzle.slice); absent, it starts the settle's unit (settleUnit), giving it this process's
+ * width, and waits on it, so every settle of a family, and every settle of a member, runs as the one unit its name
+ * gives, at the width of the run it serves.
  */
-export const settlingVariable = "TOOLCHAIN_PG_SETTLING"
+export const settleWidthVariable = "TOOLCHAIN_PG_SETTLE_WIDTH"
 
 /** The command a settle unit runs: this package's `toolchain-pg`, which strips the types of its TypeScript source. */
 const settleProgram = process
@@ -853,12 +927,29 @@ const settleProgram = process
 	.fileURLToPath(new URL("../../scripts/toolchain-pg.sh", import.meta.url))
 
 /**
+ * What a settle unit of `family` is given, beside its working directory, whose pg.config.ts states the cluster: the
+ * family's checkout, so it settles that family wherever systemd starts it, and its width (settleWidthVariable), so it
+ * settles the family at the width of the run that reaches it, never at its own.
+ */
+export const settleEnvironment = (family: CheckoutFamily): Readonly<Record<string, string>> => ({
+	[settleWidthVariable]: `${family.width}`,
+	[checkoutVariable]: family.checkout
+})
+
+/** The command a settle unit of `target` runs (settleUnit): `toolchain-pg settle`, with the member's index for a member. */
+export const settleArgv = (target: SettleTarget): Arr.NonEmptyReadonlyArray<string> => [
+	"/bin/sh",
+	settleProgram,
+	"settle",
+	...(target.kind === "family" ? [] : [`${target.index}`])
+]
+
+/**
  * `target`'s settle as its unit: `<family>-settle` for its family, `<member>-settle` for a member, in its cluster's
- * repository's slice (its unit name's first word), run with `toolchain-pg settle [index]` in this process's working
- * directory, whose pg.config.ts states the cluster, and given the family's checkout, so it settles that family wherever
- * systemd starts it. Type=oneshot, so `systemctl --user start` of the unit while it runs joins its start and returns as
- * it ends (unitSettled). `systemd-run --wait --pipe` answers the unit's exit status and is refused at once while the
- * unit runs.
+ * repository's slice (its unit name's first word), run with `toolchain-pg settle [index]` (settleArgv) in this
+ * process's working directory, whose pg.config.ts states the cluster, and given what it settles (settleEnvironment). Type=oneshot, so
+ * `systemctl --user start` of the unit while it runs joins its start and returns as it ends (unitSettled).
+ * `systemd-run --wait --pipe` answers the unit's exit status and is refused at once while the unit runs.
  */
 export const settleUnit = (
 	family: CheckoutFamily,
@@ -883,15 +974,12 @@ export const settleUnit = (
 				"--wait",
 				"--pipe",
 				"--collect",
-				"-E",
-				`${settlingVariable}=1`,
-				"-E",
-				`${checkoutVariable}=${family.checkout}`,
+				...Arr.flatMap(Rec.toEntries(settleEnvironment(family)), ([name, value]) => [
+					"-E",
+					`${name}=${value}`
+				]),
 				"--",
-				"/bin/sh",
-				settleProgram,
-				"settle",
-				...(target.kind === "family" ? [] : [`${target.index}`])
+				...settleArgv(target)
 			],
 			{ stdin: stdio, stdout: stdio, stderr: stdio }
 		)
@@ -899,17 +987,22 @@ export const settleUnit = (
 }
 
 /**
- * A member's settle as its unit (settleUnit), as a run's worker settles the member it reaches: run, and where that
- * fails, the unit joined (`systemctl --user start`, which waits on the unit while another process's settle of the
- * member runs, and finds none once it has ended), its failure kept for memberBroughtUp to give where the member's read
- * still refuses it after.
+ * `target`'s settle as its unit (settleUnit), as a run's worker settles what it reaches: run, and where that fails, the
+ * unit joined (`systemctl --user start`, which waits on the unit while another process's settle of it runs, and finds
+ * none once it has ended), its failure kept for memberBroughtUp to give where the member's read still refuses it after.
  */
-export const unitSettled: MemberSettle = (family, index) => {
-	const { unit, command } = settleUnit(family, { kind: "member", index }, "pipe")
-	const step: Step = { cluster: family.name, doing: `settling its member ${index} as ${unit}` }
+const unitSettled = (family: CheckoutFamily, target: SettleTarget) => {
+	const { unit, command } = settleUnit(family, target, "pipe")
+	const step: Step = { cluster: family.name, doing: `settling it as ${unit}` }
 	return Effect.tapError(succeeded(step, command), () =>
 		Effect.ignore(
 			succeeded(step, ChildProcess.make("systemctl", ["--user", "start", `${unit}.service`]))
 		)
 	)
+}
+
+/** A family's settles run as their units (unitSettled): its state's as `<family>-settle`, a member's as its own. */
+export const unitSettler: Settler = {
+	family: (family) => unitSettled(family, { kind: "family" }),
+	member: (family, index) => unitSettled(family, { kind: "member", index })
 }

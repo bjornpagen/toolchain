@@ -9,6 +9,7 @@ import {
 	portsHeld,
 	stateOf
 } from "#pg/family.ts"
+import { testWorkers } from "#workers.ts"
 
 /**
  * What the family properties (family.test.ts) draw and make: homes and checkouts of a case's own, in scratch
@@ -85,7 +86,7 @@ export const familyOfKind = (
 			)
 		}
 		const checkout = kind === "package" ? checkoutAt(`${folder}/packages/p`) : folder
-		const family = familyOf(cluster, checkout, homes)
+		const family = familyOf(cluster, checkout, homes, testWorkers)
 		yield* Effect.orDie(fs.makeDirectory(stateOf(family), { recursive: true }))
 		if (kind !== "unrecorded") {
 			yield* checkoutRecorded(family, step(family))

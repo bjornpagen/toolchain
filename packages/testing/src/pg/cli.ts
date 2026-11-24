@@ -14,9 +14,17 @@ import {
 } from "effect"
 import { ChildProcessSpawner } from "effect/process"
 import { failureText } from "#failure.ts"
-import { type CheckoutFamily, checkoutHere, familyOf, homesHere } from "#pg/family.ts"
+import {
+	type Checkout,
+	type CheckoutFamily,
+	checkoutHere,
+	familyOf,
+	type Homes,
+	homesHere
+} from "#pg/family.ts"
 import { bootstrapSuperuser, type ClusterFailed, psql, serverBin } from "#pg/server.ts"
 import {
+	familyAsSettled,
 	memberNames,
 	memberRead,
 	memberSettled,
@@ -25,10 +33,11 @@ import {
 	type SettleTarget,
 	settled,
 	settleUnit,
-	settlingVariable,
-	unitSettled
+	settleWidthVariable,
+	unitSettler
 } from "#pg/settle.ts"
 import { LocalCluster } from "#pg/spec.ts"
+import { testWorkers } from "#workers.ts"
 
 /** The file a package's cluster is stated in, at the root the command runs from. */
 const configFile = "pg.config.ts"
@@ -157,13 +166,39 @@ const targetOf = (
  */
 const settledHere = (family: CheckoutFamily, target: SettleTarget) =>
 	Effect.flatMap(
-		target.kind === "family" ? settled(family, unitSettled) : memberSettled(family, target.index),
+		target.kind === "family" ? settled(family, unitSettler) : memberSettled(family, target.index),
 		(member) => Console.log(`settled: ${member.name} (port ${member.port})`)
 	)
 
-/** The commands, by name, each from its arguments to its exit status, over this checkout's family. */
+/** A width as a settle unit is given it (settleWidthVariable): a whole number of workers, one at least, in decimal. */
+const widthText = regex("^[1-9][0-9]*$")
+
+/**
+ * The width a settle unit was given (settleWidthVariable): none for a process no settle unit is, a person's or a
+ * script's, and a defect for a variable that is no width, which only a broken starter writes.
+ */
+const settleWidth: Effect.Effect<Option.Option<number>> = Effect.map(
+	Effect.orDie(Config.option(Config.String(settleWidthVariable))),
+	Option.map((text) => {
+		if (!widthText.test(text)) {
+			throw new Error(
+				`${settleWidthVariable}=${text} is no width: a whole number of workers it must be`
+			)
+		}
+		return Number(text)
+	})
+)
+
+/**
+ * The commands, by name, each from its arguments to its exit status, over `cluster`'s family at this process's checkout
+ * in its account's homes: `settle` at the width a settle unit was given, else at this process's own run width
+ * (testWorkers), which it gives the unit it starts; every other command at the width the family's state was last
+ * settled for (familyAsSettled), since a person's command runs no workers.
+ */
 const commands = (
-	family: CheckoutFamily
+	cluster: LocalCluster,
+	checkout: Checkout,
+	homes: Homes
 ): Readonly<
 	Record<
 		string,
@@ -175,54 +210,64 @@ const commands = (
 			NodeServices.NodeServices
 		>
 	>
-> => ({
-	settle: (args) =>
-		Option.match(targetOf(family, args), {
-			onNone: () => Effect.as(Console.error(usage), 2),
-			onSome: (target) =>
-				Effect.flatMap(
-					Config.option(Config.String(settlingVariable)).pipe(Effect.orDie),
-					(
-						settling
-					): Effect.Effect<
-						number,
-						ClusterFailed | PlatformError.PlatformError,
-						NodeServices.NodeServices
-					> =>
-						Option.isNone(settling)
-							? Effect.flatMap(ChildProcessSpawner.ChildProcessSpawner, (spawner) =>
-									Effect.map(
-										spawner.exitCode(settleUnit(family, target, "inherit").command),
-										(status): number => Number(status)
+> => {
+	const asSettled = familyAsSettled(cluster, checkout, homes)
+	return {
+		settle: (args) =>
+			Effect.flatMap(
+				settleWidth,
+				(
+					given
+				): Effect.Effect<
+					number,
+					ClusterFailed | PlatformError.PlatformError,
+					NodeServices.NodeServices
+				> => {
+					const family = familyOf(
+						cluster,
+						checkout,
+						homes,
+						Option.getOrElse(given, () => testWorkers)
+					)
+					return Option.match(targetOf(family, args), {
+						onNone: () => Effect.as(Console.error(usage), 2),
+						onSome: (target) =>
+							Option.isNone(given)
+								? Effect.flatMap(ChildProcessSpawner.ChildProcessSpawner, (spawner) =>
+										Effect.map(
+											spawner.exitCode(settleUnit(family, target, "inherit").command),
+											(status): number => Number(status)
+										)
 									)
-								)
-							: Effect.as(settledHere(family, target), 0)
-				)
-		}),
-	check: () =>
-		Effect.as(
-			Effect.flatMap(membersRunning(family), (members) =>
-				Console.log(
-					`as its spec states: ${Arr.join(
-						Arr.map(members, (member) => member.name),
-						", "
-					)}`
-				)
+								: Effect.as(settledHere(family, target), 0)
+					})
+				}
 			),
-			0
-		),
-	psql: (args) => interactive(family, "owner", args),
-	admin: (args) => interactive(family, "admin", args),
-	env: () =>
-		Effect.flatMap(firstMember(family), (member) =>
+		check: () =>
 			Effect.as(
-				Effect.forEach(envLines(member, family.cluster.template), (line) => Console.log(line), {
-					discard: true
-				}),
+				Effect.flatMap(Effect.flatMap(asSettled, membersRunning), (members) =>
+					Console.log(
+						`as its spec states: ${Arr.join(
+							Arr.map(members, (member) => member.name),
+							", "
+						)}`
+					)
+				),
 				0
+			),
+		psql: (args) => Effect.flatMap(asSettled, (family) => interactive(family, "owner", args)),
+		admin: (args) => Effect.flatMap(asSettled, (family) => interactive(family, "admin", args)),
+		env: () =>
+			Effect.flatMap(Effect.flatMap(asSettled, firstMember), (member) =>
+				Effect.as(
+					Effect.forEach(envLines(member, cluster.template), (line) => Console.log(line), {
+						discard: true
+					}),
+					0
+				)
 			)
-		)
-})
+	}
+}
 
 /**
  * Runs the command its arguments name over the working directory's cluster at this process's checkout and in its
@@ -233,7 +278,7 @@ const main = Effect.gen(function* () {
 	const cluster = yield* specOf
 	const checkout = yield* checkoutHere
 	const homes = yield* homesHere
-	const all = commands(familyOf(cluster, checkout, homes))
+	const all = commands(cluster, checkout, homes)
 	return yield* Option.match(
 		Option.flatMap(Option.fromUndefinedOr(name), (named) => Option.fromUndefinedOr(all[named])),
 		{

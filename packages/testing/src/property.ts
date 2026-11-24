@@ -53,7 +53,7 @@ export type { CaseList } from "#gen.ts"
 /**
  * A test is a value, not a callback. A test module exports properties and nothing else
  * (`export const x = property.explore({ ... })`), and the runner, which owns every search's state machine, evaluates
- * their cases on a pool of workers, one for every two cores (testWorkers): the unit of parallelism is the case. Nothing in a property can ask
+ * their cases on a pool of workers, one for every two CPUs of the run's allowance (testWorkers): the unit of parallelism is the case. Nothing in a property can ask
  * for serial execution (no concurrency, sequence, retry, hook or timeout field), its resources exist only through
  * `needs` and are per case, its space comes only from generators, its regressions are replay tokens and its bugs are
  * kept mutants it must kill.

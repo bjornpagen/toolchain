@@ -9,13 +9,16 @@
  * first need starts only its own member (memberBroughtUp); a member whose port another listener took while it was
  * stopped is refused by its settle before its unit starts, the settle naming that listener's process, and settled once
  * the listener is gone; and a case cluster the process that drew it left as it ended is removed as the next case draws
- * its own, where one a live case holds is kept. Each case's cluster is a unit name of its own, its family at a checkout of the case's own, its units stopped
+ * its own, where one a live case holds is kept; a family settled for one run's width and reached by a run of another is
+ * refused by every read until that run's first need settles it at its own width, its state and each member it reaches,
+ * where it would have been refused for good or read as the other width's, and a family's settle unit settles at the
+ * width it is given, never at the width of its own place. Each case's cluster is a unit name of its own, its family at a checkout of the case's own, its units stopped
  * and its data, claims and state removed when the case ends. Oracle: the specification, stated in the checks.
  */
 import { Array as Arr, Effect, FileSystem, Option, String as Str } from "effect"
 import { assert } from "#assert.ts"
-import { boolean, finite } from "#gen.ts"
-import { portsHeld } from "#pg/family.ts"
+import { boolean, finite, int } from "#gen.ts"
+import { familyOf, portsHeld, stateWidth } from "#pg/family.ts"
 import { adminSql, serverBin } from "#pg/server.ts"
 import {
 	clusterOf,
@@ -29,20 +32,27 @@ import {
 	portHeldHere,
 	presenceOf,
 	removedAtEnd,
+	settledAsItsUnit,
 	settledWhole,
 	shapes,
-	unitActive
+	unitActive,
+	widthCases,
+	widthCluster,
+	widths
 } from "#pg/settle.fixtures.ts"
 import {
+	familySettled,
 	memberAtPort,
 	memberBroughtUp,
 	memberNames,
 	memberRead,
 	memberSettled,
 	membersRunning,
+	processSettler,
 	settled
 } from "#pg/settle.ts"
 import { property } from "#property.ts"
+import { testWorkers } from "#workers.ts"
 
 export const settledAsItsSpec = property.exhaust(finite(shapes), {
 	box: "a cluster's family over its socket or over TLS, of one member or two, its predicate room production's a backend or its workers'",
@@ -53,7 +63,7 @@ export const settledAsItsSpec = property.exhaust(finite(shapes), {
 			Effect.gen(function* () {
 				const cluster = yield* clusterOf(shape)
 				yield* removedAtEnd(cluster)
-				const family = yield* familyIn(cluster)
+				const family = yield* familyIn(cluster, testWorkers)
 				const members = yield* settledWhole(family)
 				const read = yield* membersRunning(family)
 				const atPorts = yield* Effect.forEach(read, (member) => memberAtPort(family, member.port))
@@ -71,7 +81,7 @@ export const settledAsItsSpec = property.exhaust(finite(shapes), {
 					{ cluster: family.name, doing: "changing a setting behind the spec's back" }
 				)
 				const refusedAfterChange = yield* failedOf(memberRead(family, 0))
-				yield* settled(family, memberSettled)
+				yield* settled(family, processSettler)
 				const readAgain = yield* membersRunning(family)
 				yield* adminSql(
 					bin,
@@ -99,7 +109,7 @@ export const settledAsItsSpec = property.exhaust(finite(shapes), {
 					{ cluster: family.name, doing: "reading its relation promotion" }
 				)
 				const refusedAfterUnstated = yield* failedOf(memberRead(family, 0))
-				yield* settled(family, memberSettled)
+				yield* settled(family, processSettler)
 				const unstatedLeft = yield* adminSql(
 					bin,
 					{ socket: first.socket, port: first.port },
@@ -217,7 +227,7 @@ export const aReadStartsNothingANeedItsOwnMember = property.exhaust(finite(shape
 				const fs = yield* FileSystem.FileSystem
 				const cluster = yield* clusterOf(shape)
 				yield* removedAtEnd(cluster)
-				const family = yield* familyIn(cluster)
+				const family = yield* familyIn(cluster, testWorkers)
 				const names = memberNames(family)
 				const refused = yield* Effect.forEach(names, (_, index) =>
 					failedOf(memberRead(family, index))
@@ -226,10 +236,10 @@ export const aReadStartsNothingANeedItsOwnMember = property.exhaust(finite(shape
 				const data = yield* Effect.forEach(names, (name) =>
 					Effect.flatMap(dataOf(name), (directory) => fs.exists(directory))
 				)
-				yield* settled(family, memberSettled)
+				yield* settled(family, processSettler)
 				yield* Effect.forEach(names, memberStopped, { discard: true })
 				const last = names.length - 1
-				yield* memberBroughtUp(family, last, memberSettled)
+				yield* memberBroughtUp(family, last, processSettler)
 				const activeAfterNeed = yield* Effect.forEach(names, unitActive)
 				assert.deepEqual(
 					{ refused, active, data, activeAfterNeed },
@@ -250,17 +260,113 @@ export const aReadStartsNothingANeedItsOwnMember = property.exhaust(finite(shape
 	kills: [
 		{
 			file: "packages/testing/src/pg/settle.ts",
-			original: "\t\tconst keptPassword = yield* readIfThere(files.password)\n",
+			original: "\t\tconst recorded = yield* stateWidth(cluster, family.checkout, family.homes)\n",
 			replacement:
-				'\t\tyield* Effect.forEach(memberNames(family), (name) => systemctl("start", name, step), { discard: true })\n\t\tconst keptPassword = yield* readIfThere(files.password)\n',
+				'\t\tyield* Effect.forEach(memberNames(family), (name) => systemctl("start", name, step), { discard: true })\n\t\tconst recorded = yield* stateWidth(cluster, family.checkout, family.homes)\n',
 			why: "A read starts each member's unit, as the old harness's need made and started its cluster, so a run changes a server every run shares; the property fails, the units started."
 		},
 		{
 			file: "packages/testing/src/pg/settle.ts",
-			original: "\t\tEffect.flatMap(Effect.result(settle(family, index)), (settling) =>\n",
+			original: "\t\t\t\t\tsettle.member(family, index)\n",
 			replacement:
-				"\t\tEffect.flatMap(Effect.result(Effect.forEach(memberNames(family), (_, other) => settle(family, other))), (settling) =>\n",
+				"\t\t\t\t\tEffect.forEach(memberNames(family), (_, other) => settle.member(family, other))\n",
 			why: "A worker's first need brings up every member of its family, as a settle of the whole family did, so a run of one worker starts every server of it (FAMILYFREE, 2026-11-23: grizzle's union-import by path, one worker, 32 members and 2.2 GiB of /dev/shm); the property fails, the member no worker reached started."
+		}
+	]
+})
+
+export const aFamilyOfAnotherWidthIsSettledAtTheRuns = property.exhaust(finite(widthCases), {
+	box: "a family settled whole for a run of one worker and reached by a run of two, or the other way, spread a member a worker over TLS or of one member over its socket",
+	needs: {},
+	situations: [],
+	check: () => (width) =>
+		Effect.scoped(
+			Effect.gen(function* () {
+				const cluster = yield* widthCluster(width.family)
+				yield* removedAtEnd(cluster)
+				const [before, after] =
+					width.move === "wider" ? [widths.narrow, widths.wide] : [widths.wide, widths.narrow]
+				const settledFor = yield* familyIn(cluster, before)
+				yield* settledWhole(settledFor)
+				const reached = familyOf(cluster, settledFor.checkout, settledFor.homes, after)
+				const names = memberNames(reached)
+				const refusedBefore = yield* Effect.forEach(names, (_, index) =>
+					failedOf(memberRead(reached, index))
+				)
+				const brought = yield* Effect.forEach(names, (_, index) =>
+					memberBroughtUp(reached, index, processSettler)
+				)
+				const recorded = yield* stateWidth(cluster, reached.checkout, reached.homes)
+				const refusedAfter = yield* Effect.forEach(names, (_, index) =>
+					failedOf(memberRead(reached, index))
+				)
+				const otherRefused = yield* failedOf(memberRead(settledFor, 0))
+				assert.deepEqual(
+					{
+						refusedBefore,
+						brought: Arr.map(brought, (member) => member.name),
+						recorded,
+						refusedAfter,
+						otherRefused
+					},
+					{
+						refusedBefore: Arr.map(names, () => true),
+						brought: Arr.copy(names),
+						recorded: Option.some(after),
+						refusedAfter: Arr.map(names, () => false),
+						otherRefused: true
+					}
+				)
+			})
+		),
+	oracle: {
+		kind: "specification",
+		name: "a family whose state and members were settled for a run of another width is refused by every read of a run of this width, even where each of its members' settings is the same at both, and a worker's first need settles it at this width, its state recording it and claiming the ports of this width's members, and each member it reaches as this width's spec states; read again, every member it reached is read, and a read at the other width is refused in turn"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/pg/settle.ts",
+			original: "\t\tif (!Option.contains(recorded, family.width)) {\n",
+			replacement: "\t\tif (Option.isNone(recorded)) {\n",
+			why: "A read takes a family's state as settled for any width it records, so a run reuses a state another width settled, and a member whose settings no width moves serves it as if its width's spec were settled there: the width of the run it serves is nowhere checked; the property fails, the read of the single member at the other width answered."
+		},
+		{
+			file: "packages/testing/src/pg/settle.ts",
+			original: "\t\t\t\t\t\t\t(recorded) => !Option.contains(recorded, family.width)\n",
+			replacement: "\t\t\t\t\t\t\t() => false\n",
+			why: "A worker's first need settles only the member it reaches, never its family's state, so a family another width settled is refused for good, as a member's settle requires its family's state of its own width, and a run of more workers finds fewer ports claimed than it has members (lane METISREDS, 2026-11-24: settled in metis.slice, refused in grizzle.slice); the property fails, the bring-up refused."
+		}
+	]
+})
+
+export const aSettleUnitSettlesAtTheWidthItIsGiven = property.exhaust(finite(int(0, 1)), {
+	box: "each member of a family spread a member a worker over TLS, its state settled for a run of two workers, settled by its settle unit's own command and environment under the CPU allowance of a run of three",
+	needs: {},
+	situations: [],
+	check: () => (index) =>
+		Effect.scoped(
+			Effect.gen(function* () {
+				const cluster = yield* widthCluster("spread")
+				yield* removedAtEnd(cluster)
+				const family = yield* familyIn(cluster, widths.wide)
+				yield* familySettled(family)
+				yield* settledAsItsUnit(family, index, 2 * (widths.wide + 1))
+				const read = yield* memberRead(family, index)
+				assert.deepEqual(read.name, Arr.getUnsafe(memberNames(family), index))
+			})
+		),
+	oracle: {
+		kind: "specification",
+		name: "a member settled by its settle unit's command, given the width of the run that started it, is settled for that width whatever CPU allowance the unit itself runs under, and a run of that width reads it as its spec states"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/pg/cli.ts",
+			original: "\t\t\t\t\t\tOption.getOrElse(given, () => testWorkers)\n",
+			replacement: "\t\t\t\t\t\ttestWorkers\n",
+			why: "A settle unit sizes its family for its own CPU allowance, the slice it runs in, rather than the width it was given, so a run narrowed by its affinity or its slice's quota finds members sized for another run (2026-11-24: a run of 4 workers under CPUAffinity=0-7 against members settled for 32, max_connections 211 where it expects 835); the property fails, the unit's settle refused, its family's state of the width it was given."
 		}
 	]
 })
@@ -274,7 +380,7 @@ export const aHeldPortRefusesItsSettle = property.exhaust(finite(boolean), {
 			Effect.gen(function* () {
 				const cluster = yield* clusterOf({ tls: true, spread, room: true })
 				yield* removedAtEnd(cluster)
-				const family = yield* familyIn(cluster)
+				const family = yield* familyIn(cluster, testWorkers)
 				yield* settledWhole(family)
 				const names = memberNames(family)
 				const name = Arr.lastNonEmpty(names)

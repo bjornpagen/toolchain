@@ -14,6 +14,45 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: one width, the run's CPU allowance, from the run to its clusters (2026-11-24)
+
+A run's width and its clusters' sizing came from different sources, so they disagreed whenever a run held fewer CPUs
+than the machine: testWorkers read `availableParallelism()`, which on Node 26.13.1 reads a slice's quota in place of a
+tighter one of the unit's own, and a settle unit, which runs in its cluster's repository's slice, sized each member for
+its own allowance. A run under grizzle.slice's 16-CPU quota met members sized for another width
+(ConnectionBudgetExhausted, databases that failed to open); a spec settled in metis.slice was refused in grizzle.slice;
+a run of 4 workers under `CPUAffinity=0-7` met members settled for 32 (max_connections 211 where it expects 835). Every
+width now comes from one source, and no command takes a width:
+
+- **A process's CPU allowance** (`@bjornpagen/testing/workers` `processors`) is what the kernel states of it: its
+  affinity's CPUs, never more than the tightest cpu.max quota of any cgroup from its own to the hierarchy's root, one
+  at least. testWorkers is half of it, as before. A run's first process reads it once and gives it every process it
+  starts (`TOOLCHAIN_CPU_ALLOWANCE`: the pool's workers, a Vitest run's test processes, and what they start in turn), so
+  every process of a run is of one width whenever it starts.
+- **A family is reached at a width**: `familyOf(cluster, checkout, homes, width)`, a run's width its `testWorkers`.
+  Its state records the width it was settled for (`<state>/width`); a read at another width is refused, and a worker's
+  first need (`memberBroughtUp(family, index, settler)`) settles the family's state at the run's width, then the member
+  it reaches, where it would have been refused for good. A command that runs no workers reads the family at the width
+  its state records: `familyAsSettled(cluster, checkout, homes)`, as `toolchain-pg check`, `psql`, `admin` and `env`
+  and collection do.
+- **A settle unit never reads its own allowance**: it is given the width of the family it settles
+  (`TOOLCHAIN_PG_SETTLE_WIDTH`, beside `TOOLCHAIN_PG_CHECKOUT`) and settles at that width. `TOOLCHAIN_PG_SETTLING` is
+  gone with the recipes that set it.
+- `MemberSettle`, `memberSettled` and `unitSettled` leave `@bjornpagen/testing/pg`: a `Settler` settles a family's
+  state and a member, by their units (`unitSettler`) or in the process (`processSettler`).
+
+Before you move `vendor/toolchain` past this section, in the same commit:
+
+1. **Pass the width to `familyOf`**: a process of a run passes `testWorkers` (`@bjornpagen/testing/workers`), which a
+   command line child of a case inherits from its run through `TOOLCHAIN_CPU_ALLOWANCE`; a process that is no run's,
+   a bench or a person's script, reads `familyAsSettled` instead.
+2. **Delete every settle by hand under an affinity or another slice** (`TOOLCHAIN_PG_SETTLING=1 toolchain-pg settle 0`,
+   a oneshot unit that settles member 0 under `CPUAffinity` first): a run settles its family at its own width.
+3. **Expect each family to settle once**: no state settled before records a width, so each run's first need settles
+   its family's state, and each member it reaches restarts once where its width's settings differ (its
+   max_connections, its predicate lock room). `toolchain-pg check`, `psql`, `admin` and `env` refuse such a family until
+   it is settled; run `toolchain-pg settle` once where they are wanted first.
+
 ## Consumer migration: a run is searches only; the kill census is its own command (2026-11-23)
 
 Bjorn, 2026-11-23: the release check is searches only, and kill trials run as a separate census on each pin. A run

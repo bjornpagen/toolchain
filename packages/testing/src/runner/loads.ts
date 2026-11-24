@@ -12,7 +12,7 @@ import { testWorkers } from "#workers.ts"
  * check names it with what it threw, where only a run that loads every module met it. Each module the runner config
  * includes loads apart, in a process of its own under this process's flags, as a worker loads a property's module
  * first (load-entry.ts, through the runner's own discover), so whether it loads is a function of its closure alone and
- * never of which module a process loaded before it; the processes run one for every two cores (testWorkers). A module whose closure (with the
+ * never of which module a process loaded before it; the processes run one for every two CPUs of the run's allowance (testWorkers). A module whose closure (with the
  * config's and the runner's) loaded before is a known answer: the repository's load cache holds its pass
  * (`<toolchain-test cache>/<repository key>/loads`, cache.ts loadCacheAt, keyed by affected.ts loadKeyingAt), and it is
  * not loaded again; a failure records nothing, so a module that failed loads again next time.
@@ -68,7 +68,7 @@ const loadedApart = (root: string, module: string) =>
 		})
 	)
 
-/** Every module of `modules` loaded apart, one process for every two cores at once (testWorkers). */
+/** Every module of `modules` loaded apart, one process for every two CPUs of the run's allowance at once (testWorkers). */
 const loadedEach = (root: string, modules: ReadonlyArray<string>) =>
 	Effect.forEach(modules, (module) => loadedApart(root, module), { concurrency: testWorkers })
 

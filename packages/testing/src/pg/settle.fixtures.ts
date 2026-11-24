@@ -6,15 +6,30 @@ import {
 	FileSystem,
 	Option,
 	Result,
+	Schema,
 	Scope,
 	String as Str
 } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
-import { boolean, type Gen } from "#gen.ts"
+import { boolean, element, type Gen } from "#gen.ts"
 import { type CheckoutFamily, checkoutAt, familyOf, homesHere, unitOf } from "#pg/family.ts"
-import { memberNames, memberSettled, settled } from "#pg/settle.ts"
-import { type LocalCluster, localCluster, type WorkerSizing } from "#pg/spec.ts"
-import { testWorkers } from "#workers.ts"
+import { succeeded } from "#pg/server.ts"
+import {
+	memberNames,
+	memberSettled,
+	processSettler,
+	settleArgv,
+	settled,
+	settleEnvironment
+} from "#pg/settle.ts"
+import {
+	type Family,
+	type LocalCluster,
+	localCluster,
+	type PredicateRoom,
+	type WorkerSizing
+} from "#pg/spec.ts"
+import { allowanceVariable, testWorkers } from "#workers.ts"
 
 /**
  * What the settle properties (settle.test.ts, family.test.ts) draw and run: a cluster of a unit name of its own (a
@@ -210,14 +225,21 @@ const swept = Effect.gen(function* () {
 })
 
 /**
- * A case's cluster of `shape`: a unit name of its own (`tcs-` and 8 random hex digits), held by this process for the
- * enclosing scope (holdTaken), its workers' capacity sized by a busy backend of the package's own (pg.config.ts's), two
- * members when `spread` (a family whose members serve half the run's workers each), its predicate lock room a room of
- * its workers' when `room` and production's a backend otherwise, and over TLS its families' ports claimed from a free
- * one (freePorts). Drawing it first removes every case cluster no process holds (swept).
+ * What a case cluster states of its members beside its unit name and ports: whether its clients reach them over TLS,
+ * its family (one member, or a spread of members each serving `workersPerMember` of a run's workers) and its predicate
+ * lock room.
  */
-export const clusterOf = (
-	shape: Shape
+type Sized = Readonly<{ tls: boolean; family: Family; room: PredicateRoom }>
+
+/**
+ * A case's cluster `sized` so: a unit name of its own (`tcs-` and 8 random hex digits), held by this process for the
+ * enclosing scope (holdTaken), its workers' capacity sized by a busy backend of the package's own (pg.config.ts's), and
+ * over TLS its families' ports claimed from one that `members` consecutive ports are free from (freePorts). Drawing it
+ * first removes every case cluster no process holds (swept).
+ */
+const clusterSized = (
+	sized: Sized,
+	members: number
 ): Effect.Effect<
 	LocalCluster<WorkerSizing>,
 	never,
@@ -230,10 +252,10 @@ export const clusterOf = (
 			return yield* Effect.die(`a case's cluster's name, ${unit}, is held by another process`)
 		}
 		yield* swept
-		const port = shape.tls ? yield* freePorts(shape.spread ? 2 : 1) : 0
+		const port = sized.tls ? yield* freePorts(members) : 0
 		return localCluster({
 			unit,
-			network: shape.tls ? { kind: "tls", from: port } : { kind: "socket" },
+			network: sized.tls ? { kind: "tls", from: port } : { kind: "socket" },
 			owner: "toolchain_settle",
 			template: "toolchain_settle_template",
 			extensions: [],
@@ -242,45 +264,141 @@ export const clusterOf = (
 			durability: "throwaway",
 			sizing: {
 				kind: "workers",
-				family: shape.spread
-					? { kind: "spread", workersPerMember: Math.max(1, Math.ceil(testWorkers / 2)) }
-					: { kind: "one" },
+				family: sized.family,
 				connections: { kind: "capacity", backendBytes: 37_301_248 },
 				replication: { kind: "default" },
 				sharedBuffers: { kind: "default" },
 				locks: { kind: "perTransaction", locks: 256 },
-				predicateLocks: shape.room
-					? { kind: "perWorker", targets: caseRoomTargets }
-					: { kind: "perBackend" }
+				predicateLocks: sized.room
 			}
 		})
 	})
 
 /**
- * `cluster`'s family at a checkout of the case's own, with a states home of its own, both in a scratch directory made
- * for the enclosing scope (the checkout under no `.git`, so a checkout while it exists, family.ts checkoutLive), and the
- * workbench's data home, where its members' units keep their data.
+ * A case's cluster of `shape` (clusterSized): two members when `spread` (a family whose members serve half the run's
+ * workers each), its predicate lock room a room of its workers' when `room` and production's a backend otherwise.
  */
-export const familyIn = (cluster: LocalCluster) =>
+export const clusterOf = (shape: Shape) =>
+	clusterSized(
+		{
+			tls: shape.tls,
+			family: shape.spread
+				? { kind: "spread", workersPerMember: Math.max(1, Math.ceil(testWorkers / 2)) }
+				: { kind: "one" },
+			room: shape.room ? { kind: "perWorker", targets: caseRoomTargets } : { kind: "perBackend" }
+		},
+		shape.spread ? 2 : 1
+	)
+
+/**
+ * The widths the width properties settle a family at, a run's workers: a run of one worker, and one of two, so a family
+ * spread a member a worker (widthCluster) has one member at the first and two at the second.
+ */
+export const widths = { narrow: 1, wide: 2 } as const
+
+/**
+ * How a family's width moves in a width case: a family settled for the narrow width reached by a run of the wide
+ * (`wider`), or the other way (`narrower`); over a family spread a member a worker over TLS, whose members' count and
+ * capacity follow the width, or of one member over its socket, whose every setting is the same at both widths.
+ */
+export type WidthCase = Readonly<{ move: "wider" | "narrower"; family: "spread" | "one" }>
+
+/** Every width case, one each. */
+export const widthCases: Gen<WidthCase> = (source) => ({
+	move: source.draw(element(["wider", "narrower"])),
+	family: source.draw(element(["spread", "one"]))
+})
+
+/**
+ * A case's cluster whose sizing follows a run's width as `kind` states (WidthCase's family): spread a member a worker
+ * over TLS, with a room for its workers, so its members' count is the width and each member's capacity the machine's
+ * over them; or one member over its socket at production's room, whose settings no width moves.
+ */
+export const widthCluster = (kind: WidthCase["family"]) =>
+	clusterSized(
+		kind === "spread"
+			? {
+					tls: true,
+					family: { kind: "spread", workersPerMember: 1 },
+					room: { kind: "perWorker", targets: caseRoomTargets }
+				}
+			: { tls: false, family: { kind: "one" }, room: { kind: "perBackend" } },
+		widths.wide
+	)
+
+/**
+ * `family`'s cluster stated as a package's pg.config.ts states it, in its checkout, `<checkout>/pg.config.ts`: its spec
+ * as its default export (localCluster of its fields, @bjornpagen/testing/pg by this module's file), so `toolchain-pg`
+ * run in the checkout reads the case's cluster.
+ */
+const specWritten = (family: CheckoutFamily) =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		const json = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))
+		const library = yield* Effect.orDie(json(new URL("./pg.ts", import.meta.url).href))
+		const fields = yield* Effect.orDie(json(family.cluster))
+		yield* Effect.orDie(
+			fs.writeFileString(
+				`${family.checkout}/pg.config.ts`,
+				`import { localCluster } from ${library}\nexport default localCluster(${fields})\n`
+			)
+		)
+	})
+
+/**
+ * Member `index` of `family` settled by exactly what its settle unit runs (settle.ts settleArgv) with exactly what the
+ * unit is given (settleEnvironment), in the checkout, whose pg.config.ts states the case's cluster (specWritten), as a
+ * child of this process rather than a unit of systemd's: its states home the family's (XDG_STATE_HOME, family.ts
+ * homesHere), and its own CPU allowance `own` (workers.ts allowanceVariable), standing in for the slice a unit runs in,
+ * whose run's width is not the family's. Its stdout, or its failure with what it printed.
+ */
+export const settledAsItsUnit = (family: CheckoutFamily, index: number, own: number) =>
+	Effect.gen(function* () {
+		yield* specWritten(family)
+		const [program, ...args] = settleArgv({ kind: "member", index })
+		return yield* succeeded(
+			{ cluster: family.name, doing: `settling its member ${index} as its unit would` },
+			ChildProcess.make(program, args, {
+				cwd: family.checkout,
+				env: {
+					...settleEnvironment(family),
+					XDG_STATE_HOME: process.getBuiltinModule("node:path").dirname(family.homes.states),
+					[allowanceVariable]: `${own}`
+				},
+				extendEnv: true
+			})
+		)
+	})
+
+/**
+ * `cluster`'s family at a checkout of the case's own, as a run of `width` workers reaches it, with a states home of its
+ * own, both in a scratch directory made for the enclosing scope (the checkout under no `.git`, so a checkout while it
+ * exists, family.ts checkoutLive), the states home where a process whose XDG_STATE_HOME is the scratch's `state` keeps
+ * its families' (family.ts homesHere, stateHomeOf), and the workbench's data home, where its members' units keep their
+ * data.
+ */
+export const familyIn = (cluster: LocalCluster, width: number) =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem
 		const made = yield* Effect.orDie(fs.makeTempDirectoryScoped({ prefix: "toolchain-family-" }))
 		const real = yield* Effect.orDie(fs.realPath(made))
 		yield* Effect.orDie(fs.makeDirectory(`${real}/checkout`))
 		const homes = yield* machineHomes
-		return familyOf(cluster, checkoutAt(`${real}/checkout`), {
-			states: `${real}/state`,
-			data: homes.data
-		})
+		return familyOf(
+			cluster,
+			checkoutAt(`${real}/checkout`),
+			{ states: `${real}/state/toolchain-pg`, data: homes.data },
+			width
+		)
 	})
 
 /**
  * `family` settled whole in this process: its state and its first member (settled, the member settled here as its unit
- * would, memberSettled), then every other member, in member order; each as a run reads it.
+ * would, processSettler), then every other member, in member order (memberSettled); each as a run reads it.
  */
 export const settledWhole = (family: CheckoutFamily) =>
 	Effect.gen(function* () {
-		const first = yield* settled(family, memberSettled)
+		const first = yield* settled(family, processSettler)
 		const rest = yield* Effect.forEach(Arr.drop(memberNames(family), 1), (_, at) =>
 			memberSettled(family, at + 1)
 		)
@@ -354,7 +472,7 @@ export const leftCluster = (left: Left) =>
 			clusterOf({ tls: false, spread: left.spread, room: true })
 		)
 		yield* removedAtEnd(cluster)
-		const family = yield* familyIn(cluster)
+		const family = yield* familyIn(cluster, testWorkers)
 		yield* settledWhole(family)
 		if (!left.alive) {
 			yield* Scope.close(holding, Exit.void)

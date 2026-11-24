@@ -78,7 +78,7 @@ export type Durability = "throwaway" | "kept"
 
 /**
  * How many members a cluster sized for workers has, each a unit of its own, its workers spread over them: `one`, a
- * single member serving every worker of a run; or `spread`, as many members as a run's workers (one a core, testing's
+ * single member serving every worker of a run; or `spread`, as many members as a run's workers (one for every two CPUs of its allowance, testing's
  * testWorkers) over the workers one member serves at once, rounded up, for a repository whose measurement shows a
  * member's shared costs (SSI's LWLocks, the checkpointer) grow with the workers on it. `workersPerMember` is the
  * repository's measured number, never this library's.

@@ -215,20 +215,35 @@ trunk's worktree and each lane's workspace never share a member and never wait o
 2026-11-22 trunk's 32-worker pg tier and every lane's run shared grizzle's one family: 54 to 75% of its busy backends
 waited on them). The checkout is the workspace root of the working directory (the nearest directory above it holding
 `pnpm-workspace.yaml`, else the nearest holding `.git`), so every package of one checkout reaches one family and settles
-it from anywhere in it; or that of `TOOLCHAIN_PG_CHECKOUT` where a worker runs elsewhere (the mutator's worker trees). A family's size is derived per machine: `ceil(testWorkers / workersPerMember)`
-members, `workersPerMember` the repository's measured number. A repository starts at 1, a server a worker, and
+it from anywhere in it; or that of `TOOLCHAIN_PG_CHECKOUT` where a worker runs elsewhere (the mutator's worker trees). A family's size is derived from the width of the run that reaches it: `ceil(testWorkers / workersPerMember)`
+members, `workersPerMember` the repository's measured number, and each member is sized for its share of that run's
+workers (`CheckoutFamily`'s `width`, below). A repository starts at 1, a server a worker, and
 measures from there: on grizzle's laws subset, its families in memory, 1 took 4% less time than 4 over three runs at
 once and 16 twice 4's, for 40 to 47% more of the family in memory (grizzle's pg.config.ts, lane RUNPG1, 2026-11-23).
 The testing package's own cluster stays `one`: its resource properties read the databases of the one member, and 7 of
 their 23 fail with a member a worker.
 
-- `toolchain-pg settle` settles the working directory's family's state (its password, hba file and CA, and the ports
-  of all its members) and its first member, as the unit `<family>-settle`. Trunk's script and a lane run it before any
-  pg run. A run's worker brings up the member it reaches on its first need, and no other: where the member is absent
-  or not as its spec states it is settled as the unit `<family>-<i>-settle` (`toolchain-pg settle <i>`), a second asker
-  joining that unit's start, and a settle that fails is that worker's failure. So a family runs the members its runs
-  reached: a run of one worker, one member. A fresh member takes a few seconds (initdb, its owner, template and
-  extensions, a restart); a read of a settled one starts nothing.
+- `toolchain-pg settle` settles the working directory's family's state (its password, hba file and CA, the ports of
+  all the members its width gives, and that width, recorded last in `<state>/width`) and its first member, as the unit
+  `<family>-settle`. Trunk's script and a lane run it before any pg run. A run's worker brings up the member it reaches
+  on its first need, and no other: where the family's state records another width than the run's, or none, it is
+  settled first as the unit `<family>-settle`; where the member is absent or not as its width's spec states it is
+  settled as the unit `<family>-<i>-settle` (`toolchain-pg settle <i>`), a second asker joining either unit's start,
+  and a settle that fails is that worker's failure. So a family runs the members its runs reached: a run of one
+  worker, one member. A fresh member takes a few seconds (initdb, its owner, template and extensions, a restart); a
+  read of a settled one starts nothing.
+- A run's width is its testWorkers (`packages/testing/src/workers.ts`), half its CPU allowance: the CPUs its affinity
+  names, never more than the tightest cpu.max quota of any cgroup from its own to the hierarchy's root (`allowanceOf`;
+  Node 26.13.1's `availableParallelism()` reads a slice's quota in place of a tighter one of the unit's own: a unit with
+  CPUQuota=400% in a slice held to 16 CPUs reads 16). The run's first process reads it once and gives it every process
+  it starts (`TOOLCHAIN_CPU_ALLOWANCE`: the pool's workers, a Vitest run's test processes), so a worker forked after its
+  slice's quota moved is of the run's width still. A settle unit runs in its cluster's repository's slice, under another
+  allowance than its starter's, so it never reads its own: it is given the width of the family it settles
+  (`TOOLCHAIN_PG_SETTLE_WIDTH`, settle.ts `settleEnvironment`, beside the checkout) and sizes the family for that. A
+  family settled for one width and reached by a run of another is refused by every read of that run until its first need
+  settles it at its own; a person's `check`, `psql`, `admin` and `env`, which run no workers, read it at the width its
+  state records (`familyAsSettled`), and so does collection. Neither variable is a person's option: each is the
+  toolchain's plumbing between its own processes, and a process no run started reads its own.
 - Over TLS a family's members claim their ports: the lowest from the spec's `from` that no family claims and nothing
   listens at, each claim a file `~/.local/state/toolchain-pg/ports/<port>` naming its family, created with O_EXCL, so two
   families settling at once take different ports. Nothing waits on a claim. A listener outside the claims (a cluster
@@ -304,12 +319,12 @@ A shell script keeps its number as a `readonly` at its top with the same tags ab
 
 A number the machine reports is read where it is used, never minted, and widths computed from it are no limit:
 
-| Width                                              | Where                                     | What it is                                                                                                                                                                                                                                                        |
-| -------------------------------------------------- | ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Test processes at once, `testWorkers`              | `packages/testing/src/workers.ts`         | what the machine reports, `availableParallelism()`: one forked test process a logical CPU                                                                                                                                                                         |
-| Workers one mutant's trial leases                  | `packages/testing/src/mutate/schedule.ts` | `shareOf`, a plain function of the pool's width (`testWorkers`) and the trials of a run: the width split evenly among them, at least one each, so the trials at once never lease more workers than one test run holds                                             |
-| turbo's tasks at once, `"concurrency": "100%"`     | `turbo.json`                              | one task a logical processor; turbo documents `100%` as "all available logical processors" and 10 tasks as its default (https://turborepo.dev/docs/reference/configuration, verified 2026-11-15). JSON carries no comment, so this row is its documentation       |
-| A search's cases at once, a search's `concurrency` | each test's `explore` or `exhaust`        | left out, one at a time (`oneAtATime`), an identity; stated above one, the test's own input, no resource's bound: the engine finds the same cases at any concurrency, and a sense that reads process-wide counters (guided coverage) runs its cases one at a time |
+| Width                                              | Where                                     | What it is                                                                                                                                                                                                                                                                    |
+| -------------------------------------------------- | ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Test processes at once, `testWorkers`              | `packages/testing/src/workers.ts`         | what the kernel states of the process (`allowanceOf`): its affinity's CPUs, never more than the tightest cpu.max quota of its cgroup ancestry; one forked test process for every two of them, one at least, the run's first process's allowance given every process it starts |
+| Workers one mutant's trial leases                  | `packages/testing/src/mutate/schedule.ts` | `shareOf`, a plain function of the pool's width (`testWorkers`) and the trials of a run: the width split evenly among them, at least one each, so the trials at once never lease more workers than one test run holds                                                         |
+| turbo's tasks at once, `"concurrency": "100%"`     | `turbo.json`                              | one task a logical processor; turbo documents `100%` as "all available logical processors" and 10 tasks as its default (https://turborepo.dev/docs/reference/configuration, verified 2026-11-15). JSON carries no comment, so this row is its documentation                   |
+| A search's cases at once, a search's `concurrency` | each test's `explore` or `exhaust`        | left out, one at a time (`oneAtATime`), an identity; stated above one, the test's own input, no resource's bound: the engine finds the same cases at any concurrency, and a sense that reads process-wide counters (guided coverage) runs its cases one at a time             |
 
 ## Steering belongs to the generator
 

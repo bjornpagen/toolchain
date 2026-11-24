@@ -35,6 +35,7 @@ import {
 } from "#pg/family.ts"
 import { clusterOf, removedAtEnd } from "#pg/settle.fixtures.ts"
 import { property } from "#property.ts"
+import { testWorkers } from "#workers.ts"
 
 /** How many families claim at once, and how many members' ports each claims. */
 type Claiming = Readonly<{ families: number; members: number }>
@@ -66,8 +67,12 @@ export const familiesClaimApart = property.explore(
 							Array.from({ length: families }),
 							() => scratchCheckout
 						)
-						const drawn = Arr.map(checkouts, (checkout) => familyOf(cluster, checkout, homes))
-						const again = Arr.map(checkouts, (checkout) => familyOf(cluster, checkout, homes))
+						const drawn = Arr.map(checkouts, (checkout) =>
+							familyOf(cluster, checkout, homes, testWorkers)
+						)
+						const again = Arr.map(checkouts, (checkout) =>
+							familyOf(cluster, checkout, homes, testWorkers)
+						)
 						yield* Effect.forEach(drawn, (family) => checkoutRecorded(family, step(family)), {
 							discard: true
 						})
@@ -122,8 +127,8 @@ export const familiesClaimApart = property.explore(
 			},
 			{
 				file: "packages/testing/src/pg/family.ts",
-				original: `\t\tname: UnitName(\`\${cluster.unit}-\${Str.slice(0, keyDigits)(digest)}\`),\n`,
-				replacement: `\t\tname: UnitName(\`\${cluster.unit}-\${Str.slice(0, 0)(digest)}\`),\n`,
+				original: `\treturn UnitName(\`\${cluster.unit}-\${Str.slice(0, keyDigits)(digest)}\`)\n`,
+				replacement: `\treturn UnitName(\`\${cluster.unit}-\${Str.slice(0, 0)(digest)}\`)\n`,
 				why: "A family is named by its cluster alone, so every checkout reaches one family, trunk's and every lane's runs on one cluster's SSI LWLocks (2026-11-22: 54 to 75% of its busy backends waiting on them); the property fails."
 			}
 		]
@@ -243,7 +248,7 @@ export const checkoutsAreWorkspaces = property.exhaust(
 					const ofPackages = Arr.map(["ws1/packages/a", "ws1/packages/b", "ws2/packages/a"], (at) =>
 						Effect.map(
 							checkoutOfPath(`${root}/${at}`),
-							(resolved) => familyOf(cluster, resolved, homes).name
+							(resolved) => familyOf(cluster, resolved, homes, testWorkers).name
 						)
 					)
 					const [a, b, other] = yield* Effect.all(ofPackages)

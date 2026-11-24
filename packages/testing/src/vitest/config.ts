@@ -2,7 +2,7 @@ import { Array as Arr, Config, Effect, Option, Result, String as Str } from "eff
 import { defineConfig } from "vitest/config"
 import { HARDENED_FLAGS, SMALL_STACK } from "#runner/config.ts"
 import { type Examples, residualReporter } from "#vitest/reporter.ts"
-import { testWorkers } from "#workers.ts"
+import { allowanceVariable, processors, testWorkers } from "#workers.ts"
 
 export { HARDENED_FLAGS, testWorkers }
 
@@ -49,7 +49,8 @@ export type TestConfig = Readonly<{
 /**
  * A package's Vitest config. Tests run as Node runs the code: native ESM by type stripping, never through Vite's
  * module runner or loader, so no transform changes what a module means; one process per file, as many at once as
- * testWorkers holds (half the cores); the
+ * testWorkers holds (half the CPUs this process may use), each given this process's CPU allowance (workers.ts
+ * allowanceVariable), so every width a test process derives is the run's; the
  * hardened flags; Node's compile cache in every process whose coverage is never read (compile-cache.ts: not the guided
  * project's, and none of a run under NODE_V8_COVERAGE); the run seed chosen once by global setup; and the residual table
  * at the end, whose reporter fails
@@ -114,6 +115,7 @@ export const defineTestConfig = (config: TestConfig) => {
 					: [])
 			],
 			maxWorkers: testWorkers,
+			env: { [allowanceVariable]: `${processors}` },
 			reporters: ["default", residualReporter(config.examples)],
 			testTimeout: timeoutOf(config.timeouts.test),
 			hookTimeout: timeoutOf(config.timeouts.hook)

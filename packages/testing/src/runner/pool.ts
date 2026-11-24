@@ -77,6 +77,7 @@ import {
 	waitLeft,
 	type Waits
 } from "#runner/work.ts"
+import { allowanceVariable, processors } from "#workers.ts"
 
 /**
  * The pool: worker processes, at most one a core and forked as the queue wants them (one for each module no worker
@@ -237,7 +238,9 @@ export const placesOf = (workers: number): Places => ({
  * What the pool's workers start from: the worker's entry module, the package root its test modules load from, the
  * directory it runs in, its Node flags, the mutant its module hook serves, if any (mutate/pool.ts Served: the pool adds
  * the hook to the flags, and hashes the closures it answers its workers with over the files as they load them), and
- * what its environment adds to this process's; the store its workers keep Node's compile cache in, in their root's
+ * what its environment adds to this process's, beside this process's CPU allowance, which every worker is given
+ * (workers.ts allowanceVariable), so a worker forked late, after its cgroup's quota moved, is of the run's width still;
+ * the store its workers keep Node's compile cache in, in their root's
  * directory (runner/compile-cache.ts); the places its workers take (one a core for a run); and whether any
  * search guides by blocks (each worker then starts V8's coverage before it loads a module); and the values of the run
  * needs its properties read (runner/runs.ts), opened once before the pool, which every worker it forks is sent before
@@ -724,7 +727,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 			])
 			const child = childProcesses.spawn(launch.command, launch.args, {
 				cwd: spec.cwd,
-				env: { ...process.env, ...spec.env, ...compiling },
+				env: { ...process.env, [allowanceVariable]: `${processors}`, ...spec.env, ...compiling },
 				serialization: "advanced",
 				stdio: ["pipe", "pipe", "pipe", "ipc", "pipe"],
 				detached: true

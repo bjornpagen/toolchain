@@ -10,7 +10,7 @@ import { runWidth } from "#shared/threads.ts"
 /**
  * toolchain-turbo: `turbo run` with every argument it is given, at the width it executes at (shared/threads.ts
  * runWidth: the fewer of turbo's concurrency and the tasks its dry run plans), which it sets as TURBO_CONCURRENCY:
- * turbo runs at it and passes it to every task, whose tool's wrapper hands its tool the machine's logical CPUs over it.
+ * turbo runs at it and passes it to every task, whose tool's wrapper hands its tool its run's CPU allowance (testing's processors) over it.
  * So a check of six tasks at a concurrency of every processor hands each tool a sixth of the machine, where the
  * concurrency alone would have handed it one thread, and a run of more tasks than processors hands each one. It sets
  * NODE_COMPILE_CACHE to the repository root's compile cache (testing's runner/compile-cache.ts: its own directory in

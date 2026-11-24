@@ -214,7 +214,7 @@ export const TOOLS = {
 
 /**
  * `tool` run with `args` in `cwd` (this process's own working directory when none) and handed the threads of this task
- * (threadsPerTask over the machine's logical CPUs and the width of the run it is a task of), its output this
+ * (threadsPerTask over its run's CPU allowance, testing's processors, and the width of the run it is a task of), its output this
  * process's, its exit status the answer.
  */
 export const toolRun = (tool: Tool, args: ReadonlyArray<string>, cwd: Option.Option<string>) =>

@@ -14,16 +14,18 @@ import {
 } from "effect"
 import { checkoutHere, familyOf, homesHere } from "#pg/family.ts"
 import {
+	familyAsSettled,
 	memberBroughtUp,
 	memberNames,
 	membersRunning,
 	type PgMember,
 	type Platform,
-	unitSettled
+	unitSettler
 } from "#pg/settle.ts"
 import type { LocalCluster, WorkerSizing } from "#pg/spec.ts"
 import { runnerLimits } from "#runner/limits.ts"
 import { NeedFailed, WorkerIndex } from "#runner/services.ts"
+import { testWorkers } from "#workers.ts"
 
 export type { PgMember } from "#pg/settle.ts"
 
@@ -131,7 +133,11 @@ export type PgClusterShape = Readonly<{
 	memberOf: (
 		worker: Context.Service.Shape<typeof WorkerIndex>
 	) => Effect.Effect<PgMember, NeedFailed>
-	/** The family's members that run now, each read, none brought up (pg/settle.ts membersRunning): what collection reads. */
+	/**
+	 * The family's members that run now, each read at the width its state was last settled for, none brought up
+	 * (pg/settle.ts familyAsSettled, membersRunning): what collection reads, before a run as after it, whatever width
+	 * settled them.
+	 */
 	running: Effect.Effect<ReadonlyArray<PgMember>, NeedFailed>
 	/** The worker's owner on `member`, opened once (Owner). */
 	owner: (member: PgMember) => Effect.Effect<Owner, NeedFailed>
@@ -323,7 +329,7 @@ export class PgCluster extends Context.Service<PgCluster, PgClusterShape>()(
 					Effect.flatMap(checkout, (at) =>
 						Effect.mapBoth(homesHere, {
 							onFailure: clusterFailed,
-							onSuccess: (homes) => familyOf(spec.cluster, at, homes)
+							onSuccess: (homes) => familyOf(spec.cluster, at, homes, testWorkers)
 						})
 					)
 				)
@@ -339,7 +345,7 @@ export class PgCluster extends Context.Service<PgCluster, PgClusterShape>()(
 								return Effect.andThen(
 									Deferred.into(
 										Effect.mapError(
-											Effect.provideContext(memberBroughtUp(reached, at, unitSettled), platform),
+											Effect.provideContext(memberBroughtUp(reached, at, unitSettler), platform),
 											clusterFailed
 										),
 										bringing
@@ -350,7 +356,16 @@ export class PgCluster extends Context.Service<PgCluster, PgClusterShape>()(
 						})
 					})
 				const running = Effect.flatMap(family, (reached) =>
-					Effect.mapError(Effect.provideContext(membersRunning(reached), platform), clusterFailed)
+					Effect.mapError(
+						Effect.provideContext(
+							Effect.flatMap(
+								familyAsSettled(reached.cluster, reached.checkout, reached.homes),
+								membersRunning
+							),
+							platform
+						),
+						clusterFailed
+					)
 				)
 				const owners = new Map<string, Deferred.Deferred<Owner, NeedFailed>>()
 				return {

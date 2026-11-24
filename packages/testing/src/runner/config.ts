@@ -125,7 +125,7 @@ const servicesFailed = <E>(cause: Cause.Cause<E>) =>
 /**
  * A package's runner config: `export default defineRunner({ include: ["src/**\/*.test.ts"], smallStack: [],
  * conditions: [], layer, mutation: noMutation })`, where `layer` provides the RunnerServices the repository declares
- * (Layer.empty when it declares none). There is no worker, width or timeout option: a run is testWorkers wide, a worker for every two cores, and
+ * (Layer.empty when it declares none). There is no worker, width or timeout option: a run is testWorkers wide, a worker for every two CPUs of its allowance, and
  * budgets are the runner's Limits.
  */
 export const defineRunner = <E>(spec: RunnerSpec<E>): RunnerConfig =>

@@ -138,12 +138,20 @@ export const homesHere: Effect.Effect<Homes, ClusterFailed> = Effect.mapError(
 		})
 )
 
-/** A checkout's family of a cluster: the cluster's spec, the checkout, its name (familyOf) and its homes. */
+/**
+ * A checkout's family of a cluster as a process of a run of `width` workers reaches it: the cluster's spec, the
+ * checkout, its name (familyOf) and its homes, and the width its state and its members are sized for, the run's
+ * testWorkers (workers.ts), which its members' count and each member's share of the workers derive from (settings.ts
+ * membersOf, shareOf). A family's name is its checkout's alone: a run of another width reaches the same family, its state
+ * and members settled at that run's width where they are not (settle.ts memberBroughtUp), so no width's run is refused
+ * a family another width's settled.
+ */
 export type CheckoutFamily = Readonly<{
 	cluster: LocalCluster
 	checkout: Checkout
 	name: UnitName
 	homes: Homes
+	width: number
 }>
 
 /**
@@ -158,24 +166,23 @@ const keyDigits = 8
 /** A family's name after its cluster's unit and a hyphen: its key's 8 hexadecimal digits (keyDigits). */
 const familyKey = regex("^[0-9a-f]{8}$")
 
-/** `cluster`'s family at `checkout`: named `<unit>-<the first 8 hex digits of the checkout's SHA-256>`. */
-export const familyOf = (
-	cluster: LocalCluster,
-	checkout: Checkout,
-	homes: Homes
-): CheckoutFamily => {
+/** `cluster`'s family's name at `checkout`: `<unit>-<the first 8 hex digits of the checkout's SHA-256>`. */
+const familyNameOf = (cluster: LocalCluster, checkout: Checkout): UnitName => {
 	const digest = process
 		.getBuiltinModule("node:crypto")
 		.createHash("sha256")
 		.update(checkout)
 		.digest("hex")
-	return {
-		cluster,
-		checkout,
-		name: UnitName(`${cluster.unit}-${Str.slice(0, keyDigits)(digest)}`),
-		homes
-	}
+	return UnitName(`${cluster.unit}-${Str.slice(0, keyDigits)(digest)}`)
 }
+
+/** `cluster`'s family at `checkout` in `homes` (familyNameOf), as a run of `width` workers reaches it (CheckoutFamily). */
+export const familyOf = (
+	cluster: LocalCluster,
+	checkout: Checkout,
+	homes: Homes,
+	width: number
+): CheckoutFamily => ({ cluster, checkout, name: familyNameOf(cluster, checkout), homes, width })
 
 /** The family's members' unit instance names, `<family>-<index>` for each of `count`. */
 export const memberNamesOf = (
@@ -199,6 +206,9 @@ const claimsDirectory = "ports"
 /** The file in a family's state that names its checkout, read by collection. */
 const checkoutFile = "checkout"
 
+/** The file in a family's state that names the width its state was settled for (widthRecorded). */
+const widthFile = "width"
+
 /** A family's state directory: `<states>/<family>`. */
 export const stateOf = (family: CheckoutFamily): string => `${family.homes.states}/${family.name}`
 
@@ -218,6 +228,42 @@ export const checkoutRecorded = (family: CheckoutFamily, step: Step) =>
 			(error) => failed(step, `${state}/${checkoutFile}: ${error.message}`)
 		)
 	})
+
+/**
+ * The width `family`'s state was settled for, recorded in its state directory by settle once the ports of the members
+ * that width gives are claimed (settle.ts familySettled): what a run of another width finds, and settles its own width's
+ * state over (settle.ts memberBroughtUp), and what a command of no width of its own reads the family at (settle.ts
+ * familyAsSettled).
+ */
+export const widthRecorded = (family: CheckoutFamily, step: Step) =>
+	Effect.flatMap(FileSystem.FileSystem, (fs) =>
+		Effect.mapError(
+			fs.writeFileString(`${stateOf(family)}/${widthFile}`, `${family.width}\n`),
+			(error) => failed(step, `${stateOf(family)}/${widthFile}: ${error.message}`)
+		)
+	)
+
+/** A width as a family's state records it: a whole number of workers, one at least, in decimal. */
+const widthText = regex("^[1-9][0-9]*$")
+
+/**
+ * The width the state of `cluster`'s family at `checkout` in `homes` records (widthRecorded), or none where it records
+ * none: a family never settled, or settled before its state recorded a width.
+ */
+export const stateWidth = (cluster: LocalCluster, checkout: Checkout, homes: Homes) =>
+	Effect.flatMap(FileSystem.FileSystem, (fs) =>
+		Effect.orElseSucceed(
+			Effect.map(
+				fs.readFileString(`${homes.states}/${familyNameOf(cluster, checkout)}/${widthFile}`),
+				(text) =>
+					Option.map(
+						Option.liftPredicate(Str.trim(text), (trimmed) => widthText.test(trimmed)),
+						Number
+					)
+			),
+			() => Option.none<number>()
+		)
+	)
 
 /** A port claim's file name: the port, in decimal. */
 const claimName = regex("^[0-9]{1,5}$")
