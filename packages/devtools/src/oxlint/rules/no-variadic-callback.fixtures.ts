@@ -51,7 +51,7 @@ const BUILTINS = [
 ] as const satisfies ReadonlyArray<Builtin>
 
 /** Every case of the box: each callee, each builtin, each shadowed or not. */
-export const CALL_CASES: Arr.NonEmptyReadonlyArray<CallCase> = Arr.flatMap(CALLEES, (callee) =>
+const CALL_CASES: Arr.NonEmptyReadonlyArray<CallCase> = Arr.flatMap(CALLEES, (callee) =>
 	Arr.flatMap(BUILTINS, (builtin) =>
 		Arr.map([false, true] as const, (shadowed): CallCase => ({ callee, builtin, shadowed }))
 	)
@@ -82,7 +82,7 @@ const READING: ReadonlySet<Builtin> = new Set([
 ])
 
 /** The reports the contract gives a case: one where a passing callee is handed a reading builtin no binding shadows. */
-export const reportsOf = (c: CallCase): number =>
+const reportsOf = (c: CallCase): number =>
 	PASSING.has(c.callee) && READING.has(c.builtin) && !c.shadowed ? 1 : 0
 
 /** The call a case writes, handing `b` to its callee. */
@@ -127,7 +127,7 @@ const HEADER = Arr.join(
 )
 
 /** The module a case is: its call, at the top level, or inside a function whose parameter shadows the holder. */
-export const codeOf = (c: CallCase): string => {
+const codeOf = (c: CallCase): string => {
 	const call = callOf(c.callee, c.builtin)
 	return c.shadowed
 		? `${HEADER}export const f = (${HOLDERS[c.builtin]}: never) => ${call}\n`
