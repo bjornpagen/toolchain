@@ -15,9 +15,8 @@ import {
 import { checkoutHere, familyOf, homesHere, memberNames } from "#pg/family.ts"
 import { familyHeld } from "#pg/hold.ts"
 import {
-	familyAsSettled,
+	membersRunningAt,
 	memberBroughtUp,
-	membersRunning,
 	type PgMember,
 	type Platform,
 	unitSettler
@@ -136,7 +135,7 @@ export type PgClusterShape = Readonly<{
 	) => Effect.Effect<PgMember, NeedFailed>
 	/**
 	 * The family's members that run now, each read at the width its state was last settled for, none brought up
-	 * (pg/settle.ts familyAsSettled, membersRunning): what collection reads, before a run as after it, whatever width
+	 * (pg/settle.ts membersRunningAt, every width's family): what collection reads, before a run as after it, whatever width
 	 * settled them.
 	 */
 	running: Effect.Effect<ReadonlyArray<PgMember>, NeedFailed>
@@ -364,10 +363,7 @@ export class PgCluster extends Context.Service<PgCluster, PgClusterShape>()(
 				const running = Effect.flatMap(family, (reached) =>
 					Effect.mapError(
 						Effect.provideContext(
-							Effect.flatMap(
-								familyAsSettled(reached.cluster, reached.checkout, reached.homes),
-								membersRunning
-							),
+							membersRunningAt(reached.cluster, reached.checkout, reached.homes),
 							platform
 						),
 						clusterFailed

@@ -5,6 +5,7 @@ import {
 	Config,
 	Effect,
 	FileSystem,
+	Formatter,
 	Option,
 	Order,
 	String as Str
@@ -167,12 +168,21 @@ const keyDigits = 8
 /** A family's name after its cluster's unit and a hyphen: its key's 8 hexadecimal digits (keyDigits). */
 const familyKey = regex("^[0-9a-f]{8}$")
 
-/** `cluster`'s family's name at `checkout`: `<unit>-<the first 8 hex digits of the checkout's SHA-256>`. */
-const familyNameOf = (cluster: LocalCluster, checkout: Checkout): UnitName => {
+/**
+ * `cluster`'s family's name at `checkout` for a run of `width` workers: `<unit>-<the first 8 hex digits of the SHA-256 of
+ * the checkout, the width and the cluster's spec>`, everything its members' settings are a function of (settings.ts:
+ * max_connections, max_wal_senders and the lock table sized by the width; the rest by the spec). So two holders of one
+ * member never want it settled differently, and no settle restarts a member under another holder for its own settings:
+ * two runs of one checkout at different widths shared one family, and each run's settle sized its members for its own
+ * width and restarted them under the other's connections, which the server ended (57P01, STOREDERIVE4's soundness gate,
+ * 2026-11-25: member 0 of STOREDERIVE4-fix's family restarted at 21:16:05 and 21:16:11Z, its connections terminated by
+ * administrator command at those instants).
+ */
+const familyNameOf = (cluster: LocalCluster, checkout: Checkout, width: number): UnitName => {
 	const digest = process
 		.getBuiltinModule("node:crypto")
 		.createHash("sha256")
-		.update(checkout)
+		.update(`${checkout}\n${String(width)}\n${Formatter.format(cluster)}`)
 		.digest("hex")
 	return UnitName(`${cluster.unit}-${Str.slice(0, keyDigits)(digest)}`)
 }
@@ -183,7 +193,13 @@ export const familyOf = (
 	checkout: Checkout,
 	homes: Homes,
 	width: number
-): CheckoutFamily => ({ cluster, checkout, name: familyNameOf(cluster, checkout), homes, width })
+): CheckoutFamily => ({
+	cluster,
+	checkout,
+	name: familyNameOf(cluster, checkout, width),
+	homes,
+	width
+})
 
 /**
  * The names of `family`'s members, its members' unit instance names, `<family>-<i>` for each of the members its sizing
@@ -257,24 +273,63 @@ export const widthRecorded = (family: CheckoutFamily, step: Step) =>
 /** A width as a family's state records it: a whole number of workers, one at least, in decimal. */
 const widthText = regex("^[1-9][0-9]*$")
 
-/**
- * The width the state of `cluster`'s family at `checkout` in `homes` records (widthRecorded), or none where it records
- * none: a family never settled, or settled before its state recorded a width.
- */
-export const stateWidth = (cluster: LocalCluster, checkout: Checkout, homes: Homes) =>
+/** The width `family`'s state records (widthRecorded), or none where its state records none: a family never settled. */
+export const stateWidth = (family: CheckoutFamily) =>
 	Effect.flatMap(FileSystem.FileSystem, (fs) =>
 		Effect.orElseSucceed(
-			Effect.map(
-				fs.readFileString(`${homes.states}/${familyNameOf(cluster, checkout)}/${widthFile}`),
-				(text) =>
-					Option.map(
-						Option.liftPredicate(Str.trim(text), (trimmed) => widthText.test(trimmed)),
-						Number
-					)
+			Effect.map(fs.readFileString(`${stateOf(family)}/${widthFile}`), (text) =>
+				Option.map(
+					Option.liftPredicate(Str.trim(text), (trimmed) => widthText.test(trimmed)),
+					Number
+				)
 			),
 			() => Option.none<number>()
 		)
 	)
+
+/**
+ * The families of `cluster` at `checkout` in `homes`, one for each width a run of the checkout settled one for: each
+ * state whose recorded checkout is `checkout`, at the width it records, whose name is that width's under the cluster's
+ * spec now (familyNameOf), in their states' order.
+ */
+export const familiesAt = (
+	cluster: LocalCluster,
+	checkout: Checkout,
+	homes: Homes
+): Effect.Effect<ReadonlyArray<CheckoutFamily>, never, FileSystem.FileSystem> =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		const entries = yield* Effect.orElseSucceed(
+			fs.readDirectory(homes.states),
+			(): ReadonlyArray<string> => []
+		)
+		const named = Arr.filter(
+			Arr.sort(entries, Order.String),
+			(name) =>
+				Str.startsWith(`${cluster.unit}-`)(name) &&
+				familyKey.test(Str.slice(cluster.unit.length + 1)(name))
+		)
+		const found = yield* Effect.forEach(named, (name) =>
+			Effect.gen(function* () {
+				const recorded = yield* recordedCheckout(`${homes.states}/${name}`)
+				if (!Option.contains(recorded, checkout)) {
+					return Option.none<CheckoutFamily>()
+				}
+				const text = yield* Effect.orElseSucceed(
+					fs.readFileString(`${homes.states}/${name}/${widthFile}`),
+					() => ""
+				)
+				return Option.filter(
+					Option.map(
+						Option.liftPredicate(Str.trim(text), (trimmed) => widthText.test(trimmed)),
+						(width) => familyOf(cluster, checkout, homes, Number(width))
+					),
+					(family) => family.name === name
+				)
+			})
+		)
+		return Arr.getSomes(found)
+	})
 
 /** A port claim's file name: the port, in decimal. */
 const claimName = regex("^[0-9]{1,5}$")

@@ -27,6 +27,7 @@ import {
 	portsHeld,
 	sliceOf,
 	stateOf,
+	familiesAt,
 	stateWidth,
 	unitOf,
 	widthRecorded
@@ -543,15 +544,9 @@ const familyState = (
 		const { cluster } = family
 		const unsettled = unsettledOf(family, step)
 		const files = stateFiles(stateOf(family))
-		const recorded = yield* stateWidth(cluster, family.checkout, family.homes)
-		if (!Option.contains(recorded, family.width)) {
-			return yield* unsettled(
-				Option.match(recorded, {
-					onNone: () => `${stateOf(family)} records no width its state was settled for`,
-					onSome: (width) =>
-						`its state was settled for a run of ${width} workers, where this process's run has ${family.width}`
-				})
-			)
+		const recorded = yield* stateWidth(family)
+		if (Option.isNone(recorded)) {
+			return yield* unsettled(`${stateOf(family)} records no width its state was settled for`)
 		}
 		const keptPassword = yield* readIfThere(files.password)
 		const password = yield* Effect.mapError(Effect.fromOption(keptPassword), () =>
@@ -776,6 +771,7 @@ export const memberSettled = (
 			}
 			yield* familyHeld(family)
 			yield* freedForgotten(family.homes.data, name, at)
+			const ranBefore = yield* Effect.isSuccess(socketNow(name, at))
 			yield* leaseStarted(family, name, at)
 			const socket = yield* socketNow(name, at)
 			const blockSize = yield* blockSizeOf(bin, socket, at)
@@ -806,6 +802,12 @@ export const memberSettled = (
 				{ ...at, doing: `${at.doing}: reading what waits for a restart` }
 			)
 			if (pending !== "0") {
+				if (ranBefore) {
+					return yield* failed(
+						at,
+						`${name} runs with settings its family's name does not fix (${pending} wait for a restart), and a settle restarts only a member it started itself, never one another process may hold: stop the member's holds and settle again`
+					)
+				}
 				yield* leaseRestarted(family, name, at)
 			}
 			return yield* memberReadIn(family, state, index)
@@ -847,8 +849,8 @@ export const memberBroughtUp = (
 ): Effect.Effect<PgMember, ClusterFailed, Platform> =>
 	Effect.catch(memberRead(family, index), () =>
 		Effect.gen(function* () {
-			const recorded = yield* stateWidth(family.cluster, family.checkout, family.homes)
-			const ofState = Option.contains(recorded, family.width)
+			const recorded = yield* stateWidth(family)
+			const ofState = Option.isSome(recorded)
 				? Result.void
 				: yield* Effect.result(settle.family(family))
 			const ofMember = yield* Effect.result(settle.member(family, index))
@@ -879,51 +881,43 @@ export const settled = (
 	)
 
 /**
- * `cluster`'s family at `checkout` in `homes` as its state was last settled (familySettled): at the width its state
- * records (family.ts stateWidth), what a command of no width of its own reads (`toolchain-pg check`; collection, which
- * reads the members that run), where a run reads it at its own. A family whose state records no width fails, naming
- * `toolchain-pg settle`.
+ * `cluster`'s families at `checkout` in `homes` as their states were settled (familySettled), one for each width a run
+ * of the checkout settled (family.ts familiesAt): what a command of no width of its own reads (`toolchain-pg check`;
+ * collection, which reads the members that run), where a run reads its own width's. None where no run settled one.
  */
-export const familyAsSettled = (
+export const familiesAsSettled = (
 	cluster: LocalCluster,
 	checkout: Checkout,
 	homes: Homes
-): Effect.Effect<CheckoutFamily, ClusterFailed, FileSystem.FileSystem> =>
-	Effect.flatMap(stateWidth(cluster, checkout, homes), (recorded) =>
-		Option.match(recorded, {
-			onSome: (width) => Effect.succeed(familyOf(cluster, checkout, homes, width)),
-			onNone: () =>
-				Effect.fail(
-					failed(
-						{
-							cluster: cluster.unit,
-							doing: "reading the width its family's state was settled for"
-						},
-						`the family at ${checkout} records no width its state was settled for: run \`pnpm exec toolchain-pg settle\` (as a unit) in ${checkout} to give its family its spec`
-					)
-				)
-		})
+): Effect.Effect<ReadonlyArray<CheckoutFamily>, never, FileSystem.FileSystem> =>
+	familiesAt(cluster, checkout, homes)
+
+/**
+ * The members that run of every family of `cluster` at `checkout` in `homes` (familiesAsSettled, membersRunning): what
+ * collection reads, before a run as after it, whatever width the families were settled at.
+ */
+export const membersRunningAt = (
+	cluster: LocalCluster,
+	checkout: Checkout,
+	homes: Homes
+): Effect.Effect<ReadonlyArray<PgMember>, ClusterFailed, Platform> =>
+	Effect.map(
+		Effect.flatMap(familiesAsSettled(cluster, checkout, homes), (families) =>
+			Effect.forEach(families, membersRunning)
+		),
+		Arr.flatten
 	)
 
 /**
  * `cluster`'s family at `checkout` in `homes` as a process that brings up its first member and runs no workers reaches
- * it (`toolchain-pg psql`, `admin` and `run`; a repository's bench or script): at the width its state records (family.ts
- * stateWidth), so the members a run of that width holds are never settled at another under it, else, where it records
- * none, at this process's own (testWorkers).
+ * it (`toolchain-pg psql`, `admin` and `run`; a repository's bench or script): the family at this process's own width
+ * (testWorkers), each width's family its own, so a person's command never settles the members another width's run holds.
  */
 export const familyReached = (
 	cluster: LocalCluster,
 	checkout: Checkout,
 	homes: Homes
-): Effect.Effect<CheckoutFamily, never, FileSystem.FileSystem> =>
-	Effect.map(stateWidth(cluster, checkout, homes), (recorded) =>
-		familyOf(
-			cluster,
-			checkout,
-			homes,
-			Option.getOrElse(recorded, () => testWorkers)
-		)
-	)
+): Effect.Effect<CheckoutFamily> => Effect.succeed(familyOf(cluster, checkout, homes, testWorkers))
 
 /** What a settle unit settles: a family's state and its first member (settled), or one member (memberSettled). */
 export type SettleTarget =

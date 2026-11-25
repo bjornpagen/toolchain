@@ -2,7 +2,7 @@
  * A repository's local PostgreSQL cluster as units of the workbench's PostgreSQL, one implementation for every
  * repository: its spec (localCluster, the default export of the package's pg.config.ts, which `toolchain-pg` reads);
  * its family at a checkout (familyOf, of the checkout a process's boundary reads, checkoutHere, as a run of a width,
- * testWorkers, reaches it; familyAsSettled, at the width its state was last settled for), the members every run and
+ * testWorkers, reaches it; familiesAsSettled, one for each width its runs settled), the members every run and
  * command of the checkout reaches, and no other checkout's; the family's settling (settled: every family of a checkout
  * gone removed, then its state and its first member, which `toolchain-pg settle` runs as a unit of its own;
  * memberBroughtUp: the member a worker reaches, settled at the run's width by its own unit where it is absent or of
@@ -28,8 +28,9 @@ export { ClusterFailed, bootstrapSuperuser } from "#pg/server.ts"
 export { clientCheckInterval } from "#pg/settings.ts"
 export {
 	caVariable,
-	familyAsSettled,
+	familiesAsSettled,
 	familyReached,
+	membersRunningAt,
 	type MemberTls,
 	memberAtPort,
 	memberBroughtUp,

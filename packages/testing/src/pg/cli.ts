@@ -17,11 +17,10 @@ import {
 import { familyHeld } from "#pg/hold.ts"
 import { bootstrapSuperuser, type ClusterFailed, psql, serverBin } from "#pg/server.ts"
 import {
-	familyAsSettled,
+	membersRunningAt,
 	familyReached,
 	memberBroughtUp,
 	memberSettled,
-	membersRunning,
 	type PgMember,
 	type SettleTarget,
 	settled,
@@ -192,8 +191,8 @@ const settleWidth: Effect.Effect<Option.Option<number>> = Effect.map(
  * The commands, by name, each from its arguments to its exit status, over `cluster`'s family at this process's checkout
  * in its account's homes: `settle` at the width a settle unit was given, else at this process's own run width
  * (testWorkers), which it gives the unit it starts; `check` at the width the family's state was last settled for
- * (familyAsSettled), since a person's command runs no workers; and `psql`, `admin` and `run`, which bring up the first
- * member, at that width where its state records one, else at this process's own (familyReached).
+ * (membersRunningAt, every width's family), since a person's command runs no workers; and `psql`, `admin` and `run`,
+ * which bring up the first member of the family at this process's own width (familyReached).
  */
 const commands = (
 	cluster: LocalCluster,
@@ -211,7 +210,6 @@ const commands = (
 		>
 	>
 > => {
-	const asSettled = familyAsSettled(cluster, checkout, homes)
 	const reached = familyReached(cluster, checkout, homes)
 	return {
 		settle: (args) =>
@@ -246,7 +244,7 @@ const commands = (
 			),
 		check: () =>
 			Effect.as(
-				Effect.flatMap(Effect.flatMap(asSettled, membersRunning), (members) =>
+				Effect.flatMap(membersRunningAt(cluster, checkout, homes), (members) =>
 					Console.log(
 						`as its spec states: ${Arr.join(
 							Arr.map(members, (member) => member.name),

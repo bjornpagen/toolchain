@@ -61,6 +61,21 @@ const machineHomes = Effect.orDie(homesHere)
 export type Shape = Readonly<{ tls: boolean; spread: boolean; room: boolean }>
 
 /** Every shape, one case each. */
+
+/**
+ * The pid of the postmaster serving `member`, the first line of its socket's lock file (PostgreSQL's
+ * `<socket>/.s.PGSQL.<port>.lock`): another pid after a read means the member's server was restarted between them.
+ */
+export const postmasterOf = (member: Readonly<{ socket: string; port: number }>) =>
+	Effect.map(
+		Effect.orDie(
+			Effect.flatMap(FileSystem.FileSystem, (fs) =>
+				fs.readFileString(`${member.socket}/.s.PGSQL.${String(member.port)}.lock`)
+			)
+		),
+		(text) => Option.getOrElse(Arr.head(Str.split("\n")(text)), () => "")
+	)
+
 export const shapes: Gen<Shape> = (source) => ({
 	tls: source.draw(boolean),
 	spread: source.draw(boolean),

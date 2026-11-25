@@ -34,6 +34,7 @@ import {
 	lefts,
 	memberStopped,
 	portHeldHere,
+	postmasterOf,
 	presenceOf,
 	joinedSettler,
 	removedAtEnd,
@@ -265,9 +266,10 @@ export const aReadStartsNothingANeedItsOwnMember = property.exhaust(finite(shape
 	kills: [
 		{
 			file: "packages/testing/src/pg/settle.ts",
-			original: "\t\tconst recorded = yield* stateWidth(cluster, family.checkout, family.homes)\n",
+			original:
+				"\t\tconst recorded = yield* stateWidth(family)\n\t\tif (Option.isNone(recorded)) {\n",
 			replacement:
-				"\t\tyield* Effect.forEach(memberNames(family), (name) => leaseStarted(family, name, step), { discard: true })\n\t\tconst recorded = yield* stateWidth(cluster, family.checkout, family.homes)\n",
+				"\t\tyield* Effect.forEach(memberNames(family), (name) => leaseStarted(family, name, step), { discard: true })\n\t\tconst recorded = yield* stateWidth(family)\n\t\tif (Option.isNone(recorded)) {\n",
 			why: "A read starts each member's unit, as the old harness's need made and started its cluster, so a run changes a server every run shares; the property fails, the units started."
 		},
 		{
@@ -280,8 +282,8 @@ export const aReadStartsNothingANeedItsOwnMember = property.exhaust(finite(shape
 	]
 })
 
-export const aFamilyOfAnotherWidthIsSettledAtTheRuns = property.exhaust(finite(widthCases), {
-	box: "a family settled whole for a run of one worker and reached by a run of two, or the other way, spread a member a worker over TLS or of one member over its socket, each member brought up as a worker that found the family's settle unit running and joined it",
+export const runsOfTwoWidthsKeepTheirOwnFamilies = property.exhaust(finite(widthCases), {
+	box: "a family settled whole for a run of one worker and a run of two reaching its own, or the other way, spread a member a worker over TLS or of one member over its socket, each member brought up as a worker that found the family's settle unit running and joined it",
 	needs: {},
 	situations: [],
 	check: () => (width) =>
@@ -293,6 +295,9 @@ export const aFamilyOfAnotherWidthIsSettledAtTheRuns = property.exhaust(finite(w
 					width.move === "wider" ? [widths.narrow, widths.wide] : [widths.wide, widths.narrow]
 				const settledFor = yield* familyIn(cluster, before)
 				yield* settledWhole(settledFor)
+				yield* familyHeld(settledFor)
+				const first = yield* memberRead(settledFor, 0)
+				const postmasterBefore = yield* postmasterOf(first)
 				const reached = familyOf(cluster, settledFor.checkout, settledFor.homes, after)
 				const names = memberNames(reached)
 				const held = yield* familyHeld(reached)
@@ -302,46 +307,54 @@ export const aFamilyOfAnotherWidthIsSettledAtTheRuns = property.exhaust(finite(w
 				const brought = yield* Effect.forEach(names, (_, index) =>
 					memberBroughtUp(held, index, joinedSettler)
 				)
-				const recorded = yield* stateWidth(cluster, reached.checkout, reached.homes)
+				const recorded = yield* stateWidth(reached)
+				const recordedBefore = yield* stateWidth(settledFor)
 				const refusedAfter = yield* Effect.forEach(names, (_, index) =>
 					failedOf(memberRead(reached, index))
 				)
 				const otherRefused = yield* failedOf(memberRead(settledFor, 0))
+				const postmasterAfter = yield* postmasterOf(first)
 				assert.deepEqual(
 					{
+						own: reached.name !== settledFor.name,
 						refusedBefore,
 						brought: Arr.map(brought, (member) => member.name),
 						recorded,
+						recordedBefore,
 						refusedAfter,
-						otherRefused
+						otherRefused,
+						restarted: postmasterAfter !== postmasterBefore
 					},
 					{
+						own: true,
 						refusedBefore: Arr.map(names, () => true),
 						brought: Arr.copy(names),
 						recorded: Option.some(after),
+						recordedBefore: Option.some(before),
 						refusedAfter: Arr.map(names, () => false),
-						otherRefused: true
+						otherRefused: false,
+						restarted: false
 					}
 				)
 			})
 		),
 	oracle: {
 		kind: "specification",
-		name: "a family whose state and members were settled for a run of another width is refused by every read of a run of this width, even where each of its members' settings is the same at both, and a worker's first need settles it at this width, its state recording it and claiming the ports of this width's members, and each member it reaches as this width's spec states, though its own start of the family's settle was refused as another asker's ran; read again, every member it reached is read, and a read at the other width is refused in turn"
+		name: "a run of another width reaches a family of its own (its name covers the checkout, the width and the spec, family.ts familyNameOf), settles it at its width, its state recording it, and each member it reaches as its width's spec states, though its own start of the family's settle was refused as another asker's ran; the family the other width settled is untouched: its state records its own width, its member is read, and its server was never restarted (STOREDERIVE4's soundness gate, 2026-11-25: two runs of one checkout at two widths shared a family and restarted each other's members, 57P01)"
 	},
 	kept: [],
 	kills: [
 		{
-			file: "packages/testing/src/pg/settle.ts",
-			original: "\t\tif (!Option.contains(recorded, family.width)) {\n",
-			replacement: "\t\tif (Option.isNone(recorded)) {\n",
-			why: "A read takes a family's state as settled for any width it records, so a run reuses a state another width settled, and a member whose settings no width moves serves it as if its width's spec were settled there: the width of the run it serves is nowhere checked; the property fails, the read of the single member at the other width answered."
+			file: "packages/testing/src/pg/family.ts",
+			original: `\t\t.update(\`\${checkout}\\n\${String(width)}\\n\${Formatter.format(cluster)}\`)\n`,
+			replacement: `\t\t.update(\`\${checkout}\\n\${Formatter.format(cluster)}\`)\n`,
+			why: "A family is named by its checkout alone, as it was: runs of one checkout at two widths share it, and each run's settle sizes its members for its own width and restarts them under the other's connections, which the server ends (57P01, STOREDERIVE4's soundness gate, 2026-11-25); the property fails, the other width's family settled over."
 		},
 		{
 			file: "packages/testing/src/pg/settle.ts",
-			original: "\t\t\tconst ofState = Option.contains(recorded, family.width)\n",
+			original: "\t\t\tconst ofState = Option.isSome(recorded)\n",
 			replacement: "\t\t\tconst ofState = true\n",
-			why: "A worker's first need settles only the member it reaches, never its family's state, so a family another width settled is refused for good, as a member's settle requires its family's state of its own width, and a run of more workers finds fewer ports claimed than it has members (lane METISREDS, 2026-11-24: settled in metis.slice, refused in grizzle.slice); the property fails, the bring-up refused."
+			why: "A worker's first need settles only the member it reaches, never its family's state, so a family no run of its width settled is refused for good, as a member's settle requires its family's state (lane METISREDS, 2026-11-24: settled in metis.slice, refused in grizzle.slice); the property fails, the bring-up refused."
 		},
 		{
 			file: "packages/testing/src/pg/settle.ts",
