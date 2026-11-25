@@ -110,22 +110,29 @@ const bannedOf =
 	}
 
 /** Whether a line writes `name` as a key: JSON's `"name":`, YAML's `name:` or either quoted form. */
-const yamlKey =
+export const yamlKey =
 	(name: string) =>
 	(line: string): boolean => {
 		const key = Str.trimStart(line)
 		return Arr.some([`${name}:`, `'${name}':`, `"${name}":`], (form) => Str.startsWith(form)(key))
 	}
 
-/** The 1-based line of the first line that writes `key` after the lines holding each anchor in turn, else the first. */
-const lineOf = (
+/** Whether a line is `header` as a YAML text writes a section's key alone on its line (`catalog:`, `  legacy:`). */
+export const isLine =
+	(header: string) =>
+	(line: string): boolean =>
+		Str.trimEnd(line) === header
+
+/** The 1-based line of the first line that writes `key` after the first lines each anchor holds in turn, else the
+ * first. */
+export const lineOf = (
 	text: string,
-	anchors: ReadonlyArray<string>,
+	anchors: ReadonlyArray<(line: string) => boolean>,
 	key: (line: string) => boolean
 ): number => {
 	const lines = Str.split("\n")(text)
 	const from = Arr.reduce(anchors, 0, (at, anchor) =>
-		Option.match(Arr.findFirstIndex(Arr.drop(lines, at), Str.includes(anchor)), {
+		Option.match(Arr.findFirstIndex(Arr.drop(lines, at), anchor), {
 			onNone: () => at,
 			onSome: (found) => at + found
 		})
@@ -201,7 +208,7 @@ export const bannedPackageFindings = (
 									onSome: (banned) => [
 										findingOf({
 											file: `${stated.root}/${path}`,
-											line: lineOf(text, [`"${field}"`], yamlKey(name)),
+											line: lineOf(text, [Str.includes(`"${field}"`)], yamlKey(name)),
 											edge: `${manifest.name ?? path}'s ${field} entry ${name}`,
 											banned
 										})
@@ -229,9 +236,13 @@ export const bannedPackageFindings = (
 					(workspace): ReadonlyArray<Finding> =>
 						Arr.flatMap(
 							[
-								{ anchors: ["catalog:"], catalog: "catalog", entries: workspace.catalog ?? {} },
+								{
+									anchors: [isLine("catalog:")],
+									catalog: "catalog",
+									entries: workspace.catalog ?? {}
+								},
 								...Arr.map(Record.toEntries(workspace.catalogs ?? {}), ([name, entries]) => ({
-									anchors: ["catalogs:", `  ${name}:`],
+									anchors: [isLine("catalogs:"), isLine(`  ${name}:`)],
 									catalog: `catalogs.${name}`,
 									entries: entries ?? {}
 								}))
@@ -275,7 +286,11 @@ export const bannedPackageFindings = (
 											onSome: (banned) => [
 												findingOf({
 													file: `${stated.root}/${LOCKFILE}`,
-													line: lineOf(text, [`  ${entry}:`, `    ${field}:`], yamlKey(name)),
+													line: lineOf(
+														text,
+														[isLine(`  ${entry}:`), isLine(`    ${field}:`)],
+														yamlKey(name)
+													),
 													edge: `${LOCKFILE}'s ${section} entry ${entry}'s ${field} entry ${name}`,
 													banned
 												})

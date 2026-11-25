@@ -230,7 +230,7 @@ export const pluginBlockCounts = Effect.fn("pluginBlockCounts")(function* (
 		one.listed ? Result.succeed(packageDirectory(index)) : Result.failVoid
 	)
 	const findings = yield* tsconfigFindings({ effectFree, rejectedDiagnostics: [] }).pipe(
-		Effect.provideService(Repository, { root, packages: leaves, apps: [] })
+		Effect.provideService(Repository, { root, packages: leaves, vendored: [], apps: [] })
 	)
 	const reported = Arr.map(
 		Arr.filter(findings, (finding) => finding.rule === "effect-plugin-block"),

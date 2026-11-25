@@ -31,19 +31,16 @@ const inSubmodule =
 	(file: string): boolean =>
 		Arr.some(submodules, (path) => file === path || Str.startsWith(`${path}/`)(file))
 
-/**
- * The files git shows under a directory, tracked or untracked but not ignored, that still exist, in path order, leaving
- * out each submodule's files. A working tree lists a submodule as its one gitlink, but the gate's snapshot (a fresh git
- * repository with each submodule filled in as plain files) would list every file in it as untracked, so a check reading
- * this list would judge another repository's files in the snapshot and not in the tree. Leaving the submodule's paths
- * out makes the two lists the same.
- */
-export const gitFilesUnder = Effect.fn("gitFilesUnder")(function* (directory: string) {
+/** gitFilesUnder's list, of the files `pathspecs` (git's pathspecs, relative to `directory`) match, or all for none. */
+const listedUnder = Effect.fn("listedUnder")(function* (
+	directory: string,
+	pathspecs: ReadonlyArray<string>
+) {
 	const fs = yield* FileSystem.FileSystem
 	const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
 	const command = ChildProcess.make(
 		"git",
-		["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+		["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", ...pathspecs],
 		{ cwd: directory }
 	)
 	const [output, exitCode] = yield* Effect.scoped(
@@ -70,6 +67,47 @@ export const gitFilesUnder = Effect.fn("gitFilesUnder")(function* (directory: st
 		fs.exists(file).pipe(Effect.mapError(inspectionFailure(file)))
 	)
 })
+
+/**
+ * The files git shows under a directory, tracked or untracked but not ignored, that still exist, in path order, leaving
+ * out each submodule's files. A working tree lists a submodule as its one gitlink, but the gate's snapshot (a fresh git
+ * repository with each submodule filled in as plain files) would list every file in it as untracked, so a check reading
+ * this list would judge another repository's files in the snapshot and not in the tree. Leaving the submodule's paths
+ * out makes the two lists the same.
+ */
+export const gitFilesUnder = (directory: string) => listedUnder(directory, [])
+
+/**
+ * The files named `name` under `directory` at any depth, the directory's own (gitFilesUnder's) and each submodule's, a
+ * submodule's submodules' among them, in path order: what a check of everything a repository runs reads where another
+ * repository's copy of a file matters as much as the repository's own (each pnpm workspace's manifest, for the catalog
+ * agreement). A submodule's files are its own repository's list in a working tree and the snapshot's under it in the
+ * gate's snapshot, which fills each submodule in as plain files, so both read the same files; a submodule left
+ * uninitialized, or absent, holds none.
+ */
+export const filesNamedUnder = (
+	directory: string,
+	name: string
+): Effect.Effect<
+	ReadonlyArray<string>,
+	DevtoolFailure,
+	FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner
+> =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		const own = yield* listedUnder(directory, [`*${name}`])
+		const listed = yield* submodulePathsUnder(directory)
+		const submodules = yield* Effect.filter(listed, (submodule) =>
+			fs.exists(submodule).pipe(Effect.mapError(inspectionFailure(submodule)))
+		)
+		const nested = yield* Effect.forEach(submodules, (submodule) =>
+			filesNamedUnder(submodule, name)
+		)
+		return Arr.sort(
+			[...Arr.filter(own, Str.endsWith(`/${name}`)), ...Arr.flatten(nested)],
+			Order.String
+		)
+	})
 
 /**
  * The files the repository-relative paths `named` (style/paths.ts) name inside a submodule of `directory` that exist on

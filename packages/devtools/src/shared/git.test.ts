@@ -14,6 +14,13 @@
  * judges another repository's): over workspaces of up to two submodules (a vendored toolchain and edullm's qti-pie)
  * and packages at a submodule's root, under it, under a repository it vendors in turn, and of the root's own, one of
  * whose names a submodule's prefixes, the own packages are exactly those at or under no submodule .gitmodules names.
+ *
+ * And the files of one name a check of everything a repository runs reads at any depth (filesNamedUnder, which the
+ * catalog agreement reads every pnpm workspace by): over trees of real repositories, a root with a workspace of its own
+ * deeper in its tree or not, a vendored toolchain cloned, left uninitialized or with its directory gone, and a vendored
+ * qti-pie that vendors grizzle in turn, cloned or left uninitialized, the files found are exactly every workspace
+ * manifest a repository of the tree holds on disk: none under node_modules, which .gitignore ignores, none whose name
+ * only ends like one.
  */
 import { assert } from "@bjornpagen/testing/assert"
 import { property } from "@bjornpagen/testing/property"
@@ -22,10 +29,14 @@ import {
 	expectedOf,
 	featuresOf,
 	inputsOf,
+	manifestsFoundIn,
 	ownExpectedOf,
 	ownPackagesOf,
 	packageFeaturesOf,
 	repositories,
+	treeExpectedOf,
+	treeFeaturesOf,
+	trees,
 	workspaces
 } from "#shared/git.fixtures.ts"
 
@@ -106,6 +117,52 @@ export const ownPackages = property.explore(workspaces, {
 			original: `file === path || Str.startsWith(\`\${path}/\`)(file)`,
 			replacement: "Str.startsWith(path)(file)",
 			why: "A package whose name a submodule's path prefixes (packages/qti-pie-notes beside packages/qti-pie) is read as the submodule's and never judged; the property's workspaces with such a package fail."
+		}
+	]
+})
+
+/** Find every file of the name a repository of the tree holds, at any depth of submodules, and nothing else. */
+export const filesNamed = property.exhaust(trees, {
+	box: "a root with or without a deeper workspace of its own, a vendored toolchain cloned, uninitialized, gone or absent, and a vendored qti-pie alone, vendoring grizzle cloned or uninitialized, or absent",
+	needs: {},
+	situations: [
+		"an own workspace deeper in the tree",
+		"a cloned submodule's workspace",
+		"an uninitialized submodule",
+		"a submodule whose directory is gone",
+		"a submodule's submodule's workspace",
+		"an uninitialized submodule of a submodule"
+	],
+	check: (_resources, c) => (tree) =>
+		Effect.scoped(
+			Effect.gen(function* () {
+				c.noteAll(treeFeaturesOf(tree))
+				const { root, found } = yield* manifestsFoundIn(tree)
+				assert.deepEqual(found, treeExpectedOf(root, tree))
+			})
+		),
+	oracle: { kind: "specification", name: "filesNamedUnder's stated contract" },
+	kept: [],
+	kills: [
+		{
+			file: "packages/devtools/src/shared/git.ts",
+			original:
+				"\t\tconst nested = yield* Effect.forEach(submodules, (submodule) =>\n\t\t\tfilesNamedUnder(submodule, name)\n\t\t)\n",
+			replacement: "\t\tconst nested: ReadonlyArray<ReadonlyArray<string>> = []\n",
+			why: "A submodule's files are never read: in a working tree the root lists a submodule as its gitlink alone, so a vendored qti-pie's workspace goes unseen and the catalog agreement judges nothing; the trees with a cloned submodule fail."
+		},
+		{
+			file: "packages/devtools/src/shared/git.ts",
+			original: `\t\t\t[...Arr.filter(own, Str.endsWith(\`/\${name}\`)), ...Arr.flatten(nested)],\n`,
+			replacement: "\t\t\t[...Arr.filter(own, Str.endsWith(name)), ...Arr.flatten(nested)],\n",
+			why: "A file whose name only ends like the one sought (docs/not-pnpm-workspace.yaml) is found as one; every tree fails."
+		},
+		{
+			file: "packages/devtools/src/shared/git.ts",
+			original:
+				"\t\tconst submodules = yield* Effect.filter(listed, (submodule) =>\n\t\t\tfs.exists(submodule).pipe(Effect.mapError(inspectionFailure(submodule)))\n\t\t)\n",
+			replacement: "\t\tconst submodules = listed\n",
+			why: "A submodule .gitmodules lists whose directory is gone is listed by git run inside it, which fails: the gate fails on a tree it should read; the trees whose toolchain's directory is gone fail."
 		}
 	]
 })

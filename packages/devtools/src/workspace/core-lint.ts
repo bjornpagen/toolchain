@@ -166,9 +166,9 @@ export const judgedConfiguration = (
 
 /**
  * The repository's oxlint configurations: each tracked file oxlint reads as one (`files`, repository-relative), and each
- * one that stands in a workspace package's directory (`packages`, absolute), which git need not track: a package
- * checked out as a submodule of its own, as edullm's qti-pie is, lints by its own configuration, which no file the
- * repository tracks names.
+ * one that stands in a workspace package's directory (`packages`, absolute, the repository's own and those it vendors,
+ * Repository vendored), which git need not track: a package checked out as a submodule of its own, as edullm's qti-pie
+ * is, lints by its own configuration, which no file the repository tracks names.
  */
 const configurationsOf = (
 	root: string,

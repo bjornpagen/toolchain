@@ -14,6 +14,27 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: one version through every workspace (2026-11-25)
+
+edullm's vendored toolchain stated oxfmt 0.79.0 where edullm stated 0.78.0, and its qti-pie pin's grizzle stated
+thirteen entries behind edullm's: each vendored repository proved its code against versions the root never ran it with.
+The workspace gate's `catalog-agreement` refuses it, and no exception excuses it. Beside the root's pnpm workspace, every
+other one in the tree at any depth (a git-tracked one of the repository's own, a submodule's, a submodule's submodule's)
+states each entry it shares with the root's:
+
+- at the root's versions (`version`), read as pnpm resolves them: the catalog's and the named catalogs', or an
+  override's alone where one names the entry, an override of `catalog:` that catalog's version;
+- with the root's release-age exclusions of it as written, and no other (`exclusion`): `effect` and `@effect/*` in
+  every workspace that shares effect, or in none;
+- and a versioned exclusion of a shared entry (`name@1.2.3`, `name@1.2.3 || 1.2.4`) names only the root's versions,
+  wherever it is stated (`excluded version`).
+
+An entry one side alone states is no agreement's to judge. To migrate: make each finding agree, moving the root or
+the vendored repository (whose owner bumps its pin): at the trunks' tips on 2026-11-25 edullm moves oxfmt to 0.79.0 and
+its qti-pie pin to one whose catalog states the root's @ui-sdk versions and exclusions, and metis deletes or rewrites its
+two `@ui-sdk/*@0.1.0-beta.2` exclusions, which name a version its tree does not install. And `core-lint` now judges a
+vendored workspace package's configuration too, as it states: it had read the repository's own packages alone.
+
 ## Consumer migration: one core lint set, held by the gate (2026-11-25)
 
 qti-pie's package configuration, built on another preset, loaded no dev tools plugin, so none of the core rules ran on

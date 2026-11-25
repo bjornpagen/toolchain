@@ -12,10 +12,11 @@ import {
 } from "#shared/config.ts"
 import { failureFrom } from "#shared/devtool.ts"
 import { type Finding, renderFindings, statusOf } from "#shared/finding.ts"
-import { gitFilesUnder } from "#shared/git.ts"
+import { filesNamedUnder, gitFilesUnder } from "#shared/git.ts"
 import { relativeTo, Repository } from "#shared/repository.ts"
 import { runDevtool } from "#shared/run.ts"
 import { bannedPackageFindings, LOCKFILE, WORKSPACE_MANIFEST } from "#workspace/banned-packages.ts"
+import { catalogAgreementFindings } from "#workspace/catalog-agreement.ts"
 import { compileCacheFindings } from "#workspace/compile-cache.ts"
 import { repositoryCoreLintFindings } from "#workspace/core-lint.ts"
 import { deadPathFindings } from "#workspace/dead-paths.ts"
@@ -42,8 +43,11 @@ import { tsconfigFindings, workspaceFixtureMismatches } from "#workspace/tsconfi
  * test system's gates (workspace/test-system.ts): no worker flag in a script, and, in a repository that runs the
  * properties pack, no Vitest configuration, no plant and no numbered shard of a test module; and the banned-packages
  * law (workspace/banned-packages.ts): no manifest, catalog or lockfile importer of the repository names a banned
- * package, which no exception excuses; and the core lint set (workspace/core-lint.ts): every oxlint configuration the
- * repository holds loads the dev tools' plugin and holds every core rule at error, as oxlint resolves it, which no
+ * package, which no exception excuses; the catalog agreement (workspace/catalog-agreement.ts): every pnpm workspace in
+ * the tree at any depth, its own or a submodule's, states each entry it shares with the root's at the root's versions,
+ * with the root's release-age exclusions of it, a versioned one naming the root's versions alone, which no exception
+ * excuses; and the core lint set (workspace/core-lint.ts): every oxlint configuration the repository holds, a vendored
+ * package's among them, loads the dev tools' plugin and holds every core rule at error, as oxlint resolves it, which no
  * exception excuses either.
  * The repository's decisions come from its toolchain.config.ts: its rejected diagnostics, its Effect-free packages, and
  * its exceptions, which excuse the files they list from one of these rules and name no other. `--fixtures` runs the
@@ -104,7 +108,7 @@ const checkFixtures = Effect.gen(function* () {
 
 /** Every finding of the gate over the repository, less those its exceptions excuse. */
 const checkRepository = Effect.gen(function* () {
-	const { root, packages } = yield* Repository
+	const { root, packages, vendored } = yield* Repository
 	const config = yield* repositoryToolchain
 	const tsconfigs = yield* tsconfigFindings({
 		effectFree: config.effectFree,
@@ -184,12 +188,23 @@ const checkRepository = Effect.gen(function* () {
 	const manifests = yield* Effect.forEach(manifestPaths, (path) =>
 		Effect.map(read(path), (text) => ({ path, text }))
 	)
+	const workspace = yield* optionalText(WORKSPACE_MANIFEST)
 	const bannedPackages = yield* bannedPackageFindings({
 		root,
 		banned: [...BANNED_PACKAGES, ...config.bannedPackages],
 		manifests,
-		workspace: yield* optionalText(WORKSPACE_MANIFEST),
+		workspace,
 		lockfile: yield* optionalText(LOCKFILE)
+	})
+	const rootWorkspace = `${root}/${WORKSPACE_MANIFEST}`
+	const workspaces = yield* filesNamedUnder(root, WORKSPACE_MANIFEST)
+	const vendoredWorkspaces = yield* Effect.forEach(
+		Arr.filter(workspaces, (file) => file !== rootWorkspace),
+		(file) => Effect.map(read(relativeTo(root)(file)), (text) => ({ file, text }))
+	)
+	const catalogAgreement = yield* catalogAgreementFindings({
+		root: Option.map(workspace, (text) => ({ file: rootWorkspace, text })),
+		vendored: vendoredWorkspaces
 	})
 	const findings = [
 		...Arr.filter(
@@ -205,7 +220,8 @@ const checkRepository = Effect.gen(function* () {
 			(finding) => !isExcepted(config.exceptions, root, finding)
 		),
 		...bannedPackages,
-		...(yield* repositoryCoreLintFindings(root, files, packages))
+		...catalogAgreement,
+		...(yield* repositoryCoreLintFindings(root, files, [...packages, ...vendored]))
 	]
 	yield* Console.log(renderFindings({ tool: "workspace-gate", root, findings }))
 	return statusOf(findings)

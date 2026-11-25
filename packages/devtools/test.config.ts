@@ -24,6 +24,7 @@ export default defineRunner({
 		"src/oxlint/rules/single-permit-owners.test.ts",
 		"src/shared/git.test.ts",
 		"src/workspace/banned-packages.test.ts",
+		"src/workspace/catalog-agreement.test.ts",
 		"src/workspace/compile-cache.test.ts",
 		"src/workspace/dead-paths.test.ts",
 		"src/workspace/quarantine.test.ts",

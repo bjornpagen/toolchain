@@ -44,6 +44,12 @@ export class Repository extends Context.Service<
 		 * judges.
 		 */
 		packages: ReadonlyArray<string>
+		/**
+		 * The workspace packages pnpm-workspace.yaml selects at or under a submodule, another repository's (a vendored
+		 * toolchain's, edullm's qti-pie and what it vendors), which no check of the repository's own code judges, but which
+		 * the workspace gate's check of what the repository runs reads: each one's oxlint configuration (core-lint).
+		 */
+		vendored: ReadonlyArray<string>
 		/** Every Tailwind app: each workspace package holding components.json. */
 		apps: ReadonlyArray<TailwindApp>
 	}>
@@ -291,9 +297,11 @@ const derive = Effect.gen(function* () {
 	const text = yield* fs.readFileString(manifest).pipe(Effect.mapError(inspectionFailure(manifest)))
 	const globs = yield* workspaceGlobsOf(manifest, text)
 	const packagesPerGlob = yield* Effect.forEach(globs, (glob) => packagesOf(root, glob))
-	const packages = yield* ownPackagesUnder(root, Arr.flatten(packagesPerGlob))
+	const selected = Arr.flatten(packagesPerGlob)
+	const packages = yield* ownPackagesUnder(root, selected)
+	const vendored = Arr.filter(selected, (directory) => !Arr.contains(packages, directory))
 	const packageApps = yield* Effect.forEach(packages, tailwindAppOf)
-	return { root, packages, apps: Arr.getSomes(packageApps) }
+	return { root, packages, vendored, apps: Arr.getSomes(packageApps) }
 })
 
 /**
