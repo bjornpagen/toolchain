@@ -59,18 +59,20 @@ export const slowShapes: Gen<Slow> = map(int(0, 2), (step) => ({
 	stallMillis: 700
 }))
 
-/** An inner search whose case, whatever its value, is slow: bursts of CPU between stalls on the live clock, then it passes. */
+/** A slow case's work: bursts of CPU between stalls on the live clock, then it ends. */
+export const slowWork = (shape: Slow): Effect.Effect<void> =>
+	Effect.forEach(
+		Array.from({ length: shape.bursts }, (_, at) => at),
+		() => Effect.andThen(burn(shape.burstMillis), liveSleep(Duration.millis(shape.stallMillis))),
+		{ discard: true }
+	)
+
+/** An inner search whose case, whatever its value, is slow (slowWork), then it passes. */
 export const slowCase = (shape: Slow): Property =>
 	property.explore(int(0, 9), {
 		needs: {},
 		situations: [],
-		check: () => () =>
-			Effect.forEach(
-				Array.from({ length: shape.bursts }, (_, at) => at),
-				() =>
-					Effect.andThen(burn(shape.burstMillis), liveSleep(Duration.millis(shape.stallMillis))),
-				{ discard: true }
-			),
+		check: () => () => slowWork(shape),
 		oracle: planted,
 		kept: [],
 		kills: []
@@ -148,7 +150,7 @@ const RUNAWAY_BURST_MILLIS = 5
 
 /** A runaway's work: it spends its deadline's CPU many times over, yielding as it goes, so only a CPU budget stops it;
  * then it ends. */
-const runawayWork = (shape: Runaway): Effect.Effect<void> =>
+export const runawayWork = (shape: Runaway): Effect.Effect<void> =>
 	Effect.forEach(
 		Array.from(
 			{ length: (shape.deadline * shape.deadlines) / RUNAWAY_BURST_MILLIS },
@@ -192,7 +194,7 @@ export const UNJUDGED_DEADLINES = 60
 
 /** A deadlocked case's work: it waits on the live clock, spending nothing, the twenty deadlines a hung case is given
  * (HUNG_DEADLINES), so a guard that misjudges it lets it end. */
-const deadlockedWork = (shape: Deadlock): Effect.Effect<void> =>
+export const deadlockedWork = (shape: Deadlock): Effect.Effect<void> =>
 	liveSleep(Duration.millis(shape.deadline * HUNG_DEADLINES))
 
 /** An inner search whose one case waits on the live clock for many deadlines, spending nothing, then passes. */

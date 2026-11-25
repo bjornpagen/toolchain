@@ -440,6 +440,13 @@ export const checkedClaims = (wall: number): Effect.Effect<void> => {
 export const waitedOnNow = (): ReadonlyArray<string> =>
 	Arr.map(processWaits().open, (open) => open.on)
 
+/** What a hung case's report adds of the declared waits open at its verdict: what each waits on, or nothing. */
+export const waitedOnText = (on: ReadonlyArray<string>): string =>
+	Arr.match(on, {
+		onEmpty: () => "",
+		onNonEmpty: (open) => `; its declared waits open then wait on ${Arr.join(open, "; ")}`
+	})
+
 /** The wall milliseconds this process has spent in declared waits by `wall`. */
 const ownWaited = (wall: number): number => waitedBy(processWaits().waits, wall)
 

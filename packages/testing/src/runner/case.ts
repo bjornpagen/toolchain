@@ -64,7 +64,8 @@ import {
 	overrunText,
 	ownCpu,
 	ownWork,
-	waitedOnNow
+	waitedOnNow,
+	waitedOnText
 } from "#runner/work.ts"
 import { type Observed, type Recording, recording, simplestChooser } from "#source.ts"
 
@@ -535,13 +536,6 @@ const printedOf = <S>(
 	value: shownOf(print, value),
 	draws: Arr.map(drew, (draw) => Formatter.format(draw))
 })
-
-/** What a hung case's report adds of the declared waits open at its verdict: what each waits on, or nothing. */
-const waitedOnText = (on: ReadonlyArray<string>): string =>
-	Arr.match(on, {
-		onEmpty: () => "",
-		onNonEmpty: (open) => `; its declared waits open then wait on ${Arr.join(open, "; ")}`
-	})
 
 /**
  * How a guarded effect ended: it passed, failed with its cause, ran past its deadline (and what the declared waits open

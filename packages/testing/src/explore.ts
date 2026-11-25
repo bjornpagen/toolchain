@@ -50,7 +50,7 @@ import {
 	abandon,
 	awaitWithinGrace,
 	liveMillis,
-	liveSleepUntil,
+	overrun,
 	watchdogGraceMillis,
 	watchedCase
 } from "#live.ts"
@@ -68,6 +68,14 @@ import {
 	wordsOf
 } from "#random.ts"
 import { type Drawn, type Replay, ReplayCase, replayTokenOf } from "#replay.ts"
+import {
+	deadlineBound,
+	overrunText,
+	ownCpu,
+	ownWork,
+	waitedOnNow,
+	waitedOnText
+} from "#runner/work.ts"
 import { searchStarted } from "#searches.ts"
 import { seedsOf } from "#seeds.ts"
 import { notesOnly, type Sense } from "#sense.ts"
@@ -288,7 +296,9 @@ export type Oracle =
  *   that share state the property does not isolate must run;
  * - `steerEvery` is how many cases pass between the snapshots a steered generator reads (Steered), a constant of the suite, so the
  *   same seed draws the same cases however many run at once;
- * - `caseHang` is how long one case may run before it is stopped and reported;
+ * - `caseHang` is the work one case may do before it is stopped and reported, judged as the runner judges a case
+ *   (runner/work.ts deadlineBound): its process tree's CPU, and the wall time it could have run over which that CPU
+ *   must move, so a case the machine slows is never hung for it;
  * - `oracle` is what the property is checked against, which the report prints, `unstated` while the suite has not
  *   said.
  */
@@ -358,7 +368,7 @@ export class PropertyFalsified extends Schema.TaggedError<
 	message: Schema.String
 }) {}
 
-/** A case ran past its hang limit; it is reported as drawn, unshrunk, and the suite stops. */
+/** A case's work went over its hang limit (runner/work.ts Overrun); it is reported as drawn, unshrunk, and the suite stops. */
 export class CaseHung extends Schema.TaggedError<CaseHung, { readonly brand: unique symbol }>()(
 	"CaseHung",
 	{ suite: Schema.String, replay: Schema.Option(ReplayCase), message: Schema.String }
@@ -436,7 +446,7 @@ export type SearchFailure =
 type Outcome =
 	| Readonly<{ kind: "passed" }>
 	| Readonly<{ kind: "failed"; cause: Cause.Cause<unknown>; tape: Tape }>
-	| Readonly<{ kind: "hung"; tape: Tape }>
+	| Readonly<{ kind: "hung"; leg: string; tape: Tape }>
 
 /**
  * A case's outcome as its search judges it: what it did, or misused, when a case that passed was used after it ended. A failure or a hang is judged as itself, whatever was done with the case after.
@@ -541,7 +551,7 @@ const steeredBy = <F extends string>(
 type Settled =
 	| Readonly<{ kind: "passed"; trace: Uint8Array }>
 	| Readonly<{ kind: "failed"; cause: Cause.Cause<unknown> }>
-	| Readonly<{ kind: "hung" }>
+	| Readonly<{ kind: "hung"; leg: string }>
 
 /** A case's outcome: as its property settled, a failed or hung case with its tape. */
 const outcomeOf = (recorded: Recording, settled: Settled): Outcome => {
@@ -551,7 +561,7 @@ const outcomeOf = (recorded: Recording, settled: Settled): Outcome => {
 		case "failed":
 			return { kind: "failed", cause: settled.cause, tape: recorded.tape() }
 		case "hung":
-			return { kind: "hung", tape: recorded.tape() }
+			return { kind: "hung", leg: settled.leg, tape: recorded.tape() }
 	}
 }
 
@@ -623,7 +633,10 @@ type Blocked<S> = (sketch: Option.Option<S>, tape: Tape) => string
 
 /**
  * Runs one case on a recorder from the pool: generates its sketch from the chooser, resolves it, and runs the property
- * in its own scope and fiber, raced against the hang guard. A case stopped any way, hung or interrupted with the search, is kept among its search's stopped cases (`life`, withCaseLives), whose cleanups the
+ * in its own scope and fiber, raced against the hang guard: its work, from its CPU before it started (runner/work.ts
+ * ownWork), over `caseHang` as the runner's guard judges a case's (runner/case.ts guarded), never the live clock, which
+ * judged the machine: pantry's test/inclusion-cycles hung at its first case at load 290, its 1.5 s of CPU past 30 s of
+ * wall, and so again at a CPU quota of 3 % with its CPU moving every second (QP-GATE, 2026-11-25). A case stopped any way, hung or interrupted with the search, is kept among its search's stopped cases (`life`, withCaseLives), whose cleanups the
  * search awaits before it returns, so a case's finalizers always run and none outlives its search. The case's fiber
  * starts inline, so a property that runs to its end synchronously arms no guard and never waits on the event loop;
  * from its start until the race that guards it, the search is uninterruptible, so an interruption of the search that
@@ -759,6 +772,7 @@ const runRecorded = <S, T, F extends string, E, R, K>(
 		return Effect.uninterruptibleMask((restore) =>
 			Effect.gen(function* () {
 				const began = yield* liveMillis
+				const own = ownCpu()
 				const running = yield* Effect.forkDetach(settled, { startImmediately: true })
 				const ranThrough = running.pollUnsafe()
 				if (ranThrough !== undefined) {
@@ -767,9 +781,16 @@ const runRecorded = <S, T, F extends string, E, R, K>(
 				}
 				const guards: ReadonlyArray<Effect.Effect<Settled>> = [
 					Effect.map(Fiber.await(running), settledOf),
-					Effect.as(liveSleepUntil(began + Duration.toMillis(Duration.fromInputUnsafe(caseHang))), {
-						kind: "hung"
-					} as const)
+					Effect.map(
+						overrun(
+							ownWork(began, own),
+							deadlineBound(Duration.toMillis(Duration.fromInputUnsafe(caseHang)))
+						),
+						(ran): Settled => ({
+							kind: "hung",
+							leg: `${overrunText(ran)}${waitedOnText(waitedOnNow())}`
+						})
+					)
 				]
 				const ended = yield* restore(Effect.raceAllFirst(guards)).pipe(
 					Effect.onInterrupt(() => life.stop(running))
@@ -991,7 +1012,7 @@ const replayOne = <S, T, F extends string, E, R, A>(
 					CaseHung.make({
 						suite: search.suite,
 						replay: Option.some(replayCaseOf(replayed.drawn, hung.tape)),
-						message: `${search.suite}: ${where} ran past ${hangOf(search.caseHang)}: ${search.literal(caseRun.sketch)}`
+						message: `${search.suite}: ${where} hung: ${hung.leg}: ${search.literal(caseRun.sketch)}`
 					})
 				),
 			failed: (failed) => {
@@ -1179,7 +1200,6 @@ export const explore = <S, T, F extends string, E, R>(
 			const independentTally = tallyOf("independent")
 			const fuzzedTally = tallyOf("fuzzed")
 			const pool: Array<Recorder> = []
-			const hang = hangOf(spec.caseHang)
 			const unsteered = underOf(situations, { kind: "unsteered" })
 			let cases = 0
 			const blockedUnder = (under: Under<F>) =>
@@ -1276,12 +1296,12 @@ export const explore = <S, T, F extends string, E, R>(
 							: Effect.void
 					},
 					misused: () => misusedIn(spec.suite, where),
-					hung: () =>
+					hung: (hung) =>
 						Effect.fail(
 							CaseHung.make({
 								suite: spec.suite,
 								replay: Option.none(),
-								message: `${spec.suite}: ${where} ran past ${hang}`
+								message: `${spec.suite}: ${where} hung: ${hung.leg}`
 							})
 						),
 					failed: (failed) =>
@@ -1329,7 +1349,7 @@ export const explore = <S, T, F extends string, E, R>(
 							CaseHung.make({
 								suite: spec.suite,
 								replay: Option.some(replayed),
-								message: `${spec.suite}: ${where} ran past ${hang}: counterexample ${spec.literal(caseRun.sketch)}, replay it alone: TEST_REPLAY='${replayTokenOf(spec.suite, replayed)}'`
+								message: `${spec.suite}: ${where} hung: ${hung.leg}: counterexample ${spec.literal(caseRun.sketch)}, replay it alone: TEST_REPLAY='${replayTokenOf(spec.suite, replayed)}'`
 							})
 						)
 					},
@@ -1708,7 +1728,6 @@ export const exhaust = <A, F extends string, E, R>(
 			const exhaustive = tallyOf("exhaustive")
 			const unsteered = underOf(situations, { kind: "unsteered" })
 			const pool: Array<Recorder> = []
-			const hang = hangOf(spec.caseHang)
 			const blocked = blockedIn(
 				run,
 				spec.suite,
@@ -1808,7 +1827,7 @@ export const exhaust = <A, F extends string, E, R>(
 								CaseHung.make({
 									suite: spec.suite,
 									replay: Option.some(replayed),
-									message: `${spec.suite}: ${where} ran past ${hang}: counterexample ${spec.literal(caseRun.sketch)}, replay it alone: TEST_REPLAY='${replayTokenOf(spec.suite, replayed)}'`
+									message: `${spec.suite}: ${where} hung: ${hung.leg}: counterexample ${spec.literal(caseRun.sketch)}, replay it alone: TEST_REPLAY='${replayTokenOf(spec.suite, replayed)}'`
 								})
 							)
 						},

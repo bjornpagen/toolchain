@@ -47,6 +47,7 @@ export default defineRunner({
 		"src/runner/work.test.ts",
 		"src/runner/search.test.ts",
 		"src/runner/case.test.ts",
+		"src/explore.test.ts",
 		"src/runner/pool.test.ts",
 		"src/runner/migrate.test.ts",
 		"src/runner/launcher.test.ts",
