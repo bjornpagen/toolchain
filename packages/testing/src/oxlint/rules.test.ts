@@ -157,7 +157,7 @@ export const noOrderedUnordered = ruleProperty(
 	]
 )
 
-/** no-example-table reports exactly the tables of written-out rows. */
+/** no-example-table reports exactly the tables of written-out rows, in whatever function a test runs as its body. */
 export const noExampleTable = ruleProperty("no-example-table", inTests(programOf(tableSites)), [
 	{
 		file: "packages/testing/src/oxlint/rules/no-example-table.ts",
@@ -165,6 +165,49 @@ export const noExampleTable = ruleProperty("no-example-table", inTests(programOf
 			"\t\tTaggedTemplateExpression: (node) => {\n\t\t\tif (Option.exists(testPathOf(context, node.tag), isTablePath)) {\n\t\t\t\trefuse(node)\n\t\t\t}\n\t\t},\n",
 		replacement: "",
 		why: "no-example-table reads a tagged-template table as no table."
+	},
+	{
+		file: "packages/testing/src/oxlint/rules/no-example-table.ts",
+		original: "\tOption.exists(testPathOf(context, call.callee), (path) => !isTablePath(path))\n",
+		replacement: "\tOption.exists(testPathOf(context, call.callee), (path) => isTablePath(path))\n",
+		why: "A test's own callback is no body: a for…of over written rows straight in `it(..., () => { ... })` passes."
+	},
+	{
+		file: "packages/testing/src/oxlint/rules/no-example-table.ts",
+		original: "\t\treturn parent.body === node && runsAsBody(context, parent, seen)\n",
+		replacement: "\t\treturn false\n",
+		why: "The generator of an `Effect.gen` a test's arrow returns is no body: `it.effect(..., () => Effect.gen(function* () { for … }))` passes."
+	},
+	{
+		file: "packages/testing/src/oxlint/rules/no-example-table.ts",
+		original: "\t\t\t(isTestCall(context, parent) || runsAsBody(context, parent, seen))\n",
+		replacement: "\t\t\tisTestCall(context, parent)\n",
+		why: 'A wrapper hands no function on: the generator of `Effect.fn("name")(function* (ctx) { … })` handed a test as its body, qti-pie pantry\'s blind spot, passes, as does an `Effect.gen` under `Effect.scoped`.'
+	},
+	{
+		file: "packages/testing/src/oxlint/rules/no-example-table.ts",
+		original: "\t\t\tparent.object === node &&\n",
+		replacement: "\t\t\tfalse &&\n",
+		why: "An effect piped on is no body: the generator of `Effect.gen(function* () { for … }).pipe(Effect.scoped)` a test's arrow returns passes, as 28 of qti-pie's reported tables would."
+	},
+	{
+		file: "packages/testing/src/oxlint/rules/no-example-table.ts",
+		original:
+			"\t\t\t(reference) => reference.isRead() && runsAsBody(context, reference.identifier, held)\n",
+		replacement: "\t\t\t(reference) => false\n",
+		why: 'A body a `const` holds is no body: `const body = Effect.fn("name")(function* (ctx) { for … })` handed a test as `it.effect(..., body)` passes.'
+	},
+	{
+		file: "packages/testing/src/oxlint/rules/no-example-table.ts",
+		original: "\t\t(!Arr.contains(FUNCTIONS, node.type) &&\n",
+		replacement: "\t\t(false &&\n",
+		why: "A body's declaration runs nothing: the generator of an `Effect.gen` a declaration of a test's callback runs (`const ran = Effect.runSync(Effect.gen(function* () { for … }))`) passes."
+	},
+	{
+		file: "packages/testing/src/oxlint/rules/no-example-table.ts",
+		original: '\t"ExpressionStatement",\n',
+		replacement: "",
+		why: "A body's statement runs nothing: the generator of an `Effect.gen` a statement of a test's callback runs (`Effect.runSync(Effect.gen(function* () { for … }))`) passes."
 	}
 ])
 

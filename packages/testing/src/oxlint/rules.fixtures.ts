@@ -1099,7 +1099,12 @@ const rowsGen: Gen<readonly [declared: string, written: string, writtenOut: bool
 const testPathGen: Gen<string> = (source) =>
 	`${source.draw(oneOf(TEST_ROOTS))}${source.draw(element(["", ".effect"] as const))}`
 
-/** A table test over drawn rows, a tagged-template table, a near modifier, and a for…of over rows in or out of a test. */
+/**
+ * A table test over drawn rows, a tagged-template table, a near modifier, and a for…of over rows in or out of a test:
+ * in its callback, in the generator of an `Effect.gen` it returns, of an `Effect.fn("name")` handed it as its body,
+ * directly or by a `const`, of an `Effect.gen` under a further wrapper or piped through one, of one a declaration of the
+ * body runs, and of one a statement runs; never in a helper the body calls by name, nor in an effect no test runs.
+ */
 export const tableSites: Gen<Site> = weighted([
 	[
 		3,
@@ -1144,9 +1149,40 @@ export const tableSites: Gen<Site> = weighted([
 		}
 	],
 	[
+		3,
+		(s) => {
+			const [declared, rows, writtenOut] = s.draw(rowsGen)
+			const root = s.draw(oneOf(TEST_ROOTS))
+			const loop = (indent: string) =>
+				`${indent}for (const v of ${rows}) {\n${indent}\tyield* check(v)\n${indent}}`
+			return site(
+				`${declared}${s.draw(
+					element([
+						`${root}.effect("case ${OWN}", Effect.fn("case ${OWN}")(function* (ctx) {\n${loop("\t")}\n}))`,
+						`const body${OWN} = Effect.fn("case ${OWN}")(function* (ctx) {\n${loop("\t")}\n})\n${root}.effect("case ${OWN}", body${OWN})`,
+						`${root}.effect("case ${OWN}", () =>\n\tEffect.scoped(\n\t\tEffect.gen(function* () {\n${loop("\t\t\t")}\n\t\t})\n\t)\n)`,
+						`${root}.effect("case ${OWN}", () =>\n\tEffect.gen(function* () {\n${loop("\t\t")}\n\t}).pipe(Effect.scoped)\n)`,
+						`${root}("case ${OWN}", () => {\n\tconst ran${OWN} = Effect.runSync(\n\t\tEffect.gen(function* () {\n${loop("\t\t\t")}\n\t\t})\n\t)\n})`,
+						`${root}("case ${OWN}", () => {\n\tEffect.runSync(\n\t\tEffect.gen(function* () {\n${loop("\t\t\t")}\n\t\t})\n\t)\n})`
+					] as const)
+				)}`,
+				writtenOut ? 1 : 0
+			)
+		}
+	],
+	[
 		1,
 		constant(
 			site(`const helper${OWN} = () => {\n\tfor (const v of [1, 2]) {\n\t\tcheck(v)\n\t}\n}`, 0)
+		)
+	],
+	[
+		1,
+		constant(
+			site(
+				`const outside${OWN} = Effect.gen(function* () {\n\tfor (const v of [1, 2]) {\n\t\tyield* check(v)\n\t}\n})`,
+				0
+			)
 		)
 	],
 	[
