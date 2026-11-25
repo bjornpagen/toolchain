@@ -74,7 +74,7 @@ export const declaredWaitsDoNotStall = property.exhaust(finite(boolean), {
 		{
 			file: "packages/testing/src/live.ts",
 			original:
-				"\t\t\tEffect.flatMap(liveMillis, (wall) => Effect.sync(() => enterWait(wall, on, claim))),\n\t\t\t() => effect,\n\t\t\t(id) => Effect.flatMap(liveMillis, (wall) => Effect.sync(() => leaveWait(wall, id)))",
+				"\t\t\tEffect.flatMap(liveMillis, (wall) => Effect.sync(() => enterWait(wall, on))),\n\t\t\t() => effect,\n\t\t\t(id) => Effect.flatMap(liveMillis, (wall) => Effect.sync(() => leaveWait(wall, id)))",
 			replacement: "\t\t\tEffect.succeed(0),\n\t\t\t() => effect,\n\t\t\t() => Effect.void",
 			why: "waitingOn declares nothing, so a need's open that waits on another process's work stalls past the stall window and fails, unopened; the property fails."
 		}

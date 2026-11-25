@@ -1,8 +1,18 @@
 import * as NodeServices from "@effect/platform-node/NodeServices"
-import { Array as Arr, Brand, Context, Effect, Layer, Option, type Scope } from "effect"
+import {
+	Array as Arr,
+	Brand,
+	Context,
+	Effect,
+	Layer,
+	Option,
+	Queue,
+	type Scope,
+	Stream
+} from "effect"
 import { ChildProcess } from "effect/process"
 import pg from "pg"
-import { boolean, characterOf, type Gen, int, string } from "#gen.ts"
+import { boolean, characterOf, type Gen, int, map, string } from "#gen.ts"
 import testingCluster from "#pg.config.ts"
 import { bootstrapSuperuser, serverBin } from "#pg/server.ts"
 import { pgOwnerSession, pgSuperuserSession } from "#pg/session.ts"
@@ -131,6 +141,63 @@ export const undeclaredSession = (
 				})
 			)
 	)
+
+/**
+ * The deadlines the backend properties judge under (resources.test.ts statementWorkIsTheCases and the others over a
+ * case's backends), and how many of them a statement's work lasts: long enough that a guard's readings, each asking the
+ * case's servers what carries its backends' waits, take their answers into account at a machine's load.
+ */
+export const backendShapes: Gen<Readonly<{ deadline: number; deadlines: number }>> = map(
+	int(0, 1),
+	(step) => ({
+		deadline: 1000 + 1000 * step,
+		deadlines: 4
+	})
+)
+
+/**
+ * A statement that keeps its backend running on a CPU for `millis` milliseconds and then ends: a busy loop on
+ * clock_timestamp, the stand-in for a statement whose work is long (a large install's, a scan), where pg_sleep spends
+ * nothing and is no work.
+ */
+export const busyFor = (millis: number): string =>
+	`DO $$ DECLARE stop timestamptz := pg_catalog.clock_timestamp() + ${String(millis)} * interval '1 millisecond'; BEGIN WHILE pg_catalog.clock_timestamp() < stop LOOP END LOOP; END $$`
+
+/**
+ * A session of the member's bootstrap superuser in `database` over its socket, in a psql the scope starts now and ends
+ * with it: another process's session, its backend no work's of this process's begun after it (a descendant started
+ * before a work began is no part of it, runner/work.ts descendantsOf, nor is the backend its socket is the peer of,
+ * runner/backends.ts), as a sibling case's or another run's is. It runs each statement it is handed, in order, without
+ * answering.
+ */
+export const outsideSession = (member: PgMember, database: string) =>
+	Effect.gen(function* () {
+		const bin = yield* Effect.mapError(
+			serverBin({ cluster: member.name, doing: "an outside session" }),
+			(failure) => NeedFailed.make({ need: "pg", message: failure.message })
+		)
+		const handle = yield* ChildProcess.make(
+			`${bin}/psql`,
+			[
+				"-X",
+				"-q",
+				"-h",
+				member.socket,
+				"-p",
+				`${member.port}`,
+				"-U",
+				bootstrapSuperuser(),
+				"-d",
+				database
+			],
+			{ stdin: "pipe", stdout: "ignore", stderr: "ignore" }
+		)
+		const statements = yield* Queue.unbounded<string>()
+		yield* Effect.forkScoped(
+			Effect.ignore(Stream.run(Stream.encodeText(Stream.fromQueue(statements)), handle.stdin))
+		)
+		return (sql: string) => Effect.asVoid(Queue.offer(statements, `${sql};\n`))
+	})
 
 /**
  * Drops every claim of the templates under `prefix` on `member` (pg/settle.ts templateClaimsTable), as collection drops

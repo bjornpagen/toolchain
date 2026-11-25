@@ -64,6 +64,7 @@ export const observationText = (observation: Observation): string => {
 export const unwatched = Object.freeze({
 	readFileSync: process.getBuiltinModule("node:fs").readFileSync,
 	readdirSync: process.getBuiltinModule("node:fs").readdirSync,
+	readlinkSync: process.getBuiltinModule("node:fs").readlinkSync,
 	spawn: process.getBuiltinModule("node:child_process").spawn,
 	Worker: process.getBuiltinModule("node:worker_threads").Worker
 })

@@ -32,10 +32,9 @@ export type { PgMember } from "#pg/settle.ts"
  * A session on one member as the cluster's owner role (the role that may CREATE DATABASE and owns what it creates),
  * which the repository opens over its own client: one statement at a time, concurrent callers taking turns, each with
  * text parameters. Every statement this library sends casts each column it reads to text, so a row's columns arrive as
- * strings, or null, from any client. Its `query` is a declared wait of its process while the member works on the
- * statement (live.ts waitingOnWork, its claim checked against the session's backend, as pg/session.ts pgSession's is; or
- * live.ts waitingOn): the session declares its statements, the library's (run) and its caller's alike, so a statement
- * the member keeps busy is no stall of its case.
+ * strings, or null, from any client. No statement is a declared wait: the session's backend is the peer of a socket
+ * its process holds, so a guard counts its CPU as its case's own (runner/backends.ts), whatever client the repository
+ * opens it over, and a statement the member keeps busy is no stall of its case.
  */
 export interface PgSession {
 	readonly query: (

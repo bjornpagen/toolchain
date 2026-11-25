@@ -46,6 +46,7 @@ export default defineRunner({
 		"src/syntax.test.ts",
 		"src/blocking.test.ts",
 		"src/runner/work.test.ts",
+		"src/runner/backends.test.ts",
 		"src/runner/search.test.ts",
 		"src/runner/case.test.ts",
 		"src/explore.test.ts",

@@ -8,6 +8,7 @@ import {
 	type Scope,
 	String as Str
 } from "effect"
+import { waitingOn } from "#live.ts"
 import { templateClaimsTable } from "#pg/settle.ts"
 import type { NeedContext } from "#property.ts"
 import {
@@ -432,7 +433,8 @@ const createdFresh = (
  * taken as it is. Otherwise the builder waits in the server for the session-level advisory lock of the template's
  * digest, in the owner's database, on a session of its own: the one gate, so concurrent builders of one template on one
  * member, in any worker of any run, build it once and the rest find it built once the lock is theirs (a declared wait,
- * as every statement is: cluster.ts run). Holding the lock, a database of the template's name that is not a built
+ * live.ts waitingOn: the lock's holder sits between statements while its other connections build, so no backend
+ * carrying the wait moves). Holding the lock, a database of the template's name that is not a built
  * template, and the template's build database (names.ts buildName), are a builder's that ended mid-build, and are
  * dropped.
  *
@@ -470,9 +472,11 @@ const ensureBuilt = (
 		yield* Effect.scoped(
 			Effect.gen(function* () {
 				const gate = yield* cluster.connect(member, cluster.maintenance)
-				yield* run(gate, `SELECT pg_catalog.pg_advisory_lock(${lockKey("$1")})::text`, [
-					Str.slice(0, 16)(digest)
-				])
+				yield* waitingOn(`the build of template ${name} on member ${member.name}`)(
+					run(gate, `SELECT pg_catalog.pg_advisory_lock(${lockKey("$1")})::text`, [
+						Str.slice(0, 16)(digest)
+					])
+				)
 				const state = yield* single(gate, stateQuery, [name])
 				if (state === "ready") {
 					return
@@ -532,7 +536,8 @@ const ensureBuilt = (
  * live worker opened, which the worker clones (and builds from) for as long as it runs, whichever run collects: a
  * concurrent run of other properties, or of other code, a kill trial's mutant included. Taken before the template is
  * built, so a collection that held a key first has dropped the template before the opener finds it absent and builds it
- * again, waiting on a collection that holds the key exclusively (a declared wait: cluster.ts run).
+ * again, waiting on a collection that holds the key exclusively (a declared wait, live.ts
+ * waitingOn: the collection's session holds the key between its statements).
  */
 const holdInUse = (owner: Owner, identified: Identified): Effect.Effect<void, NeedFailed> =>
 	Effect.andThen(
@@ -540,9 +545,11 @@ const holdInUse = (owner: Owner, identified: Identified): Effect.Effect<void, Ne
 			onNone: () => Effect.void,
 			onSome: (origin) => holdInUse(owner, origin)
 		}),
-		run(owner.session, `SELECT pg_catalog.pg_advisory_lock_shared(${useKey("$1")})::text`, [
-			Str.slice(0, 16)(identified.digest)
-		])
+		waitingOn(`the collection of template ${identified.name}`)(
+			run(owner.session, `SELECT pg_catalog.pg_advisory_lock_shared(${useKey("$1")})::text`, [
+				Str.slice(0, 16)(identified.digest)
+			])
+		)
 	)
 
 /**
