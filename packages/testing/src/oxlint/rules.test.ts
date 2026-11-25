@@ -53,8 +53,8 @@ export const noWallClockVerdict = ruleProperty(
 		{
 			file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
 			original:
-				"\t\t\t\tOption.exists(keyOf(node), (key) => Arr.contains(VITEST_TIMEOUTS, key)) &&\n",
-			replacement: "\t\t\t\tfalse &&\n",
+				"\t\t\t\t!Option.exists(keyOf(node), (key) => Arr.contains(VITEST_TIMEOUTS, key)) ||\n",
+			replacement: "\t\t\t\ttrue ||\n",
 			why: "A finite testTimeout or hookTimeout passes, so a Vitest config fails a test by the wall clock, as qti-pie's testTimeout: 60_000 failed crust on a slow machine; the property fails."
 		},
 		{
@@ -65,8 +65,8 @@ export const noWallClockVerdict = ruleProperty(
 		},
 		{
 			file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
-			original: "\t\t\t...Arr.filter(Option.toArray(Arr.get(call.arguments, 2)), (third) =>\n",
-			replacement: "\t\t\t...Arr.filter(Option.toArray(Arr.get(call.arguments, 3)), (third) =>\n",
+			original: "\t\treturn [...options, ...argumentTimer(context, call, 2)]\n",
+			replacement: "\t\treturn [...options, ...argumentTimer(context, call, 3)]\n",
 			why: "A test's or a suite's timeout argument, `it(name, fn, 60_000)`, passes; the property fails."
 		},
 		{
@@ -79,8 +79,8 @@ export const noWallClockVerdict = ruleProperty(
 		},
 		{
 			file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
-			original: "\t\t\t...Arr.filter(Option.toArray(Arr.get(call.arguments, 1)), (second) =>\n",
-			replacement: "\t\t\t...Arr.filter(Option.toArray(Arr.get(call.arguments, 9)), (second) =>\n",
+			original: "\t\treturn [...options, ...argumentTimer(context, call, 1)]\n",
+			replacement: "\t\treturn [...options, ...argumentTimer(context, call, 9)]\n",
 			why: "A hook's timeout argument, `beforeAll(fn, 30_000)`, passes; the property fails."
 		},
 		{
@@ -101,6 +101,25 @@ export const noWallClockVerdict = ruleProperty(
 			original: '\t"vi.waitFor",\n',
 			replacement: "",
 			why: "A wait's timeout, `vi.waitFor(fn, { timeout })`, passes; the property fails."
+		},
+		{
+			file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
+			original: "\tfixer.replaceTextRange([edit.range[0], edit.range[1]], edit.text)\n",
+			replacement: "\tfixer.replaceTextRange([edit.range[0], edit.range[0]], edit.text)\n",
+			why: "The fix leaves every timer where it was, so `oxlint --fix` cuts nothing over; the property fails."
+		},
+		{
+			file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
+			original: "\t\t\t\t\t\t\t\t\t\toptions === argument && options.properties.length === 1\n",
+			replacement: "\t\t\t\t\t\t\t\t\t\tfalse\n",
+			why: "The fix leaves an empty options object behind, `test(name, {}, fn)`; the property fails."
+		},
+		{
+			file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
+			original:
+				'\t\t\t\tonSome: (after) => ({ range: [element.range[0], after.range[0]], text: "" }),\n',
+			replacement: '\t\t\t\tonSome: () => ({ range: element.range, text: "" }),\n',
+			why: "A first option's deletion leaves its separator, `{ , retry: 0 }`, which no longer parses; the property fails."
 		}
 	]
 )

@@ -32,8 +32,10 @@ passed. No verdict rests on the wall clock now, by two constructions:
   (`@bjornpagen/testing/scope` VITEST_CONFIGS: `vite.config.ts`, `vitest.config.ts`, `vitest.*.config.ts` and their
   `.mts`, `vitest.workspace.ts`).
 
-To migrate: delete `timeouts` from every `defineTestConfig`, every finite `testTimeout` and `hookTimeout` from every
-Vite and Vitest configuration, and every finite timeout a test, a suite, a hook, a layer or a wait is given.
+To migrate: delete `timeouts` from every `defineTestConfig`, then run `oxlint --fix`, which deletes every finite timer
+the rule refuses (a timeout argument with its separator, a `timeout` option or a configuration's timeout with its
+separator, and an options object the deletion leaves empty); the constants the timers named are then unused, which
+their own lint names. A read of the clock is the author's to replace.
 
 ## Consumer migration: one version through every workspace (2026-11-25)
 

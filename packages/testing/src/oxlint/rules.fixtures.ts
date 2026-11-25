@@ -222,23 +222,51 @@ const FINITE_TIMERS = element(["60_000", "limit", "process.env.CI ? 0 : 60_000"]
 /** A timeout of none, as Vitest reads one. */
 const NO_TIMERS = element(["0", "Infinity", "Number.POSITIVE_INFINITY"] as const)
 
-/** Every form a test API takes a timer in, given `timer`, each once, so a site of them reaches every form: a test's or a
- * suite's third argument and options, a table's, a hook's second argument, a layer's options, a wait's, and options a
- * `const` holds. */
-const timedCalls = (timer: string) =>
+/**
+ * Every form a test API takes a timer in, given `timer`, each once, so a site of them reaches every form, and its text
+ * once the rule's fix deletes the timer: a test's or a suite's third argument and options, alone or beside another
+ * option, first or last, a table's, a hook's second argument, a layer's options, a wait's, and options a `const` holds,
+ * which the fix leaves `{}`.
+ */
+const timedCalls = (timer: string): ReadonlyArray<readonly [code: string, fixed: string]> => [
+	[`it("case ${OWN}", () => check(), ${timer})`, `it("case ${OWN}", () => check())`],
 	[
-		`it("case ${OWN}", () => check(), ${timer})`,
 		`test("case ${OWN}", { timeout: ${timer} }, () => check())`,
+		`test("case ${OWN}", () => check())`
+	],
+	[
 		`describe("suite ${OWN}", () => check(), { timeout: ${timer} })`,
+		`describe("suite ${OWN}", () => check())`
+	],
+	[
 		`it.effect("case ${OWN}", () => Effect.void, ${timer})`,
+		`it.effect("case ${OWN}", () => Effect.void)`
+	],
+	[
 		`it.each([1])("case ${OWN}", (n) => check(n), ${timer})`,
-		`beforeAll(() => check(), ${timer})`,
-		`afterEach(() => check(), ${timer})`,
+		`it.each([1])("case ${OWN}", (n) => check(n))`
+	],
+	[`beforeAll(() => check(), ${timer})`, `beforeAll(() => check())`],
+	[`afterEach(() => check(), ${timer})`, `afterEach(() => check())`],
+	[
 		`layer(Live${OWN}, { timeout: ${timer} })("suite ${OWN}", (it) => check(it))`,
-		`vi.waitFor(() => check(), { timeout: ${timer} })`,
-		`expect.poll(() => check(), { timeout: ${timer} })`,
-		`const options${OWN} = { timeout: ${timer} }\nit("case ${OWN}", options${OWN}, () => check())`
-	] as const
+		`layer(Live${OWN})("suite ${OWN}", (it) => check(it))`
+	],
+	[`vi.waitFor(() => check(), { timeout: ${timer} })`, `vi.waitFor(() => check())`],
+	[`expect.poll(() => check(), { timeout: ${timer} })`, `expect.poll(() => check())`],
+	[
+		`it("case ${OWN}", { retry: 0, timeout: ${timer} }, () => check())`,
+		`it("case ${OWN}", { retry: 0 }, () => check())`
+	],
+	[
+		`it("case ${OWN}", { timeout: ${timer}, retry: 0 }, () => check())`,
+		`it("case ${OWN}", { retry: 0 }, () => check())`
+	],
+	[
+		`const options${OWN} = { timeout: ${timer} }\nit("case ${OWN}", options${OWN}, () => check())`,
+		`const options${OWN} = {}\nit("case ${OWN}", options${OWN}, () => check())`
+	]
+]
 
 /** A reference that reads the clock, a Date of now, or a near name of either, which reads nothing; and a Vitest
  * timeout, finite (a literal, a name, a value computed at load) or none (0, Infinity), or a near name of one. */
@@ -260,11 +288,20 @@ export const clockSites: Gen<Site> = weighted([
 	[1, (s) => site(`const day${OWN} = new ${s.draw(oneOf(DATE_READS))}(${s.draw(int(0, 9))})`, 0)],
 	[
 		3,
-		(s) =>
-			site(
-				`const config${OWN} = { test: { ${s.draw(oneOf(VITEST_TIMEOUTS))}: ${s.draw(element(["60_000", "1", "limit", "process.env.CI ? 0 : 60_000"] as const))} } }`,
-				1
-			)
+		(s) => {
+			const timeout = `${s.draw(oneOf(VITEST_TIMEOUTS))}: ${s.draw(element(["60_000", "1", "limit", "process.env.CI ? 0 : 60_000"] as const))}`
+			return s.draw(element([false, true] as const))
+				? fixedSite(
+						`const config${OWN} = { test: { include: ["a"], ${timeout} } }`,
+						1,
+						`const config${OWN} = { test: { include: ["a"] } }`
+					)
+				: fixedSite(
+						`const config${OWN} = { test: { ${timeout} } }`,
+						1,
+						`const config${OWN} = { test: {} }`
+					)
+		}
 	],
 	[
 		2,
@@ -280,7 +317,20 @@ export const clockSites: Gen<Site> = weighted([
 		(s) => {
 			const bounded = s.draw(element([true, false] as const))
 			const calls = timedCalls(s.draw(bounded ? FINITE_TIMERS : NO_TIMERS))
-			return site(Arr.join(calls, "\n"), bounded ? calls.length : 0)
+			const code = Arr.join(
+				Arr.map(calls, ([written]) => written),
+				"\n"
+			)
+			return bounded
+				? fixedSite(
+						code,
+						calls.length,
+						Arr.join(
+							Arr.map(calls, ([, fixed]) => fixed),
+							"\n"
+						)
+					)
+				: site(code, 0)
 		}
 	],
 	[
