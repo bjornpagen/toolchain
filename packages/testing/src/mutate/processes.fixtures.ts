@@ -3,6 +3,7 @@ import { ChildProcess, type ChildProcessSpawner } from "effect/process"
 import { type MutantPool, servedArgv } from "#mutate/pool.ts"
 import { type Kept, type Kill, Property } from "#property.ts"
 import { type Batch, type CaseResult, lostOtherwise } from "#runner/protocol.ts"
+import { widthOf } from "#workers.ts"
 
 /** A case that passed, as a worker answers it. */
 export const passed: CaseResult = {
@@ -90,7 +91,7 @@ export const checkProperty = (kills: ReadonlyArray<Kill>, kept: ReadonlyArray<Ke
 export const processPool = Effect.map(
 	Effect.context<ChildProcessSpawner.ChildProcessSpawner>(),
 	(services): MutantPool<never> => ({
-		width: 4,
+		width: widthOf(4),
 		lease: (image) =>
 			Effect.succeed({
 				series: () => Effect.succeed([]),

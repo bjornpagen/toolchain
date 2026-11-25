@@ -54,6 +54,7 @@ import {
 } from "#runner/pool.fixtures.ts"
 import { placesOf, placesShared, poolOf } from "#runner/pool.ts"
 import { runPackage, WORKER_ENTRY } from "#runner/run.ts"
+import { widthOf } from "#workers.ts"
 
 export const workersLeaveNoChild = property.exhaust(finite(leavings), {
 	box: "one to three children, their worker ended or left running",
@@ -75,7 +76,7 @@ export const workersLeaveNoChild = property.exhaust(finite(leavings), {
 							cwd: root,
 							env: { [CHILD_FILE]: file },
 							compile: sharedStore,
-							places: placesOf(1),
+							places: placesOf(widthOf(1)),
 							execArgv: process.execArgv,
 							served: Option.none(),
 							guide: "notes",
@@ -164,7 +165,7 @@ export const loadsNever = property.exhaust(finite(boolean), {
 							cwd: root,
 							env: {},
 							compile: sharedStore,
-							places: placesOf(1),
+							places: placesOf(widthOf(1)),
 							execArgv: process.execArgv,
 							served: Option.none(),
 							guide: "notes",
@@ -217,7 +218,7 @@ export const slowWorkerKept = property.exhaust(finite(boolean), {
 							cwd: root,
 							env: {},
 							compile: sharedStore,
-							places: placesOf(1),
+							places: placesOf(widthOf(1)),
 							execArgv: process.execArgv,
 							served: Option.none(),
 							guide: "notes",
@@ -267,7 +268,7 @@ export const silentBeforeReadying = property.exhaust(finite(boolean), {
 							cwd: root,
 							env: {},
 							compile: sharedStore,
-							places: placesOf(1),
+							places: placesOf(widthOf(1)),
 							execArgv: process.execArgv,
 							served: Option.none(),
 							guide: "notes",
@@ -323,7 +324,7 @@ export const lostNamesItsLeg = property.exhaust(finite(silenceSpace), {
 							cwd: root,
 							env: {},
 							compile: sharedStore,
-							places: placesOf(1),
+							places: placesOf(widthOf(1)),
 							execArgv: process.execArgv,
 							served: Option.none(),
 							guide: "notes",
@@ -407,7 +408,7 @@ export const unreadMessageEndsItsWorker = property.exhaust(finite(boolean), {
 							cwd: root,
 							env: {},
 							compile: sharedStore,
-							places: placesOf(1),
+							places: placesOf(widthOf(1)),
 							execArgv: process.execArgv,
 							served: Option.none(),
 							guide: "notes",
@@ -471,7 +472,7 @@ export const declaredWaitKept = property.exhaust(finite(declaredWaitDeadlines), 
 							cwd: root,
 							env: {},
 							compile: sharedStore,
-							places: placesOf(1),
+							places: placesOf(widthOf(1)),
 							execArgv: process.execArgv,
 							served: Option.none(),
 							guide: "notes",
@@ -544,7 +545,7 @@ export const countedOnAWorker = property.exhaust(finite(countsEvery), {
 							cwd: root,
 							env: {},
 							compile: sharedStore,
-							places: placesOf(1),
+							places: placesOf(widthOf(1)),
 							execArgv: process.execArgv,
 							served: Option.none(),
 							guide: "notes",
@@ -616,7 +617,7 @@ export const openDiesUnopened = property.exhaust(finite(boolean), {
 							cwd: root,
 							env: {},
 							compile: sharedStore,
-							places: placesOf(1),
+							places: placesOf(widthOf(1)),
 							execArgv: process.execArgv,
 							served: Option.none(),
 							guide: "notes",
@@ -721,7 +722,7 @@ export const workersTakeTheirPlaces = property.exhaust(
 								cwd: root,
 								env: {},
 								compile: sharedStore,
-								places: { at: [at], of },
+								places: { at: [at], of: widthOf(of) },
 								execArgv: process.execArgv,
 								served: Option.none(),
 								guide: "notes",
@@ -771,7 +772,7 @@ export const leasesTakeDistinctPlaces = property.explore(
 							? "more places asked at once than the width holds"
 							: "all at once within the width"
 					)
-					const { placesFor } = placesLeased(width)
+					const { placesFor } = placesLeased(widthOf(width))
 					const held = new Set<number>()
 					const clashes: Array<number> = []
 					let most = 0
@@ -780,7 +781,7 @@ export const leasesTakeDistinctPlaces = property.explore(
 						(workers) =>
 							Effect.scoped(
 								Effect.gen(function* () {
-									const taken = yield* placesFor(workers)
+									const taken = yield* placesFor(widthOf(workers))
 									for (const place of taken) {
 										if (held.has(place) || place < 0 || place >= width) {
 											clashes.push(place)
@@ -838,7 +839,7 @@ export const startsNever = property.exhaust(finite(boolean), {
 							cwd: root,
 							env: {},
 							compile: sharedStore,
-							places: placesOf(1),
+							places: placesOf(widthOf(1)),
 							execArgv: process.execArgv,
 							served: Option.none(),
 							guide: "notes",
@@ -946,14 +947,14 @@ export const kindsShareTheWidth = property.explore(
 							? "kinds as many as the width"
 							: "kinds more than the width"
 				)
-				const places = placesShared(shared.width, shared.weights)
+				const places = placesShared(widthOf(shared.width), shared.weights)
 				const taken = Arr.flatMap(places, ({ at }) => at)
 				const total = Arr.reduce(shared.weights, 0, (sum, weight) => sum + weight)
 				const extra = shared.width - kinds
 				assert.deepEqual(
 					{
 						kinds: places.length,
-						of: Arr.every(places, (one) => one.of === Math.max(1, shared.width)),
+						of: Arr.every(places, (one) => one.of === shared.width),
 						within: Arr.every(taken, (place) => place >= 0 && place < shared.width),
 						distinct: kinds > shared.width || new Set(taken).size === taken.length,
 						held: kinds > shared.width ? kinds : taken.length,

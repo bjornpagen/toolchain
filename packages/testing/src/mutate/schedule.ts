@@ -4,6 +4,7 @@ import { type MutantPool, type Serves, Unstarted, type WorkerImage } from "#muta
 import { type Property, type PropertyId, runNeedsOf } from "#property.ts"
 import type { Limits } from "#runner/limits.ts"
 import type { Evaluator, Finding } from "#runner/protocol.ts"
+import { type Width, widthOf } from "#workers.ts"
 
 /**
  * A property as the mutator runs it: its identity, the property, and how its workers load the repository's code
@@ -91,7 +92,7 @@ const servesOf = (properties: Arr.NonEmptyReadonlyArray<Subject>): Serves => {
 const stageOn = <E, L>(
 	pool: MutantPool<E>,
 	run: WitnessRun,
-	workers: number,
+	workers: Width,
 	stage: Stage<E, L>
 ): Effect.Effect<TrialVerdict<L>, E> =>
 	Effect.scoped(
@@ -144,8 +145,7 @@ export type Judging<E, L, A> = (staged: Staged<E, L>) => Effect.Effect<A, E>
  * the trials, at least one. With as many trials as workers or more, each runs on one worker and `width` run at once;
  * with fewer, each spreads its cases over its share and all run at once, so the workers leased never pass the width.
  */
-export const shareOf = (width: number, trials: number): number =>
-	Math.max(1, Math.floor(width / Math.max(1, trials)))
+export const shareOf = (width: Width, trials: number): Width => widthOf(width / Math.max(1, trials))
 
 /**
  * How a run's trials share the pool: spread, each leasing an even split of the width (shareOf), so that a few trials
@@ -158,9 +158,9 @@ export const SHARINGS = ["spread", "one each"] as const
 export type Sharing = (typeof SHARINGS)[number]
 
 /** How many workers each trial of `trials` leases from a pool `width` wide, as `sharing` shares it. */
-const LEASED: Readonly<Record<Sharing, (width: number, trials: number) => number>> = {
+const LEASED: Readonly<Record<Sharing, (width: Width, trials: number) => Width>> = {
 	spread: shareOf,
-	"one each": () => 1
+	"one each": () => widthOf(1)
 }
 
 /**

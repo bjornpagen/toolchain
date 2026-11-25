@@ -246,6 +246,11 @@ their 23 fail with a member a worker.
   is that worker's failure. So a family runs the members its live runs reached: a run of one worker, one member. A fresh
   member takes a few seconds (initdb, its owner, template and extensions, a restart), and every run makes again the
   members it reaches; a read of a running one starts nothing.
+- Every width (CPUs, workers, threads, places, tasks, a member's connections) is a `Width` (`packages/testing/src/workers.ts`),
+  a whole number, one at least, minted only by `widthOf`, its one floor: a width of 0 runs nothing, and a run of nothing
+  must never pass (edullm's gate, whose nproc/16 came to 0 under CPUAffinity=0-7, ran no test and exited 0). A run
+  that executes no test fails: the Vitest reporter fails one that ends with none executed or never ends, and every
+  toolchain-test command refuses a load of no property.
 - A run's width is its testWorkers (`packages/testing/src/workers.ts`), half its CPU allowance: the CPUs its affinity
   names, never more than the tightest cpu.max quota of any cgroup from its own to the hierarchy's root (`allowanceOf`;
   Node 26.13.1's `availableParallelism()` reads a slice's quota in place of a tighter one of the unit's own: a unit with

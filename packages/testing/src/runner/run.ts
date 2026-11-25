@@ -42,7 +42,7 @@ import type { Translation } from "#runner/search.ts"
 import { ModuleClosure, WorkerIndex } from "#runner/services.ts"
 import { labelOf, runOfLabel, type Stack } from "#runner/stack.ts"
 import { landedText, type RunUsage } from "#runner/usage.ts"
-import { runWorkers } from "#workers.ts"
+import { runWorkers, widthOf } from "#workers.ts"
 
 /**
  * A run of a package's properties on the pool, as every command reads it: which properties, by identity or module, at
@@ -219,18 +219,22 @@ const moduleOfArgument = (argument: string): string => {
 }
 
 /**
- * A package as a command loads it: its runner config, the properties the arguments name, in discovery order, and the
- * one stack each runs on: the small stack for a module its config's smallStack names, the default for every other.
+ * A package as a command loads it: its runner config, the properties the arguments name, in discovery order, one at
+ * least, and the one stack each runs on: the small stack for a module its config's smallStack names, the default for
+ * every other.
  */
 type Loaded = Readonly<{
 	config: RunnerConfig
-	discovered: ReadonlyArray<Discovered>
+	discovered: Arr.NonEmptyReadonlyArray<Discovered>
 	stackOf: (found: Discovered) => Stack
 }>
 
 /**
  * Loads a package's runner config and the properties `selected` names (every property when it names none): only the
- * test modules an argument reaches are imported, and an argument that names no property fails the load (namedIn).
+ * test modules an argument reaches are imported, and an argument that names no property fails the load (namedIn). A
+ * load of no property fails too, whatever the config includes: every command answers for the properties it loads, so a
+ * run, a gate or a census of none would verify nothing and exit as if it had (the false green of edullm's gate,
+ * 2026-11-24, whose run executed no test and passed).
  */
 export const loadPackage = (
 	root: string,
@@ -242,12 +246,20 @@ export const loadPackage = (
 		const smallModules = yield* matchedBy(root, config.smallStack)
 		const small = new Set(smallModules)
 		const named = Arr.map(selected, argumentOf)
+		const discovered = yield* Arr.isReadonlyArrayNonEmpty(named)
+			? namedIn(root, modules, named)
+			: discover(root, modules)
+		if (!Arr.isReadonlyArrayNonEmpty(discovered)) {
+			return yield* LoadFailed.make({
+				path: `${root}/test.config.ts`,
+				message:
+					"the runner config's include holds no property, so a run of it would verify nothing: a load of no property is refused"
+			})
+		}
 		return {
 			config,
 			stackOf: (found) => (small.has(found.module) ? "small" : "default"),
-			discovered: yield* Arr.isReadonlyArrayNonEmpty(named)
-				? namedIn(root, modules, named)
-				: discover(root, modules)
+			discovered
 		}
 	})
 
@@ -525,7 +537,7 @@ const tokenPropertyOf = (
 			cwd: root,
 			env: {},
 			compile: sharedStore,
-			places: placesOf(1),
+			places: placesOf(widthOf(1)),
 			execArgv: flagsOf(named.stack),
 			served: Option.none(),
 			guide: "notes",

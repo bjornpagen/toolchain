@@ -1,6 +1,13 @@
 import { Array as Arr, Console, Effect, Order, Schema, String as Str } from "effect"
 import type { TestAnnotation } from "vitest"
-import type { Reporter, TestCase, Vitest } from "vitest/node"
+import type {
+	Reporter,
+	SerializedError,
+	TestCase,
+	TestModule,
+	TestRunEndReason,
+	Vitest
+} from "vitest/node"
 
 /** The annotation an exploration's residual line arrives at the reporter as. */
 export const RESIDUAL = "residual"
@@ -97,6 +104,25 @@ const exampleError = (testCase: TestCase, root: string) => ({
 	message: `${relativeTo(root)(testCase.module.moduleId)} > ${testCase.fullName}: this test case ran no search, so a person chose its inputs and wrote its verdict: it is an example, and examples are banned. State the property against an oracle and search it with explore, exhaust or interleave from @bjornpagen/testing, or delete the case if a search already catches what it catches. A file whose cases cannot be searches is exempt, with its reason, in the Vitest config's examples.exempt.`
 })
 
+/**
+ * Where the run the reporter watches stands: between runs (none started yet, or the last one ended), or running, with
+ * how many test cases it has executed so far: passed or failed, since a skipped or pending case executed nothing.
+ */
+type Watched = Readonly<{ kind: "between" }> | Readonly<{ kind: "running"; executed: number }>
+
+/**
+ * Why a run that executed no test case fails: it verified nothing, whatever it was told. A run whose test cases a
+ * filter skipped every one of, or whose files hold none, ends with none executed; a run whose workers never start (a
+ * maxWorkers of 0: edullm's gate unit, pinned to 8 CPUs, derived VITEST_MAX_WORKERS=0 from nproc/16, 2026-11-24) never
+ * ends at all, its event loop drained under a run Vitest still awaits, and Node exits 0 as the loop empties.
+ */
+export const noTestRan = {
+	ended:
+		"this run executed no test case, so it verified nothing: a filter that matches none, or files that hold none, is no pass",
+	unended:
+		"this run never ended: Node's event loop drained before Vitest ran its tests (a maxWorkers of 0 starts no worker), so it verified nothing"
+} as const
+
 /** One line of the residual table, and the bound it is ordered by, Infinity for a risk that is unknown. */
 type Row = Readonly<{ line: string; risk: number }>
 
@@ -149,6 +175,10 @@ const tableOf = (
  * has printed them, so a watch mode's reruns never pile up. It prints through Vitest's logger, so it goes where the
  * run's other output goes.
  *
+ * The reporter fails a run that executed no test case (noTestRan): one that ended with none passed or failed, and one
+ * whose event loop drained before it ended, which Node would exit 0. Either verified nothing, whatever Vitest's worker
+ * setting, its filters or its files, so neither is a pass.
+ *
  * Where the package bans examples, the reporter also fails the run for every test case that passed having run no
  * search, outside the files the package exempts: the library's setup (searches-setup), which `defineTestConfig` runs in
  * every test process, leaves in each test's meta how many times it started explore, exhaust or interleave, so the
@@ -179,8 +209,13 @@ export default class ResidualReporter implements Reporter {
 	#rows: Array<Row> = []
 	#proofs: Array<string> = []
 	#oracles = new Map<string, number>()
+	#watched: Watched = { kind: "between" }
 	#print: (table: string) => void = (table) => Effect.runSync(Console.log(table))
 	#fail: (testCase: TestCase) => void = () => undefined
+	#refuse: (why: string) => void = (why) => {
+		Effect.runSync(Console.error(why))
+		process.exitCode = 1
+	}
 
 	/** Takes the reporter's options as Vitest hands them, decoded, so a config that names the reporter without its
 	 * stance on examples fails to start rather than skip the check. */
@@ -198,12 +233,28 @@ export default class ResidualReporter implements Reporter {
 				"Example Test Case"
 			)
 		}
+		this.#refuse = (why) => {
+			vitest.logger.error(why)
+			process.exitCode = 1
+		}
+		process.on("beforeExit", () => {
+			if (this.#watched.kind === "running") {
+				this.#watched = { kind: "between" }
+				this.#refuse(noTestRan.unended)
+			}
+		})
 	}
 
-	onTestRunStart(): void {
+	/** Lets go of the rows a run collected, so a watch mode's reruns never pile up. */
+	#emptied(): void {
 		this.#rows = []
 		this.#proofs = []
 		this.#oracles = new Map()
+	}
+
+	onTestRunStart(): void {
+		this.#emptied()
+		this.#watched = { kind: "running", executed: 0 }
 	}
 
 	onTestCaseResult(testCase: TestCase): void {
@@ -211,6 +262,12 @@ export default class ResidualReporter implements Reporter {
 			state: testCase.result().state,
 			file: testCase.module.moduleId,
 			searches: testCase.meta()[SEARCHES_KEY] ?? 0
+		}
+		if (
+			this.#watched.kind === "running" &&
+			(finished.state === "passed" || finished.state === "failed")
+		) {
+			this.#watched = { kind: "running", executed: this.#watched.executed + 1 }
 		}
 		if (isBannedExample(this.#examples, testCase.project.config.root, finished)) {
 			this.#fail(testCase)
@@ -233,11 +290,20 @@ export default class ResidualReporter implements Reporter {
 		}
 	}
 
-	onTestRunEnd(): void {
+	onTestRunEnd(
+		_modules: ReadonlyArray<TestModule>,
+		_errors: ReadonlyArray<SerializedError>,
+		reason: TestRunEndReason
+	): void {
 		const table = tableOf(this.#rows, this.#proofs, this.#oracles)
-		this.onTestRunStart()
+		const watched = this.#watched
+		this.#emptied()
+		this.#watched = { kind: "between" }
 		if (Arr.isReadonlyArrayNonEmpty(table)) {
 			this.#print(Arr.join(table, "\n"))
+		}
+		if (watched.kind === "running" && watched.executed === 0 && reason !== "interrupted") {
+			this.#refuse(noTestRan.ended)
 		}
 	}
 }

@@ -1,4 +1,4 @@
-import { processors, threadsPerTask } from "@bjornpagen/testing/workers"
+import { processors, threadsPerTask, type Width, widthOf } from "@bjornpagen/testing/workers"
 import { Array as Arr, Config, Effect, Option, Schema, String as Str } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { DevtoolFailure, failureFrom } from "#shared/devtool.ts"
@@ -48,15 +48,15 @@ const isNumeral = (text: string, point: boolean): boolean => {
  * reads it (its --concurrency, TURBO_CONCURRENCY or turbo.json's `concurrency`): `N%`, that share of the processors
  * rounded down, one at least; or `N`, a whole number of at least one; none for any other text, which turbo refuses too.
  */
-const tasksAtOnceOf = (concurrency: string, processors: number): Option.Option<number> => {
+const tasksAtOnceOf = (concurrency: string, processors: Width): Option.Option<Width> => {
 	if (Str.endsWith("%")(concurrency)) {
 		const share = Str.slice(0, -1)(concurrency)
 		return isNumeral(share, true) && Number(share) > 0
-			? Option.some(Math.max(1, Math.floor((processors * Number(share)) / 100)))
+			? Option.some(widthOf((processors * Number(share)) / 100))
 			: Option.none()
 	}
 	return isNumeral(concurrency, false) && Number(concurrency) >= 1
-		? Option.some(Number(concurrency))
+		? Option.some(widthOf(Number(concurrency)))
 		: Option.none()
 }
 
@@ -126,7 +126,7 @@ const widthHere = Effect.flatMap(placeHere, (place) => {
 		case "turbo":
 			return Effect.flatMap(turboConcurrency, tasksAtOnce)
 		case "alone":
-			return Effect.succeed(1)
+			return Effect.succeed(widthOf(1))
 	}
 })
 
@@ -176,7 +176,7 @@ export const runWidth = (args: ReadonlyArray<string>) =>
 			onNone: () => Effect.flatMap(turboConcurrency, tasksAtOnce)
 		})
 		const tasks = yield* tasksOfRun(args)
-		return Math.max(1, Math.min(width, tasks))
+		return widthOf(Math.min(width, tasks))
 	})
 
 /**

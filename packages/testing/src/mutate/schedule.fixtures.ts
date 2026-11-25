@@ -5,6 +5,7 @@ import { lost, oneCase, passed } from "#mutate/processes.fixtures.ts"
 import { SHARINGS, type Sharing, type TrialVerdict } from "#mutate/schedule.ts"
 import { Property, PropertyId } from "#property.ts"
 import { type Batch, lostOtherwise, type Reach, type Sense } from "#runner/protocol.ts"
+import { type Width, widthOf } from "#workers.ts"
 
 /** The properties a stage's draw names. */
 const NAMES = ["p0", "p1", "p2", "p3"] as const
@@ -19,7 +20,7 @@ export type DrawnStage = Readonly<{
 
 /** A case: the pool's width, the trials, each its stages, and how they share the pool. */
 export type Schedule = Readonly<{
-	width: number
+	width: Width
 	trials: ReadonlyArray<Arr.NonEmptyReadonlyArray<DrawnStage>>
 	sharing: Sharing
 }>
@@ -107,7 +108,7 @@ export const keyOf = (trial: number, stage: number) => `${String(trial)}/${Strin
  * counted as leases open and close.
  */
 export const fakePool = (
-	width: number,
+	width: Width,
 	stages: ReadonlyMap<string, DrawnStage>,
 	seen: Ref.Ref<Seen>
 ): MutantPool<never> => ({
@@ -201,7 +202,7 @@ const trialGen: Gen<Arr.NonEmptyReadonlyArray<DrawnStage>> = (source) =>
 
 /** A case: a pool one to eight wide, up to twelve trials, and either way of sharing the pool. */
 export const scheduleGen: Gen<Schedule> = (source) => ({
-	width: source.draw(int(1, 8)),
+	width: widthOf(source.draw(int(1, 8))),
 	trials: source.draw(array(trialGen, { min: 0, max: 12 })),
 	sharing: source.draw(element(SHARINGS))
 })

@@ -1,5 +1,6 @@
 import { Array as Arr, Option, Order, String as Str } from "effect"
 import { runOfLabel } from "#runner/stack.ts"
+import { widthOf } from "#workers.ts"
 
 /**
  * What the pool's scheduling knows and chooses: the queue, which modules each worker holds (it was sent a unit of a
@@ -558,7 +559,7 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 			return 1
 		}
 		const mean = sum.millis / sum.count
-		const fair = Math.max(1, Math.ceil(total / workers))
+		const fair = widthOf(Math.ceil(total / workers))
 		let count = 0
 		let work = 0
 		for (const unit of units) {
@@ -569,7 +570,7 @@ export const schedulerOf = <U extends Scheduled>(workers: number): Scheduler<U> 
 			work = next
 			count += 1
 		}
-		return Math.max(1, count)
+		return widthOf(count)
 	}
 
 	const take = (worker: number, module: string): Option.Option<Arr.NonEmptyReadonlyArray<U>> => {

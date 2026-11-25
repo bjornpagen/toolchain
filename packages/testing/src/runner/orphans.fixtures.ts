@@ -8,6 +8,7 @@ import { HARDENED_FLAGS } from "#runner/config.ts"
 import { CHILD_FILE } from "#runner/pool.fixtures.ts"
 import { placesOf, poolOf } from "#runner/pool.ts"
 import { WORKER_ENTRY } from "#runner/run.ts"
+import { widthOf } from "#workers.ts"
 
 /**
  * The binding's property (pool.test.ts workersEndWithTheirParent) kills a parent whose worker is held for ever, a
@@ -43,7 +44,7 @@ const heldAsProgram = (root: string, held: string, pidFile: string, childFile: s
 				cwd: root,
 				env: { [CHILD_FILE]: childFile },
 				compile: sharedStore,
-				places: placesOf(1),
+				places: placesOf(widthOf(1)),
 				execArgv: process.execArgv,
 				served: Option.none(),
 				guide: "notes",

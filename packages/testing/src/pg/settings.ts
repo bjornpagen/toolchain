@@ -1,5 +1,6 @@
 import { Array as Arr, String as Str } from "effect"
 import type { Durability, LocalCluster, PredicateRoom, SessionLocks, Sizing } from "#pg/spec.ts"
+import { widthOf } from "#workers.ts"
 
 /**
  * How long a backend runs a statement between two polls of its client's socket, PostgreSQL's
@@ -456,7 +457,7 @@ const lockStatusConnections = (locksPerBackend: number, sendersPerConnection: 0 
 		(sendersPerConnection === 1 ? 0 : defaultWalSenders) +
 		specialWorkerProcesses +
 		preparedTransactions
-	return Math.max(1, Math.floor((backends - others) / (1 + sendersPerConnection)))
+	return widthOf((backends - others) / (1 + sendersPerConnection))
 }
 
 /**
@@ -474,7 +475,7 @@ const capacityOf = (
 ): number =>
 	Math.min(
 		lockStatusConnections(locksPerBackendOf(room), sendersPerConnection),
-		Math.max(1, Math.floor(machineBytes / (backendBytes * members)))
+		widthOf(machineBytes / (backendBytes * members))
 	)
 
 /**

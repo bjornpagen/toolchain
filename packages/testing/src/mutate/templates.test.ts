@@ -32,6 +32,7 @@ import { dropTemplate, services, templateNameOf } from "#resources/resources.fix
 import { Scratch } from "#resources/scratch.ts"
 import { mutantPoolOf } from "#runner/lease.ts"
 import { runnerLimits } from "#runner/limits.ts"
+import { widthOf } from "#workers.ts"
 
 export const trialTemplatesApart = property.exhaust(runPairs, {
 	box: "two runs, each unmutated or serving one of two mutants",
@@ -84,7 +85,7 @@ export const trialTemplatesApart = property.exhaust(runPairs, {
 							)
 							const evaluator = yield* pool.lease(
 								{ ...image, env: { [MARK_TOKEN]: token, [MARK_FILE]: file } },
-								1,
+								widthOf(1),
 								{ guide: "notes", runs: [] }
 							)
 							const results = yield* evaluator.evaluate(

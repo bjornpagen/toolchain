@@ -24,6 +24,7 @@ export default defineRunner({
 		"src/runner/named.test.ts",
 		"src/runner/flags.test.ts",
 		"src/runner/loads.test.ts",
+		"src/runner/norun.test.ts",
 		"src/resources/scratch.test.ts",
 		"src/resources/resources.test.ts",
 		"src/pg/settle.test.ts",

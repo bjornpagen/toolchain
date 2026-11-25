@@ -3,6 +3,7 @@ import type { MutatedFile, RealPath } from "#mutate/mutated.ts"
 import type { RunNeed } from "#property.ts"
 import type { CompileStore } from "#runner/compile-cache.ts"
 import type { Evaluator } from "#runner/protocol.ts"
+import type { Width } from "#workers.ts"
 
 /**
  * What the mutator needs of the runner's pool (lane CORE's runner/pool.ts), and nothing more: an evaluator over workers
@@ -90,10 +91,10 @@ export class Unstarted extends Schema.TaggedError<Unstarted, { readonly brand: u
  * than the width (schedule.ts).
  */
 export type MutantPool<E> = Readonly<{
-	width: number
+	width: Width
 	lease: (
 		image: WorkerImage,
-		workers: number,
+		workers: Width,
 		serves: Serves
 	) => Effect.Effect<Evaluator, E | Unstarted, Scope.Scope>
 }>

@@ -1,5 +1,5 @@
 import { regex } from "arkregex"
-import { Array as Arr, Config, Effect, Option, String as Str } from "effect"
+import { Array as Arr, Brand, Config, Effect, Option, String as Str } from "effect"
 
 /**
  * What the kernel states of the CPUs a process may keep busy at once: its affinity, the `Cpus_allowed_list` of
@@ -41,16 +41,39 @@ const quotaCpus = (limit: string): number => {
 }
 
 /**
+ * A width: how many of something a run holds or does at once (CPUs, workers, threads, tasks, places, a member's
+ * connections, a message's units), a whole number, one at least. A width of zero is no smaller run but none at all: a
+ * gate unit pinned to 8 CPUs read nproc 8, its nproc/16 came to 0, VITEST_MAX_WORKERS=0 ran no test, and Vitest exited 0
+ * (edullm's gate, 2026-11-24). So every width the toolchain derives is minted by widthOf, its one floor, and whatever
+ * takes a width (a pool's places, Vitest's maxWorkers, a tool's threads) takes this type, never a bare number.
+ */
+export type Width = number & Brand.Brand<"Width">
+
+const Width = Brand.nominal<Width>()
+
+/**
+ * The width a derivation comes to (`size`: a share, a quotient, the fewer of two counts), rounded down, and one at
+ * least: the one floor of every width (Width). A size that is no finite number is a broken derivation's (a division by
+ * zero, a count never read), and fails the process.
+ */
+export const widthOf = (size: number): Width => {
+	if (!Number.isFinite(size)) {
+		throw new Error(`a width derived from ${size}, which is no finite number of anything`)
+	}
+	return Width(Math.max(1, Math.floor(size)))
+}
+
+/**
  * A process's CPU allowance from what the kernel states of it (CpuFacts): the CPUs its affinity names, never more than
  * the whole CPUs any cgroup it runs under lets its tasks keep busy (each cpu.max from its own cgroup to the root, the
- * tightest of them binding), and one at least. A quota throttles every task of its cgroup and of the cgroups below it,
- * so a process under a slice held to 16 CPUs keeps 16 busy whatever its affinity and its own cgroup say. Node's
- * availableParallelism() is no such reading: on Node 26.13.1 a unit with CPUQuota=400% in a slice held to 16 CPUs
- * reads 16, the slice's quota in place of its own (cassowary, 2026-11-24), so a run under a quota sized itself past it.
+ * tightest of them binding), and one at least (widthOf), so a quota of part of a CPU is one. A quota throttles every
+ * task of its cgroup and of the cgroups below it, so a process under a slice held to 16 CPUs keeps 16 busy whatever its
+ * affinity and its own cgroup say. Node's availableParallelism() is no such reading: on Node 26.13.1 a unit with
+ * CPUQuota=400% in a slice held to 16 CPUs reads 16, the slice's quota in place of its own (cassowary, 2026-11-24), so
+ * a run under a quota sized itself past it.
  */
-export const allowanceOf = (facts: CpuFacts): number =>
-	Math.max(
-		1,
+export const allowanceOf = (facts: CpuFacts): Width =>
+	widthOf(
 		Arr.reduce(facts.limits, affinityCount(facts.affinity), (least, limit) =>
 			Math.min(least, quotaCpus(limit))
 		)
@@ -111,7 +134,7 @@ const allowanceText = regex("^[1-9][0-9]*$")
  * the kernel states of it now (allowanceOf over cpuFactsAt the machine's root). A variable that is no allowance is a
  * broken parent's, and fails the process.
  */
-const allowanceHere = (): number =>
+const allowanceHere = (): Width =>
 	Option.match(Effect.runSync(Effect.orDie(Config.option(Config.String(allowanceVariable)))), {
 		onNone: () => allowanceOf(cpuFactsAt("")),
 		onSome: (given) => {
@@ -120,7 +143,7 @@ const allowanceHere = (): number =>
 					`${allowanceVariable}=${given} is no CPU allowance: a whole number of CPUs it must be`
 				)
 			}
-			return Number(given)
+			return widthOf(Number(given))
 		}
 	})
 
@@ -128,7 +151,7 @@ const allowanceHere = (): number =>
  * The logical CPUs this process may keep busy at once, its CPU allowance (allowanceHere), read once as the module loads:
  * what testWorkers and every task's threads derive from, the one source of every width a run takes.
  */
-export const processors: number = allowanceHere()
+export const processors: Width = allowanceHere()
 
 /**
  * How many test workers a run of `allowance` CPUs holds: half of them, and one at least (Bjorn, 2026-11-20: "they must
@@ -137,7 +160,7 @@ export const processors: number = allowanceHere()
  * of hundreds. Each test file runs in a forked Node process of its own, one JavaScript thread, so a run of this many
  * processes holds half its CPUs at most.
  */
-const workersOf = (allowance: number): number => Math.max(1, Math.floor(allowance / 2))
+export const workersOf = (allowance: Width): Width => widthOf(allowance / 2)
 
 /**
  * How many test workers a run holds: workersOf this process's CPU allowance (processors). Vitest's maxWorkers is this
@@ -146,7 +169,7 @@ const workersOf = (allowance: number): number => Math.max(1, Math.floor(allowanc
  * members are sized for (pg/family.ts CheckoutFamily's width), a load's processes. It lives in a module of its own,
  * which loads no Vitest, so a script that sizes such a resource reads it without installing Vitest.
  */
-export const testWorkers: number = workersOf(processors)
+export const testWorkers: Width = workersOf(processors)
 
 /**
  * How many workers a run of `properties` properties holds: testWorkers, or fewer when it has fewer properties, one at
@@ -154,8 +177,7 @@ export const testWorkers: number = workersOf(processors)
  * leases a slot of each cluster its needs reach for the run's life, so a lane's run of four properties that held
  * testWorkers leased 32 slots of a shared family where it needed 4, and twelve such runs queued two at a time on 5491.
  */
-export const runWorkers = (properties: number): number =>
-	Math.max(1, Math.min(testWorkers, properties))
+export const runWorkers = (properties: number): Width => widthOf(Math.min(testWorkers, properties))
 
 /**
  * How many threads one task of a run takes when the run executes `tasksAtOnce` tasks at once on `cpus` logical
@@ -164,5 +186,5 @@ export const runWorkers = (properties: number): number =>
  * CPU). A run of at most `cpus` tasks at once so hands out at most `cpus` threads in all; a run of more
  * hands each task its one.
  */
-export const threadsPerTask = (cpus: number, tasksAtOnce: number): number =>
-	Math.max(1, Math.floor(cpus / tasksAtOnce))
+export const threadsPerTask = (cpus: Width, tasksAtOnce: Width): Width =>
+	widthOf(cpus / tasksAtOnce)

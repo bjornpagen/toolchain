@@ -65,8 +65,8 @@ export const threadsShared = property.exhaust(threadings, {
 		},
 		{
 			file: "packages/devtools/src/shared/threads.ts",
-			original: "\t\treturn Math.max(1, Math.min(width, tasks))\n",
-			replacement: "\t\treturn Math.max(1, width)\n",
+			original: "\t\treturn widthOf(Math.min(width, tasks))\n",
+			replacement: "\t\treturn widthOf(width)\n",
 			why: "A run is sized by its concurrency alone, so a check of six tasks at a concurrency of every processor hands each tool one thread and leaves the machine idle; the property fails for the narrow run."
 		},
 		{
@@ -84,8 +84,8 @@ export const threadsShared = property.exhaust(threadings, {
 		},
 		{
 			file: "packages/devtools/src/shared/threads.ts",
-			original: "Math.floor((processors * Number(share)) / 100)",
-			replacement: "Math.floor(Number(share))",
+			original: "widthOf((processors * Number(share)) / 100)",
+			replacement: "widthOf(Number(share))",
 			why: "A share of the processors is read as a count of tasks, so a run at a quarter of them hands each tool the CPUs over 25 tasks, not over a quarter of the machine; the property fails."
 		},
 		{

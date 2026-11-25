@@ -6,18 +6,18 @@ import { needStallMillis } from "#runner/limits.ts"
 import { type PoolFailed, poolOf } from "#runner/pool.ts"
 import { WORKER_ENTRY } from "#runner/run.ts"
 import { openedRuns } from "#runner/runs.ts"
-import { testWorkers } from "#workers.ts"
+import { testWorkers, type Width, widthOf } from "#workers.ts"
 
 /**
  * The places of a pool `width` wide that leases take: `placesFor(workers)` takes that many places no other open lease
  * holds, in the caller's scope, waiting while too few are free, and gives them back as the scope closes, so the places
  * held at once are distinct and never more than the width.
  */
-export const placesLeased = (width: number) => {
+export const placesLeased = (width: Width) => {
 	const leasing = Semaphore.makeUnsafe(width)
 	const free: Array<number> = Array.from({ length: width }, (_, place) => place)
 	return {
-		placesFor: (workers: number) =>
+		placesFor: (workers: Width) =>
 			Effect.acquireRelease(
 				Effect.andThen(leasing.take(workers), () =>
 					Effect.filterOrElse(
@@ -80,7 +80,7 @@ export const mutantPoolOf = (
 				Effect.gen(function* () {
 					const rebased = rebasedTo(checkout, image.root)
 					const root = rebased(packageRoot)
-					const taken = yield* placesFor(Math.max(1, Math.min(workers, testWorkers)))
+					const taken = yield* placesFor(widthOf(Math.min(workers, testWorkers)))
 					const runs = yield* Effect.provideContext(
 						openedRuns(serves.runs, root, needStallMillis),
 						platform

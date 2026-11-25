@@ -77,7 +77,7 @@ import {
 	waitLeft,
 	type Waits
 } from "#runner/work.ts"
-import { allowanceVariable, processors } from "#workers.ts"
+import { allowanceVariable, processors, type Width, widthOf } from "#workers.ts"
 
 /**
  * The pool: worker processes, at most one a core and forked as the queue wants them (one for each module no worker
@@ -177,7 +177,7 @@ const uncounted = "the pool gave back no answer for a count it was sent"
  * the members' count, resources/cluster.ts memberOf), so workers that run at once take distinct places: a run's pool
  * holds every place, and each lease of the mutator's pool holds places no other lease holds.
  */
-export type Places = Readonly<{ at: Arr.NonEmptyReadonlyArray<number>; of: number }>
+export type Places = Readonly<{ at: Arr.NonEmptyReadonlyArray<number>; of: Width }>
 
 /**
  * The places of a run whose pools are `weights.length` kinds of workers sharing one width (runner/run.ts: one pool for
@@ -186,14 +186,14 @@ export type Places = Readonly<{ at: Arr.NonEmptyReadonlyArray<number>; of: numbe
  * `width` workers in all and no two of its workers take one place (a worker's place picks its cluster member). A machine narrower than its kinds gives each kind one place, the kinds sharing them in turn.
  */
 export const placesShared = (
-	width: number,
+	width: Width,
 	weights: Arr.NonEmptyReadonlyArray<number>
 ): Arr.NonEmptyReadonlyArray<Places> => {
 	const kinds = weights.length
 	if (kinds > width) {
 		return Arr.map(weights, (_, kind) => ({
-			at: [kind % Math.max(1, width)],
-			of: Math.max(1, width)
+			at: [kind % width],
+			of: width
 		}))
 	}
 	const extra = width - kinds
@@ -226,12 +226,12 @@ export const placesShared = (
 }
 
 /** Every place of `workers` processes, a pool's own, the first worker at the first. */
-export const placesOf = (workers: number): Places => ({
+export const placesOf = (workers: Width): Places => ({
 	at: Arr.prepend(
-		Array.from({ length: Math.max(0, workers - 1) }, (_, place) => place + 1),
+		Array.from({ length: workers - 1 }, (_, place) => place + 1),
 		0
 	),
-	of: Math.max(1, workers)
+	of: workers
 })
 
 /**
@@ -1167,7 +1167,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 							onSome: ([, answer]) => answer
 						})
 				),
-			width: Effect.sync(() => Math.max(1, Arr.filter(workers, idle).length - scheduler.queued())),
+			width: Effect.sync(() => widthOf(Arr.filter(workers, idle).length - scheduler.queued())),
 			workers: most
 		}
 		return {

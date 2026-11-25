@@ -1,4 +1,4 @@
-import { Array as Arr, Effect, FileSystem, Option, String as Str } from "effect"
+import { Array as Arr, Effect, FileSystem, Option, Schema, String as Str } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { array, boolean, element, type Gen, int, option, weighted } from "#gen.ts"
 import type { CheckoutDir } from "#mutate/checkout.ts"
@@ -146,27 +146,40 @@ export const treeWritten = (tree: Tree) =>
 	})
 
 /**
- * A unit's own limits in a live case: the whole CPUs of its quota (systemd's CPUQuota, a percent of one CPU) and the
- * CPUs of its affinity (CPUAffinity, from CPU 0), each where it states one.
+ * A unit's own limits in a live case: its quota as systemd's CPUQuota states it, a percent of one CPU, and the CPUs of
+ * its affinity (CPUAffinity, from CPU 0), each where it states one.
  */
 export type UnitLimits = Readonly<{ quota: Option.Option<number>; affinity: Option.Option<number> }>
 
 /**
- * Every live case: a quota of one or two CPUs or none, and an affinity of one or two CPUs or none, each a bound well
- * below any machine's that runs the toolchain's tests.
+ * Every live case: a quota of half a CPU, one or two, or none, and an affinity of one or two CPUs or none, each a bound
+ * well below any machine's that runs the toolchain's tests, so its affinity is smaller than the machine's CPUs.
  */
 export const unitLimits: Gen<UnitLimits> = (source) => ({
-	quota: source.draw(option(int(1, 2))),
+	quota: source.draw(option(element([50, 100, 200]))),
 	affinity: source.draw(option(int(1, 2)))
 })
 
 /**
- * The CPU allowance a transient unit of systemd's with `limits` reads of itself: workers.ts of the testing package at
- * `checkout` (Checkout.dir, so a kill's mutant on disk is what it loads) loaded in a Node process the unit runs
- * (`systemd-run --user --wait --pipe`), which no process of a run started, so no allowance is given it and it reads its
- * own (its affinity and every cpu.max of its ancestry), printed and read back here.
+ * The widths a process derives of itself (workers.ts), as a unit prints them, as JSON: its CPU allowance, its test
+ * workers, the workers of a run of no property, and the threads of one task among more tasks than it has CPUs.
  */
-export const unitAllowance = (checkout: CheckoutDir, limits: UnitLimits) =>
+const UnitWidthsJson = Schema.fromJsonString(
+	Schema.Struct({
+		processors: Schema.Finite,
+		testWorkers: Schema.Finite,
+		runOfNone: Schema.Finite,
+		threadsAmongMore: Schema.Finite
+	})
+)
+
+/**
+ * The widths a transient unit of systemd's with `limits` derives of itself (UnitWidthsJson): workers.ts of the testing
+ * package at `checkout` (Checkout.dir, so a kill's mutant on disk is what it loads) loaded in a Node process the unit
+ * runs (`systemd-run --user --wait --pipe`), which no process of a run started, so no allowance is given it and it
+ * reads its own (its affinity and every cpu.max of its ancestry), printed and read back here.
+ */
+export const unitWidths = (checkout: CheckoutDir, limits: UnitLimits) =>
 	Effect.gen(function* () {
 		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
 		const workers = process
@@ -175,7 +188,7 @@ export const unitAllowance = (checkout: CheckoutDir, limits: UnitLimits) =>
 		const properties = [
 			...Option.match(limits.quota, {
 				onNone: () => [],
-				onSome: (cpus) => ["-p", `CPUQuota=${cpus * 100}%`]
+				onSome: (percent) => ["-p", `CPUQuota=${percent}%`]
 			}),
 			...Option.match(limits.affinity, {
 				onNone: () => [],
@@ -196,9 +209,31 @@ export const unitAllowance = (checkout: CheckoutDir, limits: UnitLimits) =>
 					"--disable-warning=ExperimentalWarning",
 					"--input-type=module",
 					"--eval",
-					`import { processors } from "${workers}"\nconsole.log(processors)`
+					`import { processors, runWorkers, testWorkers, threadsPerTask, widthOf } from "${workers}"\nconsole.log(JSON.stringify({ processors, testWorkers, runOfNone: runWorkers(0), threadsAmongMore: threadsPerTask(processors, widthOf(processors + 1)) }))`
 				])
 			)
 		)
-		return Number(Str.trim(printed))
+		return yield* Effect.orDie(Schema.decodeEffect(UnitWidthsJson)(Str.trim(printed)))
 	})
+
+/**
+ * A count a run's widths are derived beside: the properties a run holds, the tasks a turbo run executes at once, the
+ * trials of a mutation run, and the weights (properties) of a run's kinds of workers, none of them bounded below.
+ */
+type Counts = Readonly<{
+	properties: number
+	tasks: number
+	trials: number
+	weights: Arr.NonEmptyReadonlyArray<number>
+}>
+
+/** Every count a case draws beside its tree: each from none to past any allowance the trees state. */
+export const widthCounts: Gen<Counts> = (source) => {
+	const weights = source.draw(array(int(0, 12), { min: 1, max: 4 }))
+	return {
+		properties: source.draw(int(0, 40)),
+		tasks: source.draw(int(0, 400)),
+		trials: source.draw(int(0, 40)),
+		weights: Arr.isReadonlyArrayNonEmpty(weights) ? weights : [0]
+	}
+}

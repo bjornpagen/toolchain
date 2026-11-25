@@ -1,3 +1,4 @@
+import { regex } from "arkregex"
 import { Array as Arr, Config, Effect, Option, Result, String as Str } from "effect"
 import { defineConfig } from "vitest/config"
 import { HARDENED_FLAGS, SMALL_STACK } from "#runner/config.ts"
@@ -20,6 +21,30 @@ const SEARCHES_SETUP = `${import.meta.dirname}/searches-setup.ts`
 
 /** The setup that keeps a test process's compiled code in Node's compile cache (compile-cache.ts). */
 const COMPILE_CACHE_SETUP = `${import.meta.dirname}/compile-cache.ts`
+
+/** A count of workers as VITEST_MAX_WORKERS may hold one: a whole number, one at least, in decimal. */
+const workersText = regex("^[1-9][0-9]*$")
+
+/**
+ * The variable Vitest reads its maxWorkers from past any config (Number.parseInt of its text, Vitest 5.1.1's
+ * resolveConfig), refused unless it holds a whole number of workers, one at least: a 0 starts no worker, so a run
+ * executes no test and Node exits 0 as its event loop drains (edullm's gate, 2026-11-24: a unit pinned to 8 CPUs derived
+ * nproc/16 = 0), and parseInt reads "50%" as 50 and "1.5" as 1. Refused as the config loads, so Vitest never starts.
+ */
+const MAX_WORKERS_VARIABLE = "VITEST_MAX_WORKERS"
+
+/** Refuses a VITEST_MAX_WORKERS that is no whole number of workers, one at least (MAX_WORKERS_VARIABLE). */
+const refuseWorkerlessOverride = (given: Option.Option<string>): void =>
+	Option.match(given, {
+		onNone: () => undefined,
+		onSome: (text) => {
+			if (!workersText.test(text)) {
+				throw new Error(
+					`${MAX_WORKERS_VARIABLE}=${text} is no count of workers: a whole number, one at least, it must be, or unset (a run takes testWorkers)`
+				)
+			}
+		}
+	})
 
 /** Vitest's form of a timeout, where zero means none. */
 const millisOf = (timeout: Timeout) => (timeout.kind === "unbounded" ? 0 : timeout.millis)
@@ -55,10 +80,13 @@ export type TestConfig = Readonly<{
  * project's, and none of a run under NODE_V8_COVERAGE); the run seed chosen once by global setup; and the residual table
  * at the end, whose reporter fails
  * the run for every passing test case that ran no search where the package bans examples, as each project's setup
- * records the searches every test ran. A fuzz run lifts every
+ * records the searches every test ran, and fails a run that executed no test case (reporter.ts noTestRan), as Vitest's
+ * own passWithNoTests, false here, fails a run that found no test file; a VITEST_MAX_WORKERS that is no whole number of
+ * workers, one at least, is refused before Vitest starts (MAX_WORKERS_VARIABLE). A fuzz run lifts every
  * timeout: its budget is its own, and each case's hang guard still catches a case that stops.
  */
 export const defineTestConfig = (config: TestConfig) => {
+	refuseWorkerlessOverride(Effect.runSync(Config.option(Config.String(MAX_WORKERS_VARIABLE))))
 	const fuzzing = Option.isSome(Effect.runSync(Config.option(Config.String("TEST_FUZZ"))))
 	const covered = Option.isSome(Effect.runSync(Config.option(Config.String("NODE_V8_COVERAGE"))))
 	const uncoveredSetup = covered ? [SEARCHES_SETUP] : [COMPILE_CACHE_SETUP, SEARCHES_SETUP]
@@ -115,6 +143,7 @@ export const defineTestConfig = (config: TestConfig) => {
 					: [])
 			],
 			maxWorkers: testWorkers,
+			passWithNoTests: false,
 			env: { [allowanceVariable]: `${processors}` },
 			reporters: ["default", residualReporter(config.examples)],
 			testTimeout: timeoutOf(config.timeouts.test),

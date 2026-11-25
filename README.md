@@ -14,6 +14,27 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: no width is 0, and a run of no test fails (2026-11-24)
+
+edullm's gate unit, pinned by CPUAffinity to 8 CPUs, read nproc 8, so its nproc/16 width came to 0;
+VITEST_MAX_WORKERS=0 then started no worker, Vitest ran no test, Node exited 0 as its event loop drained, and the gate
+read that as green. Two constructions close the class:
+
+- **Every width is a `Width`** (`@bjornpagen/testing/workers`): a whole number, one at least, minted by `widthOf`, its
+  one floor. The allowance, testWorkers, a run's workers, a task's threads, a pool's places, a trial's share, a
+  member's connections and turbo's tasks at once are each one, and what takes a width (`placesOf`, `placesShared`, a
+  mutant pool's lease) takes the type. A width a repository derives itself (a share of `processors`, a count of
+  members) goes through `widthOf`, never a bare `Math.floor` or division.
+- **A run that executes no test fails**, whatever its worker setting: `defineTestConfig` refuses a
+  `VITEST_MAX_WORKERS` that is no whole number, one at least, as the config loads (Vitest reads it past any config),
+  and sets `passWithNoTests: false`; the reporter (`@bjornpagen/testing/vitest/reporter`) fails a run that ended with
+  no test case passed or failed (a filter that matches none) and one whose event loop drained before it ended (a
+  worker setting of 0). Every toolchain-test command refuses a load of no property (`run`, `affected`, `verified`,
+  `kills`, `census`, `fuzz`).
+
+To migrate: drop any `VITEST_MAX_WORKERS`, `--maxWorkers` or nproc arithmetic from scripts and units (a unit's width is
+its CPUAffinity and CPUQuota, which the allowance reads), and pass a width a repository computes through `widthOf`.
+
 ## Consumer migration: a member runs only while a process holds its family (2026-11-24)
 
 toolchain-pg started each member as `postgres@<family>-<i>`, a unit of its own, so a run that ended, failed or was

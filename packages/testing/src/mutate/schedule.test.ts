@@ -144,13 +144,13 @@ export const scheduledTrials = property.explore(scheduleGen, {
 		},
 		{
 			file: "packages/testing/src/mutate/schedule.ts",
-			original: "Math.max(1, Math.floor(width / Math.max(1, trials)))",
-			replacement: "Math.max(1, Math.ceil(width / Math.max(1, trials)))",
+			original: "widthOf(width / Math.max(1, trials))",
+			replacement: "widthOf(Math.ceil(width / Math.max(1, trials)))",
 			why: "Each trial leases the width split evenly rounded up, so the trials at once lease more workers than the width holds."
 		},
 		{
 			file: "packages/testing/src/mutate/schedule.ts",
-			original: '"one each": () => 1',
+			original: '"one each": () => widthOf(1)',
 			replacement: '"one each": shareOf',
 			why: "A coverage pass's trials spread over the width like a mutant's, so each subject's witnesses fork as many coverage workers as the split gives, each started dearly."
 		},
