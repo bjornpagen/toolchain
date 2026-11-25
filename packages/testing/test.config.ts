@@ -10,6 +10,7 @@ import { defineRunner, noMutation } from "#runner/config.ts"
 export default defineRunner({
 	include: [
 		"src/fact.test.ts",
+		"src/traces.test.ts",
 		"src/workers.test.ts",
 		"src/oracle.test.ts",
 		"src/seeds.test.ts",

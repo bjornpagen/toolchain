@@ -38,6 +38,7 @@
 		"./swarm": "./src/swarm.ts",
 		"./syntax": "./src/syntax.ts",
 		"./tape": "./src/tape.ts",
+		"./traces": "./src/traces.ts",
 		"./values": "./src/values.ts",
 		"./verdict": "./src/mutate/verdict.ts",
 		"./vitest": "./src/vitest/searched.ts",
