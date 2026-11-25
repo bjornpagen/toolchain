@@ -292,7 +292,10 @@ const applyListOf = (context: Context, call: NodeOf<"CallExpression">): Option.O
  * `as const` tuple, a binding scope analysis finds holding one (a binding with a written tuple type, a constant holding
  * an `as const` tuple or such a call's result, the function's own rest parameter), and the result of a call of a function of this module whose
  * written return type is such a tuple or of one the options name. Every other list is refused, since the syntax gives
- * no length.
+ * no length. So a spread of a statically sized tuple is admitted (`on(R, ...key)` with `const key = ["a", "b"] as
+ * const`), a spread of a runtime list is refused (`and(...predicates)` over a list a program builds), and an API that
+ * must take a runtime list takes it as one list parameter (grizzle's `r.and(predicates)` and `r.or(predicates)`), never
+ * as a rest parameter its callers spread into.
  */
 export const noSpreadArgument = configured(Options, (context, options) => {
 	let reading: Reading = { context, aliases: new Map(), tuples: options.tuples }

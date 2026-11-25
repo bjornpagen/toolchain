@@ -157,7 +157,7 @@ export const noOrderedUnordered = ruleProperty(
 	]
 )
 
-/** no-example-table reports exactly the tables of written-out rows, in whatever function a test runs as its body. */
+/** no-example-table reports exactly the tables of rows written in source, in whatever function a test runs as its body. */
 export const noExampleTable = ruleProperty("no-example-table", inTests(programOf(tableSites)), [
 	{
 		file: "packages/testing/src/oxlint/rules/no-example-table.ts",
@@ -165,6 +165,19 @@ export const noExampleTable = ruleProperty("no-example-table", inTests(programOf
 			"\t\tTaggedTemplateExpression: (node) => {\n\t\t\tif (Option.exists(testPathOf(context, node.tag), isTablePath)) {\n\t\t\t\trefuse(node)\n\t\t\t}\n\t\t},\n",
 		replacement: "",
 		why: "no-example-table reads a tagged-template table as no table."
+	},
+	{
+		file: "packages/testing/src/oxlint/rules/no-example-table.ts",
+		original: "\t\tArr.isReadonlyArrayNonEmpty(value.elements) ||\n",
+		replacement: "\t\ttrue ||\n",
+		why: "An empty array is read as rows: an accumulator a property fills at run time (edullm's journey.test.ts `journeyNotes`) is refused as an example table."
+	},
+	{
+		file: "packages/testing/src/oxlint/rules/no-example-table.ts",
+		original:
+			"\t\t\tArr.some(variable.references, (reference) => pushesWritten(reference.identifier))\n",
+		replacement: "\t\t\tfalse\n",
+		why: "Rows a test pushes are no rows: `const t = []; t.push({ input: 1 })` and a loop over `t` pass as no table."
 	},
 	{
 		file: "packages/testing/src/oxlint/rules/no-example-table.ts",

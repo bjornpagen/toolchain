@@ -1087,11 +1087,22 @@ export const orderedSites: Gen<Site> = weighted([
 	]
 ])
 
-/** Rows a test takes, and whether they are written out: an array literal or a `const` holding one, or rows made. */
+/**
+ * Rows a test takes, and whether they are written out: an array literal of rows or a `const` holding one, an empty one
+ * the code pushes written rows into; or none written: an empty literal, an accumulator program code fills or pushes
+ * computed values into, or rows made.
+ */
 const rowsGen: Gen<readonly [declared: string, written: string, writtenOut: boolean]> = element([
 	["", "[1, 2]", true],
-	["", "[]", true],
+	["", "[]", false],
 	[`const rows${OWN} = [{ input: 1, output: 2 }]\n`, `rows${OWN}`, true],
+	[
+		`const rows${OWN}: Array<{ input: number }> = []\nrows${OWN}.push({ input: 1 }, { input: -2 })\n`,
+		`rows${OWN}`,
+		true
+	],
+	[`const rows${OWN}: Array<number> = []\nfill(rows${OWN})\n`, `rows${OWN}`, false],
+	[`const rows${OWN}: Array<number> = []\nrows${OWN}.push(compute())\n`, `rows${OWN}`, false],
 	["", "rowsOf(3)", false]
 ] as const)
 
