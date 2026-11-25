@@ -677,7 +677,7 @@ export const closedOnReturn = property.exhaust(finite(boolean), {
 						const outcome = yield* runPackage({
 							root,
 							seedOf: () => 1,
-							observes: () => false,
+							conductOf: () => "clean",
 							reach: "full",
 							selected: []
 						})

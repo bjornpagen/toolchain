@@ -32,7 +32,7 @@ import {
 	storeDirectory
 } from "#runner/compile-cache.ts"
 import { moduleClosureAt } from "#runner/module-closure.ts"
-import type { Observation } from "#runner/observe.ts"
+import { type Drained, type Observation, type ReadBy, unwatched, widerOf } from "#runner/observe.ts"
 import {
 	type CountAnswer,
 	countAnswerOf,
@@ -66,6 +66,8 @@ import {
 	schedulerOf,
 	type View
 } from "#runner/schedule.ts"
+import type { KeyedRead } from "#runner/strace.ts"
+import type { WorkerReads } from "#runner/traces.ts"
 import {
 	type ChildrenStated,
 	type PoolUsage,
@@ -161,6 +163,7 @@ type Worker = {
 	occupiedSince: number
 	readyingMillis: number
 	observed: Option.Option<Observation>
+	traces: Array<KeyedRead>
 }
 
 /** How much of what a worker wrote the parent keeps, to report a lost case with: the end of it. */
@@ -299,11 +302,16 @@ export type Pool = Readonly<{
  * What a property's run observed past its key (runner/observe.ts), as a pool saw it: `unclean`, the first observation
  * of a worker that had made one by the time it answered a readying or a unit of the property, so its verdict depends on
  * something its key does not hold, none when every worker that ran it had observed nothing up to its last unit there;
- * and `own`, the first observation a window of its own made, none when none did.
+ * `traces`, every keyable read (runner/strace.ts KeyedRead) of every worker that ran it up to its last unit there (each
+ * worker's reads and how many of them, runner/traces.ts WorkerReads), which its verdict may depend on through a value a
+ * module kept as much as through its own reads; `own`, the first observation a window of its own made, none when none
+ * did; and `readBy`, the widest reader of its own windows' keyable reads (runner/observe.ts ReadBy).
  */
 export type Observed = Readonly<{
 	unclean: Option.Option<Observation>
+	traces: ReadonlyArray<WorkerReads>
 	own: Option.Option<Observation>
+	readBy: ReadBy
 }>
 
 /** The pool failed to start: a worker could not load the package's runner config, and why. */
@@ -318,10 +326,14 @@ const decode = Schema.decodeUnknownOption(FromWorker)
  * Node's child processes, which the pool forks with an IPC channel and structured cloning: Effect's ChildProcess
  * spawns without one, so the pool takes Node's own module, as the process holds it.
  */
-const childProcesses = process.getBuiltinModule("node:child_process")
+/**
+ * node:child_process as this module loads, before a worker's guard wraps it (runner/observe.ts): a pool's workers are the
+ * runner's own processes, never a property's child, though a property may open a pool (the pool's own properties).
+ */
+const childProcesses = Object.freeze({ spawn: unwatched.spawn })
 
 /** A forked worker process. */
-type ChildProcess = ReturnType<typeof childProcesses.fork>
+type ChildProcess = ReturnType<typeof childProcesses.spawn>
 
 /**
  * A worker's launch, bound to the pool's parent: a shell, which leads the worker's process group (it is started
@@ -552,9 +564,22 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 		const processes: Array<Worker["usage"]> = []
 		const uncleanBy = new Map<string, Observation>()
 		const ownBy = new Map<string, Observation>()
+		const readBy = new Map<string, ReadBy>()
+		const tracedUpTo = new Map<string, Map<Worker, number>>()
 
-		/** A property answered on `worker`: unclean when the worker had observed by then, the worker's first observation why. */
-		const answeredOn = (worker: Worker, label: string) => {
+		/**
+		 * A property answered on `worker`, what the worker drained with it (Drained: its reads since, and who made its
+		 * window's): unclean when the worker had observed by then, the worker's first observation why, and its traces every
+		 * keyable read the worker had made by then.
+		 */
+		const answeredOn = (worker: Worker, label: string, drained: Drained) => {
+			for (const trace of drained.reads) {
+				worker.traces.push(trace)
+			}
+			readBy.set(label, widerOf(readBy.get(label) ?? "none", drained.by))
+			const marks = tracedUpTo.get(label) ?? new Map<Worker, number>()
+			marks.set(worker, worker.traces.length)
+			tracedUpTo.set(label, marks)
 			Option.map(worker.observed, (observation) => {
 				if (!uncleanBy.has(label)) {
 					uncleanBy.set(label, observation)
@@ -785,7 +810,8 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 				usage: { started: 0, reported: 0 },
 				occupiedSince: now,
 				readyingMillis: 0,
-				observed: Option.none()
+				observed: Option.none(),
+				traces: []
 			}
 			processes.push(worker.usage)
 			const keep = (chunk: unknown) => {
@@ -1018,7 +1044,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 											cpu: received.cpu
 										})
 										worker.readyingMillis += received.millis
-										answeredOn(worker, unit.property)
+										answeredOn(worker, unit.property, received.drained)
 										spent(unit.property, {
 											readyingCpu: received.cpu,
 											childrenCpu: childrenMillis(received.children),
@@ -1044,7 +1070,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 										ranOf(received.done).cases,
 										held
 									)
-									answeredOn(worker, unit.value.property)
+									answeredOn(worker, unit.value.property, received.drained)
 									spent(unit.value.property, {
 										childrenCpu: childrenMillis(received.children),
 										casesWall: held
@@ -1259,7 +1285,12 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 			observed: (label) =>
 				Effect.sync((): Observed => ({
 					unclean: Option.fromUndefinedOr(uncleanBy.get(label)),
-					own: Option.fromUndefinedOr(ownBy.get(label))
+					traces: Arr.map(
+						Arr.fromIterable(tracedUpTo.get(label) ?? new Map<Worker, number>()),
+						([worker, upTo]): WorkerReads => ({ reads: worker.traces, upTo })
+					),
+					own: Option.fromUndefinedOr(ownBy.get(label)),
+					readBy: readBy.get(label) ?? "none"
 				}))
 		}
 	})

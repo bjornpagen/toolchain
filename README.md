@@ -14,6 +14,32 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: a run answers a property that reads at run time while what it read stands (2026-11-26)
+
+`toolchain-test run` answered from the cache only a property that read nothing at run time: one that read a file (a
+fixture, a program's prelude, PostgreSQL's catalog), started a child process (tsgo) or connected to its cluster
+observed past its key and ran every time (grizzle, 2026-11-25: 1,141 of its 1,316 properties). Now a pass keeps its
+trace, and a run answers it while some trace of it reads alike:
+
+- **A trace is every keyable read its workers made at run time**, each with the digest of what it read: a file's
+  bytes, a directory's entries, a path's presence, where a path resolves to (realpath), a link's text, by the
+  property's process or by a child it starts, which runs under strace; and each connection to one of the run's own
+  cluster members, a read of the PostgreSQL serving it (its installation and the workbench's postgres@.service). The
+  verdict key's PostgreSQL field is gone: it is a read.
+- **What no digest states still observes past every key**, so its property runs every time: a path's status or watch
+  (times, an inode), /proc, /sys or /dev read as a file, a child run through a shell, exec or fork or outliving its
+  unit, a connection to anything but the run's own members, a thread.
+- **A property's workers are of its conduct's kind**: clean, reading (its own process reads), spawning (a child it
+  starts reads) or observing, as its last run's windows did (`<cache>/<repository key>/{reading,spawning,observing}/`),
+  so a reader's reads join no clean property's trace and an observer leaves no reader's worker unclean.
+- A run's reads are kept once, in `<verdicts>/reads/`, each pass's trace beside its record. They accumulate until
+  retention by reachability lands.
+
+To migrate: a stall guard that reads a child's /proc itself observes; judge the child's tree by the testing library's
+judge (`processWorkNow` over its pid and `overrun`, `@bjornpagen/testing/live`), whose reads of /proc are the runner's
+own, no property's (grizzle's type tier). A child's reads are keyed only where `/usr/bin/strace` is installed; elsewhere
+a child observes.
+
 ## Consumer migration: a closure names what its conditions resolve; a runner keeps its own templates (2026-11-26)
 
 metis rebuilt its database template at every switch between its `react-server` packages and its plain ones (338 s
@@ -110,21 +136,24 @@ its verdict line) and how many were cached, run, observed and failed. `toolchain
 
 A key holds what a property can observe: its identity, its import closure (its module's, the runner config's, the
 package's pg.config.ts, the runner's entries, under the config's conditions and Node's version), the digest of every
-file of the toolchain's testing package, the digest of its workers' environment, the PostgreSQL installation and the
-workbench's cluster configuration for a property that declares a database template, and its seeds: each property's
+file of the toolchain's testing package, the digest of its workers' environment, and its seeds: each property's
 rotating stream is seeded by its key, so a run at an unchanged key draws the cases it drew before (TEST_SEED=<n> seeds
-every property with n, and keys n). A property whose code reads a file that is not its own data, starts a child
-process, opens a connection or starts a thread at run time observes past its key: it runs every time, and every
-property run after it on the same worker is not kept either (CONTRIBUTING.md, "A run reads the verdict cache"); one
-that observed in a window of its own is noted and runs on workers of its own kind next time, so the others stay clean.
-Today that is every property that starts a child process (grizzle's type tier, which runs tsgo; the TypeScript API,
-which spawns it) or reads a file at run time (a type program's prelude, PostgreSQL's postgres.bki), and every property
-that declares a database need, whose cluster is reached through child processes and connections.
+every property with n, and keys n). What a property reads at run time is its pass's trace: a fixture or a program's
+prelude, the PostgreSQL build's catalog, where a path resolves to, a link's text, what a child process it starts reads
+(tsgo's sources and libraries: each child runs under strace), the PostgreSQL serving a member it connects to; the pass
+answers while every read of some trace of it reads alike, in this checkout or another of the repository. What no
+digest states (a file's times, /proc, a shell's child, a connection to another server, a thread) is an observation past
+every key: its property runs every time, and every property run after it on the same worker is not kept either
+(CONTRIBUTING.md, "A run reads the verdict cache"); a property that observed or read in a window of its own runs on
+workers of its own kind next time, so the others stay clean. A stall guard over a child a property starts judges the
+child's process tree by the library's judge (`processWorkNow` and `overrun`, `@bjornpagen/testing/live`), whose reads of
+/proc are no property's: a consumer's own /proc reader is an observation, so its property is never cached.
 
-Out of every key's reach, and so assumed of every property (main's ruling, 2026-11-24): its verdict does not depend on
-the clock, on randomness not drawn from its case's tape, on the machine's live state read through node:os or process
-(load, memory, a process's id), on a value another property left in a module's state without reading anything, or on
-the checkout's absolute path, which a key cannot hold without ending every reuse across checkouts.
+What every key holds of a database property (its template, the PostgreSQL serving it, the members' settings) and
+what is out of every key's reach, and so assumed of every property (the clock, the server's included; untaped
+randomness, SQL's random() included; the machine's live state; the cluster's identities and other sessions' activity;
+a value left in a module's state; the checkout's absolute path), is stated once, in the guard's doc
+(packages/testing/src/runner/observe.ts).
 
 A worker is given only the variables the toolchain names (HOME, USER, LOGNAME, SHELL, PATH, LANG, LC_ALL, TZ, TMPDIR,
 the XDG directories, DBUS_SESSION_BUS_ADDRESS, PGSSLROOTCERT, NODE_DISABLE_COMPILE_CACHE) and those its runner config
@@ -425,7 +454,8 @@ Leases, `scripts/hold.pl`, the family queue and its tickets, `RunLease`, the clu
    bootstrap superuser is the account (`bootstrapSuperuser()`), over `member.socket`, never `postgres`.
 3. **Settle once a spec changes**: `pnpm exec toolchain-pg settle` from the package with pg.config.ts. A script that
    called `clusterUp`, `stopCluster` or `doctor` calls `settled(spec)` or runs `toolchain-pg settle | check | psql |
-   admin | env`; one that stops a server runs `systemctl --user stop postgres@<unit>-<i>`.
+   admin | env`; no script stops a member: a member runs only while a process holds its family, and the workbench
+   starts none unheld (beefy da1e9fc).
 
 ## Consumer migration: a typecheck from scratch (2026-11-20)
 

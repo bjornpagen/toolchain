@@ -2,6 +2,7 @@ import { layerDigest } from "@effect/platform-node/NodeCrypto"
 import {
 	Array as Arr,
 	Console,
+	Context,
 	Effect,
 	FileSystem,
 	Inspectable,
@@ -18,7 +19,6 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { killApplied } from "#mutants.ts"
 import type { Judged } from "#mutate/kills.ts"
 import { type Kill, Property, type PropertyId } from "#property.ts"
-import { templatesOf } from "#resources/collect.ts"
 import { toolchainTestCache } from "#runner/cache-home.ts"
 import {
 	type Edit,
@@ -26,6 +26,7 @@ import {
 	loadCacheAt,
 	recordOf,
 	repositoryKeyOf,
+	verdictFileOf,
 	SeedPolicy,
 	type VerdictCache,
 	VerdictCacheUnusable,
@@ -46,9 +47,17 @@ import type { RunnerConfig } from "#runner/config.ts"
 import { type KeyGrounds, keyGroundsOf } from "#runner/grounds.ts"
 import type { Discovered } from "#runner/load.ts"
 import type { LoadKeying } from "#runner/loads.ts"
-import { observationText } from "#runner/observe.ts"
+import { observationText, type ReadBy, widerOf } from "#runner/observe.ts"
 import type { Observed } from "#runner/pool.ts"
-import { loadPackage, type RunOutcome, searchedPassed, WORKER_ENTRY } from "#runner/run.ts"
+import {
+	type Conduct,
+	loadPackage,
+	type RunOutcome,
+	searchedPassed,
+	WORKER_ENTRY
+} from "#runner/run.ts"
+import { traceLookupOf, traceStands, tracesRemoved, tracesWritten } from "#runner/traces.ts"
+import type { Standing } from "#traces.ts"
 
 /**
  * The verdict cache's side of `toolchain-test run` (runKeyingAt) and of the commands that judge kills and mutants
@@ -210,7 +219,7 @@ const editOfKill = (tree: Files, kill: Kill) =>
 
 /**
  * One property as the gate weighs it: what it is, its joint closure, the key of its search's verdict and the seed of
- * its rotating stream in it, whether it declares a database template (so its keys hold the PostgreSQL), and each kill
+ * its rotating stream in it, and each kill
  * with its edit (none when the kill is stale), the key of the kill's verdict.
  */
 type Weighed = Readonly<{
@@ -218,7 +227,6 @@ type Weighed = Readonly<{
 	closure: Closure
 	key: VerdictKey
 	seed: number
-	templated: boolean
 	killEdits: ReadonlyArray<readonly [Kill, Option.Option<Edit>]>
 }>
 
@@ -278,6 +286,8 @@ type Weighing = Readonly<{
 	repository: string
 	packageRoot: string
 	cache: VerdictCache
+	verdicts: string
+	digest: Context.Service.Shape<typeof Digest.Digest>
 	notes: Notes
 	weighed: ReadonlyArray<Weighed>
 	keyUnder: (one: Weighed, edit: Edit) => Effect.Effect<Option.Option<VerdictKey>>
@@ -464,14 +474,12 @@ const modulesWeighedOf = (
 
 /**
  * The key of a property's search of the program as it stands: its identity and joint closure, the run's grounds (its
- * toolchain, its workers' environment, and its PostgreSQL where the property declares a database template, `templated`),
- * and its seeds, TEST_SEED's or derived from the rest of the key (Seeding).
+ * toolchain and its workers' environment), and its seeds, TEST_SEED's or derived from the rest of the key (Seeding).
  */
 export const searchKeyOf = (
 	property: PropertyId,
 	searched: Closure,
 	grounds: KeyGrounds,
-	templated: boolean,
 	seeding: Seeding
 ) =>
 	Effect.gen(function* () {
@@ -480,7 +488,6 @@ export const searchKeyOf = (
 			closure: searched.hash,
 			toolchain: grounds.toolchain,
 			environment: grounds.environment,
-			postgres: templated ? grounds.postgres : Option.none(),
 			seeds: SeedPolicy(""),
 			edit: Option.none()
 		}
@@ -501,15 +508,13 @@ export const editKeyOf = (
 	searched: Closure,
 	edited: Closure,
 	edit: Edit,
-	grounds: KeyGrounds,
-	templated: boolean
+	grounds: KeyGrounds
 ) =>
 	Effect.map(jointClosureOf([searched, edited]), (joint): VerdictKey => ({
 		property,
 		closure: joint.hash,
 		toolchain: grounds.toolchain,
 		environment: grounds.environment,
-		postgres: templated ? grounds.postgres : Option.none(),
 		seeds: EDIT_SEEDS,
 		edit: Option.some(edit)
 	}))
@@ -534,43 +539,37 @@ const weighingOf = (
 			Arr.map(discovered, (found) => found.module),
 			edited
 		)
-		const templatedOf = (found: Discovered) =>
-			Arr.isReadonlyArrayNonEmpty(templatesOf(found.property.needs))
-		const grounds = yield* keyGroundsOf(config, Arr.some(discovered, templatedOf)).pipe(
-			Effect.provide(weighed.hashing)
-		)
+		const grounds = yield* keyGroundsOf(config).pipe(Effect.provide(weighed.hashing))
 		const properties = yield* Effect.forEach(discovered, (found) =>
 			Effect.gen(function* () {
 				const closure = yield* weighed.jointOf(found.module)
-				const templated = templatedOf(found)
 				const edits = yield* Effect.forEach(found.property.kills, (kill) =>
 					editOfKill(weighed.tree, kill)
 				).pipe(Effect.provide(weighed.hashing))
 				const killEdits = Arr.zip(found.property.kills, edits)
-				const { key, seed } = yield* searchKeyOf(
-					found.id,
-					closure,
-					grounds,
-					templated,
-					seeding
-				).pipe(Effect.provide(weighed.hashing))
-				return { found, closure, key, seed, templated, killEdits } satisfies Weighed
+				const { key, seed } = yield* searchKeyOf(found.id, closure, grounds, seeding).pipe(
+					Effect.provide(weighed.hashing)
+				)
+				return { found, closure, key, seed, killEdits } satisfies Weighed
 			})
 		)
 		const verdicts = yield* verdictCacheAt(`${weighed.home}/verdicts`).pipe(
 			Effect.provide(weighed.hashing)
 		)
-		const notes = yield* notesAt(`${weighed.home}/observing`).pipe(Effect.provide(weighed.hashing))
+		const notes = yield* notesAt(weighed.home).pipe(Effect.provide(weighed.hashing))
+		const digest = Context.get(weighed.hashing, Digest.Digest)
 		return {
 			repository,
 			packageRoot,
 			cache: verdicts,
+			verdicts: `${weighed.home}/verdicts`,
+			digest,
 			notes,
 			weighed: properties,
 			keyUnder: (one, edit) =>
 				Effect.transposeOption(
 					Option.map(weighed.editedOf(edit.file), (file) =>
-						editKeyOf(one.found.id, one.closure, file, edit, grounds, one.templated)
+						editKeyOf(one.found.id, one.closure, file, edit, grounds)
 					)
 				).pipe(Effect.provide(weighed.hashing))
 		} satisfies Weighing
@@ -799,72 +798,115 @@ const touchedOf = (one: Weighed, passed: boolean): Touched => ({
 })
 
 /**
- * What a repository's runs know each property does past its key (runner/observe.ts), so a run gives one known to
- * observe workers of its own (runner/run.ts Workers) and the workers every other runs on stay clean: `observes` answers
- * whether its last run observed in a window of its own, and `kept` keeps what its run's pools saw it do (runner/pool.ts
- * Observed's own): a note where it observed, none where it did not. A note is a file `<directory>/<SHA-256 of the
- * property id>`, holding the observation's text, which no verdict reads: it only places a property's cases, and
- * deleting it at any time costs one run of the property on a clean worker. A property that observes only through a
- * value another left in a module may lose its note and find it again, run after run: it is never cached either way.
+ * What a repository's runs know each property does past its key (runner/run.ts Conduct), so a run gives each workers
+ * of its conduct's kind (runner/run.ts Workers). `conductOf` answers what its last run did in windows of its own, and
+ * `kept` keeps what its run's pools saw it do (conductSeen): a note of its conduct, none where it did nothing past its
+ * key. A note is a file `<home>/<observing | spawning | reading>/<SHA-256 of the property id>`, which no verdict reads:
+ * it only places a property's cases, and deleting it at any time costs one run of the property on a clean worker. A
+ * property that observes or reads only through a value another left in a module may lose its note and find it again,
+ * run after run.
  */
 type Notes = Readonly<{
-	observes: (id: PropertyId) => Effect.Effect<boolean, VerdictCacheUnusable>
-	kept: (
-		id: PropertyId,
-		seen: ReadonlyArray<Observed["own"]>
-	) => Effect.Effect<void, VerdictCacheUnusable>
+	conductOf: (id: PropertyId) => Effect.Effect<Conduct, VerdictCacheUnusable>
+	kept: (id: PropertyId, seen: ReadonlyArray<Observed>) => Effect.Effect<void, VerdictCacheUnusable>
 }>
 
-/** The notes under `directory`, which it creates as it writes (Notes). */
-const notesAt = (directory: string) =>
+/** The conducts a note states, the widest first: a property noted under more than one is the first's. */
+const NOTED = ["observing", "spawning", "reading"] as const
+
+/** A conduct a note states (NOTED). */
+type Noted = (typeof NOTED)[number]
+
+/**
+ * What a run's pools saw a property do in windows of its own (runner/pool.ts Observed), the widest of its runs': an
+ * observation; else a child's keyable reads; else its own; else nothing.
+ */
+const conductSeen = (seen: ReadonlyArray<Observed>): Conduct => {
+	if (Arr.some(seen, (one) => Option.isSome(one.own))) {
+		return "observing"
+	}
+	const by = Arr.reduce<Observed, ReadBy>(seen, "none", (wider, one) => widerOf(wider, one.readBy))
+	return by === "children" ? "spawning" : by === "process" ? "reading" : "clean"
+}
+
+/**
+ * The notes under `home` (Notes): a property's under the directory of its conduct (`observing/`, `spawning/`,
+ * `reading/`), an observer's holding its observation's text, each created as it is written.
+ */
+const notesAt = (home: string) =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem
 		const digest = yield* Digest.Digest
-		const fileOf = (id: PropertyId) =>
+		const fileOf = (conduct: Noted, id: PropertyId) =>
 			Effect.map(
 				digest.digestHex(Digest.sha256, new TextEncoder().encode(id)),
-				(hash) => `${directory}/${hash}`
+				(hash) => `${home}/${conduct}/${hash}`
 			)
 		const unusable = (path: string) => (cause: unknown) =>
 			VerdictCacheUnusable.make({ path, cause })
-		return {
-			observes: (id) =>
-				Effect.flatMap(fileOf(id), (file) => Effect.mapError(fs.exists(file), unusable(file))),
-			kept: (id, seen) =>
-				Effect.gen(function* () {
-					const file = yield* fileOf(id)
-					const observed = Arr.findFirst(seen, Option.isSome)
-					if (Option.isSome(observed) && Option.isSome(observed.value)) {
-						const text = observationText(observed.value.value)
-						yield* Effect.mapError(
-							fs.makeDirectory(directory, { recursive: true }),
+		const noted = (conduct: Noted, id: PropertyId) =>
+			Effect.flatMap(fileOf(conduct, id), (file) =>
+				Effect.mapError(fs.exists(file), unusable(file))
+			)
+		const removed = (conduct: Noted, id: PropertyId) =>
+			Effect.flatMap(fileOf(conduct, id), (file) =>
+				Effect.mapError(fs.remove(file, { force: true }), unusable(file))
+			)
+		const written = (conduct: Noted, id: PropertyId, text: string) =>
+			Effect.gen(function* () {
+				const file = yield* fileOf(conduct, id)
+				const directory = `${home}/${conduct}`
+				yield* Effect.mapError(
+					fs.makeDirectory(directory, { recursive: true }),
+					unusable(directory)
+				)
+				yield* Effect.scoped(
+					Effect.gen(function* () {
+						const temporary = yield* Effect.mapError(
+							fs.makeTempFileScoped({ directory, prefix: ".note-" }),
 							unusable(directory)
 						)
-						yield* Effect.scoped(
-							Effect.gen(function* () {
-								const temporary = yield* Effect.mapError(
-									fs.makeTempFileScoped({ directory, prefix: ".note-" }),
-									unusable(directory)
-								)
-								yield* Effect.mapError(
-									fs.writeFileString(temporary, `${text}\n`),
-									unusable(temporary)
-								)
-								yield* Effect.mapError(fs.rename(temporary, file), unusable(file))
-							})
-						)
+						yield* Effect.mapError(fs.writeFileString(temporary, `${text}\n`), unusable(temporary))
+						yield* Effect.mapError(fs.rename(temporary, file), unusable(file))
+					})
+				)
+			})
+		return {
+			conductOf: (id) =>
+				Effect.map(
+					Effect.findFirst(NOTED, (conduct) => noted(conduct, id)),
+					Option.getOrElse((): Conduct => "clean")
+				),
+			kept: (id, seen) =>
+				Effect.gen(function* () {
+					if (!Arr.isReadonlyArrayNonEmpty(seen)) {
 						return
 					}
-					if (Arr.isReadonlyArrayNonEmpty(seen)) {
-						yield* Effect.mapError(fs.remove(file, { force: true }), unusable(file))
-					}
+					const conduct = conductSeen(seen)
+					const observation = Arr.head(Arr.getSomes(Arr.map(seen, (one) => one.own)))
+					yield* Effect.forEach(
+						NOTED,
+						(one) =>
+							one === conduct
+								? written(
+										one,
+										id,
+										Option.match(observation, {
+											onNone: () =>
+												`its windows' keyable reads were made by its ${one === "spawning" ? "children" : "process"}`,
+											onSome: observationText
+										})
+									)
+								: removed(one, id),
+						{ discard: true }
+					)
 				})
 		} satisfies Notes
 	})
 
 /**
- * Whether a property's run answers for its key: every search of it passed, and no worker that ran it had observed past
- * its key by then (runner/observe.ts), so its verdict depends on nothing the key does not hold.
+ * Whether a property's run answers for its key and its trace: every search of it passed, and no worker that ran it had
+ * observed past both by then (runner/observe.ts), so its verdict depends on nothing they do not hold.
  */
 const answersForItsKey = (outcome: RunOutcome, id: PropertyId): boolean =>
 	searchedPassed(outcome, id) &&
@@ -874,31 +916,92 @@ const answersForItsKey = (outcome: RunOutcome, id: PropertyId): boolean =>
 	)
 
 /**
- * Records each weighed property's verdict under its key: a pass when its run answers for its key (answersForItsKey), a
- * failure otherwise, which removes the pass its key held; and keeps what it does (Notes): known to observe when a run of
- * it observed, known not to when none did on a worker that had observed nothing before, as it stood otherwise.
+ * Records each weighed property's verdict under its key: a pass when its run answers for its key (answersForItsKey) and
+ * its trace was kept (traces.ts tracesWritten: every keyable read of the workers that ran it, none changed since the run
+ * began `began`), its trace written before its record, so a record always has its trace; a failure otherwise, which
+ * removes the pass its key held. It keeps what each does (Notes): known to observe when a window of its own observed or
+ * made a keyable read, so its next run takes workers of their own.
  */
 const recorded = (
-	cache: VerdictCache,
-	notes: Notes,
+	weighing: Weighing,
 	due: ReadonlyArray<Weighed>,
-	outcome: RunOutcome
+	outcome: RunOutcome,
+	began: number
 ) =>
-	Effect.forEach(
-		due,
-		(one) =>
-			Effect.andThen(
-				cache.record(one.key, answersForItsKey(outcome, one.found.id) ? "passed" : "failed"),
-				notes.kept(
-					one.found.id,
-					Arr.map(
-						Arr.filter(outcome.properties, (ran) => ran.id === one.found.id),
-						(ran) => ran.observed.own
-					)
-				)
+	Effect.gen(function* () {
+		const placed = yield* Effect.forEach(due, (one) =>
+			Effect.map(
+				verdictFileOf(weighing.verdicts, one.key).pipe(
+					Effect.provideService(Digest.Digest, weighing.digest)
+				),
+				(place) => ({
+					one,
+					record: place.file,
+					runs: Arr.filter(outcome.properties, (ran) => ran.id === one.found.id)
+				})
+			)
+		)
+		const { kept, changed } = yield* tracesWritten(
+			weighing.repository,
+			weighing.verdicts,
+			began,
+			Arr.filterMap(placed, (each) =>
+				answersForItsKey(outcome, each.one.found.id)
+					? Result.succeed({
+							record: each.record,
+							traces: Arr.flatMap(each.runs, (ran) => ran.observed.traces)
+						})
+					: Result.failVoid
 			),
-		{ discard: true }
-	)
+			new Map<string, Standing>()
+		).pipe(Effect.provideService(Digest.Digest, weighing.digest))
+		yield* Effect.forEach(
+			placed,
+			(each) =>
+				Option.match(Option.fromUndefinedOr(changed.get(each.record)), {
+					onNone: () => Effect.void,
+					onSome: (path) =>
+						Console.log(
+							`${each.one.found.id}: its pass is not kept, since ${path}, which its trace reads, changed while it ran`
+						)
+				}),
+			{ discard: true }
+		)
+		yield* Effect.forEach(
+			placed,
+			(each) =>
+				Effect.andThen(
+					kept.has(each.record)
+						? weighing.cache.record(each.one.key, "passed")
+						: Effect.andThen(
+								weighing.cache.record(each.one.key, "failed"),
+								tracesRemoved(each.record)
+							),
+					weighing.notes.kept(
+						each.one.found.id,
+						Arr.map(each.runs, (ran) => ran.observed)
+					)
+				),
+			{ discard: true }
+		)
+	})
+
+/**
+ * When a run began, as the file system's clock reads it: the modification time of a file the run makes in the cache's
+ * directory `verdicts` for its scope, the clock every read's own modification time is on (traces.ts traceWritten),
+ * which the kernel ticks coarser than the wall clock, so a file changed after the mark is never stamped before it.
+ */
+const runBegan = (verdicts: string) =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		yield* fs.makeDirectory(verdicts, { recursive: true })
+		const mark = yield* fs.makeTempFileScoped({ directory: verdicts, prefix: ".run-" })
+		const info = yield* fs.stat(mark)
+		return Option.getOrElse(
+			Option.map(info.mtime, (at) => at.getTime()),
+			() => 0
+		)
+	}).pipe(Effect.orDie)
 
 /** A property `run` answers from the cache: its identity and its key, which holds a pass. */
 export type Cached = Readonly<{ id: PropertyId; key: VerdictKey }>
@@ -906,8 +1009,8 @@ export type Cached = Readonly<{ id: PropertyId; key: VerdictKey }>
 /**
  * How `toolchain-test run` reads and keeps the verdict cache (runner/cli.ts run). Keyed: each property loaded whose key
  * holds a pass is `cached`, answered without running; every other runs on its key's seed (`seedOf`), and `record` keeps
- * each verdict it ran under its key, and what each property is known to do (`observes`, Notes), so a run gives a
- * property known to observe past its key workers of its own kind. Unkeyed (a package in no git repository, a closure that will not hash, the
+ * each verdict it ran under its key, and what each property is known to do past it (`conductOf`, Notes), so a run gives
+ * a property workers of its conduct's kind. Unkeyed (a package in no git repository, a closure that will not hash, the
  * hasher's TypeScript not installed): every property runs, nothing is read or kept, and `why` says why.
  */
 export type RunKeying =
@@ -915,8 +1018,14 @@ export type RunKeying =
 			kind: "keyed"
 			cached: ReadonlyArray<Cached>
 			seedOf: (id: PropertyId) => number
-			observes: (id: PropertyId) => boolean
-			record: (outcome: RunOutcome) => Effect.Effect<void, VerdictCacheUnusable>
+			conductOf: (id: PropertyId) => Conduct
+			record: (
+				outcome: RunOutcome
+			) => Effect.Effect<
+				void,
+				VerdictCacheUnusable,
+				FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner
+			>
 	  }>
 	| Readonly<{ kind: "unkeyed"; why: string }>
 
@@ -944,8 +1053,17 @@ export const runKeyingAt = (root: string, selected: ReadonlyArray<string>, seedi
 			} satisfies RunKeying
 		}
 		const weighed = weighing.success
+		const began = yield* runBegan(weighed.verdicts)
+		const lookup = traceLookupOf(weighed.repository, weighed.verdicts)
 		const answered = yield* Effect.forEach(weighed.weighed, (one) =>
 			weighed.cache.passed(one.key).pipe(
+				Effect.flatMap((passed) =>
+					passed
+						? Effect.flatMap(verdictFileOf(weighed.verdicts, one.key), (placed) =>
+								traceStands(lookup, placed.file)
+							).pipe(Effect.provideService(Digest.Digest, weighed.digest))
+						: Effect.succeed(false)
+				),
 				Effect.map((passed) => ({ one, passed })),
 				Effect.catchTag("VerdictCorrupt", (corrupt) =>
 					Effect.as(
@@ -959,11 +1077,14 @@ export const runKeyingAt = (root: string, selected: ReadonlyArray<string>, seedi
 			passed ? Result.failVoid : Result.succeed(one)
 		)
 		const seeds = new Map(Arr.map(weighed.weighed, (one) => [one.found.id, one.seed] as const))
-		const observing = yield* Effect.filter(
-			Arr.map(due, (one) => one.found.id),
-			(id) => weighed.notes.observes(id)
+		const conducted = yield* Effect.forEach(due, (one) =>
+			Effect.map(
+				weighed.notes.conductOf(one.found.id),
+				(conduct) => [one.found.id, conduct] as const
+			)
 		)
-		const known = new Set(observing)
+		const conducts = new Map(conducted)
+
 		return {
 			kind: "keyed",
 			cached: Arr.filterMap(answered, ({ one, passed }) =>
@@ -974,8 +1095,8 @@ export const runKeyingAt = (root: string, selected: ReadonlyArray<string>, seedi
 					Option.fromUndefinedOr(seeds.get(id)),
 					() => new Error(`${id} runs with no key weighed for it`)
 				),
-			observes: (id) => known.has(id),
-			record: (outcome) => recorded(weighed.cache, weighed.notes, due, outcome)
+			conductOf: (id) => conducts.get(id) ?? "clean",
+			record: (outcome) => recorded(weighed, due, outcome, began)
 		} satisfies RunKeying
 	})
 

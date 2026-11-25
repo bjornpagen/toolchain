@@ -53,6 +53,12 @@ export const eachReadReadsWhatItsKindSays = property.exhaust(reads, {
 		},
 		{
 			file: "packages/testing/src/traces.ts",
+			original: `\t\t\t\t\t? \`\${place.success.kind} \${place.success.path}\`\n`,
+			replacement: '\t\t\t\t\t? "resolved"\n',
+			why: "A resolution keeps that a path resolved, not where to, so a link pointed elsewhere reads alike; the link's resolution fails."
+		},
+		{
+			file: "packages/testing/src/traces.ts",
 			original: "\t\t? cause.code\n",
 			replacement: "\t\t? reason._tag\n",
 			why: "A failure is kept by its platform's kind, which folds errnos together (an absent path and a path through a file), so the reads that fail read alike where they differ; the dangling resolution fails."

@@ -8,14 +8,12 @@ import { allowanceVariable, processors } from "#workers.ts"
 
 /**
  * What every verdict key of a run holds beside its property's own (runner/cache.ts VerdictKey): the toolchain that
- * runs it, the environment its workers are given, and the PostgreSQL that serves its databases, for a property that
- * declares a database template. Each is read once a run, in the runner's own process, as a digest of what a property
- * can observe of it.
+ * runs it and the environment its workers are given, each read once a run, in the runner's own process, as a digest of
+ * what a property can observe of it.
  */
 export type KeyGrounds = Readonly<{
 	toolchain: ContentHash
 	environment: ContentHash
-	postgres: Option.Option<ContentHash>
 }>
 
 /**
@@ -89,19 +87,33 @@ const filesUnder = (
 
 /**
  * The digest of the tree at `directory`: each file's path and the SHA-256 of its bytes (filesUnder), so two trees
- * digest alike exactly when they hold the same files with the same bytes.
+ * digest alike exactly when they hold the same files with the same bytes; and when it last changed, the latest
+ * modification time of its directory and its files, in milliseconds.
  */
-const treeDigestOf = (directory: string) =>
+const treeStandingOf = (directory: string) =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem
 		const files = yield* filesUnder(directory)
 		const entries = yield* Effect.forEach(files, (file) =>
-			Effect.map(
-				Effect.flatMap(Effect.orDie(fs.readFile(`${directory}/${file}`)), contentHashOf),
-				(hash) => [file, hash] as const
-			)
+			Effect.gen(function* () {
+				const path = `${directory}/${file}`
+				const hash = yield* Effect.flatMap(Effect.orDie(fs.readFile(path)), contentHashOf)
+				const info = yield* Effect.orDie(fs.stat(path))
+				return {
+					file,
+					hash,
+					changed: Option.getOrElse(
+						Option.map(info.mtime, (at) => at.getTime()),
+						() => 0
+					)
+				}
+			})
 		)
-		return yield* listDigestOf(entries)
+		const digest = yield* listDigestOf(Arr.map(entries, (one) => [one.file, one.hash] as const))
+		return {
+			digest,
+			changed: Arr.reduce(entries, 0, (latest, one) => Math.max(latest, one.changed))
+		}
 	})
 
 /**
@@ -109,11 +121,14 @@ const treeDigestOf = (directory: string) =>
  * file of it as it stands, its runner, its search and its budgets (runner/limits.ts) among them, whatever loads them:
  * the toolchain's commit, read from its files, so a toolchain moved, or edited in the working tree, keys anew.
  */
-const toolchainDigest = Effect.flatMap(
-	Effect.flatMap(FileSystem.FileSystem, (fs) =>
-		Effect.orDie(fs.realPath(`${import.meta.dirname}/../..`))
+const toolchainDigest = Effect.map(
+	Effect.flatMap(
+		Effect.flatMap(FileSystem.FileSystem, (fs) =>
+			Effect.orDie(fs.realPath(`${import.meta.dirname}/../..`))
+		),
+		treeStandingOf
 	),
-	treeDigestOf
+	(standing) => standing.digest
 )
 
 /**
@@ -144,17 +159,17 @@ const outputOf = (command: string, args: ReadonlyArray<string>) =>
 	)
 
 /**
- * The PostgreSQL a run's clusters are served by, as a property that declares a database template can observe it: the
- * digest of the installation the workbench's units run (the directory above `pg_config --bindir`, its programs,
+ * The PostgreSQL a run's clusters are served by, as a property that connects to a member reads it (a KeyedRead of kind
+ * `postgres`, runner/traces.ts): the digest of the installation the workbench's units run (the directory above `pg_config --bindir`, its programs,
  * libraries and shared files, every byte), of the workbench's unit template (`systemctl --user cat postgres@.service`,
  * its drop-ins among it) and of each file or directory its lines name under the account's home (its cluster script and
  * configuration files, %h read as the home), so another build, version or cluster configuration keys anew.
  */
-const postgresDigest = Effect.gen(function* () {
+export const postgresStanding = Effect.gen(function* () {
 	const fs = yield* FileSystem.FileSystem
 	const printed = yield* outputOf("pg_config", ["--bindir"])
 	const bin = Str.trim(printed)
-	const installation = yield* treeDigestOf(Arr.join(Arr.dropRight(Str.split("/")(bin), 1), "/"))
+	const installation = yield* treeStandingOf(Arr.join(Arr.dropRight(Str.split("/")(bin), 1), "/"))
 	const unit = yield* outputOf("systemctl", ["--user", "cat", "postgres@.service"])
 	const home = yield* Effect.orDie(Config.String("HOME"))
 	const named = Arr.dedupe(
@@ -171,35 +186,50 @@ const postgresDigest = Effect.gen(function* () {
 			if (Option.isNone(info)) {
 				return Option.none()
 			}
+			const changed = Option.getOrElse(
+				Option.map(info.value.mtime, (at) => at.getTime()),
+				() => 0
+			)
 			switch (ENTRY_ROLES[info.value.type]) {
 				case "directory":
-					return Option.some([path, yield* treeDigestOf(path)] as const)
-				case "file":
-					return Option.some([
-						path,
-						yield* Effect.flatMap(Effect.orDie(fs.readFile(path)), contentHashOf)
-					] as const)
+					return Option.some([path, yield* treeStandingOf(path)] as const)
+				case "file": {
+					const digest = yield* Effect.flatMap(Effect.orDie(fs.readFile(path)), contentHashOf)
+					return Option.some([path, { digest, changed }] as const)
+				}
 				case "none":
 					return Option.none()
 			}
 		})
 	)
 	const unitHash = yield* contentHashOf(new TextEncoder().encode(unit))
-	return yield* listDigestOf([
-		["installation", installation],
+	const digest = yield* listDigestOf([
+		["installation", installation.digest],
 		["postgres@.service", unitHash],
-		...Arr.getSomes(configured)
+		...Arr.getSomes(
+			Arr.map(
+				configured,
+				Option.map(([path, standing]) => [path, standing.digest] as const)
+			)
+		)
 	])
+	const changed = Arr.reduce(
+		Arr.getSomes(
+			Arr.map(
+				configured,
+				Option.map(([, standing]) => standing.changed)
+			)
+		),
+		installation.changed,
+		(latest, one) => Math.max(latest, one)
+	)
+	return { digest, changed }
 })
 
-/**
- * The grounds of a run's verdict keys (KeyGrounds) under `config`: the toolchain's digest, its workers' environment's,
- * and, where `templated` (some property of the run declares a database template), the PostgreSQL's.
- */
-export const keyGroundsOf = (config: RunnerConfig, templated: boolean) =>
+/** The grounds of a run's verdict keys (KeyGrounds) under `config`: the toolchain's digest and its workers' environment's. */
+export const keyGroundsOf = (config: RunnerConfig) =>
 	Effect.gen(function* () {
 		const toolchain = yield* toolchainDigest
 		const environment = yield* environmentDigestOf(config)
-		const postgres = templated ? yield* Effect.asSome(postgresDigest) : Option.none()
-		return { toolchain, environment, postgres } satisfies KeyGrounds
+		return { toolchain, environment } satisfies KeyGrounds
 	})

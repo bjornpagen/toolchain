@@ -586,23 +586,14 @@ const membersRemoved = (home: string, name: string) =>
 	})
 
 /**
- * Everything of the family `name` in `homes` gone: its members' units stopped (`postgres@<name>-*`, systemctl's pattern
- * over the units it has loaded), which takes a member's data in memory with it, and their failures forgotten, each
- * member's data directory (`<data>/<name>-<i>`), its port claims (only the files holding its name) and its state
- * directory removed. What is already gone is no error.
+ * Everything of the family `name` in `homes` gone: each member's data directory (`<data>/<name>-<i>`), its port claims
+ * (only the files holding its name) and its state directory removed. No member of it runs: a member runs only while a
+ * process holds its family (pg/hold.ts), and the workbench's postgres@ unit starts no member unheld (beefy da1e9fc), so
+ * nothing is stopped here. What is already gone is no error.
  */
 export const familyRemoved = (homes: Homes, name: string) =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem
-		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-		yield* Effect.forEach(
-			["stop", "reset-failed"],
-			(verb) =>
-				Effect.ignore(
-					spawner.exitCode(ChildProcess.make("systemctl", ["--user", verb, unitOf(`${name}-*`)]))
-				),
-			{ discard: true }
-		)
 		yield* membersRemoved(homes.data, name)
 		const ports = yield* claimsOf(homes, name)
 		yield* Effect.forEach(

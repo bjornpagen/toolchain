@@ -108,16 +108,26 @@ export const searchedPassed = (outcome: RunOutcome, id: PropertyId): boolean => 
 }
 
 /**
+ * What a property is known to do past its key (runner/observe.ts), as its last run did in windows of its own: nothing
+ * (`clean`); keyable reads of its process alone (`reading`: a fixture, a prelude, a catalog), or through a child it
+ * starts too (`spawning`: a compiler's sources and libraries, thousands of files), each of which every later trace of
+ * its worker takes; or an act no key holds (`observing`), which leaves its worker unclean. Each takes workers of its own
+ * kind (Workers), so a reader's reads reach no clean property's trace, a child's sources no mere reader's, and an
+ * observer leaves no reader's worker unclean.
+ */
+export type Conduct = "clean" | "reading" | "spawning" | "observing"
+
+/**
  * What to run: the package root, each property's seed (its rotating stream's: a run's derived from each property's
- * verdict key, or TEST_SEED's for all), whether it is known to observe past its key (runner/observe.ts: its workers are
- * then its own kind, so the workers of every other stay clean), the reach (every phase, or the witnesses alone), and which properties: every
- * one, or those the arguments name, each a module path or a directory of them (a prefix of a module's path), or a
- * property identity (`<module>#<export>`, which names a family's every member too).
+ * verdict key, or TEST_SEED's for all), what it is known to do past its key (Conduct: its workers are its conduct's
+ * kind), the reach (every phase, or the witnesses alone), and which properties: every one, or those the arguments name,
+ * each a module path or a directory of them (a prefix of a module's path), or a property identity
+ * (`<module>#<export>`, which names a family's every member too).
  */
 export type RunRequest = Readonly<{
 	root: string
 	seedOf: (id: PropertyId) => number
-	observes: (id: PropertyId) => boolean
+	conductOf: (id: PropertyId) => Conduct
 	reach: Reach
 	selected: ReadonlyArray<string>
 }>
@@ -127,22 +137,21 @@ export const WORKER_ENTRY = `${import.meta.dirname}/worker-entry.ts`
 
 /**
  * Which workers a run's cases go to: its stack, whether they start V8's precise coverage before loading any module (a
- * guided property's), so only a guided property's workers pay for counting blocks, and whether its properties are
- * known to observe past their keys (runner/observe.ts), so a worker one of them makes unclean runs no property whose
- * verdict could be kept.
+ * guided property's), so only a guided property's workers pay for counting blocks, and what its properties are known to
+ * do past their keys (Conduct), so a worker an observer makes unclean runs no property whose verdict could be kept, and
+ * a reader's reads join no clean property's trace.
  */
-type Workers = readonly [stack: Stack, guide: "notes" | "blocks", observing: "observing" | "clean"]
+type Workers = readonly [stack: Stack, guide: "notes" | "blocks", conduct: Conduct]
 
-/** The workers a property's run on `stack` takes its cases to, `observes` saying whether it is known to observe. */
-const workersOf = (stack: Stack, found: Discovered, observes: boolean): Workers => [
+/** The workers a property's run on `stack` takes its cases to, `conduct` what it is known to do past its key. */
+const workersOf = (stack: Stack, found: Discovered, conduct: Conduct): Workers => [
 	stack,
 	found.property.guide.kind,
-	observes ? "observing" : "clean"
+	conduct
 ]
 
 /** A kind of workers as a key. */
-const labelOfWorkers = ([stack, guide, observing]: Workers): string =>
-	`${stack}/${guide}/${observing}`
+const labelOfWorkers = ([stack, guide, conduct]: Workers): string => `${stack}/${guide}/${conduct}`
 
 /** The flags a stack's workers run under: this process's, and the small stack's on top for the small stack. */
 const flagsOf = (stack: Stack): ReadonlyArray<string> => {
@@ -402,7 +411,7 @@ export const runPackage = (
 					const runs = Arr.map(discovered, (found) => ({ found, stack: stackOf(found) }))
 					const kinds = new Map(
 						Arr.map(runs, ({ found, stack }) => {
-							const kind = workersOf(stack, found, request.observes(found.id))
+							const kind = workersOf(stack, found, request.conductOf(found.id))
 							return [labelOfWorkers(kind), kind] as const
 						})
 					)
@@ -412,7 +421,7 @@ export const runPackage = (
 						properties: Arr.filter(
 							runs,
 							({ found, stack }) =>
-								labelOfWorkers(workersOf(stack, found, request.observes(found.id))) === label
+								labelOfWorkers(workersOf(stack, found, request.conductOf(found.id))) === label
 						).length
 					}))
 					const shared = Arr.isReadonlyArrayNonEmpty(weighed)
@@ -449,7 +458,9 @@ export const runPackage = (
 								const pool = yield* Effect.mapError(
 									Effect.fromOption(
 										Option.fromUndefinedOr(
-											pools.get(labelOfWorkers(workersOf(stack, found, request.observes(found.id))))
+											pools.get(
+												labelOfWorkers(workersOf(stack, found, request.conductOf(found.id)))
+											)
 										)
 									),
 									() => PoolFailed.make({ message: `no pool was forked for ${label}` })
@@ -476,7 +487,14 @@ export const runPackage = (
 										[
 											`${lineOf(label, found.property.oracle, verdict)}; ${landedText(landed, wall)}`,
 											...Option.match(observed.unclean, {
-												onNone: () => [],
+												onNone: () => {
+													const reads = Arr.reduce(observed.traces, 0, (sum, one) => sum + one.upTo)
+													return reads > 0
+														? [
+																`  its verdict is kept with the trace of ${reads} reads its workers made at run time, and answers while they read alike`
+															]
+														: []
+												},
 												onSome: (observation) => [
 													`  observed past its key, so its verdict is never cached: ${observationText(observation)}`
 												]

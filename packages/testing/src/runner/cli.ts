@@ -150,7 +150,7 @@ const run = (selected: ReadonlyArray<string>) =>
 				? yield* runPackage({
 						root,
 						seedOf,
-						observes: keying.kind === "keyed" ? keying.observes : () => false,
+						conductOf: keying.kind === "keyed" ? keying.conductOf : () => "clean",
 						reach: "full",
 						selected: Arr.map(due, (found) => found.id)
 					})

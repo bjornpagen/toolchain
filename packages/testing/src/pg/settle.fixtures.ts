@@ -20,7 +20,7 @@ import {
 	memberNames,
 	unitOf
 } from "#pg/family.ts"
-import { familyHeld } from "#pg/hold.ts"
+import { familyHeld, leaseOf } from "#pg/hold.ts"
 import { failed, succeeded } from "#pg/server.ts"
 import {
 	familySettled,
@@ -194,10 +194,9 @@ const namesIn = (directory: string) =>
 	)
 
 /**
- * Case cluster `unit` gone, whatever is left of it: its members' units stopped (`postgres@<unit>-*`, systemctl's
- * pattern over the units it has loaded, every family's), and every other unit named after it (`<unit>-*`: its
- * families' holds, leases and settles, a hold property's runs, which a kill trial's mutant may leave running), and
- * their failures forgotten, then every member's data directory (`<data>/<unit>-*`, the workbench's) removed: a member
+ * Case cluster `unit` gone, whatever is left of it: every unit named after it stopped (`<unit>-*`: its families' holds,
+ * leases and settles, a hold property's runs, which a kill trial's mutant may leave running), each lease's stop stopping
+ * its member (pg/hold.ts), and their failures forgotten, then every member's data directory (`<data>/<unit>-*`, the workbench's) removed: a member
  * in memory (the workbench's memory list names `tcs-*`) takes its data with its unit's stop. Its families' state and
  * claims are in the case's scratch directory, gone with it.
  */
@@ -209,9 +208,7 @@ const clusterRemoved = (unit: string) =>
 			["stop", "reset-failed"],
 			(verb) =>
 				Effect.ignore(
-					spawner.exitCode(
-						ChildProcess.make("systemctl", ["--user", verb, unitOf(`${unit}-*`), `${unit}-*`])
-					)
+					spawner.exitCode(ChildProcess.make("systemctl", ["--user", verb, `${unit}-*`]))
 				),
 			{ discard: true }
 		)
@@ -478,12 +475,14 @@ export const removedAtEnd = (cluster: LocalCluster) =>
 	Effect.addFinalizer(() => clusterRemoved(cluster.unit))
 
 /**
- * `name`'s member unit stopped (`systemctl --user stop`), as a person does: a case cluster's member is in memory
- * (`tcs-*`), so its data goes with the stop and the next settle makes it again.
+ * `name`'s member stopped by its lease's stop (pg/hold.ts leaseOf), the one way a member stops: a case cluster's member
+ * is in memory (`tcs-*`), so its data goes with the stop and the next settle makes it again.
  */
 export const memberStopped = (name: string) =>
 	Effect.flatMap(ChildProcessSpawner.ChildProcessSpawner, (spawner) =>
-		Effect.orDie(spawner.exitCode(ChildProcess.make("systemctl", ["--user", "stop", unitOf(name)])))
+		Effect.orDie(
+			spawner.exitCode(ChildProcess.make("systemctl", ["--user", "stop", leaseOf(name)]))
+		)
 	)
 
 /**

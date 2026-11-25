@@ -29,6 +29,7 @@ export default defineRunner({
 		"src/runner/norun.test.ts",
 		"src/vitest/timeouts.test.ts",
 		"src/runner/reuse.test.ts",
+		"src/runner/observe.test.ts",
 		"src/resources/scratch.test.ts",
 		"src/resources/resources.test.ts",
 		"src/pg/settle.test.ts",

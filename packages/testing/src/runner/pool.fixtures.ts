@@ -1,10 +1,10 @@
 import { Array as Arr, Config, Duration, Effect, FileSystem } from "effect"
-import { ChildProcess } from "effect/process"
 import { boolean, finite, type Gen, int, map } from "#gen.ts"
 import { HUNG_CLEANUP_GRACE, liveSleep, waitingOn, watchdogGraceMillis } from "#live.ts"
 import { plantedBudget } from "#planted.fixtures.ts"
 import { type Need, property } from "#property.ts"
 import { Scratch } from "#resources/scratch.ts"
+import { unwatched } from "#runner/observe.ts"
 import type { Batch } from "#runner/protocol.ts"
 import { WorkerIndex } from "#runner/services.ts"
 import { ownCpu } from "#runner/work.ts"
@@ -140,25 +140,27 @@ const alive = (pid: number): boolean => {
  * process's pidfd, which is readable once the process exits, so a zombie nothing has reaped yet has ended, and answers
  * at once, its status 1, for a process already gone. Its pid is handed over in a file of `directory`, its --pidfile. A
  * signal 0, which reaches a zombie, read a killed child as running until init reaped it, which under load took longer
- * than any grace a property gave it. A process that never ends holds its case, whose guard reports it hung.
+ * than any grace a property gave it. A process that never ends holds its case, whose guard reports it hung. pidwait is
+ * the harness's own wait, started by Node's spawn as it was before the worker's guard wrapped it (runner/observe.ts
+ * unwatched): under the guard's strace its reads of /proc, thousands a second, and strace's writes of them were its
+ * case's progress, so a case waiting on a process that never ends was never judged hung (lane TOOLTRUST2, 2026-11-26).
  */
 export const exitOf = (pid: number, directory: string) =>
-	Effect.scoped(
-		Effect.gen(function* () {
-			const fs = yield* FileSystem.FileSystem
-			const file = `${directory}/exit-${pid}`
-			yield* fs.writeFileString(file, String(pid))
-			const waiting = yield* ChildProcess.make("pidwait", ["--pidfile", file], {
-				stdin: "ignore",
-				stdout: "ignore",
-				stderr: "ignore"
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		const file = `${directory}/exit-${pid}`
+		yield* fs.writeFileString(file, String(pid))
+		const status = yield* Effect.callback<number | null>((resume) => {
+			const waiting = unwatched.spawn("pidwait", ["--pidfile", file], { stdio: "ignore" })
+			waiting.once("exit", (code) => resume(Effect.succeed(code)))
+			return Effect.sync(() => {
+				waiting.kill("SIGKILL")
 			})
-			const status = yield* waiting.exitCode
-			if (status !== 0 && status !== 1) {
-				return yield* Effect.die(`pidwait --pidfile ${file} exited ${status}`)
-			}
 		})
-	)
+		if (status !== 0 && status !== 1) {
+			return yield* Effect.die(`pidwait --pidfile ${file} exited ${String(status)}`)
+		}
+	})
 
 /** Ends the process `pid` should it still run, as the property's cleanup does for a child its worker left behind. */
 export const ended = (pid: number) =>

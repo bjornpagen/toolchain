@@ -63,7 +63,6 @@ export type KeyModel = Readonly<{
 	closure: number
 	toolchain: number
 	environment: number
-	postgres: Option.Option<number>
 	seeds: number
 	edit: Option.Option<EditModel>
 }>
@@ -89,7 +88,6 @@ const keys: Gen<KeyModel> = (source) => ({
 	closure: source.draw(element([0, 1])),
 	toolchain: source.draw(element([0, 1])),
 	environment: source.draw(element([0, 1])),
-	postgres: source.draw(option(element([0, 1]))),
 	seeds: source.draw(element([0, 1])),
 	edit: source.draw(option(edits))
 })
@@ -101,13 +99,9 @@ const editNameOf = (key: KeyModel): string =>
 		onSome: (edit) => `${edit.mutant}.${edit.content}`
 	})
 
-/** A key's PostgreSQL as its identity names it: `-` for none. */
-const postgresNameOf = (key: KeyModel): string =>
-	Option.match(key.postgres, { onNone: () => "-", onSome: String })
-
 /** A key's identity: equal for two keys exactly when the cache must answer them alike. */
 const identityOf = (key: KeyModel): string =>
-	`${key.property} ${key.closure} ${key.toolchain} ${key.environment} ${postgresNameOf(key)} ${key.seeds} ${editNameOf(key)}`
+	`${key.property} ${key.closure} ${key.toolchain} ${key.environment} ${key.seeds} ${editNameOf(key)}`
 
 /** Up to six rounds of up to four operations, each round's keys distinct. */
 const programs: Gen<Program> = array(
@@ -129,7 +123,7 @@ const programs: Gen<Program> = array(
 
 /**
  * The two closure hashes and two content hashes a model key's fields choose between: its closure, its edit's file's
- * contents and mutants, and its toolchain's, environment's and PostgreSQL's digests.
+ * contents and mutants, and its toolchain's and environment's digests.
  */
 export type Hashes = Readonly<{
 	closures: readonly [ClosureHash, ClosureHash]
@@ -189,9 +183,6 @@ const keyOf = (hashes: Hashes, key: KeyModel): VerdictKey => ({
 	closure: key.closure === 0 ? hashes.closures[0] : hashes.closures[1],
 	toolchain: key.toolchain === 0 ? hashes.grounds[0] : hashes.grounds[1],
 	environment: key.environment === 0 ? hashes.grounds[0] : hashes.grounds[1],
-	postgres: Option.map(key.postgres, (which) =>
-		which === 0 ? hashes.grounds[0] : hashes.grounds[1]
-	),
 	seeds: SeedPolicy(`policy ${key.seeds}`),
 	edit: Option.map(key.edit, (edit): Edit => ({
 		file: `packages/testing/src/mutant${edit.mutant}.ts`,
@@ -310,7 +301,6 @@ export type CacheSituation =
 	| "a key whose closure alone differs from a pass read as none"
 	| "a key whose toolchain alone differs from a pass read as none"
 	| "a key whose environment alone differs from a pass read as none"
-	| "a key whose PostgreSQL alone differs from a pass read as none"
 	| "a key whose seed policy alone differs from a pass read as none"
 	| "a key whose edit alone differs from a pass read as none"
 	| "passes of distinct keys written at once"
@@ -323,7 +313,6 @@ const loneFieldOf = (left: KeyModel, right: KeyModel): Option.Option<KeyField> =
 			["closure", left.closure !== right.closure],
 			["toolchain", left.toolchain !== right.toolchain],
 			["environment", left.environment !== right.environment],
-			["postgres", postgresNameOf(left) !== postgresNameOf(right)],
 			["seeds", left.seeds !== right.seeds],
 			["edit", editNameOf(left) !== editNameOf(right)]
 		] as const,
@@ -335,7 +324,7 @@ const loneFieldOf = (left: KeyModel, right: KeyModel): Option.Option<KeyField> =
 }
 
 /** A key's fields. */
-type KeyField = "property" | "closure" | "toolchain" | "environment" | "postgres" | "seeds" | "edit"
+type KeyField = "property" | "closure" | "toolchain" | "environment" | "seeds" | "edit"
 
 /** The situation of reading a key that differs from a passed key in one field alone. */
 const LONE_FIELD_SITUATIONS: Readonly<Record<KeyField, CacheSituation>> = {
@@ -343,7 +332,6 @@ const LONE_FIELD_SITUATIONS: Readonly<Record<KeyField, CacheSituation>> = {
 	closure: "a key whose closure alone differs from a pass read as none",
 	toolchain: "a key whose toolchain alone differs from a pass read as none",
 	environment: "a key whose environment alone differs from a pass read as none",
-	postgres: "a key whose PostgreSQL alone differs from a pass read as none",
 	seeds: "a key whose seed policy alone differs from a pass read as none",
 	edit: "a key whose edit alone differs from a pass read as none"
 }
@@ -501,7 +489,7 @@ const thenRead =
 
 /**
  * Programs, aimed at what a read meets after one write of its key's property: a pass under the same key, a corrupt
- * record, a pass under a key one property, closure, seed policy, toolchain, environment or PostgreSQL away, a failure after a pass, and a
+ * record, a pass under a key one property, closure, seed policy, toolchain or environment away, a failure after a pass, and a
  * pass read after a newer pass of its property.
  */
 export const aimedPrograms = aimed<Program, CacheSituation>(programs, [
@@ -526,16 +514,6 @@ export const aimedPrograms = aimed<Program, CacheSituation>(programs, [
 	[
 		"a key whose environment alone differs from a pass read as none",
 		thenRead("pass", (key) => ({ ...key, environment: 1 - key.environment }))
-	],
-	[
-		"a key whose PostgreSQL alone differs from a pass read as none",
-		thenRead("pass", (key) => ({
-			...key,
-			postgres: Option.match(key.postgres, {
-				onNone: () => Option.some(0),
-				onSome: (which) => (which === 0 ? Option.some(1) : Option.none())
-			})
-		}))
 	],
 	["a key read as none after a failure cleared its pass", clearedPrograms],
 	["a pass read beside another pass of its property", keptPrograms]

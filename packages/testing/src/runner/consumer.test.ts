@@ -96,8 +96,9 @@ export const consumersRunInEveryLayout = property.exhaust(layouts, {
 		{
 			file: "packages/testing/src/runner/affected.ts",
 			original:
-				'cache.record(one.key, answersForItsKey(outcome, one.found.id) ? "passed" : "failed"),',
-			replacement: 'cache.record(one.key, "failed"),',
+				'kept.has(each.record)\n\t\t\t\t\t\t? weighing.cache.record(each.one.key, "passed")',
+			replacement:
+				'kept.has(each.record)\n\t\t\t\t\t\t? weighing.cache.record(each.one.key, "failed")',
 			why: "a run records no pass for a property whose search passed, so a key that holds a verdict never holds it"
 		}
 	]

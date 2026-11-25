@@ -152,19 +152,34 @@ A property's key (`runner/cache.ts` VerdictKey) holds everything its verdict can
 | The toolchain            | the digest of every file of the runner's package (`runner/grounds.ts`), its runner, search and budgets (`runner/limits.ts`) among them, as they stand on disk                                                                                                                                         |
 | Node                     | its version, in every closure hash                                                                                                                                                                                                                                                                    |
 | Its workers' environment | the digest of every variable a worker is given (`runner/environment.ts`): the toolchain's list (HOME, PATH, the locale, the XDG directories, the account's bus, PGSSLROOTCERT, …), the runner config's `environment`, and the run's CPU allowance. No other variable of the runner's reaches a worker |
-| PostgreSQL               | for a property that declares a database template: the digest of the installation `pg_config --bindir` lies in, every byte, and of the workbench's `postgres@.service` and the files and directories under the home its lines name                                                                     |
+| PostgreSQL               | not in the key: a connection to one of the run's own members is a read of its trace, the digest of the installation `pg_config --bindir` lies in, every byte, and of the workbench's `postgres@.service` and the files under the home its lines name, checked whenever the key is read                |
 | Its budget and seed      | the budget is the runner's (`runner/limits.ts`, in the toolchain's digest); the rotating stream's seed is derived from the rest of the key, or TEST_SEED's for every property, so a search is a function of its key                                                                                   |
 
-What a property observes past its key, its key cannot answer for, so it is never cached: a worker watches every act of
-a property's code (`runner/observe.ts`): node:fs's reads of a path that is no data of the process's own (a directory it
-made, a file it wrote), a child process, a connection, a thread. The runner's own acts (its watchdog thread, its
-reads of /proc, a scratch directory's remover) are no property's; a database need's cluster, reached through child
-processes and connections, is a property's observation for now, so a property that declares one is never cached. A worker that observed once is unclean for the rest of its life, and so is every property it
-runs after, since a module may keep what it read for another (a memo). A property that observed in a window of its own
-is noted (`<repository key>/observing/<SHA-256 of its id>`), and the next run gives it workers of its own kind, so the
-workers every other property runs on stay clean; its note goes once a run of it observes nothing. Out of every key's reach, and so assumed of
-every property: the clock, randomness not drawn from the case's tape, the machine's live state read through node:os or
-process, and a value one property leaves in a module's state for another.
+What a property reads at run time is its pass's trace (`runner/traces.ts`): a worker watches every act of a property's
+code (`runner/observe.ts`), and each keyable read (a file's bytes, a directory's entries, a path's presence, where a
+path resolves to, a link's text, by the property or by a child it starts, which runs under strace; a connection to one
+of the run's own cluster members, which reads the PostgreSQL serving it) is kept with the pass, each with the digest of
+what it read, checked whenever the key is read: the pass answers while some trace of it reads alike. A read that
+changed after the run began keeps no pass. A run keeps its reads once: one reads file holds each distinct read with
+its digest and each worker's reads in order, and a pass's trace names it and how far into each of its workers' reads it
+goes, so a run's traces cost its distinct reads, and a lookup weighs each read once however many traces hold it. Paths
+under the repository are kept from its root, so every checkout of it answers from another's verdicts. What no digest
+states is an observation past every key, and its property is never cached: a path's status or watch (a time, an
+inode), /proc, /sys or /dev read as a file, a child the guard cannot trace (a shell, exec, fork, one that outlives its
+unit, no strace), a connection to anything but the run's own members, a thread. The runner's own acts (its watchdog
+thread, its reads of /proc, the judge's of a child's tree among them (live.ts processWorkNow), a scratch directory's remover, a pool's workers, a worker's
+services built and everything its cluster does: holds, leases, settles, sessions) are no property's; an act outside
+any window (a worker's start, its runner config's modules evaluated, work that outlives its window) is the worker's,
+its reads in every later trace, an observation making the next window's property unclean. A worker that observed once
+is unclean for the rest of its life, and so is every property it runs after, since a module may keep what it read for
+another (a memo); for the same reason a trace takes every read of its workers up to its last unit there. A property is
+noted by what its own windows did (`<repository key>/<observing | spawning | reading>/<SHA-256 of its id>`): observed;
+made keyable reads through a child it started (a compiler's thousands of sources and libraries); or made them in its
+own process alone (a fixture, a prelude, the build's catalog). The next run gives each workers of its own kind, so an
+observer leaves no reader's worker unclean, a compiler's reads join no mere reader's trace, and no reader's reads join
+a clean property's; a note goes once a run of its property does none of them. What every key holds of a database
+property, and what is out of every key's reach and so assumed of every property, is stated once, in the guard's doc
+(`runner/observe.ts`).
 
 A closure hash (`runner/closure.ts`) is the SHA-256 of everything a module loads as Node loads it: every file reached
 through static imports, re-exports and dynamic imports of a literal (never `import type` or `export type`, which Node
@@ -253,8 +268,9 @@ their 23 fail with a member a worker.
   holding process writes, so the hold ends with that process however it ends, a SIGKILL to its unit included. A run's
   worker holds its family from its first need to its end; a member's settle while it settles; `toolchain-pg settle`,
   `psql`, `admin` and `run` while they run. systemd counts the holds: the last one's end stops every lease no hold
-  wants, and each lease its member. The workbench's postgres@ unit takes no dependency at run time (`systemctl
-  set-property` refuses BindsTo= on a loaded unit), so the dependency lives in the lease; and a hold binds to a
+  wants, and each lease its member. The workbench's postgres@ unit takes no dependency at run time (systemd's
+  set-property refuses BindsTo= on a loaded unit), and starts no member whose lease is not active (beefy da1e9fc), so
+  the dependency lives in the lease, nothing starts or stops a member but its lease, and no cleanup stops one; and a hold binds to a
   process, never to the unit it runs in, since a terminal's scope lives for days and a service may run many runs.
   Before leases, a run that ended, failed or was killed left its members running: on 2026-11-24 379 of grizzle's
   members held 88 GB of /dev/shm's 124.
