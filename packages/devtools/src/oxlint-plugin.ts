@@ -31,6 +31,7 @@ import { noSwitchDefaultBailout } from "#oxlint/rules/no-switch-default-bailout.
 import { noTry } from "#oxlint/rules/no-try.ts"
 import { noUnoptimizedNextImage } from "#oxlint/rules/no-unoptimized-next-image.ts"
 import { noUselessContinue } from "#oxlint/rules/no-useless-continue.ts"
+import { noVariadicCallback } from "#oxlint/rules/no-variadic-callback.ts"
 import { preferEarlyReturn } from "#oxlint/rules/prefer-early-return.ts"
 import { sha256Digests } from "#oxlint/rules/sha256-digests.ts"
 import { sideEffectFree } from "#oxlint/rules/side-effect-free.ts"
@@ -82,6 +83,7 @@ const PLUGIN_RULES = {
 	"no-try": noTry,
 	"no-unoptimized-next-image": noUnoptimizedNextImage,
 	"no-useless-continue": noUselessContinue,
+	"no-variadic-callback": noVariadicCallback,
 	"prefer-early-return": preferEarlyReturn,
 	"sha256-digests": sha256Digests,
 	"side-effect-free": sideEffectFree,

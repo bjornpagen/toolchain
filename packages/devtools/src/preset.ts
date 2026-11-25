@@ -523,6 +523,7 @@ const PLACES = {
 	"no-try": { part: "core", scope: "effect-free code" },
 	"no-unoptimized-next-image": { part: "web", scope: "every file" },
 	"no-useless-continue": { part: "core", scope: "every file" },
+	"no-variadic-callback": { part: "core", scope: "every file" },
 	"prefer-early-return": { part: "core", scope: "every file" },
 	"sha256-digests": { part: "core", scope: "every file" },
 	"side-effect-free": { part: "grizzle", scope: "every file" },

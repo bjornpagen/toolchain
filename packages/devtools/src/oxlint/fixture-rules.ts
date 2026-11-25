@@ -118,6 +118,7 @@ export const FIXTURE_RULES: FixtureRules<
 	"no-try": null,
 	"no-unoptimized-next-image": null,
 	"no-useless-continue": null,
+	"no-variadic-callback": null,
 	"prefer-early-return": null,
 	"sha256-digests": null,
 	"side-effect-free": {
