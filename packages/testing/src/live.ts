@@ -41,7 +41,7 @@ import {
  * @limitKind measured
  * @owner the choice-stream testing library (live.ts's watchdog)
  * @unit milliseconds
- * @scope every case a search runs on a process's main thread, once it is past its hang limit or its search's deadline
+ * @scope every case a search runs on a process's main thread, once it is past its hang limit
  * @evidence packages/testing/out/watchdog-grace/20261116T064618/ in the toolchain's checkout on cassowary
  *   (/Users/bjorn/Documents/toolchain), the uncommitted record of `sh run.sh` there: probe.mjs, whose worker pings the
  *   main thread as the watchdog does (postMessage, the answer through shared memory) while the main thread runs
@@ -77,7 +77,7 @@ export const watchdogGraceMillis = 5000
  * @unit seconds
  * @scope the cleanup of each case a search stops as hung, before the search reports or runs its next case
  * @guards without it a search waits on a hung case's cleanup for as long as the cleanup takes, so a cleanup that
- *   itself hangs holds the hang's report, and the next case, until the test's own timeout
+ *   itself hangs holds the hang's report, and the next case, until the gate's progress watch
  * @measure time the cleanup of every case the library's and the consumers' suites stop as hung (their releases: a
  *   fiber's finalizers, a database schema's drop), on cassowary, with the suites running at their usual width; the
  *   grace is the slowest cleanup seen, with its headroom stated, and never shorter than the slowest release the report
@@ -129,7 +129,7 @@ export const awaitWithinGrace = <A, E>(running: Fiber.Fiber<A, E>): Effect.Effec
 
 /**
  * Interrupts a hung fiber and waits until its cleanup has ended, however long that takes: no cleanup outlives the guard
- * that stopped it, and one that never ends holds the guard, which its caller's own timeout then names.
+ * that stopped it, and one that never ends holds the guard, which the gate's progress watch then names.
  */
 export const stopHung = <A, E>(running: Fiber.Fiber<A, E>): Effect.Effect<void> =>
 	Effect.asVoid(Fiber.interrupt(running))
@@ -615,17 +615,14 @@ export const watchdogWakes: Effect.Effect<Option.Option<number>> = Effect.sync((
 	)
 )
 
-/**
- * When a case's guard would stop it: its hang limit after it began, or its search's cut, the moment its deadline
- * leaves for reporting, whichever comes first.
- */
-export type CaseLimits = Readonly<{ caseHang: Duration.Input; cut: Option.Option<number> }>
+/** When a case's guard would stop it: its hang limit after it began. */
+export type CaseLimits = Readonly<{ caseHang: Duration.Input }>
 
 /**
  * `effect`, a case, watched by the process's watchdog for as long as it runs: should it hold the main thread without
  * yielding past the moment its guard would first judge it (CaseLimits) and watchdogGraceMillis more, with its work
- * over its hang limit (its CPU spent, or not moving over a whole hang limit of wall time: runner/work.ts) or its
- * search's cut reached, the process ends with `report`, the case's hang verdict, on its stderr, since nothing on that
+ * over its hang limit (its CPU spent, or not moving over a whole hang limit of wall time: runner/work.ts), the process
+ * ends with `report`, the case's hang verdict, on its stderr, since nothing on that
  * thread can stop it. A case that yields is the guard's to stop, and the watchdog never acts on it.
  */
 export const watchedCase = <A, E, R>(
@@ -638,23 +635,11 @@ export const watchedCase = <A, E, R>(
 		Effect.flatMap(liveMillis, (now) =>
 			Effect.sync(() => {
 				const judge = judgeOf(ownWork(now, ownCpu()), deadlineBound(hangMillis))
-				const cutText = (cut: number) =>
-					`its search's cut, the moment its deadline leaves for reporting, came ${Math.round(Math.max(0, cut - now))} ms after it began`
 				return watchdogOfProcess().watch({
-					hangsAt: Option.match(limits.cut, {
-						onNone: () => now + hangMillis,
-						onSome: (cut) => Math.min(now + hangMillis, cut)
-					}),
+					hangsAt: now + hangMillis,
 					graceMillis: watchdogGraceMillis,
 					report,
-					judged: (at) =>
-						Option.match(
-							Option.filter(limits.cut, (cut) => at >= cut),
-							{
-								onSome: (cut) => Option.some(cutText(cut)),
-								onNone: () => Option.map(judge(at), overrunText)
-							}
-						)
+					judged: (at) => Option.map(judge(at), overrunText)
 				})
 			})
 		),

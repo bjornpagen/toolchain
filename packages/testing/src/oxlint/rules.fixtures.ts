@@ -59,7 +59,7 @@ import {
 	DICTIONARY_MODULES,
 	VERDICT_KEYS
 } from "#oxlint/rules/no-verdict-table.ts"
-import { CLOCK_READS, DATE_READS } from "#oxlint/rules/no-wall-clock-verdict.ts"
+import { CLOCK_READS, DATE_READS, VITEST_TIMEOUTS } from "#oxlint/rules/no-wall-clock-verdict.ts"
 import { VITEST_MODULES } from "#oxlint/rules/test-module-shape.ts"
 import { EQUALITIES, ORDERED_EQUALITIES, TEST_ROOTS } from "#oxlint/syntax.ts"
 import { type Kill, type Property, property } from "#property.ts"
@@ -216,7 +216,8 @@ const judged = (name: RuleName, header: string, program: Program): Option.Option
 	})
 }
 
-/** A reference that reads the clock, a Date of now, or a near name of either, which reads nothing. */
+/** A reference that reads the clock, a Date of now, or a near name of either, which reads nothing; and a Vitest
+ * timeout, finite (a literal, a name, a value computed at load) or none (0, Infinity), or a near name of one. */
 export const clockSites: Gen<Site> = weighted([
 	[4, (s) => site(`const now${OWN} = ${spelled(s.draw(oneOf(CLOCK_READS)))}`, 1)],
 	[1, (s) => site(`const now${OWN} = new ${s.draw(oneOf(DATE_READS))}()`, 1)],
@@ -232,7 +233,24 @@ export const clockSites: Gen<Site> = weighted([
 			)
 		}
 	],
-	[1, (s) => site(`const day${OWN} = new ${s.draw(oneOf(DATE_READS))}(${s.draw(int(0, 9))})`, 0)]
+	[1, (s) => site(`const day${OWN} = new ${s.draw(oneOf(DATE_READS))}(${s.draw(int(0, 9))})`, 0)],
+	[
+		3,
+		(s) =>
+			site(
+				`const config${OWN} = { test: { ${s.draw(oneOf(VITEST_TIMEOUTS))}: ${s.draw(element(["60_000", "1", "limit", "process.env.CI ? 0 : 60_000"] as const))} } }`,
+				1
+			)
+	],
+	[
+		2,
+		(s) =>
+			site(
+				`const config${OWN} = { test: { ${s.draw(oneOf(VITEST_TIMEOUTS))}: ${s.draw(element(["0", "Infinity", "Number.POSITIVE_INFINITY"] as const))} } }`,
+				0
+			)
+	],
+	[1, (s) => site(`const near${OWN} = { ${s.draw(oneOf(VITEST_TIMEOUTS))}Ms: 60_000 }`, 0)]
 ])
 
 /** The names of a list written bare, with no module before them. */

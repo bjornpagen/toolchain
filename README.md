@@ -14,6 +14,24 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: no wall-clock verdicts (2026-11-25)
+
+qti-pie's crust went red with "DeadlineReached ... before any case failed" at 10,485 of 40,960 cases the moment the
+machine slowed: its testTimeout of 60_000 gave every search a deadline, so a slower machine failed what a faster one
+passed. No verdict rests on the wall clock now, by two constructions:
+
+- **A search has no deadline.** `@bjornpagen/testing/vitest`'s `searched` runs a search under no deadline: it ends by
+  its case count under each case's hang guard (caseHang, a bound on the case's own work), and a hang is the gate's
+  progress watch to stop. `Deadline`, `noDeadline`, `PRINT_MARGIN_MILLIS`, `DeadlineReached` and a shrink's `deadline`
+  end are gone. `defineTestConfig` takes no `timeouts`: every test and hook runs under testTimeout and hookTimeout 0.
+- **The gate refuses a timer.** `testing/no-wall-clock-verdict` refuses a finite `testTimeout` or `hookTimeout`, anything
+  but `0`, `Infinity` or `Number.POSITIVE_INFINITY`, and the preset holds every Vite and Vitest configuration file to it
+  (`@bjornpagen/testing/scope` VITEST_CONFIGS: `vite.config.ts`, `vitest.config.ts`, `vitest.*.config.ts` and their
+  `.mts`, `vitest.workspace.ts`).
+
+To migrate: delete `timeouts` from every `defineTestConfig`, and every finite `testTimeout` and `hookTimeout` from every
+Vite and Vitest configuration.
+
 ## Consumer migration: one version through every workspace (2026-11-25)
 
 edullm's vendored toolchain stated oxfmt 0.79.0 where edullm stated 0.78.0, and its qti-pie pin's grizzle stated

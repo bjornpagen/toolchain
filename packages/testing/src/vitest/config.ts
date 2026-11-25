@@ -7,14 +7,6 @@ import { allowanceVariable, processors, testWorkers } from "#workers.ts"
 
 export { HARDENED_FLAGS, testWorkers }
 
-/**
- * How long a test or a hook may take: without bound, or a number of milliseconds. A long search that keeps making
- * progress must never fail on wall time; each case's hang guard is what catches a case that stops.
- */
-export type Timeout =
-	| Readonly<{ kind: "unbounded" }>
-	| Readonly<{ kind: "bounded"; millis: number }>
-
 /** The setup every project's test processes run, which leaves on each test whether it ran a search, for the reporter
  * that fails an example where the package bans them. */
 const SEARCHES_SETUP = `${import.meta.dirname}/searches-setup.ts`
@@ -46,14 +38,10 @@ const refuseWorkerlessOverride = (given: Option.Option<string>): void =>
 		}
 	})
 
-/** Vitest's form of a timeout, where zero means none. */
-const millisOf = (timeout: Timeout) => (timeout.kind === "unbounded" ? 0 : timeout.millis)
-
 /**
  * What a package states about its tests: which files they are; which of them steer by V8's block coverage, so their
  * processes count blocks from the start, before the code under test loads; its own global setup files, which run after
- * the library's, beside the run seed; the export conditions its code resolves with; how long a test and a hook may
- * take; and `smallStack`, the files whose suites run under SMALL_STACK, about a sixth of Node's default stack, instead
+ * the library's, beside the run seed; the export conditions its code resolves with; and `smallStack`, the files whose suites run under SMALL_STACK, about a sixth of Node's default stack, instead
  * of on the default stack, so a per-element use of the stack (a spread argument, a recursion over a list) fails at the
  * widths ordinary generators reach (a case that passes on the small stack passes on the default one, and both draw the
  * same cases, so a second run on the default stack would only repeat it); and `examples`, whether every test case must run a search, and the files exempt from it, each set
@@ -66,7 +54,6 @@ export type TestConfig = Readonly<{
 	guided: ReadonlyArray<string>
 	setup: ReadonlyArray<string>
 	conditions: ReadonlyArray<string>
-	timeouts: Readonly<{ test: Timeout; hook: Timeout }>
 	smallStack: ReadonlyArray<string>
 	examples: Examples
 }>
@@ -82,15 +69,15 @@ export type TestConfig = Readonly<{
  * the run for every passing test case that ran no search where the package bans examples, as each project's setup
  * records the searches every test ran, and fails a run that executed no test case (reporter.ts noTestRan), as Vitest's
  * own passWithNoTests, false here, fails a run that found no test file; a VITEST_MAX_WORKERS that is no whole number of
- * workers, one at least, is refused before Vitest starts (MAX_WORKERS_VARIABLE). A fuzz run lifts every
- * timeout: its budget is its own, and each case's hang guard still catches a case that stops.
+ * workers, one at least, is refused before Vitest starts (MAX_WORKERS_VARIABLE). No test and no hook has a timeout
+ * (testTimeout and hookTimeout 0, Vitest's none): a timer's verdict is the wall clock's, which a slower machine changes,
+ * so a search ends by its case count under each case's hang guard (a bound on the case's own work) and a hang is the
+ * gate's progress watch to see; testing/no-wall-clock-verdict refuses a finite one in any Vitest configuration.
  */
 export const defineTestConfig = (config: TestConfig) => {
 	refuseWorkerlessOverride(Effect.runSync(Config.option(Config.String(MAX_WORKERS_VARIABLE))))
-	const fuzzing = Option.isSome(Effect.runSync(Config.option(Config.String("TEST_FUZZ"))))
 	const covered = Option.isSome(Effect.runSync(Config.option(Config.String("NODE_V8_COVERAGE"))))
 	const uncoveredSetup = covered ? [SEARCHES_SETUP] : [COMPILE_CACHE_SETUP, SEARCHES_SETUP]
-	const timeoutOf = (timeout: Timeout) => millisOf(fuzzing ? { kind: "unbounded" } : timeout)
 	/** The default project leaves out every file the small-stack project runs: a file runs on exactly one stack. */
 	const smallStackOnly = Arr.filterMap(config.smallStack, (glob) =>
 		Str.startsWith("!")(glob) ? Result.failVoid : Result.succeed(`!${glob}`)
@@ -146,8 +133,8 @@ export const defineTestConfig = (config: TestConfig) => {
 			passWithNoTests: false,
 			env: { [allowanceVariable]: `${processors}` },
 			reporters: ["default", residualReporter(config.examples)],
-			testTimeout: timeoutOf(config.timeouts.test),
-			hookTimeout: timeoutOf(config.timeouts.hook)
+			testTimeout: 0,
+			hookTimeout: 0
 		}
 	})
 }

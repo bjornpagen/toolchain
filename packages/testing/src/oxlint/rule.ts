@@ -2,7 +2,7 @@ import type { RuleTester } from "oxlint/plugins-dev"
 
 /** A rule as oxlint's plugin API types it. */
 export type Rule = Parameters<RuleTester["run"]>[1]
-type CreateRule = Extract<Rule, { create: unknown }>
+export type CreateRule = Extract<Rule, { create: unknown }>
 export type Context = Parameters<CreateRule["create"]>[0]
 type Visitor = ReturnType<CreateRule["create"]>
 type Program = Context["sourceCode"]["ast"]

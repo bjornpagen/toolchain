@@ -1,8 +1,8 @@
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem"
 import { regex } from "arkregex"
 import { Array as Arr, Effect, FileSystem, Option, Order, String as Str } from "effect"
-import { inject, type TestContext } from "vitest"
-import { type Deadline, noDeadline, type ProcessRun, Run } from "#explore.ts"
+import { inject } from "vitest"
+import { type ProcessRun, Run } from "#explore.ts"
 import { budgetOf, type Corpus } from "#fuzz.ts"
 import { fnv1a32 } from "#random.ts"
 import type { ReplayCase } from "#replay.ts"
@@ -109,35 +109,9 @@ export const runOfProcess = Effect.gen(function* () {
 }).pipe(Effect.provide(NodeFileSystem.layer))
 
 /**
- * The deadline of the test `ctx` runs, from its task: none when its timeout is unbounded (Vitest sets no timer for a
- * timeout of zero or less, or an infinite one), otherwise its timeout after its attempt began. Vitest starts a test's
- * timer when it calls the test's function, after its beforeEach hooks, and an attempt begins before them, at the test's
- * start or, for a retry or a repeat, once the last recorded attempt ended; so the deadline is never later than Vitest's.
- * A task that has no result has not begun to run, so no search can run in it.
+ * The run of a search in a test: this process's run, and no deadline. A search ends by its case count under its hang
+ * guard (caseHang, a bound on each case's own work), never by its test's timeout, so no verdict waits on the wall
+ * clock: a slow machine runs the same cases slower and judges them alike. A hang is the gate's to see, by its
+ * progress watch.
  */
-const deadlineOf = (ctx: TestContext): Effect.Effect<Deadline> => {
-	const { timeout, result } = ctx.task
-	if (timeout <= 0 || !Number.isFinite(timeout)) {
-		return Effect.succeed(noDeadline)
-	}
-	return Option.match(Option.fromNullishOr(result?.startTime), {
-		onNone: () =>
-			Effect.die(
-				`${ctx.task.fullName}: a search runs in a test that has begun, and this one has not`
-			),
-		onSome: (startTime) =>
-			Effect.succeed<Deadline>({
-				kind: "at",
-				millis:
-					Arr.reduce(result?.attempts ?? [], startTime, (began, attempt) =>
-						Math.max(began, attempt.startTime + attempt.duration)
-					) + timeout
-			})
-	})
-}
-
-/** The run of a search in the test `ctx` runs: this process's run, and the test's deadline. */
-export const runOfTest = (ctx: TestContext) =>
-	Effect.zipWith(runOfProcess, deadlineOf(ctx), (processRun, deadline) =>
-		Run.of({ ...processRun, deadline })
-	)
+export const runOfTest = Effect.map(runOfProcess, (processRun) => Run.of(processRun))

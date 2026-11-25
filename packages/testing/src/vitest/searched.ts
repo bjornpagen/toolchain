@@ -97,8 +97,8 @@ const annotationOf = (
 }
 
 /**
- * Runs a search as a Vitest test: provides this test's run, this process's with the test's deadline, so the search
- * reports what it found before the test's own timeout fails it bare, and leaves its result on its test, an
+ * Runs a search as a Vitest test: provides this test's run, this process's, under no deadline (run.ts runOfTest: a
+ * search ends by its case count, never by its test's timeout), and leaves its result on its test, an
  * exploration's residual and an exhaustion's proof, so the reporter can table every suite, riskiest first. Use it as
  * the body of an `it.effect`: `it.effect("lifecycle", (ctx) => searched(ctx, explore(spec, property)))`. The search
  * may set up what its property needs first, so it fails with its own errors as well as the search's.
@@ -115,5 +115,5 @@ export const searched = <A extends Explored | Exhausted, E, R>(
 				Effect.promise(() => ctx.annotate(result.suite, ORACLE, { body: result.oracle.kind }))
 			)
 		}),
-		Effect.provideServiceEffect(RunService, runOfTest(ctx))
+		Effect.provideServiceEffect(RunService, runOfTest)
 	)

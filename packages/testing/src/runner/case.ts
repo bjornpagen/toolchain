@@ -950,7 +950,7 @@ const evaluateCase =
 			const lateUses = yield* LateUses
 			const slot = slotOf(drawing, lateUses, order, 0)
 			const ran = yield* watchedCase(
-				{ caseHang: Duration.millis(order.deadline), cut: Option.none() },
+				{ caseHang: Duration.millis(order.deadline) },
 				blockedReport([slot], drawing.print),
 				Effect.gen(function* () {
 					switch (slot.kind) {
@@ -1025,7 +1025,7 @@ const evaluateBatch =
 				return [slot.kind === "drawn" ? drawnSoFar + 1 : drawnSoFar, slot] as const
 			})
 			const runs = yield* watchedCase(
-				{ caseHang: Duration.millis(deadlineOf(batch)), cut: Option.none() },
+				{ caseHang: Duration.millis(deadlineOf(batch)) },
 				blockedReport(slots, drawing.print),
 				runsOf(drawing, needs, checkAll, slots, deadlineOf(batch))
 			)

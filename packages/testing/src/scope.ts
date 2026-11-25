@@ -19,6 +19,21 @@ export const TEST_SCOPE: ReadonlyArray<string> = [
 	...Arr.map(SCOPE_DIRECTORIES, (directory) => `**/${directory}/**`)
 ]
 
+/**
+ * Vitest's configuration files, as oxlint globs relative to the repository root, a Vite config's among them, whose
+ * `test` block Vitest reads where a package has no Vitest config of its own: the preset holds each to the testing
+ * plugin's clock rule (testing/no-wall-clock-verdict), whose arm refuses a finite testTimeout or hookTimeout.
+ */
+export const VITEST_CONFIGS: ReadonlyArray<string> = [
+	"**/vite.config.ts",
+	"**/vite.config.mts",
+	"**/vitest.config.ts",
+	"**/vitest.config.mts",
+	"**/vitest.*.config.ts",
+	"**/vitest.*.config.mts",
+	"**/vitest.workspace.ts"
+]
+
 /** Whether a repository-relative path is test scope: it ends in a test scope suffix, or a directory above it is one of
  * test scope's. */
 export const isTestScope = (path: string): boolean => {

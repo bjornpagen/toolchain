@@ -44,7 +44,7 @@ const ONE_TEST = 'import { test } from "vitest"\n\ntest("one", () => undefined)\
 
 /** The consumer's Vitest config, the library's (defineTestConfig), its include `include`. */
 const vitestConfigOf = (include: string): string =>
-	`import { defineTestConfig } from "@bjornpagen/testing/vitest/config"\n\nexport default defineTestConfig({ include: ["${include}"], guided: [], setup: [], conditions: [], timeouts: { test: { kind: "unbounded" }, hook: { kind: "unbounded" } }, smallStack: [], examples: { kind: "allowed" } })\n`
+	`import { defineTestConfig } from "@bjornpagen/testing/vitest/config"\n\nexport default defineTestConfig({ include: ["${include}"], guided: [], setup: [], conditions: [], smallStack: [], examples: { kind: "allowed" } })\n`
 
 /** A Vitest config of the consumer's own, naming the library's reporter by its export, as a package allowing examples may. */
 const REPORTER_ALONE =

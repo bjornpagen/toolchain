@@ -38,7 +38,7 @@ import {
 } from "#oxlint/rules.fixtures.ts"
 import { property } from "#property.ts"
 
-/** no-wall-clock-verdict reports exactly the reads of the clock. */
+/** no-wall-clock-verdict reports exactly the reads of the clock and the finite Vitest timeouts. */
 export const noWallClockVerdict = ruleProperty(
 	"no-wall-clock-verdict",
 	inTests(programOf(clockSites)),
@@ -46,9 +46,22 @@ export const noWallClockVerdict = ruleProperty(
 		{
 			file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
 			original:
-				"\t\tNewExpression: (node) => {\n\t\t\tif (isNamed(context, node.callee, DATE_READS) && Arr.isReadonlyArrayEmpty(node.arguments)) {\n\t\t\t\trefuse(node)\n\t\t\t}\n\t\t},\n",
+				'\t\tNewExpression: (node) => {\n\t\t\tif (isNamed(context, node.callee, DATE_READS) && Arr.isReadonlyArrayEmpty(node.arguments)) {\n\t\t\t\tcontext.report({ node, messageId: "wallClock" })\n\t\t\t}\n\t\t},\n',
 			replacement: "",
 			why: "no-wall-clock-verdict reads `new Date()` as no read of the clock."
+		},
+		{
+			file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
+			original:
+				"\t\t\t\tOption.exists(keyOf(node), (key) => Arr.contains(VITEST_TIMEOUTS, key)) &&\n",
+			replacement: "\t\t\t\tfalse &&\n",
+			why: "A finite testTimeout or hookTimeout passes, so a Vitest config fails a test by the wall clock, as qti-pie's testTimeout: 60_000 failed crust on a slow machine; the property fails."
+		},
+		{
+			file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
+			original: '\t(value.type === "Literal" && value.value === 0) ||\n',
+			replacement: "\tfalse ||\n",
+			why: "A timeout of 0, which Vitest reads as none, is refused as finite; the property fails."
 		}
 	]
 )

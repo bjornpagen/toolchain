@@ -1,5 +1,5 @@
 import { CLOCK_RULES, EVERY_FILE_RULES, MODULE_RULES, TEST_RULES } from "@bjornpagen/testing/oxlint"
-import { TEST_SCOPE, TEST_SUFFIXES } from "@bjornpagen/testing/scope"
+import { TEST_SCOPE, TEST_SUFFIXES, VITEST_CONFIGS } from "@bjornpagen/testing/scope"
 import { Array as Arr, Option, Record, Result, String as Str } from "effect"
 import type { DummyRule, DummyRuleMap, OxlintConfig, OxlintOverride } from "oxlint"
 import { type PackName, packNamesOf, type Toolchain } from "#config.ts"
@@ -693,9 +693,14 @@ export const ownPlugin = <const P extends Plugin>(
 /** Test modules, by their suffix. */
 const TEST_FILES: ReadonlyArray<string> = Arr.map(TEST_SUFFIXES, (suffix) => `**/*${suffix}`)
 
-/** The globs the preset scopes its own blocks by, test modules and test scope: definitions of the standard's, which a
- * repository's files need not all match. Every other glob of a configuration is a repository's own. */
-export const STANDARD_GLOBS: ReadonlyArray<string> = Arr.dedupe([...TEST_FILES, ...TEST_SCOPE])
+/** The globs the preset scopes its own blocks by, test modules, test scope and Vitest's configuration files: definitions
+ * of the standard's, which a repository's files need not all match. Every other glob of a configuration is a
+ * repository's own. */
+export const STANDARD_GLOBS: ReadonlyArray<string> = Arr.dedupe([
+	...TEST_FILES,
+	...TEST_SCOPE,
+	...VITEST_CONFIGS
+])
 
 /** The testing library's oxlint plugin, by the specifier oxlint loads it with, the rules it holds test scope to, the
  * rules it holds a test module to once the repository runs the properties pack, and the rules it holds every file to;
@@ -706,7 +711,8 @@ export type Tests =
 			library: "installed"
 			/** Clock-free code beyond the test files, held to the testing plugin's clock rules: the testing library and the
 			 * tests' support, so no verdict rests on a hidden clock. A module whose job is the clock is an override's
-			 * exception. */
+			 * exception. Vitest's configuration files (VITEST_CONFIGS) are held to them as well, by the preset, so none sets a
+			 * finite testTimeout or hookTimeout. */
 			clockFree: ReadonlyArray<string>
 	  }>
 
@@ -740,7 +746,7 @@ const testingAdds = (tests: Tests): TestingAdds => {
 				rules: TEST_RULES,
 				modules: MODULE_RULES,
 				everyFile: EVERY_FILE_RULES,
-				clock: { files: tests.clockFree, rules: CLOCK_RULES }
+				clock: { files: [...tests.clockFree, ...VITEST_CONFIGS], rules: CLOCK_RULES }
 			}
 	}
 }

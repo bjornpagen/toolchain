@@ -25,6 +25,7 @@ export default defineRunner({
 		"src/runner/flags.test.ts",
 		"src/runner/loads.test.ts",
 		"src/runner/norun.test.ts",
+		"src/vitest/timeouts.test.ts",
 		"src/runner/reuse.test.ts",
 		"src/resources/scratch.test.ts",
 		"src/resources/resources.test.ts",
