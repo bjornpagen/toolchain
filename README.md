@@ -14,6 +14,42 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: `run` reads the machine-wide verdict cache (2026-11-24)
+
+About fifteen lanes each ran main's full tiers on trees where most properties' code was main's (load 600 and more in
+seven concurrent `pnpm check` runs). `toolchain-test run` now answers every property whose verdict key holds a pass from
+the machine-wide cache (`${XDG_CACHE_HOME:-~/.cache}/toolchain-test/<repository key>/verdicts`, shared by every clone
+and workspace) and runs only the rest, keeping each verdict it runs; its report says each property's fate (`CACHED`, or
+its verdict line) and how many were cached, run, observed and failed. `toolchain-test affected <ref>` is gone.
+
+A key holds what a property can observe: its identity, its import closure (its module's, the runner config's, the
+package's pg.config.ts, the runner's entries, under the config's conditions and Node's version), the digest of every
+file of the toolchain's testing package, the digest of its workers' environment, the PostgreSQL installation and the
+workbench's cluster configuration for a property that declares a database template, and its seeds: each property's
+rotating stream is seeded by its key, so a run at an unchanged key draws the cases it drew before (TEST_SEED=<n> seeds
+every property with n, and keys n). A property whose code reads a file that is not its own data, starts a child
+process, opens a connection or starts a thread at run time observes past its key: it runs every time, and every
+property run after it on the same worker is not kept either (CONTRIBUTING.md, "A run reads the verdict cache"); one
+that observed in a window of its own is noted and runs on workers of its own kind next time, so the others stay clean.
+Today that is every property that starts a child process (grizzle's type tier, which runs tsgo; the TypeScript API,
+which spawns it) or reads a file at run time (a type program's prelude, PostgreSQL's postgres.bki), and every property
+that declares a database need, whose cluster is reached through child processes and connections.
+
+Out of every key's reach, and so assumed of every property (main's ruling, 2026-11-24): its verdict does not depend on
+the clock, on randomness not drawn from its case's tape, on the machine's live state read through node:os or process
+(load, memory, a process's id), on a value another property left in a module's state without reading anything, or on
+the checkout's absolute path, which a key cannot hold without ending every reuse across checkouts.
+
+A worker is given only the variables the toolchain names (HOME, USER, LOGNAME, SHELL, PATH, LANG, LC_ALL, TZ, TMPDIR,
+the XDG directories, DBUS_SESSION_BUS_ADDRESS, PGSSLROOTCERT, NODE_DISABLE_COMPILE_CACHE) and those its runner config
+names, and the key holds their values.
+
+To migrate:
+
+1. **State `environment` in test.config.ts**: `defineRunner({ include, smallStack, conditions, environment: [], layer,
+   mutation })`, naming each variable beyond the toolchain's that a property reads (none for most); it is required.
+2. **Replace `toolchain-test affected <ref>`** with `toolchain-test run`, wherever a script or a gate ran it.
+
 ## Consumer migration: no width is 0, and a run of no test fails (2026-11-24)
 
 edullm's gate unit, pinned by CPUAffinity to 8 CPUs, read nproc 8, so its nproc/16 width came to 0;
@@ -29,8 +65,8 @@ read that as green. Two constructions close the class:
   `VITEST_MAX_WORKERS` that is no whole number, one at least, as the config loads (Vitest reads it past any config),
   and sets `passWithNoTests: false`; the reporter (`@bjornpagen/testing/vitest/reporter`) fails a run that ended with
   no test case passed or failed (a filter that matches none) and one whose event loop drained before it ended (a
-  worker setting of 0). Every toolchain-test command refuses a load of no property (`run`, `affected`, `verified`,
-  `kills`, `census`, `fuzz`).
+  worker setting of 0). Every toolchain-test command refuses a load of no property (`run`, `verified`, `kills`,
+  `census`, `fuzz`).
 
 To migrate: drop any `VITEST_MAX_WORKERS`, `--maxWorkers` or nproc arithmetic from scripts and units (a unit's width is
 its CPUAffinity and CPUQuota, which the allowance reads), and pass a width a repository computes through `widthOf`.

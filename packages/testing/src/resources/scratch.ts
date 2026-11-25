@@ -1,6 +1,7 @@
 import { Brand, type Config, Effect, FileSystem, type PlatformError, type Scope } from "effect"
 import type { Need } from "#property.ts"
 import { toolchainTestCache } from "#runner/cache-home.ts"
+import { unwatched } from "#runner/observe.ts"
 import { NeedFailed } from "#runner/services.ts"
 
 /** A directory that is one case's alone: made empty for it, removed with everything in it when the case ends. */
@@ -38,7 +39,8 @@ const key = "@bjornpagen/testing/resources Scratch.dir"
 const scratchDirBudgetMillis = 1000
 
 /** Node's child processes: a scratch directory's remover is started with a pipe the maker alone holds. */
-const childProcesses = process.getBuiltinModule("node:child_process")
+/** node:child_process's spawn as it was before any guard: a scratch directory's remover is the runner's own process (runner/observe.ts). */
+const childProcesses = unwatched
 
 /**
  * The remover of a scratch directory, `$1`: it reads its standard input to its end, then removes the directory with

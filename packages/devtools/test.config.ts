@@ -31,6 +31,7 @@ export default defineRunner({
 	],
 	smallStack: [],
 	conditions: [],
+	environment: [],
 	layer: Layer.empty,
 	mutation: noMutation
 })

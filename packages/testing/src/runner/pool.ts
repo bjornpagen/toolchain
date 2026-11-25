@@ -24,6 +24,7 @@ import {
 	storeDirectory
 } from "#runner/compile-cache.ts"
 import { moduleClosureAt } from "#runner/module-closure.ts"
+import type { Observation } from "#runner/observe.ts"
 import {
 	type CountAnswer,
 	countAnswerOf,
@@ -162,6 +163,7 @@ type Worker = {
 	usage: { started: number; reported: number }
 	occupiedSince: number
 	readyingMillis: number
+	observed: Option.Option<Observation>
 }
 
 /** How much of what a worker wrote the parent keeps, to report a lost case with: the end of it. */
@@ -238,8 +240,10 @@ export const placesOf = (workers: Width): Places => ({
  * What the pool's workers start from: the worker's entry module, the package root its test modules load from, the
  * directory it runs in, its Node flags, the mutant its module hook serves, if any (mutate/pool.ts Served: the pool adds
  * the hook to the flags, and hashes the closures it answers its workers with over the files as they load them), and
- * what its environment adds to this process's, beside this process's CPU allowance, which every worker is given
- * (workers.ts allowanceVariable), so a worker forked late, after its cgroup's quota moved, is of the run's width still;
+ * the environment a worker is given, the whole of it but the pool's own plumbing (runner/environment.ts
+ * workerEnvironmentOf: no variable of this process's reaches a worker unless the caller names it there), beside this
+ * process's CPU allowance, which every worker is given (workers.ts allowanceVariable), so a worker forked late, after
+ * its cgroup's quota moved, is of the run's width still;
  * the store its workers keep Node's compile cache in, in their root's
  * directory (runner/compile-cache.ts); the places its workers take (one a core for a run); and whether any
  * search guides by blocks (each worker then starts V8's coverage before it loads a module); and the values of the run
@@ -281,7 +285,8 @@ export type Bounding = "summed" | "per case"
 /**
  * The pool as a run uses it: the evaluator every search shares; `retire`, which tells every worker a property's search
  * ended, so a worker releases the needs only that property held there; how many cases each worker finished, how many
- * modules each holds (readied a property of), and what its workers measured of their CPU (runner/usage.ts).
+ * modules each holds (readied a property of), and what its workers measured of their CPU (runner/usage.ts); and
+ * what each property observed (runner/observe.ts), by its label (Observed).
  */
 export type Pool = Readonly<{
 	evaluator: Evaluator
@@ -289,6 +294,18 @@ export type Pool = Readonly<{
 	cases: Effect.Effect<ReadonlyArray<number>>
 	held: Effect.Effect<ReadonlyArray<number>>
 	usage: Effect.Effect<PoolUsage>
+	observed: (label: string) => Effect.Effect<Observed>
+}>
+
+/**
+ * What a property's run observed past its key (runner/observe.ts), as a pool saw it: `unclean`, the first observation
+ * of a worker that had made one by the time it answered a readying or a unit of the property, so its verdict depends on
+ * something its key does not hold, none when every worker that ran it had observed nothing up to its last unit there;
+ * and `own`, the first observation a window of its own made, none when none did.
+ */
+export type Observed = Readonly<{
+	unclean: Option.Option<Observation>
+	own: Option.Option<Observation>
 }>
 
 /** The pool failed to start: a worker could not load the package's runner config, and why. */
@@ -527,6 +544,17 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 		const lateUses = new Map<number, Map<number, Printed>>()
 		const properties = new Map<string, PropertyUsage>()
 		const processes: Array<Worker["usage"]> = []
+		const uncleanBy = new Map<string, Observation>()
+		const ownBy = new Map<string, Observation>()
+
+		/** A property answered on `worker`: unclean when the worker had observed by then, the worker's first observation why. */
+		const answeredOn = (worker: Worker, label: string) => {
+			Option.map(worker.observed, (observation) => {
+				if (!uncleanBy.has(label)) {
+					uncleanBy.set(label, observation)
+				}
+			})
+		}
 
 		let childrenStated: ChildrenStated = "stated"
 
@@ -727,7 +755,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 			])
 			const child = childProcesses.spawn(launch.command, launch.args, {
 				cwd: spec.cwd,
-				env: { ...process.env, [allowanceVariable]: `${processors}`, ...spec.env, ...compiling },
+				env: { ...spec.env, [allowanceVariable]: `${processors}`, ...compiling },
 				serialization: "advanced",
 				stdio: ["pipe", "pipe", "pipe", "ipc", "pipe"],
 				detached: true
@@ -748,7 +776,8 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 				waits: noWaits,
 				usage: { started: 0, reported: 0 },
 				occupiedSince: now,
-				readyingMillis: 0
+				readyingMillis: 0,
+				observed: Option.none()
 			}
 			processes.push(worker.usage)
 			const keep = (chunk: unknown) => {
@@ -964,6 +993,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 											cpu: received.cpu
 										})
 										worker.readyingMillis += received.millis
+										answeredOn(worker, unit.property)
 										spent(unit.property, {
 											readyingCpu: received.cpu,
 											childrenCpu: childrenMillis(received.children),
@@ -989,6 +1019,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 										ranOf(received.done).cases,
 										held
 									)
+									answeredOn(worker, unit.value.property)
 									spent(unit.value.property, {
 										childrenCpu: childrenMillis(received.children),
 										casesWall: held
@@ -1005,6 +1036,19 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 								lateUses.set(received.unit, marks)
 								return
 							}
+							case "observed":
+								Option.map(
+									Arr.findFirst(worker.sent, (sent) => sent.id === received.unit),
+									(unit) => {
+										if (!ownBy.has(unit.property)) {
+											ownBy.set(unit.property, received.observation)
+										}
+									}
+								)
+								worker.observed = Option.orElse(worker.observed, () =>
+									Option.some(received.observation)
+								)
+								return
 							case "waiting":
 								worker.waits = waitEntered(worker.waits, now)
 								return
@@ -1186,6 +1230,11 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 				properties: Arr.fromIterable(properties.values()),
 				workers: Arr.map(processes, (usage) => ({ ...usage })),
 				children: childrenStated
-			}))
+			})),
+			observed: (label) =>
+				Effect.sync((): Observed => ({
+					unclean: Option.fromUndefinedOr(uncleanBy.get(label)),
+					own: Option.fromUndefinedOr(ownBy.get(label))
+				}))
 		}
 	})

@@ -68,7 +68,8 @@ export const placesLeased = (width: Width) => {
  */
 export const mutantPoolOf = (
 	checkout: string,
-	packageRoot: string
+	packageRoot: string,
+	environment: Readonly<Record<string, string>>
 ): Effect.Effect<MutantPool<PoolFailed>, never, NodeServices> =>
 	Effect.gen(function* () {
 		const platform = yield* Effect.context<NodeServices>()
@@ -89,7 +90,7 @@ export const mutantPoolOf = (
 						entry: rebased(WORKER_ENTRY),
 						root,
 						cwd: root,
-						env: { ...image.env, [checkoutVariable]: origin },
+						env: { ...environment, ...image.env, [checkoutVariable]: origin },
 						compile: image.compile,
 						places: { at: taken, of: testWorkers },
 						execArgv: process.execArgv,

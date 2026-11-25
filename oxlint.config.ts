@@ -169,6 +169,15 @@ export default defineConfig(
 				})
 			},
 			{
+				files: ["packages/testing/src/runner/observe.ts"],
+				rules: active({
+					/** A worker's guard, which wraps Node's process-wide modules once as the worker starts, before any runtime
+					 * exists to hold a Ref, and whose window every unit opens: the process's own by Node's design, as its
+					 * module cache is (lane TOOLTRUST, 2026-11-24). */
+					"devtools/no-module-state": "off"
+				})
+			},
+			{
 				files: ["packages/testing/src/runner/resolutions.ts"],
 				rules: active({
 					/** A process's resolutions, which Node's resolve hook reads for every module the process loads: the

@@ -19,8 +19,8 @@ import {
  * records their verdicts exactly when it has a verdict key (a git repository and its lockfile, and the closure hasher,
  * which needs TypeScript), and otherwise says once why nothing was recorded; nothing passing fails for its layout. A run
  * judges no kill: a property whose kill survives passes as its search does, and its kill leaves no verdict. Each layout
- * is written in the case's scratch directory and run in a child process through the library's loadPackage, its inline
- * evaluator and verdictsRecorded, as `toolchain-test run` runs them. Oracle: the specification, stated per layout.
+ * is written in the case's scratch directory and run in a child process through the library's run keying, its
+ * loadPackage and its inline evaluator, as `toolchain-test run` runs them. Oracle: the specification, stated per layout.
  */
 export const consumersRunInEveryLayout = property.exhaust(layouts, {
 	box: "every layout: the library linked or installed, in a git repository or not, with a lockfile or not, with TypeScript or not",
@@ -96,15 +96,9 @@ export const consumersRunInEveryLayout = property.exhaust(layouts, {
 		{
 			file: "packages/testing/src/runner/affected.ts",
 			original:
-				'(one) => cache.record(one.key, searchedPassed(outcome, one.found.id) ? "passed" : "failed"),',
-			replacement: '(one) => cache.record(one.key, "failed"),',
+				'cache.record(one.key, answersForItsKey(outcome, one.found.id) ? "passed" : "failed"),',
+			replacement: 'cache.record(one.key, "failed"),',
 			why: "a run records no pass for a property whose search passed, so a key that holds a verdict never holds it"
-		},
-		{
-			file: "packages/testing/src/runner/settle.ts",
-			original: "onFailure: (unloaded) => Console.log(",
-			replacement: "onFailure: (unloaded) => Effect.die(unloaded) || Console.log(",
-			why: "a run whose closure hasher did not load (no TypeScript) fails, where its verdict is its searches' and it only records nothing"
 		}
 	]
 })

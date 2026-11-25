@@ -1,14 +1,3 @@
-/**
- * A kill trial's templates are its own (resources/template.ts identify over runner/module-closure.ts, which the pool's
- * parent holds for the mutant its workers serve, runner/pool.ts): two runs one after another on one cluster, each a
- * lease of the mutator's pool (runner/lease.ts mutantPoolOf) from an image of the checkout (mutate/image.ts), unmutated
- * or serving a mutant of the module a template's build reads (mark.fixtures.ts) through its workers' module hook, as an
- * in-process kill trial does, each open a clone of one template declaration (templates.fixtures.ts opensMarked). Each
- * run's workers load the mark their image serves, and the clone each opens comes from a template that code built,
- * never one the other run's code built, whichever ran first; and the two runs open one template exactly when their
- * workers load the same text. The check starts pools from the checkout, so the property needs Checkout.dir: its kills
- * run in a worker tree. Oracle: the specification, stated in the check.
- */
 import { Array as Arr, Effect, FileSystem, Option, Schema } from "effect"
 import { assert } from "#assert.ts"
 import { Checkout } from "#mutate/checkout.ts"
@@ -30,6 +19,18 @@ import { property } from "#property.ts"
 import { PgCluster, single } from "#resources/cluster.ts"
 import { dropTemplate, services, templateNameOf } from "#resources/resources.fixtures.ts"
 import { Scratch } from "#resources/scratch.ts"
+/**
+ * A kill trial's templates are its own (resources/template.ts identify over runner/module-closure.ts, which the pool's
+ * parent holds for the mutant its workers serve, runner/pool.ts): two runs one after another on one cluster, each a
+ * lease of the mutator's pool (runner/lease.ts mutantPoolOf) from an image of the checkout (mutate/image.ts), unmutated
+ * or serving a mutant of the module a template's build reads (mark.fixtures.ts) through its workers' module hook, as an
+ * in-process kill trial does, each open a clone of one template declaration (templates.fixtures.ts opensMarked). Each
+ * run's workers load the mark their image serves, and the clone each opens comes from a template that code built,
+ * never one the other run's code built, whichever ran first; and the two runs open one template exactly when their
+ * workers load the same text. The check starts pools from the checkout, so the property needs Checkout.dir: its kills
+ * run in a worker tree. Oracle: the specification, stated in the check.
+ */
+import { workerEnvironmentOf } from "#runner/environment.ts"
 import { mutantPoolOf } from "#runner/lease.ts"
 import { runnerLimits } from "#runner/limits.ts"
 import { widthOf } from "#workers.ts"
@@ -74,7 +75,11 @@ export const trialTemplatesApart = property.exhaust(runPairs, {
 				const target = yield* realPathOf(`${packageRoot}/src/mutate/mark.fixtures.ts`)
 				const trees = yield* treesOf(packageRoot)
 				const images = yield* imagesOf(packageRoot, trees)
-				const pool = yield* mutantPoolOf(packageRoot, packageRoot)
+				const pool = yield* mutantPoolOf(
+					packageRoot,
+					packageRoot,
+					workerEnvironmentOf([], process.env)
+				)
 				const opened = yield* Effect.forEach(pair, (loads, at) =>
 					Effect.scoped(
 						Effect.gen(function* () {
@@ -155,8 +160,8 @@ export const trialTemplatesApart = property.exhaust(runPairs, {
 		},
 		{
 			file: "packages/testing/src/runner/lease.ts",
-			original: "env: { ...image.env, [checkoutVariable]: origin },",
-			replacement: "env: { ...image.env, [checkoutVariable]: packageRoot },",
+			original: "env: { ...environment, ...image.env, [checkoutVariable]: origin },",
+			replacement: "env: { ...environment, ...image.env, [checkoutVariable]: packageRoot },",
 			why: "A lease names the package root it was made from as its workers' checkout, so a lease made inside a worker tree (a kill trial's run of this property) sends its workers to the tree's own cluster family, which no settle made, and every need on the cluster fails unopened (PGFAMILY, 2026-11-22); this property fails."
 		}
 	]

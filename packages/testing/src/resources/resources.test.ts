@@ -388,6 +388,7 @@ export const refusedDropCollected = property.exhaust(finite(int(1, 3)), {
 					include: [],
 					smallStack: [],
 					conditions: [],
+					environment: [],
 					layer: ownCluster(prefix),
 					mutation: noMutation
 				})

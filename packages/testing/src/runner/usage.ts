@@ -1,4 +1,5 @@
 import { Array as Arr, Option, Order, Result, Schema, String as Str } from "effect"
+import { unwatched } from "#runner/observe.ts"
 import type { ChildrenCpu } from "#runner/protocol.ts"
 
 /**
@@ -40,7 +41,8 @@ const PROC_STAT = {
 /** Milliseconds in a second. */
 const millisPerSecond = 1000
 
-const { readFileSync } = process.getBuiltinModule("node:fs")
+/** node:fs's read as it was before any guard: the runner's own read of /proc, never a property's (runner/observe.ts). */
+const { readFileSync } = unwatched
 
 /**
  * The CPU (ms) the children of this process took that it has waited for, user and system, as Linux states it in

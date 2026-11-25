@@ -7,10 +7,14 @@ import { type ContentHash, contentHashOf, repoPathOf, specifiersOf } from "#runn
 /**
  * The verdict cache: which properties passed, keyed by everything their verdict depends on, so a pass is a known answer
  * for as long as its key stands and is never recomputed. A key is a property's identity, the closure hash of its module
- * (closure.ts; under an edit, joined with the edited file's, runner/affected.ts editKeyOf), how the run seeded its
- * cases, and the edit it ran under, none for its search of the program as it stands: a file, its own bytes and its
- * bytes edited (a kill applied, or an operator mutant). Only passes are stored, as files named by the hash of their
- * key: a failure removes the pass its own key held and writes nothing, so a failure is never read as a pass.
+ * (closure.ts; under an edit, joined with the edited file's, runner/affected.ts editKeyOf), the toolchain that runs it
+ * (the digest of the runner's package, every file of it), the environment its workers are given (runner/environment.ts),
+ * the PostgreSQL its databases are served by where it declares a database template (the digest of the installation and
+ * of the machine's cluster configuration), how the run seeded its cases, and the edit it ran under, none for its search
+ * of the program as it stands: a file, its own bytes and its bytes edited (a kill applied, or an operator mutant). Only
+ * passes are stored, as files named by the hash of their key: a failure removes the pass its own key held and writes
+ * nothing, so a failure is never read as a pass. A pass of a property that observed past its key (runner/observe.ts)
+ * is no pass to store: it is recorded as a failure, so it runs again every time.
  *
  * Records are content-addressed and immutable: every pass is kept under its own key, so lanes that push different
  * trees one after another each find the passes of the trees before theirs, and no write removes another key's record.
@@ -79,6 +83,9 @@ export const editOf = Effect.fn("editOf")(function* (file: string, own: string, 
 export type VerdictKey = Readonly<{
 	property: PropertyId
 	closure: ClosureHash
+	toolchain: ContentHash
+	environment: ContentHash
+	postgres: Option.Option<ContentHash>
 	seeds: SeedPolicy
 	edit: Option.Option<Edit>
 }>
@@ -117,6 +124,9 @@ const KeyRecord = Schema.fromJsonString(
 	Schema.Struct({
 		property: Schema.String,
 		closure: Schema.String,
+		toolchain: Schema.String,
+		environment: Schema.String,
+		postgres: Schema.NullOr(Schema.String),
 		seeds: Schema.String,
 		edit: Schema.NullOr(
 			Schema.Struct({ file: Schema.String, content: Schema.String, mutated: Schema.String })
@@ -127,11 +137,14 @@ const KeyRecord = Schema.fromJsonString(
 const encodeKeyRecord = Schema.encodeEffect(KeyRecord)
 
 /** A key's record text: one text for every key that answers alike. */
-const recordOf = (key: VerdictKey): Effect.Effect<string> =>
+export const recordOf = (key: VerdictKey): Effect.Effect<string> =>
 	Effect.orDie(
 		encodeKeyRecord({
 			property: key.property,
 			closure: key.closure,
+			toolchain: key.toolchain,
+			environment: key.environment,
+			postgres: Option.getOrNull(key.postgres),
 			seeds: key.seeds,
 			edit: Option.getOrNull(key.edit)
 		})

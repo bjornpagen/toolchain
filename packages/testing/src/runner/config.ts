@@ -54,7 +54,9 @@ export class RunnerServicesFailed extends Schema.TaggedError<
  * package root), which of them run on workers with a small stack instead of the default (SMALL_STACK, so a per-element
  * use of the stack fails at the widths generators reach; a case runs alike on either stack but for that, so a run on
  * both would be the same cases twice), each such property's run reported and replayed as `<id>@small-stack`, the export
- * conditions its code resolves with (on every process of the run), its services, built
+ * conditions its code resolves with (on every process of the run), the variables of the runner's environment its workers
+ * are given beyond the toolchain's own (runner/environment.ts WORKER_VARIABLES; every other variable is kept from them,
+ * and the verdict key holds them all), its services, built
  * from its layer in a worker the first time a case there opens a need, so a run whose needs use no service (unit
  * properties) never builds them, and what its mutation runs add to the library's operators, loaded by
  * `toolchain-test mutate` alone (Mutation). Its class is how the runner tells it from any other default export.
@@ -63,6 +65,7 @@ export class RunnerConfig {
 	readonly include: ReadonlyArray<string>
 	readonly smallStack: ReadonlyArray<string>
 	readonly conditions: ReadonlyArray<string>
+	readonly environment: ReadonlyArray<string>
 	readonly mutation: MutationLoad
 	readonly services: Effect.Effect<
 		Context.Context<RepositoryServices>,
@@ -74,12 +77,14 @@ export class RunnerConfig {
 		include: ReadonlyArray<string>,
 		smallStack: ReadonlyArray<string>,
 		conditions: ReadonlyArray<string>,
+		environment: ReadonlyArray<string>,
 		mutation: MutationLoad,
 		services: RunnerConfig["services"]
 	) {
 		this.include = include
 		this.smallStack = smallStack
 		this.conditions = conditions
+		this.environment = environment
 		this.mutation = mutation
 		this.services = services
 	}
@@ -107,13 +112,14 @@ export const noMutation: MutationLoad = () => Promise.resolve({ families: [], eq
 
 /**
  * What a package states in its test.config.ts: its test modules, those that run on a small stack instead, its export
- * conditions, its services' layer, and how its mutation runs load what they add to the library's operators
- * (`noMutation` for nothing).
+ * conditions, the variables of the runner's environment its workers are given beyond the toolchain's own, its services'
+ * layer, and how its mutation runs load what they add to the library's operators (`noMutation` for nothing).
  */
 export type RunnerSpec<E> = Readonly<{
 	include: ReadonlyArray<string>
 	smallStack: ReadonlyArray<string>
 	conditions: ReadonlyArray<string>
+	environment: ReadonlyArray<string>
 	layer: Layer.Layer<RepositoryServices, E, RunnerProvided>
 	mutation: MutationLoad
 }>
@@ -124,7 +130,7 @@ const servicesFailed = <E>(cause: Cause.Cause<E>) =>
 
 /**
  * A package's runner config: `export default defineRunner({ include: ["src/**\/*.test.ts"], smallStack: [],
- * conditions: [], layer, mutation: noMutation })`, where `layer` provides the RunnerServices the repository declares
+ * conditions: [], environment: [], layer, mutation: noMutation })`, where `layer` provides the RunnerServices the repository declares
  * (Layer.empty when it declares none). There is no worker, width or timeout option: a run is testWorkers wide, a worker for every two CPUs of its allowance, and
  * budgets are the runner's Limits.
  */
@@ -133,6 +139,7 @@ export const defineRunner = <E>(spec: RunnerSpec<E>): RunnerConfig =>
 		spec.include,
 		spec.smallStack,
 		spec.conditions,
+		spec.environment,
 		spec.mutation,
 		Effect.catchCause(Layer.build(spec.layer), (cause) => Effect.fail(servicesFailed(cause)))
 	)

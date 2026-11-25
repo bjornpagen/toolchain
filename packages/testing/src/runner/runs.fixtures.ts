@@ -28,6 +28,7 @@ export const countedRunRoot = (directory: string, modules: number) =>
 					)}],`,
 					"\tsmallStack: [],",
 					"\tconditions: [],",
+					"\tenvironment: [],",
 					"\tlayer: Layer.empty,",
 					"\tmutation: noMutation",
 					"})",

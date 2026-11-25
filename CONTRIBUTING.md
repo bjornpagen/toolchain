@@ -10,7 +10,7 @@ the toolchain; README.md says what a repository changes to take it.
 | -------------------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | After every edit           | `pnpm types`              | `turbo run typecheck`: each package's and the root's typecheck, from scratch: it reads no build info, and turbo replays a package whose inputs did not change at all.                                                                                                                                                                                                                                                  |
 | Each landing (`pnpm land`) | `toolchain-land`          | From a jj workspace onto the repository's hub (the remote `hub`), behind the thin gate: `jj fix` with the repository's oxfmt on the files the landing changes, the lockfile against the manifests, the repository's `land:generated` where it has one, `pnpm types`, and the test files the landing adds or changes, by path. A landing whose push the hub refuses because its trunk moved lands again from the fetch. |
-| Each batch on the hub      | `pnpm trunk`              | `trunk@<repo>` runs the root's `trunk` script in a worktree of the hub's trunk, then pushes upstream only what passed: `pnpm check`, then, in each package with a `test.config.ts`, `toolchain-test affected origin/main` (upstream's main): every property with no cached pass, its search at full width (below).                                                                                                     |
+| Each batch on the hub      | `pnpm trunk`              | `trunk@<repo>` runs the root's `trunk` script in a worktree of the hub's trunk, then pushes upstream only what passed: `pnpm check`, then, in each package with a `test.config.ts`, `toolchain-test run`: every property whose key holds no cached pass, its search at full width (below).                                                                                                                             |
 | On each pin                | `toolchain-test kills`    | The kill census, beside or after the pin's searches: every declared kill of the paths named judged (a cached red answers its kill), each survivor, stale or unjudged kill reported, exit 1 on any. A test got weak; the product is not shown wrong. Never in a run (below).                                                                                                                                            |
 | On the consumer's schedule | `toolchain-test fuzz`     | The scheduled fuzz budget, in each package root its own scheduler names: fresh seeds round after round until a case fails or the budget (`1h`, `100000x`) is spent. Never in a hook.                                                                                                                                                                                                                                   |
 | By hand, never in a lane   | `pnpm check`, `pnpm test` | The full gate over the working tree, and the tests: trunk's, not a lane's.                                                                                                                                                                                                                                                                                                                                             |
@@ -132,27 +132,46 @@ behind the thin gate (the formatter, the lockfile, the typecheck and the test fi
 the root's `trunk` script, the whole gate, in its own worktree of exactly the commit it gates, on a batch of landings,
 before it pushes upstream.
 
-## A lane's properties: affected and the verdict cache
+## A run reads the verdict cache
 
-`toolchain-test affected <ref>` (`packages/testing/src/runner/affected.ts`) runs, in a package root, every property
-whose verdict key holds no cached pass, its search at full width; a property passes when its search passes, and only
-then is its pass cached. A cached pass is a known answer: it never runs again. A failure removes the pass its key held.
-A lane runs it against the trunk it lands on, in each package with a `test.config.ts`; the ref only sorts the report's
-count of what ran into "changed since <ref>" and "not verified at this content". Trunk runs every property in full,
-`toolchain-test run`, reading no cached pass.
+`toolchain-test run [paths | ids]` (`packages/testing/src/runner/cli.ts`, `runner/affected.ts` runKeyingAt) answers, in
+a package root, every property whose verdict key holds a pass from the machine-wide cache, and runs the search of every
+other at full width, keeping its verdict under its key: a pass only when its search passed and no worker that ran it had
+observed past its key (below), a failure otherwise, which removes the pass its key held. A cached pass is a known answer:
+it never runs again while its key stands. So fifteen lanes that run main's full tiers on trees where most properties'
+code is main's run only what their trees changed. The report says each property's fate: `<id>: CACHED: …` for each
+answered, a verdict line for each run (with what it observed past its key, if it did), and a summary of how many were
+cached, run, observed and failed. `affected <ref>` is gone: `run` is the one cached run.
 
-A property's key is its identity, the closure hash of its module joined with those of the package's `test.config.ts` and
-the runner's own entry modules (`runner/cli.ts`, `runner/worker.ts`), and the seed policy of a gate run, under no edit.
+A property's key (`runner/cache.ts` VerdictKey) holds everything its verdict can observe that a digest can state:
+
+| Input                    | How the key holds it                                                                                                                                                                                                                                                                                  |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Its identity             | `<module>#<export>[/<member>]`                                                                                                                                                                                                                                                                        |
+| Its import closure       | the closure hash (`runner/closure.ts`) of its module joined with the package's `test.config.ts`, its `pg.config.ts` where it has one (the runner loads it by path), and the runner's entry modules, under the config's conditions and this Node's version                                             |
+| The toolchain            | the digest of every file of the runner's package (`runner/grounds.ts`), its runner, search and budgets (`runner/limits.ts`) among them, as they stand on disk                                                                                                                                         |
+| Node                     | its version, in every closure hash                                                                                                                                                                                                                                                                    |
+| Its workers' environment | the digest of every variable a worker is given (`runner/environment.ts`): the toolchain's list (HOME, PATH, the locale, the XDG directories, the account's bus, PGSSLROOTCERT, …), the runner config's `environment`, and the run's CPU allowance. No other variable of the runner's reaches a worker |
+| PostgreSQL               | for a property that declares a database template: the digest of the installation `pg_config --bindir` lies in, every byte, and of the workbench's `postgres@.service` and the files and directories under the home its lines name                                                                     |
+| Its budget and seed      | the budget is the runner's (`runner/limits.ts`, in the toolchain's digest); the rotating stream's seed is derived from the rest of the key, or TEST_SEED's for every property, so a search is a function of its key                                                                                   |
+
+What a property observes past its key, its key cannot answer for, so it is never cached: a worker watches every act of
+a property's code (`runner/observe.ts`): node:fs's reads of a path that is no data of the process's own (a directory it
+made, a file it wrote), a child process, a connection, a thread. The runner's own acts (its watchdog thread, its
+reads of /proc, a scratch directory's remover) are no property's; a database need's cluster, reached through child
+processes and connections, is a property's observation for now, so a property that declares one is never cached. A worker that observed once is unclean for the rest of its life, and so is every property it
+runs after, since a module may keep what it read for another (a memo). A property that observed in a window of its own
+is noted (`<repository key>/observing/<SHA-256 of its id>`), and the next run gives it workers of its own kind, so the
+workers every other property runs on stay clean; its note goes once a run of it observes nothing. Out of every key's reach, and so assumed of
+every property: the clock, randomness not drawn from the case's tape, the machine's live state read through node:os or
+process, and a value one property leaves in a module's state for another.
+
 A closure hash (`runner/closure.ts`) is the SHA-256 of everything a module loads as Node loads it: every file reached
 through static imports, re-exports and dynamic imports of a literal (never `import type` or `export type`, which Node
 erases), resolved by relative path, `imports` and `exports` maps under Node's conditions and the config's, and workspace
 packages; each external package by its lockfile entry and those of the packages it depends on; built-ins by name; the
 config's conditions and Node's version. Import cycles hash as one unit. A specifier that resolves to nothing, an
-undeclared package or a key the lockfile lacks fails the command.
-
-What a property reads without importing it, a fixture file read at run time or code a child process runs, is outside
-its closure: the full run per production version, `toolchain-test run`, covers it. It reads no cached pass: every
-property named runs its search, and every verdict is recorded.
+undeclared package or a key the lockfile lacks keys nothing, and the run runs every property, saying why.
 
 No run judges a kill (Bjorn, 2026-11-23: the release check is searches only; kill trials run as a census of their own
 on each pin). A run answers whether the product is right. Whether each test can still catch the bug it declares is the
@@ -189,8 +208,8 @@ module: it is judged on every run.
 The runner that runs is part of every key, so it must be one the repository's closures hold (`runner/affected.ts`
 runnerRootsIn): a file of the repository, whose entry modules are roots, or installed in its node_modules, which the
 config's closure holds by its lockfile entry. Another checkout's runner run in this one (its binary named by path from
-the wrong directory) keys nothing: `affected` and `verified` refuse, and `kills`, `mutate` and `census` judge every
-verdict and record none.
+the wrong directory) keys nothing: `run` runs every property and keeps nothing, `verified` refuses, and `kills`,
+`mutate` and `census` judge every verdict and record none.
 
 ### Properties that need a database
 

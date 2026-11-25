@@ -25,6 +25,7 @@ export default defineRunner({
 		"src/runner/flags.test.ts",
 		"src/runner/loads.test.ts",
 		"src/runner/norun.test.ts",
+		"src/runner/reuse.test.ts",
 		"src/resources/scratch.test.ts",
 		"src/resources/resources.test.ts",
 		"src/pg/settle.test.ts",
@@ -61,6 +62,7 @@ export default defineRunner({
 	],
 	smallStack: [],
 	conditions: [],
+	environment: [],
 	layer: fixtureServices,
 	mutation: noMutation
 })

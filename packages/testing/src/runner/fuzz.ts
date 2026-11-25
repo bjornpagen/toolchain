@@ -3,6 +3,7 @@ import { budgetOf, type FuzzBudget, FuzzTime } from "#fuzz.ts"
 import { liveMillis } from "#live.ts"
 import { runNeedsOf } from "#property.ts"
 import { sharedStore } from "#runner/compile-cache.ts"
+import { workerEnvironmentOf } from "#runner/environment.ts"
 import { needStallMillis, runnerLimits } from "#runner/limits.ts"
 import { placesOf, poolOf } from "#runner/pool.ts"
 import type { Verdict } from "#runner/protocol.ts"
@@ -69,7 +70,7 @@ export const fuzz = (root: string, args: ReadonlyArray<string>) =>
 					}),
 				onSuccess: budgetOf
 			})
-			const { discovered } = yield* loadPackage(root, selected)
+			const { config, discovered } = yield* loadPackage(root, selected)
 			const sampled = Arr.filter(discovered, (found) => found.property.kind !== "exhaust")
 			if (!Arr.isReadonlyArrayNonEmpty(sampled)) {
 				yield* Console.log("no sampled property to fuzz")
@@ -79,7 +80,7 @@ export const fuzz = (root: string, args: ReadonlyArray<string>) =>
 				entry: WORKER_ENTRY,
 				root,
 				cwd: root,
-				env: {},
+				env: workerEnvironmentOf(config.environment, process.env),
 				compile: sharedStore,
 				places: placesOf(testWorkers),
 				execArgv: process.execArgv,

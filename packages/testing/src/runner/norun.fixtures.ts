@@ -52,7 +52,7 @@ const REPORTER_ALONE =
 
 /** The consumer's runner config, whose include matches no module. */
 const EMPTY_RUNNER =
-	'import { defineRunner, noMutation } from "@bjornpagen/testing/runner"\nimport { Layer } from "effect"\n\nexport default defineRunner({ include: ["test/*.test.ts"], smallStack: [], conditions: [], layer: Layer.empty, mutation: noMutation })\n'
+	'import { defineRunner, noMutation } from "@bjornpagen/testing/runner"\nimport { Layer } from "effect"\n\nexport default defineRunner({ include: ["test/*.test.ts"], smallStack: [], conditions: [], environment: [], layer: Layer.empty, mutation: noMutation })\n'
 
 /** A case's consumer files, the command it runs (a program and its arguments) and the environment it adds. */
 type Invocation = Readonly<{

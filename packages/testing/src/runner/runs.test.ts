@@ -23,7 +23,13 @@ export const runNeedOpensOnce = property.exhaust(finite(int(1, 3)), {
 				const fs = yield* FileSystem.FileSystem
 				const scratch = yield* directory
 				const root = yield* countedRunRoot(scratch, modules)
-				const outcome = yield* runPackage({ root, seed: 1, reach: "full", selected: [] })
+				const outcome = yield* runPackage({
+					root,
+					seedOf: () => 1,
+					observes: () => false,
+					reach: "full",
+					selected: []
+				})
 				const written = yield* fs.readFileString(`${root}/${OPENED}`)
 				const opened = Arr.filter(Str.split(written, "\n"), Str.isNonEmpty)
 				assert.deepEqual(

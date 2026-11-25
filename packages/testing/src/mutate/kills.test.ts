@@ -1,16 +1,3 @@
-/**
- * The kill gate (mutate/kills.ts), on real worker images: each kill is applied to its file in a checkout and its
- * property's check runs on a process started from the kill's image, the module hook for a property that loads the code
- * in process, a worker tree for one that needs Checkout.dir; a kill whose original stands anywhere but once is stale; a
- * kill of a check that goes red with no mutant is unjudged, whatever its own trial would show; a kill the check catches
- * is killed, whether the check runs the file in its own process or, from a tree, in a child; a
- * kill it misses survives, its probe saying whether the property's process loaded the mutant at all, which a check
- * that runs the file in a child without a tree never does. The check starts processes that load the hook (hook.ts),
- * so the property needs Checkout.dir. And on leases of the mutator's own pool (runner/lease.ts), a kill that freezes its
- * case, its guard with it, has its worker ended by the pool within that case's deadline and the grace, never every
- * case's of its unit, and is killed when the overrun is its own, unjudged when its subject's baseline, run again at
- * once, overruns too.
- */
 import { Array as Arr, Effect } from "effect"
 import { assert } from "#assert.ts"
 import { array, element, finite } from "#gen.ts"
@@ -39,6 +26,20 @@ import { treesOf } from "#mutate/tree.ts"
 import { property, PropertyId } from "#property.ts"
 import { Scratch } from "#resources/scratch.ts"
 import { withKills } from "#runner/affected.ts"
+/**
+ * The kill gate (mutate/kills.ts), on real worker images: each kill is applied to its file in a checkout and its
+ * property's check runs on a process started from the kill's image, the module hook for a property that loads the code
+ * in process, a worker tree for one that needs Checkout.dir; a kill whose original stands anywhere but once is stale; a
+ * kill of a check that goes red with no mutant is unjudged, whatever its own trial would show; a kill the check catches
+ * is killed, whether the check runs the file in its own process or, from a tree, in a child; a
+ * kill it misses survives, its probe saying whether the property's process loaded the mutant at all, which a check
+ * that runs the file in a child without a tree never does. The check starts processes that load the hook (hook.ts),
+ * so the property needs Checkout.dir. And on leases of the mutator's own pool (runner/lease.ts), a kill that freezes its
+ * case, its guard with it, has its worker ended by the pool within that case's deadline and the grace, never every
+ * case's of its unit, and is killed when the overrun is its own, unjudged when its subject's baseline, run again at
+ * once, overruns too.
+ */
+import { workerEnvironmentOf } from "#runner/environment.ts"
 import { mutantPoolOf } from "#runner/lease.ts"
 import { runnerLimits } from "#runner/limits.ts"
 
@@ -124,7 +125,7 @@ export const killOverran = property.exhaust(finite(overrunSpace), {
 				const scratch = yield* directory
 				const trees = yield* treesOf(root)
 				const images = yield* imagesOf(root, trees)
-				const leased = yield* mutantPoolOf(root, root)
+				const leased = yield* mutantPoolOf(root, root, workerEnvironmentOf([], process.env))
 				const pool = withEnv(leased, { [LOAD_FILE]: `${scratch}/load` })
 				const subject: Subject = {
 					id: PropertyId(OVERRUNS),

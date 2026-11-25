@@ -21,7 +21,7 @@ import { repositoryKeyOf } from "#runner/cache.ts"
 /**
  * The verdict cache answers a key with a pass exactly when a pass was last recorded under it, every key's record kept
  * beside the others of its property: a failure removes the pass under its own key alone, a key one field away (its
- * property, closure, seed policy or edit, none or one) is another key, a record whose text is not its key is refused
+ * property, closure, toolchain, environment, PostgreSQL (none or one), seed policy or edit (none or one)) is another key, a record whose text is not its key is refused
  * rather than read as a pass, and passes of distinct keys written at once all land. Oracle: a map from each key's identity to what was last recorded under it.
  */
 export const verdictsAreWhatWasLastRecorded = property.explore(aimedPrograms, {
@@ -34,6 +34,9 @@ export const verdictsAreWhatWasLastRecorded = property.explore(aimedPrograms, {
 		"a corrupt record refused",
 		"a key whose property alone differs from a pass read as none",
 		"a key whose closure alone differs from a pass read as none",
+		"a key whose toolchain alone differs from a pass read as none",
+		"a key whose environment alone differs from a pass read as none",
+		"a key whose PostgreSQL alone differs from a pass read as none",
 		"a key whose seed policy alone differs from a pass read as none",
 		"a key whose edit alone differs from a pass read as none",
 		"passes of distinct keys written at once"
@@ -94,6 +97,24 @@ export const verdictsAreWhatWasLastRecorded = property.explore(aimedPrograms, {
 			original: "seeds: key.seeds,",
 			replacement: 'seeds: "",',
 			why: "a key that ignores its seed policy: a pass under one policy answers another"
+		},
+		{
+			file: "packages/testing/src/runner/cache.ts",
+			original: "toolchain: key.toolchain,",
+			replacement: 'toolchain: "",',
+			why: "a key that ignores its toolchain: a pass of one toolchain answers another's run, a runner or budget changed since"
+		},
+		{
+			file: "packages/testing/src/runner/cache.ts",
+			original: "environment: key.environment,",
+			replacement: 'environment: "",',
+			why: "a key that ignores its workers' environment: a pass under one variable's value answers a run under another"
+		},
+		{
+			file: "packages/testing/src/runner/cache.ts",
+			original: "postgres: Option.getOrNull(key.postgres),",
+			replacement: "postgres: null,",
+			why: "a key that ignores its PostgreSQL: a pass on one server build answers a run on another"
 		}
 	]
 })

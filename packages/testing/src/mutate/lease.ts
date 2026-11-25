@@ -12,9 +12,10 @@ import { mutantPoolOf } from "#runner/lease.ts"
  */
 export const mutatorPool = (
 	checkout: RealPath,
-	packageRoot: RealPath
+	packageRoot: RealPath,
+	environment: Readonly<Record<string, string>>
 ): Effect.Effect<MutantPool<never>, never, NodeServices> =>
-	Effect.map(mutantPoolOf(checkout, packageRoot), (pool): MutantPool<never> => ({
+	Effect.map(mutantPoolOf(checkout, packageRoot, environment), (pool): MutantPool<never> => ({
 		width: pool.width,
 		lease: (image, workers, serves) =>
 			Effect.catchTag(pool.lease(image, workers, serves), "PoolFailed", (failed) =>

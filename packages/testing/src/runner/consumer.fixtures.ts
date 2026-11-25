@@ -16,8 +16,9 @@ import { boolean, element, type FiniteSpace, finite } from "#gen.ts"
  * survives, laid out as a repository holds the library (a workspace link to the library's files in the repository, as
  * grizzle's vendor/toolchain; or installed under node_modules), in a git repository or not, with a lockfile or not,
  * with TypeScript installed or not. Each is written in a scratch directory from this checkout's own library files, and
- * run in a child process through the library's loadPackage, its inline evaluator and its verdictsRecorded, so the run
- * is the one `toolchain-test run` does, with no pool nested in the case.
+ * run in a child process through the library's run keying (affected.ts runKeyingAt, where the closure hasher loads),
+ * its loadPackage and its inline evaluator, so the run is the one `toolchain-test run` does, with no pool nested in
+ * the case.
  */
 
 /**
@@ -189,7 +190,7 @@ export const runnerFilesOf = (layout: Layout): ConsumerFiles => {
 		["package.json", manifestOf(layout)],
 		[
 			"test.config.ts",
-			`import { defineRunner, noMutation } from "@bjornpagen/testing/runner"\nimport { Layer } from "effect"\n\nexport default defineRunner({ include: ["test/*.test.ts"], smallStack: [], conditions: [], layer: Layer.empty, mutation: noMutation })\n`
+			`import { defineRunner, noMutation } from "@bjornpagen/testing/runner"\nimport { Layer } from "effect"\n\nexport default defineRunner({ include: ["test/*.test.ts"], smallStack: [], conditions: [], environment: [], layer: Layer.empty, mutation: noMutation })\n`
 		],
 		[
 			"test/sums.test.ts",
@@ -201,7 +202,7 @@ export const runnerFilesOf = (layout: Layout): ConsumerFiles => {
 		],
 		[
 			"run-inline.mjs",
-			`import * as NodeServices from "@effect/platform-node/NodeServices"\nimport { Effect } from "effect"\nimport { inlineRun, searchInline } from "${library}/src/runner/inline.ts"\nimport { loadPackage } from "${library}/src/runner/run.ts"\nimport { verdictsRecorded } from "${library}/src/runner/settle.ts"\n\nconst root = process.cwd()\nconst program = Effect.gen(function* () {\n\tconst { discovered } = yield* loadPackage(root, [])\n\tconst properties = yield* Effect.forEach(discovered, (found) =>\n\t\tEffect.map(Effect.scoped(searchInline(found.property, inlineRun(found.id, 1))), (verdict) => ({ id: found.id, stack: "default", label: found.id, module: found.module, kind: found.property.kind, oracle: found.property.oracle, verdict, millis: 0 }))\n\t)\n\tyield* Effect.scoped(verdictsRecorded(root, [], { properties, millis: 0, workers: [] }))\n\tprocess.stdout.write(JSON.stringify({ verdicts: properties.map((ran) => ran.verdict.kind) }) + "\\n")\n})\nEffect.runPromise(program.pipe(Effect.provide(NodeServices.layer))).catch((cause) => {\n\tconsole.error(cause)\n\tprocess.exitCode = 1\n})\n`
+			`import * as NodeServices from "@effect/platform-node/NodeServices"\nimport { Effect, Option, Result } from "effect"\nimport { inlineRun, searchInline } from "${library}/src/runner/inline.ts"\nimport { emptyOutcome, loadPackage } from "${library}/src/runner/run.ts"\nimport { affectedModule } from "${library}/src/runner/settle.ts"\n\nconst root = process.cwd()\nconst program = Effect.gen(function* () {\n\tconst keying = yield* Effect.flatMap(Effect.result(affectedModule), Result.match({ onSuccess: (module) => module.runKeyingAt(root, [], { kind: "given", seed: 1 }), onFailure: (unloaded) => Effect.succeed({ kind: "unkeyed", why: unloaded.message }) }))\n\tif (keying.kind === "unkeyed") {\n\t\tprocess.stdout.write(\`verdicts not read or recorded: \${keying.why}\\n\`)\n\t}\n\tconst { discovered } = yield* loadPackage(root, [])\n\tconst properties = yield* Effect.forEach(discovered, (found) =>\n\t\tEffect.map(Effect.scoped(searchInline(found.property, inlineRun(found.id, 1))), (verdict) => ({ id: found.id, stack: "default", label: found.id, module: found.module, kind: found.property.kind, oracle: found.property.oracle, verdict, millis: 0, observed: { unclean: Option.none(), own: Option.none() } }))\n\t)\n\tif (keying.kind === "keyed") {\n\t\tyield* keying.record({ ...emptyOutcome, properties })\n\t}\n\tprocess.stdout.write(JSON.stringify({ verdicts: properties.map((ran) => ran.verdict.kind) }) + "\\n")\n})\nEffect.runPromise(Effect.scoped(program).pipe(Effect.provide(NodeServices.layer))).catch((cause) => {\n\tconsole.error(cause)\n\tprocess.exitCode = 1\n})\n`
 		]
 	]
 }

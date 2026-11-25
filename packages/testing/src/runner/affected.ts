@@ -13,19 +13,22 @@ import {
 	Stream,
 	String as Str
 } from "effect"
+import { Digest } from "effect/crypto"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { killApplied } from "#mutants.ts"
 import type { Judged } from "#mutate/kills.ts"
 import { type Kill, Property, type PropertyId } from "#property.ts"
+import { templatesOf } from "#resources/collect.ts"
 import { toolchainTestCache } from "#runner/cache-home.ts"
 import {
 	type Edit,
 	editOf,
 	loadCacheAt,
+	recordOf,
 	repositoryKeyOf,
 	SeedPolicy,
 	type VerdictCache,
-	type VerdictCacheUnusable,
+	VerdictCacheUnusable,
 	type VerdictKey,
 	verdictCacheAt
 } from "#runner/cache.ts"
@@ -40,48 +43,57 @@ import {
 	workingTree
 } from "#runner/closure.ts"
 import type { RunnerConfig } from "#runner/config.ts"
+import { type KeyGrounds, keyGroundsOf } from "#runner/grounds.ts"
 import type { Discovered } from "#runner/load.ts"
 import type { LoadKeying } from "#runner/loads.ts"
-import { failureLines } from "#runner/report.ts"
-import {
-	loadPackage,
-	type RunOutcome,
-	runPackage,
-	runSeedLogged,
-	searchedPassed,
-	WORKER_ENTRY
-} from "#runner/run.ts"
+import { observationText } from "#runner/observe.ts"
+import type { Observed } from "#runner/pool.ts"
+import { loadPackage, type RunOutcome, searchedPassed, WORKER_ENTRY } from "#runner/run.ts"
 
 /**
- * `toolchain-test affected <ref>`, the push gate's run: every property of the package whose verdict key holds no
- * cached pass, its search at full width; a property passes when its search passes, and only then is its pass cached.
- * A cached pass is a known answer and never runs again; a failure removes the pass its key held. No kill is judged
- * here, as no run judges one: whether a property's kills still turn it red is the kill census's (`toolchain-test
- * kills`), whose verdicts are records of the same cache under edits (EDIT_SEEDS).
+ * The verdict cache's side of `toolchain-test run` (runKeyingAt) and of the commands that judge kills and mutants
+ * (verdictsAt), and `toolchain-test verified <ref>`: every property of a package weighed, its key read. A property whose
+ * key holds a pass is a known answer and never runs again while its key stands; every other runs, and its pass is kept
+ * only when no worker that ran it observed past its key (runner/observe.ts); a failure removes the pass its key held.
+ * No kill is judged here, as no run judges one: whether a property's kills still turn it red is the kill census's
+ * (`toolchain-test kills`), whose verdicts are records of the same cache under edits (EDIT_SEEDS).
  *
- * A property's key is its identity, the joint closure (closure.ts) of its module, the package's test.config.ts and
- * the runner's own entry modules (the CLI and the worker), each hashed under the config's conditions and this Node's
- * version, and the seed policy of a gate run (RUN_SEEDS), under no edit. So an edit to a module a property loads, to
- * the runner, to the config or to a lockfile entry a closure holds makes its key new, and the property runs; nothing
- * else does. What a property reads at run time without importing it (a fixture file, a child process's code) is
- * outside its closure: a full run per production version covers it. The runner that runs must be the repository's own
- * or installed in it (runnerRootsIn): another checkout's runner keys nothing. A verdict under an edit joins the closure
- * of the edited file (editKeyOf), and an edit that loads a module its file does not keys nothing (cache.ts editOf).
- *
- * `<ref>` (any tree-ish: the commit the remote held, or the empty tree for a new branch) names what the report counts
- * against: a property run is "changed since <ref>" when a file of its closure differs from `<ref>`, else "not
- * verified at this content" (its key never passed here). Verdicts live in
- * `${XDG_CACHE_HOME:-~/.cache}/toolchain-test/<repository key>/verdicts`, the repository's key (cache.ts), so every
- * clone and workspace of a repository shares them.
+ * A property's key (cache.ts VerdictKey) is its identity; the joint closure (closure.ts) of its module, the package's
+ * test.config.ts, its pg.config.ts where it has one, and the runner's own entry modules (the CLI and the worker), each
+ * hashed under the config's conditions and this Node's version; the run's grounds (grounds.ts: the toolchain's digest,
+ * its workers' environment's, and the PostgreSQL's for a property that declares a database template); and its seeds, a
+ * search's rotating stream seeded by the rest of its key unless TEST_SEED names a seed (Seeding). The runner that runs
+ * must be the repository's own or installed in it (runnerRootsIn): another checkout's runner keys nothing. A verdict
+ * under an edit joins the closure of the edited file (editKeyOf), and an edit that loads a module its file does not
+ * keys nothing (cache.ts editOf). Verdicts live in `${XDG_CACHE_HOME:-~/.cache}/toolchain-test/<repository
+ * key>/verdicts`, the repository's key (cache.ts), so every clone and workspace of a repository shares them.
  */
 
 /**
- * The seed policy of every verdict the gate caches: a search at full reach, its floor and steered phases seeded by the
- * property's identity, its rotating stream by the run's seed. A pass under it answers for one run's sample.
+ * The seed policy of a search's verdict: at full reach, its floor and steered phases seeded by the property's identity,
+ * its rotating stream by `seed`, which a run derives from the rest of the key (derivedSeedOf) unless TEST_SEED names
+ * one, so a search is a function of its key: a pass answers for exactly the cases a run at that key draws.
  */
-const RUN_SEEDS = SeedPolicy(
-	"full reach: floor and steered phases seeded by the property's identity, the rotating stream by the run's seed"
-)
+const runSeedsOf = (seed: number): SeedPolicy =>
+	SeedPolicy(
+		`full reach: floor and steered phases seeded by the property's identity, the rotating stream by ${seed}`
+	)
+
+/** How a run seeds its searches' rotating streams: by TEST_SEED's seed, the same for every property, or each by its key. */
+export type Seeding = Readonly<{ kind: "given"; seed: number }> | Readonly<{ kind: "derived" }>
+
+/**
+ * The seed a key's rest derives: the first 32 bits of the SHA-256 of its record with its seeds unnamed, so a property
+ * whose closure, toolchain, environment or PostgreSQL moved draws a new rotating stream, and one whose key stands draws
+ * the same.
+ */
+const derivedSeedOf = (unseeded: VerdictKey) =>
+	Effect.gen(function* () {
+		const digest = yield* Digest.Digest
+		const record = yield* recordOf({ ...unseeded, seeds: SeedPolicy("derived") })
+		const hex = yield* digest.digestHex(Digest.sha256, new TextEncoder().encode(record))
+		return Number.parseInt(Str.slice(0, 8)(hex), 16)
+	})
 
 /**
  * The seed policy of a cached verdict under an edit: the property's witnesses (kept tokens, floor and steered phase,
@@ -93,7 +105,7 @@ const EDIT_SEEDS = SeedPolicy(
 	"witnesses under an edit of one file: kept tokens, floor and steered phase, fixed by the property's identity"
 )
 
-/** The affected command could not run: its usage, the repository or a ref it could not read. */
+/** A command of the verdict cache could not run: its usage, the repository or a ref it could not read. */
 class AffectedRefused extends Schema.TaggedError<
 	AffectedRefused,
 	{ readonly brand: unique symbol }
@@ -197,13 +209,16 @@ const editOfKill = (tree: Files, kill: Kill) =>
 	)
 
 /**
- * One property as the gate weighs it: what it is, its joint closure, the key of its search's verdict, and each kill
+ * One property as the gate weighs it: what it is, its joint closure, the key of its search's verdict and the seed of
+ * its rotating stream in it, whether it declares a database template (so its keys hold the PostgreSQL), and each kill
  * with its edit (none when the kill is stale), the key of the kill's verdict.
  */
 type Weighed = Readonly<{
 	found: Discovered
 	closure: Closure
 	key: VerdictKey
+	seed: number
+	templated: boolean
 	killEdits: ReadonlyArray<readonly [Kill, Option.Option<Edit>]>
 }>
 
@@ -263,6 +278,7 @@ type Weighing = Readonly<{
 	repository: string
 	packageRoot: string
 	cache: VerdictCache
+	notes: Notes
 	weighed: ReadonlyArray<Weighed>
 	keyUnder: (one: Weighed, edit: Edit) => Effect.Effect<Option.Option<VerdictKey>>
 }>
@@ -383,7 +399,8 @@ export const closuresWeighedOf = Effect.fn("closuresWeighedOf")(function* (input
 /**
  * A package's test modules as every cached answer of the repository weighs them: the working tree, the closure
  * hasher, the repository's cache directory (`<toolchain-test cache>/<repository key>`), each module's joint closure
- * with the package's test.config.ts and the runner's own entry modules (runnerRootsOf), and the closure of each file of
+ * with the package's test.config.ts, its pg.config.ts where it has one (which the runner loads by path, so no import
+ * names it: pg/config-file.ts specAt) and the runner's own entry modules (runnerRootsOf), and the closure of each file of
  * `edited` (paths from the repository root) the tree holds, hashed under the config's conditions and this Node's
  * version (closuresWeighedOf), so an edit to anything a module, the config, the runner or an edited file loads makes
  * its closure new.
@@ -406,6 +423,13 @@ const modulesWeighedOf = (
 		const configRoot = yield* Effect.flatMap(fs.realPath(`${packageRoot}/test.config.ts`), (real) =>
 			underRepository(repository, real)
 		)
+		const clusterFile = `${packageRoot}/pg.config.ts`
+		const clustered = yield* fs.exists(clusterFile)
+		const clusterRoot = clustered
+			? yield* Effect.asSome(
+					Effect.flatMap(fs.realPath(clusterFile), (real) => underRepository(repository, real))
+				)
+			: Option.none()
 		const pathEntries = yield* Effect.forEach(Arr.dedupe(modules), (module) =>
 			Effect.map(packageFile(module), (path) => [module, path] as const)
 		)
@@ -418,7 +442,7 @@ const modulesWeighedOf = (
 			tree,
 			conditions: config.conditions,
 			runtime: process.version,
-			runner: [...runnerRoots, configRoot],
+			runner: [...runnerRoots, configRoot, ...Option.toArray(clusterRoot)],
 			modules: [...paths.values()],
 			edited: Arr.getSomes(held)
 		}).pipe(Effect.provide(hashing))
@@ -438,13 +462,31 @@ const modulesWeighedOf = (
 		}
 	})
 
-/** The key of a property's search of the program as it stands: its identity and joint closure, a gate run's seeds. */
-export const searchKeyOf = (property: PropertyId, searched: Closure): VerdictKey => ({
-	property,
-	closure: searched.hash,
-	seeds: RUN_SEEDS,
-	edit: Option.none()
-})
+/**
+ * The key of a property's search of the program as it stands: its identity and joint closure, the run's grounds (its
+ * toolchain, its workers' environment, and its PostgreSQL where the property declares a database template, `templated`),
+ * and its seeds, TEST_SEED's or derived from the rest of the key (Seeding).
+ */
+export const searchKeyOf = (
+	property: PropertyId,
+	searched: Closure,
+	grounds: KeyGrounds,
+	templated: boolean,
+	seeding: Seeding
+) =>
+	Effect.gen(function* () {
+		const unseeded: VerdictKey = {
+			property,
+			closure: searched.hash,
+			toolchain: grounds.toolchain,
+			environment: grounds.environment,
+			postgres: templated ? grounds.postgres : Option.none(),
+			seeds: SeedPolicy(""),
+			edit: Option.none()
+		}
+		const seed = seeding.kind === "given" ? seeding.seed : yield* derivedSeedOf(unseeded)
+		return { key: { ...unseeded, seeds: runSeedsOf(seed) } satisfies VerdictKey, seed }
+	})
 
 /**
  * The key of a property's witnesses run under an edit: its identity, its joint closure (`searched`, a search's) joined
@@ -454,10 +496,20 @@ export const searchKeyOf = (property: PropertyId, searched: Closure): VerdictKey
  * that runs it in a child process, or reads it at run time, keyed by the file's bytes alone, kept a red the file's
  * imports had since taken away (grizzle's type properties and its CLI's, 58 of its 1,017 kills' files on 2026-11-23).
  */
-export const editKeyOf = (property: PropertyId, searched: Closure, edited: Closure, edit: Edit) =>
+export const editKeyOf = (
+	property: PropertyId,
+	searched: Closure,
+	edited: Closure,
+	edit: Edit,
+	grounds: KeyGrounds,
+	templated: boolean
+) =>
 	Effect.map(jointClosureOf([searched, edited]), (joint): VerdictKey => ({
 		property,
 		closure: joint.hash,
+		toolchain: grounds.toolchain,
+		environment: grounds.environment,
+		postgres: templated ? grounds.postgres : Option.none(),
 		seeds: EDIT_SEEDS,
 		edit: Option.some(edit)
 	}))
@@ -471,7 +523,8 @@ const weighingOf = (
 	repository: string,
 	config: RunnerConfig,
 	discovered: ReadonlyArray<Discovered>,
-	edited: ReadonlyArray<string>
+	edited: ReadonlyArray<string>,
+	seeding: Seeding
 ) =>
 	Effect.gen(function* () {
 		const weighed = yield* modulesWeighedOf(
@@ -481,28 +534,43 @@ const weighingOf = (
 			Arr.map(discovered, (found) => found.module),
 			edited
 		)
+		const templatedOf = (found: Discovered) =>
+			Arr.isReadonlyArrayNonEmpty(templatesOf(found.property.needs))
+		const grounds = yield* keyGroundsOf(config, Arr.some(discovered, templatedOf)).pipe(
+			Effect.provide(weighed.hashing)
+		)
 		const properties = yield* Effect.forEach(discovered, (found) =>
 			Effect.gen(function* () {
 				const closure = yield* weighed.jointOf(found.module)
+				const templated = templatedOf(found)
 				const edits = yield* Effect.forEach(found.property.kills, (kill) =>
 					editOfKill(weighed.tree, kill)
 				).pipe(Effect.provide(weighed.hashing))
 				const killEdits = Arr.zip(found.property.kills, edits)
-				return { found, closure, key: searchKeyOf(found.id, closure), killEdits } satisfies Weighed
+				const { key, seed } = yield* searchKeyOf(
+					found.id,
+					closure,
+					grounds,
+					templated,
+					seeding
+				).pipe(Effect.provide(weighed.hashing))
+				return { found, closure, key, seed, templated, killEdits } satisfies Weighed
 			})
 		)
 		const verdicts = yield* verdictCacheAt(`${weighed.home}/verdicts`).pipe(
 			Effect.provide(weighed.hashing)
 		)
+		const notes = yield* notesAt(`${weighed.home}/observing`).pipe(Effect.provide(weighed.hashing))
 		return {
 			repository,
 			packageRoot,
 			cache: verdicts,
+			notes,
 			weighed: properties,
 			keyUnder: (one, edit) =>
 				Effect.transposeOption(
 					Option.map(weighed.editedOf(edit.file), (file) =>
-						editKeyOf(one.found.id, one.closure, file, edit)
+						editKeyOf(one.found.id, one.closure, file, edit, grounds, one.templated)
 					)
 				).pipe(Effect.provide(weighed.hashing))
 		} satisfies Weighing
@@ -713,7 +781,11 @@ export const verdictsAt = (
 		const weighing = yield* Option.match(grounds.repository, {
 			onNone: () => Effect.succeedNone,
 			onSome: (repository) =>
-				Effect.option(weighingOf(grounds.packageRoot, repository, config, discovered, edited))
+				Effect.option(
+					weighingOf(grounds.packageRoot, repository, config, discovered, edited, {
+						kind: "derived"
+					})
+				)
 		})
 		return { kills: killVerdictsOf(weighing), edits: editVerdictsOf(weighing) }
 	})
@@ -726,21 +798,134 @@ const touchedOf = (one: Weighed, passed: boolean): Touched => ({
 	passed
 })
 
-/** Records each weighed property's verdict under its key: a pass when its searches passed, a failure otherwise. */
-const recorded = (cache: VerdictCache, due: ReadonlyArray<Weighed>, outcome: RunOutcome) =>
-	Effect.forEach(
-		due,
-		(one) => cache.record(one.key, searchedPassed(outcome, one.found.id) ? "passed" : "failed"),
-		{ discard: true }
+/**
+ * What a repository's runs know each property does past its key (runner/observe.ts), so a run gives one known to
+ * observe workers of its own (runner/run.ts Workers) and the workers every other runs on stay clean: `observes` answers
+ * whether its last run observed in a window of its own, and `kept` keeps what its run's pools saw it do (runner/pool.ts
+ * Observed's own): a note where it observed, none where it did not. A note is a file `<directory>/<SHA-256 of the
+ * property id>`, holding the observation's text, which no verdict reads: it only places a property's cases, and
+ * deleting it at any time costs one run of the property on a clean worker. A property that observes only through a
+ * value another left in a module may lose its note and find it again, run after run: it is never cached either way.
+ */
+type Notes = Readonly<{
+	observes: (id: PropertyId) => Effect.Effect<boolean, VerdictCacheUnusable>
+	kept: (
+		id: PropertyId,
+		seen: ReadonlyArray<Observed["own"]>
+	) => Effect.Effect<void, VerdictCacheUnusable>
+}>
+
+/** The notes under `directory`, which it creates as it writes (Notes). */
+const notesAt = (directory: string) =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		const digest = yield* Digest.Digest
+		const fileOf = (id: PropertyId) =>
+			Effect.map(
+				digest.digestHex(Digest.sha256, new TextEncoder().encode(id)),
+				(hash) => `${directory}/${hash}`
+			)
+		const unusable = (path: string) => (cause: unknown) =>
+			VerdictCacheUnusable.make({ path, cause })
+		return {
+			observes: (id) =>
+				Effect.flatMap(fileOf(id), (file) => Effect.mapError(fs.exists(file), unusable(file))),
+			kept: (id, seen) =>
+				Effect.gen(function* () {
+					const file = yield* fileOf(id)
+					const observed = Arr.findFirst(seen, Option.isSome)
+					if (Option.isSome(observed) && Option.isSome(observed.value)) {
+						const text = observationText(observed.value.value)
+						yield* Effect.mapError(
+							fs.makeDirectory(directory, { recursive: true }),
+							unusable(directory)
+						)
+						yield* Effect.scoped(
+							Effect.gen(function* () {
+								const temporary = yield* Effect.mapError(
+									fs.makeTempFileScoped({ directory, prefix: ".note-" }),
+									unusable(directory)
+								)
+								yield* Effect.mapError(
+									fs.writeFileString(temporary, `${text}\n`),
+									unusable(temporary)
+								)
+								yield* Effect.mapError(fs.rename(temporary, file), unusable(file))
+							})
+						)
+						return
+					}
+					if (Arr.isReadonlyArrayNonEmpty(seen)) {
+						yield* Effect.mapError(fs.remove(file, { force: true }), unusable(file))
+					}
+				})
+		} satisfies Notes
+	})
+
+/**
+ * Whether a property's run answers for its key: every search of it passed, and no worker that ran it had observed past
+ * its key by then (runner/observe.ts), so its verdict depends on nothing the key does not hold.
+ */
+const answersForItsKey = (outcome: RunOutcome, id: PropertyId): boolean =>
+	searchedPassed(outcome, id) &&
+	Arr.every(
+		Arr.filter(outcome.properties, (ran) => ran.id === id),
+		(ran) => Option.isNone(ran.observed.unclean)
 	)
 
 /**
- * The verdict cache's side of `toolchain-test run`, the full run per production version: it reads no cached pass, so
- * every property `selected` names ran (`outcome`); this records each one's verdict, its searches'. A package in no git
- * repository, or whose properties have no verdict key (no lockfile, a module that resolves to nothing), records
- * nothing and says so once, with why.
+ * Records each weighed property's verdict under its key: a pass when its run answers for its key (answersForItsKey), a
+ * failure otherwise, which removes the pass its key held; and keeps what it does (Notes): known to observe when a run of
+ * it observed, known not to when none did on a worker that had observed nothing before, as it stood otherwise.
  */
-export const recordedRun = (root: string, selected: ReadonlyArray<string>, outcome: RunOutcome) =>
+const recorded = (
+	cache: VerdictCache,
+	notes: Notes,
+	due: ReadonlyArray<Weighed>,
+	outcome: RunOutcome
+) =>
+	Effect.forEach(
+		due,
+		(one) =>
+			Effect.andThen(
+				cache.record(one.key, answersForItsKey(outcome, one.found.id) ? "passed" : "failed"),
+				notes.kept(
+					one.found.id,
+					Arr.map(
+						Arr.filter(outcome.properties, (ran) => ran.id === one.found.id),
+						(ran) => ran.observed.own
+					)
+				)
+			),
+		{ discard: true }
+	)
+
+/** A property `run` answers from the cache: its identity and its key, which holds a pass. */
+export type Cached = Readonly<{ id: PropertyId; key: VerdictKey }>
+
+/**
+ * How `toolchain-test run` reads and keeps the verdict cache (runner/cli.ts run). Keyed: each property loaded whose key
+ * holds a pass is `cached`, answered without running; every other runs on its key's seed (`seedOf`), and `record` keeps
+ * each verdict it ran under its key, and what each property is known to do (`observes`, Notes), so a run gives a
+ * property known to observe past its key workers of its own kind. Unkeyed (a package in no git repository, a closure that will not hash, the
+ * hasher's TypeScript not installed): every property runs, nothing is read or kept, and `why` says why.
+ */
+export type RunKeying =
+	| Readonly<{
+			kind: "keyed"
+			cached: ReadonlyArray<Cached>
+			seedOf: (id: PropertyId) => number
+			observes: (id: PropertyId) => boolean
+			record: (outcome: RunOutcome) => Effect.Effect<void, VerdictCacheUnusable>
+	  }>
+	| Readonly<{ kind: "unkeyed"; why: string }>
+
+/**
+ * The run keying of the properties `selected` names in the package at `root` (RunKeying), its seeds `seeding`'s: each
+ * property weighed (its joint closure, the run's grounds and its seed), its key read; a record the cache refuses as
+ * corrupt is said and its property runs.
+ */
+export const runKeyingAt = (root: string, selected: ReadonlyArray<string>, seeding: Seeding) =>
 	Effect.gen(function* () {
 		const grounds = yield* groundsOf(root)
 		const { config, discovered } = yield* loadPackage(root, selected)
@@ -749,91 +934,56 @@ export const recordedRun = (root: string, selected: ReadonlyArray<string>, outco
 				Effect.mapError(Effect.fromOption(grounds.repository), () =>
 					AffectedRefused.make({ message: `${root} lies in no git repository` })
 				),
-				(repository) => weighingOf(grounds.packageRoot, repository, config, discovered, [])
+				(repository) => weighingOf(grounds.packageRoot, repository, config, discovered, [], seeding)
 			)
 		)
-		yield* Result.match(weighing, {
-			onSuccess: (weighed) => recorded(weighed.cache, weighed.weighed, outcome),
-			onFailure: (why) =>
-				Console.log(`verdicts not recorded: ${Inspectable.toStringUnknown(why, 0)}`)
-		})
-	})
-
-/** `affected <ref>` in the package at `root`: 0 when every affected property's search passed, 1 otherwise. */
-export const affected = (root: string, args: ReadonlyArray<string>) =>
-	Effect.scoped(
-		Effect.gen(function* () {
-			const [ref, ...extra] = args
-			if (ref === undefined || Arr.isReadonlyArrayNonEmpty(extra)) {
-				return yield* AffectedRefused.make({
-					message:
-						"affected takes one ref, what the report counts changes against: toolchain-test affected <ref>"
-				})
-			}
-			const grounds = yield* groundsOf(root)
-			const repository = yield* Effect.mapError(Effect.fromOption(grounds.repository), () =>
-				AffectedRefused.make({ message: `${root} lies in no git repository` })
-			)
-			const { config, discovered } = yield* loadPackage(grounds.packageRoot, [])
-			const weighing = yield* weighingOf(grounds.packageRoot, repository, config, discovered, [])
-			const base = yield* required(
-				weighing.repository,
-				["rev-parse", "--verify", "--quiet", `${ref}^{tree}`],
-				`${ref} names no commit or tree`
-			)
-			const answered = yield* Effect.forEach(weighing.weighed, (one) =>
-				weighing.cache.passed(one.key).pipe(
-					Effect.map((cached) => ({ one, cached })),
-					Effect.catchTag("VerdictCorrupt", (corrupt) =>
-						Effect.as(
-							Console.error(`${corrupt.path} is no record of its key; ${one.found.id} runs`),
-							{ one, cached: false }
-						)
+		if (Result.isFailure(weighing)) {
+			return {
+				kind: "unkeyed",
+				why: Inspectable.toStringUnknown(weighing.failure, 0)
+			} satisfies RunKeying
+		}
+		const weighed = weighing.success
+		const answered = yield* Effect.forEach(weighed.weighed, (one) =>
+			weighed.cache.passed(one.key).pipe(
+				Effect.map((passed) => ({ one, passed })),
+				Effect.catchTag("VerdictCorrupt", (corrupt) =>
+					Effect.as(
+						Console.error(`${corrupt.path} is no record of its key; ${one.found.id} runs`),
+						{ one, passed: false }
 					)
 				)
 			)
-			const due = Arr.map(
-				Arr.filter(answered, ({ cached }) => !cached),
-				({ one }) => one
-			)
-			const cachedCount = answered.length - due.length
-			if (!Arr.isReadonlyArrayNonEmpty(due)) {
-				yield* Console.log(`${answered.length} properties, every one a cached pass`)
-				return 0
-			}
-			const changed = yield* changedSince(weighing.repository, base)
-			const changedCount = Arr.filter(due, (one) =>
-				touchedBy(changed, touchedOf(one, false))
-			).length
-			const { seed } = yield* runSeedLogged
-			const outcome = yield* runPackage({
-				root,
-				seed,
-				reach: "full",
-				selected: Arr.map(due, (one) => one.found.id)
-			})
-			yield* recorded(weighing.cache, due, outcome)
-			const failed = Arr.filter(outcome.properties, (ran) => ran.verdict.kind === "failed")
-			const failing = Arr.dedupe(Arr.map(failed, (ran) => ran.id)).length
-			yield* Console.log(
-				Arr.join(
-					[
-						...Arr.flatMap(failed, (ran) => ["", `${ran.label}:`, ...failureLines(ran.verdict)]),
-						"",
-						`${answered.length} properties: ${cachedCount} cached passes; ${due.length} run (${changedCount} changed since ${ref}, ${due.length - changedCount} not verified at this content), ${failing} failed, in ${Math.round(outcome.millis)} ms on ${outcome.workers.length} workers`
-					],
-					"\n"
-				)
-			)
-			return failing > 0 ? 1 : 0
-		})
-	)
+		)
+		const due = Arr.filterMap(answered, ({ one, passed }) =>
+			passed ? Result.failVoid : Result.succeed(one)
+		)
+		const seeds = new Map(Arr.map(weighed.weighed, (one) => [one.found.id, one.seed] as const))
+		const observing = yield* Effect.filter(
+			Arr.map(due, (one) => one.found.id),
+			(id) => weighed.notes.observes(id)
+		)
+		const known = new Set(observing)
+		return {
+			kind: "keyed",
+			cached: Arr.filterMap(answered, ({ one, passed }) =>
+				passed ? Result.succeed({ id: one.found.id, key: one.key }) : Result.failVoid
+			),
+			seedOf: (id) =>
+				Option.getOrThrowWith(
+					Option.fromUndefinedOr(seeds.get(id)),
+					() => new Error(`${id} runs with no key weighed for it`)
+				),
+			observes: (id) => known.has(id),
+			record: (outcome) => recorded(weighed.cache, weighed.notes, due, outcome)
+		} satisfies RunKeying
+	})
 
 /**
  * `verified <ref>` in the package at `root`, the push gate of a repository whose gate runs no property itself (grizzle's,
  * whose database properties run only in the machine's one database job): every property the landing touched since
  * `<ref>` (touchedBy: a file of its closure, or the lockfile its closure reads) must carry a
- * green verdict at the closure it lands, a pass its verdict key holds, which `toolchain-test affected` or `run` records
+ * green verdict at the closure it lands, a pass its verdict key holds, which `toolchain-test run` records
  * wherever the repository's clones run it (the cache is the repository's, cache.ts). It runs nothing: 1, naming each, when
  * a touched property carries none, so a landing never carries a property that did not run at its closure, as
  * grizzle's write/instants did from c79ffa503 on, its clock query a syntax error no run had read.
@@ -853,7 +1003,9 @@ export const verified = (root: string, args: ReadonlyArray<string>) =>
 				AffectedRefused.make({ message: `${root} lies in no git repository` })
 			)
 			const { config, discovered } = yield* loadPackage(grounds.packageRoot, [])
-			const weighing = yield* weighingOf(grounds.packageRoot, repository, config, discovered, [])
+			const weighing = yield* weighingOf(grounds.packageRoot, repository, config, discovered, [], {
+				kind: "derived"
+			})
 			const base = yield* required(
 				weighing.repository,
 				["rev-parse", "--verify", "--quiet", `${ref}^{tree}`],
@@ -878,7 +1030,7 @@ export const verified = (root: string, args: ReadonlyArray<string>) =>
 							(id) =>
 								`${id}: UNVERIFIED: the landing touches it and no green verdict stands at its closure`
 						),
-						`${String(touched.length)} of ${String(properties.length)} properties touched since ${ref}: ${String(touched.length - unverified.length)} carry a green verdict at the closure they land, ${String(unverified.length)} do not${Arr.isReadonlyArrayNonEmpty(unverified) ? `; run them first: toolchain-test affected ${ref}, a database property in the machine's database job` : ""}`
+						`${String(touched.length)} of ${String(properties.length)} properties touched since ${ref}: ${String(touched.length - unverified.length)} carry a green verdict at the closure they land, ${String(unverified.length)} do not${Arr.isReadonlyArrayNonEmpty(unverified) ? `; run them first: toolchain-test run, a database property in the machine's database job` : ""}`
 					],
 					"\n"
 				)

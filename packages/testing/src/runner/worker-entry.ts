@@ -1,3 +1,4 @@
+import { guardInstalled } from "#runner/observe.ts"
 import { handedFrom, resolveKnown } from "#runner/resolutions.ts"
 
 /**
@@ -11,6 +12,9 @@ import { handedFrom, resolveKnown } from "#runner/resolutions.ts"
  */
 const worker = (): Promise<unknown> => import("#runner/worker.ts")
 
+guardInstalled((observation, unit) => {
+	process.send?.({ kind: "observed", unit, observation })
+})
 handedFrom(0)
 resolveKnown()
 await worker()

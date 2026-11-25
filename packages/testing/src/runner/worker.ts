@@ -28,6 +28,7 @@ import {
 import { askedClosuresOf } from "#runner/closure-requests.ts"
 import { needStallMillis } from "#runner/limits.ts"
 import { configOf, propertyAt } from "#runner/load.ts"
+import { guardWindow } from "#runner/observe.ts"
 import { Perception, perceptionOf } from "#runner/perceive.ts"
 import {
 	FromWorker,
@@ -255,7 +256,18 @@ const main = Effect.gen(function* () {
 		})
 	}
 
+	/**
+	 * Evaluates a unit inside its property's window (runner/observe.ts Guard), its readying among it: whatever the
+	 * property does past the runner's own work, from its module's import to its last case here, is watched.
+	 */
 	const evaluate = (unit: Unit) =>
+		Effect.acquireUseRelease(
+			Effect.sync(() => guardWindow({ kind: "open", unit: unit.unit })),
+			() => evaluated(unit),
+			() => Effect.sync(() => guardWindow({ kind: "closed" }))
+		)
+
+	const evaluated = (unit: Unit) =>
 		Effect.gen(function* () {
 			const made = yield* readiedFor(unit)
 			yield* send({ kind: "started", unit: unit.unit })

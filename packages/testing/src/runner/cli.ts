@@ -16,20 +16,30 @@ import {
 	String as Str
 } from "effect"
 import { replayOf, replayTokenOf } from "#replay.ts"
+import type { RunKeying, Seeding } from "#runner/affected.ts"
 import { toolchainTestCache } from "#runner/cache-home.ts"
 import { fuzz } from "#runner/fuzz.ts"
 import { keptValuesAt, requiredFlagsAt } from "#runner/load.ts"
 import { type LoadKeying, loadCommand } from "#runner/loads.ts"
 import { failureLines, lineOf } from "#runner/report.ts"
-import { loadPackage, replayToken, runPackage, runSeedLogged, translateToken } from "#runner/run.ts"
-import { affectedModule, verdictsRecorded } from "#runner/settle.ts"
+import {
+	drawnSeed,
+	emptyOutcome,
+	givenSeed,
+	loadPackage,
+	replayToken,
+	runPackage,
+	translateToken
+} from "#runner/run.ts"
+import { affectedModule } from "#runner/settle.ts"
 import { reportOf, type UsageReport, usageJson, usageLines } from "#runner/usage.ts"
 
 /**
  * `toolchain-test`, the runner's command, run from a package's root (its test.config.ts):
  *
- *   toolchain-test run [paths | property ids]   every property (or those named), its search at full width, every
- *                                               verdict cached; exit 1 on any failure. A run judges no kill
+ *   toolchain-test run [paths | property ids]   every property (or those named): a pass its verdict key holds is
+ *                                               its answer, every other's search runs at full width and its verdict
+ *                                               is kept under its key; exit 1 on any failure. A run judges no kill
  *   toolchain-test replay <token>               the one case a failure printed, as it ran
  *   toolchain-test census [paths | property ids] whether each property caught a bug: a kill or an operator mutant of
  *                                               product source turns it red (mutate/census.ts); exit 1 on any that
@@ -37,7 +47,6 @@ import { reportOf, type UsageReport, usageJson, usageLines } from "#runner/usage
  *   toolchain-test kills [paths | property ids] the kill census: every kill of each property turns its witnesses red;
  *                                               exit 1 on any survivor, stale or unjudged kill (mutate/commands.ts)
  *   toolchain-test mutate <file>... [options]  operator mutation of the files, a measurement (mutate/commands.ts)
- *   toolchain-test affected <ref>               the push gate: every property with no cached pass, its search
  *   toolchain-test verified <ref>               the push gate of a repository whose gate runs no property: every
  *                                               property the landing touched carries a green verdict at its closure
  *   toolchain-test fuzz <fuzztime> [paths | ids] the scheduled fuzz budget: fresh seeds round after round
@@ -45,13 +54,14 @@ import { reportOf, type UsageReport, usageJson, usageLines } from "#runner/usage
  *   toolchain-test kept migrate [paths | ids]   kept tokens written before a weighted decision recorded its option
  *                                               (71eb30f), rewritten in their modules as they are written now, once
  *
- * A run prints its seed first (TEST_SEED reproduces the run), then one line per property the moment its verdict lands
- * (a failure's case, failure and replay token under it), then, once every search has ended, each failure again, the
- * run's CPU and its properties' wall time, the longest first. A run answers whether the product is right: its searches.
+ * A run prints how it seeds first (each property by its verdict key, or TEST_SEED's for all), then each property its
+ * cache answers, then one line per property it runs the moment its verdict lands (a failure's case, failure and replay
+ * token under it, and what it observed past its key, if anything), then, once every search has ended, each failure
+ * again, the run's CPU and its properties' wall time, the longest first, and how many properties were cached and run. A run answers whether the product is right: its searches.
  * Whether each test can still catch the bug it declares is the kill census's (`kills`), a command of its own, so no
  * command does both. Every process of the run, this one
  * and its workers, runs under the hardened flags and the config's export conditions: when this process was started
- * without them it starts itself again with them. A command is an entry of `commands`; a lane adds its own (affected, kills, mutate, fuzz) there,
+ * without them it starts itself again with them. A command is an entry of `commands`; a lane adds its own (kills, mutate, fuzz) there,
  * reading runPackage's results.
  */
 
@@ -77,21 +87,93 @@ const usageWritten = (packageRoot: string, seed: number, millis: number, usage: 
 	})
 
 /**
- * `run [paths | ids]`, the full run per production version: every property named, its search reading no cached pass,
- * each run's line as it lands (runPackage); then the run's JSON record, every verdict recorded in the verdict cache
- * (settle.ts verdictsRecorded), every failure and the run's usage; 1 when any search failed. It judges no kill: that is
- * the kill census (`kills`).
+ * What a run reads of the verdict cache before it runs (affected.ts RunKeying): keyed, with the properties it answers
+ * from the cache, the seed of every other and how it keeps their verdicts; unkeyed, saying why, every property run on
+ * the run's one seed and nothing kept.
+ */
+const keyingOf = (selected: ReadonlyArray<string>, seeding: Seeding) =>
+	Effect.flatMap(
+		Effect.result(affectedModule),
+		Result.match({
+			onSuccess: (module) => module.runKeyingAt(root, selected, seeding),
+			onFailure: (unloaded): Effect.Effect<RunKeying> =>
+				Effect.succeed({ kind: "unkeyed", why: unloaded.message })
+		})
+	)
+
+/**
+ * `run [paths | ids]`: every property named, each answered from the verdict cache where its key holds a pass (affected.ts
+ * runKeyingAt: its joint closure, the toolchain, its workers' environment, its PostgreSQL where it declares a database
+ * template, and its seeds, each its key's unless TEST_SEED names one for all), every other's search run (runPackage) and
+ * its verdict kept under its key, a pass only where no worker that ran it had observed past its key
+ * (runner/observe.ts); then the run's JSON record, every failure and the run's usage, and each property said cached or
+ * run; 1 when any search failed. A package with no verdict key runs every property, saying why. It judges no kill: that
+ * is the kill census (`kills`).
  */
 const run = (selected: ReadonlyArray<string>) =>
 	Effect.scoped(
 		Effect.gen(function* () {
-			const { seed } = yield* runSeedLogged
-			const outcome = yield* runPackage({ root, seed, reach: "full", selected })
+			const given = yield* givenSeed
+			const seeding: Seeding = Option.match(given, {
+				onNone: () => ({ kind: "derived" }),
+				onSome: (seed) => ({ kind: "given", seed })
+			})
+			const keying = yield* keyingOf(selected, seeding)
+			const drawn = yield* drawnSeed
+			const seedOf =
+				keying.kind === "keyed" ? keying.seedOf : () => Option.getOrElse(given, () => drawn)
+			yield* Console.log(
+				Option.match(given, {
+					onSome: (seed) => `TEST_SEED=${seed}`,
+					onNone: () =>
+						keying.kind === "keyed"
+							? "each property's rotating stream seeded by its verdict key (TEST_SEED=<n> seeds every property with n)"
+							: `TEST_SEED=${drawn} (drawn by this run; set it to reproduce the run)`
+				})
+			)
+			const cached = keying.kind === "keyed" ? keying.cached : []
+			if (keying.kind === "unkeyed") {
+				yield* Console.log(`verdicts not read or recorded: ${keying.why}`)
+			}
+			if (Arr.isReadonlyArrayNonEmpty(cached)) {
+				yield* Console.log(
+					Arr.join(
+						Arr.map(cached, (one) => `${one.id}: CACHED: its verdict key holds a pass`),
+						"\n"
+					)
+				)
+			}
+			const answered = new Set(Arr.map(cached, (one) => one.id))
+			const { discovered } = yield* loadPackage(root, selected)
+			const due = Arr.filter(discovered, (found) => !answered.has(found.id))
+			const outcome = Arr.isReadonlyArrayNonEmpty(due)
+				? yield* runPackage({
+						root,
+						seedOf,
+						observes: keying.kind === "keyed" ? keying.observes : () => false,
+						reach: "full",
+						selected: Arr.map(due, (found) => found.id)
+					})
+				: emptyOutcome
+			if (keying.kind === "keyed") {
+				yield* keying.record(outcome)
+			}
 			const usage = reportOf(outcome.usage, outcome.properties)
-			const written = yield* usageWritten(root, seed, outcome.millis, usage)
-			yield* verdictsRecorded(root, selected, outcome)
+			const written = yield* usageWritten(
+				root,
+				Option.getOrElse(given, () => drawn),
+				outcome.millis,
+				usage
+			)
 			const failed = Arr.filter(outcome.properties, (ran) => ran.verdict.kind === "failed")
 			const failing = Arr.dedupe(Arr.map(failed, (ran) => ran.id)).length
+			const observed = Arr.dedupe(
+				Arr.map(
+					Arr.filter(outcome.properties, (ran) => Option.isSome(ran.observed.unclean)),
+					(ran) => ran.id
+				)
+			).length
+			const ranCount = Arr.dedupe(Arr.map(outcome.properties, (ran) => ran.id)).length
 			yield* Console.log(
 				Arr.join(
 					[
@@ -100,7 +182,7 @@ const run = (selected: ReadonlyArray<string>) =>
 						...usageLines(usage),
 						`its CPU and wall time, every property's, as JSON: ${written}`,
 						"",
-						`${outcome.properties.length} properties, ${failing} failed, in ${Math.round(outcome.millis)} ms on ${outcome.workers.length} workers`
+						`${discovered.length} properties: ${cached.length} cached, ${ranCount} run (${observed} observed past their keys, never cached), ${failing} failed, in ${Math.round(outcome.millis)} ms on ${outcome.workers.length} workers`
 					],
 					"\n"
 				)
@@ -364,15 +446,6 @@ const commands: Readonly<Record<string, Command>> = {
 		failing(Effect.flatMap(mutateModule, (module) => module.mutateCommand(root, args))),
 	verified: (args) =>
 		failing(Effect.flatMap(affectedModule, (module) => module.verified(root, args))),
-	affected: (args) =>
-		failing(
-			Effect.flatMap(
-				Effect.mapError(affectedModule, (unloaded) =>
-					CommandFailed.make({ message: unloaded.message })
-				),
-				(module) => module.affected(root, args)
-			)
-		),
 	fuzz: (args) => failing(fuzz(root, args)),
 	load: (args) => failing(load(args)),
 	keep: (args) => failing(keep(args)),

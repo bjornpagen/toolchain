@@ -1,5 +1,6 @@
 import { Array as Arr, Effect, Option, Result, Schema, String as Str } from "effect"
 import { stalledShareOfCpu, waitedWindows } from "#runner/limits.ts"
+import { unwatched } from "#runner/observe.ts"
 
 /**
  * What a case's deadline measures: the work the case does, not the time the machine takes to let it. A case is hung when
@@ -44,7 +45,8 @@ const microsPerMilli = 1000
 /** The smallest change in a child's CPU Linux states, and the grain of a process's start: one clock tick, in ms. */
 export const TICK_MILLIS = millisPerSecond / PROC.ticksPerSecond
 
-const { readFileSync, readdirSync } = process.getBuiltinModule("node:fs")
+/** node:fs's reads as they were before any guard: the runner's own reads of /proc, never a property's (runner/observe.ts). */
+const { readFileSync, readdirSync } = unwatched
 
 /** A file's text, none when it cannot be read (a process gone, a system without /proc). */
 const textOf = (path: string): Option.Option<string> =>

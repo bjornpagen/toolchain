@@ -23,6 +23,7 @@ import { collect, templatesOf } from "#resources/collect.ts"
 import type { DatabaseTemplate } from "#resources/template.ts"
 import { sharedStore } from "#runner/compile-cache.ts"
 import { type RunnerConfig, SMALL_STACK } from "#runner/config.ts"
+import { workerEnvironmentOf } from "#runner/environment.ts"
 import { needStallMillis, runnerLimits } from "#runner/limits.ts"
 import {
 	configOf,
@@ -34,7 +35,15 @@ import {
 	pointedOf
 } from "#runner/load.ts"
 import { moduleClosureAt } from "#runner/module-closure.ts"
-import { type Pool, PoolFailed, placesOf, placesShared, poolOf } from "#runner/pool.ts"
+import { observationText } from "#runner/observe.ts"
+import {
+	type Observed,
+	type Pool,
+	PoolFailed,
+	placesOf,
+	placesShared,
+	poolOf
+} from "#runner/pool.ts"
 import type { Reach, SearchRun, Verdict } from "#runner/protocol.ts"
 import { failureLines, lineOf } from "#runner/report.ts"
 import { openedRuns } from "#runner/runs.ts"
@@ -52,7 +61,9 @@ import { runWorkers, widthOf } from "#workers.ts"
 
 /**
  * One property's run: its identity, the stack it ran on and the label that names both (`<id>`, or `<id>@small-stack`),
- * its module, its kind, its oracle, its verdict and its wall time.
+ * its module, its kind, its oracle, its verdict, its wall time, and what it observed past its verdict's key as its
+ * pools saw it (runner/pool.ts Observed): whether its verdict depends on something its key does not hold, and what the
+ * property itself does.
  */
 export type PropertyRun = Readonly<{
 	id: PropertyId
@@ -63,6 +74,7 @@ export type PropertyRun = Readonly<{
 	oracle: Oracle
 	verdict: Verdict
 	millis: number
+	observed: Observed
 }>
 
 /**
@@ -78,6 +90,15 @@ export type RunOutcome = Readonly<{
 	usage: RunUsage
 }>
 
+/** The outcome of a run of no search: every property it was asked for answered before it (a cached run's). */
+export const emptyOutcome: RunOutcome = {
+	properties: [],
+	millis: 0,
+	workers: [],
+	held: [],
+	usage: { parent: 0, properties: [], workers: [], children: "stated" }
+}
+
 /** Whether every run of a property (on every stack it ran on) passed its search, and it ran at all. */
 export const searchedPassed = (outcome: RunOutcome, id: PropertyId): boolean => {
 	const runs = Arr.filter(outcome.properties, (ran) => ran.id === id)
@@ -87,13 +108,16 @@ export const searchedPassed = (outcome: RunOutcome, id: PropertyId): boolean => 
 }
 
 /**
- * What to run: the package root, the run seed, the reach (every phase, or the witnesses alone), and which properties:
- * every one, or those the arguments name, each a module path or a directory of them (a prefix of a module's path), or
- * a property identity (`<module>#<export>`, which names a family's every member too).
+ * What to run: the package root, each property's seed (its rotating stream's: a run's derived from each property's
+ * verdict key, or TEST_SEED's for all), whether it is known to observe past its key (runner/observe.ts: its workers are
+ * then its own kind, so the workers of every other stay clean), the reach (every phase, or the witnesses alone), and which properties: every
+ * one, or those the arguments name, each a module path or a directory of them (a prefix of a module's path), or a
+ * property identity (`<module>#<export>`, which names a family's every member too).
  */
 export type RunRequest = Readonly<{
 	root: string
-	seed: number
+	seedOf: (id: PropertyId) => number
+	observes: (id: PropertyId) => boolean
 	reach: Reach
 	selected: ReadonlyArray<string>
 }>
@@ -102,16 +126,23 @@ export type RunRequest = Readonly<{
 export const WORKER_ENTRY = `${import.meta.dirname}/worker-entry.ts`
 
 /**
- * Which workers a run's cases go to: its stack, and whether they start V8's precise coverage before loading any module
- * (a guided property's), so only a guided property's workers pay for counting blocks.
+ * Which workers a run's cases go to: its stack, whether they start V8's precise coverage before loading any module (a
+ * guided property's), so only a guided property's workers pay for counting blocks, and whether its properties are
+ * known to observe past their keys (runner/observe.ts), so a worker one of them makes unclean runs no property whose
+ * verdict could be kept.
  */
-type Workers = readonly [stack: Stack, guide: "notes" | "blocks"]
+type Workers = readonly [stack: Stack, guide: "notes" | "blocks", observing: "observing" | "clean"]
 
-/** The workers a property's run on `stack` takes its cases to. */
-const workersOf = (stack: Stack, found: Discovered): Workers => [stack, found.property.guide.kind]
+/** The workers a property's run on `stack` takes its cases to, `observes` saying whether it is known to observe. */
+const workersOf = (stack: Stack, found: Discovered, observes: boolean): Workers => [
+	stack,
+	found.property.guide.kind,
+	observes ? "observing" : "clean"
+]
 
 /** A kind of workers as a key. */
-const labelOfWorkers = ([stack, guide]: Workers): string => `${stack}/${guide}`
+const labelOfWorkers = ([stack, guide, observing]: Workers): string =>
+	`${stack}/${guide}/${observing}`
 
 /** The flags a stack's workers run under: this process's, and the small stack's on top for the small stack. */
 const flagsOf = (stack: Stack): ReadonlyArray<string> => {
@@ -324,35 +355,18 @@ export const collectedAround =
 /** A 32-bit run seed as a person writes it: decimal, or hexadecimal after `0x`. */
 const SeedText = Schema.String.check(Schema.isPattern(regex("^(0x[0-9a-fA-F]{1,8}|[0-9]{1,10})$")))
 
-/** A run's seed: given in TEST_SEED, to reproduce a run, or drawn fresh by this one. */
-type RunSeed = Readonly<{ kind: "given" | "drawn"; seed: number }>
+/** TEST_SEED's seed, which reproduces a run, when it names one. */
+export const givenSeed: Effect.Effect<
+	Option.Option<number>,
+	Config.ConfigError | Schema.SchemaError
+> = Effect.flatMap(Config.option(Config.String("TEST_SEED")), (given) =>
+	Effect.transposeOption(
+		Option.map(given, (text) => Effect.map(Schema.decodeEffect(SeedText)(text), Number))
+	)
+)
 
-/** The line a run prints first, so any failure of it can be reproduced: its seed, and whether this run drew it. */
-const seedLine = (run: RunSeed): string => {
-	switch (run.kind) {
-		case "given":
-			return `TEST_SEED=${run.seed}`
-		case "drawn":
-			return `TEST_SEED=${run.seed} (drawn by this run; set it to reproduce the run)`
-	}
-}
-
-/** The run's seed, TEST_SEED's or one drawn fresh, once its line is printed. */
-export const runSeedLogged: Effect.Effect<RunSeed, Config.ConfigError | Schema.SchemaError> =
-	Effect.gen(function* () {
-		const given = yield* Config.option(Config.String("TEST_SEED"))
-		const run: RunSeed = Option.isSome(given)
-			? yield* Effect.map(Schema.decodeEffect(SeedText)(given.value), (text): RunSeed => ({
-					kind: "given",
-					seed: Number(text)
-				}))
-			: yield* Effect.map(Random.nextIntBetween(0, 0xffff_ffff), (seed): RunSeed => ({
-					kind: "drawn",
-					seed
-				}))
-		yield* Console.log(seedLine(run))
-		return run
-	})
+/** A run seed drawn fresh, for a run whose seeds no key derives and TEST_SEED names none. */
+export const drawnSeed: Effect.Effect<number> = Random.nextIntBetween(0, 0xffff_ffff)
 
 /**
  * Runs a package's properties on the pool, every property's search at once, its cases spread over every worker, and
@@ -388,7 +402,7 @@ export const runPackage = (
 					const runs = Arr.map(discovered, (found) => ({ found, stack: stackOf(found) }))
 					const kinds = new Map(
 						Arr.map(runs, ({ found, stack }) => {
-							const kind = workersOf(stack, found)
+							const kind = workersOf(stack, found, request.observes(found.id))
 							return [labelOfWorkers(kind), kind] as const
 						})
 					)
@@ -397,7 +411,8 @@ export const runPackage = (
 						kind,
 						properties: Arr.filter(
 							runs,
-							({ found, stack }) => labelOfWorkers(workersOf(stack, found)) === label
+							({ found, stack }) =>
+								labelOfWorkers(workersOf(stack, found, request.observes(found.id))) === label
 						).length
 					}))
 					const shared = Arr.isReadonlyArrayNonEmpty(weighed)
@@ -413,7 +428,7 @@ export const runPackage = (
 							entry: WORKER_ENTRY,
 							root: request.root,
 							cwd: request.root,
-							env: {},
+							env: workerEnvironmentOf(config.environment, process.env),
 							compile: sharedStore,
 							places,
 							execArgv: flagsOf(stack),
@@ -433,14 +448,16 @@ export const runPackage = (
 								const label = labelOf(found.id, stack)
 								const pool = yield* Effect.mapError(
 									Effect.fromOption(
-										Option.fromUndefinedOr(pools.get(labelOfWorkers(workersOf(stack, found))))
+										Option.fromUndefinedOr(
+											pools.get(labelOfWorkers(workersOf(stack, found, request.observes(found.id))))
+										)
 									),
 									() => PoolFailed.make({ message: `no pool was forked for ${label}` })
 								)
 								const evaluator = pool.evaluator
 								const verdict = yield* found.property.search({
 									id: label,
-									seed: request.seed,
+									seed: request.seedOf(found.id),
 									limits: runnerLimits,
 									evaluator,
 									reach: request.reach
@@ -448,6 +465,7 @@ export const runPackage = (
 								yield* pool.retire(label)
 								const end = yield* liveMillis
 								const usage = yield* pool.usage
+								const observed = yield* pool.observed(label)
 								const wall = Arr.reduce(
 									Arr.filter(usage.properties, (one) => one.label === label),
 									0,
@@ -457,6 +475,12 @@ export const runPackage = (
 									Arr.join(
 										[
 											`${lineOf(label, found.property.oracle, verdict)}; ${landedText(end - start, wall)}`,
+											...Option.match(observed.unclean, {
+												onNone: () => [],
+												onSome: (observation) => [
+													`  observed past its key, so its verdict is never cached: ${observationText(observation)}`
+												]
+											}),
 											...failureLines(verdict)
 										],
 										"\n"
@@ -470,7 +494,8 @@ export const runPackage = (
 									kind: found.property.kind,
 									oracle: found.property.oracle,
 									verdict,
-									millis: end - start
+									millis: end - start,
+									observed
 								}
 							}),
 						{ concurrency: "unbounded" }
@@ -521,7 +546,7 @@ const tokenPropertyOf = (
 	Scope.Scope | NodeServices
 > =>
 	Effect.gen(function* () {
-		yield* configOf(root)
+		const config = yield* configOf(root)
 		const named = runOfLabel(id)
 		const module = moduleOfArgument(named.id)
 		const loaded = yield* discover(root, [module])
@@ -535,7 +560,7 @@ const tokenPropertyOf = (
 			entry: WORKER_ENTRY,
 			root,
 			cwd: root,
-			env: {},
+			env: workerEnvironmentOf(config.environment, process.env),
 			compile: sharedStore,
 			places: placesOf(widthOf(1)),
 			execArgv: flagsOf(named.stack),

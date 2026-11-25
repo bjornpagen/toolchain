@@ -148,7 +148,7 @@ export const writtenPackage = (directory: string) =>
 				[
 					`import { Layer } from "${import.meta.resolve("effect")}"`,
 					`import { defineRunner, noMutation } from "${import.meta.resolve("#runner/config.ts")}"`,
-					'export default defineRunner({ include: ["test/*.test.ts"], smallStack: [], conditions: [], layer: Layer.empty, mutation: noMutation })',
+					'export default defineRunner({ include: ["test/*.test.ts"], smallStack: [], conditions: [], environment: [], layer: Layer.empty, mutation: noMutation })',
 					""
 				],
 				"\n"

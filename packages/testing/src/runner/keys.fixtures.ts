@@ -5,7 +5,8 @@ import { type Kill, PropertyId } from "#property.ts"
 import { closuresWeighedOf, editKeyOf, runnerRootsIn } from "#runner/affected.ts"
 import { editOf } from "#runner/cache.ts"
 import { treeOf } from "#runner/closure.fixtures.ts"
-import { repoPathOf } from "#runner/closure.ts"
+import { contentHashOf, repoPathOf } from "#runner/closure.ts"
+import type { KeyGrounds } from "#runner/grounds.ts"
 
 /**
  * Two runs of one kill's trial for keys.test.ts, the second after one change, each run's key made as the kill census
@@ -171,6 +172,11 @@ const keyOf = (run: Run) =>
 			modules: [paths.value.module],
 			edited: [paths.value.edited]
 		})
+		const grounds: KeyGrounds = {
+			toolchain: yield* contentHashOf(new TextEncoder().encode("the toolchain")),
+			environment: yield* contentHashOf(new TextEncoder().encode("the environment")),
+			postgres: Option.none()
+		}
 		const edit = yield* Option.match(Result.getSuccess(killApplied(run.kill, run.edited)), {
 			onNone: () => Effect.succeedNone,
 			onSome: (mutated) => editOf(EDITED, run.edited, mutated)
@@ -183,7 +189,7 @@ const keyOf = (run: Run) =>
 					edit
 				}),
 				({ searched, edited, edit: one }) =>
-					editKeyOf(PropertyId(`${MODULE}#p`), searched, edited, one)
+					editKeyOf(PropertyId(`${MODULE}#p`), searched, edited, one, grounds, false)
 			)
 		)
 	})

@@ -1,3 +1,12 @@
+import { Array as Arr, Effect, FileSystem, Option, String as Str } from "effect"
+import { assert } from "#assert.ts"
+import { countWithin } from "#enumerate.ts"
+import { array, boolean, finite, int } from "#gen.ts"
+import { waitingOn } from "#live.ts"
+import { Checkout } from "#mutate/checkout.ts"
+import { property, ReplayToken } from "#property.ts"
+import { Scratch } from "#resources/scratch.ts"
+import { sharedStore } from "#runner/compile-cache.ts"
 /**
  * The pool's teardown (runner/pool.ts), over a pool of its own running a planted property (pool.fixtures.ts) from the
  * checkout (Checkout.dir, so a mutant of pool.ts reaches it): a worker leaves none of the children it started running,
@@ -11,15 +20,7 @@
  * ends with it, with every process it started in its group (its launch binds the group to the parent, pool.ts
  * launchOf), even with its main thread held. Oracle: stated per property.
  */
-import { Array as Arr, Effect, FileSystem, Option, String as Str } from "effect"
-import { assert } from "#assert.ts"
-import { countWithin } from "#enumerate.ts"
-import { array, boolean, finite, int } from "#gen.ts"
-import { waitingOn } from "#live.ts"
-import { Checkout } from "#mutate/checkout.ts"
-import { property, ReplayToken } from "#property.ts"
-import { Scratch } from "#resources/scratch.ts"
-import { sharedStore } from "#runner/compile-cache.ts"
+import { workerEnvironmentOf } from "#runner/environment.ts"
 import { placesLeased } from "#runner/lease.ts"
 import { needStallMillis, runnerLimits } from "#runner/limits.ts"
 import { heldProgram, orphansProgram } from "#runner/orphans.fixtures.ts"
@@ -74,7 +75,7 @@ export const workersLeaveNoChild = property.exhaust(finite(leavings), {
 							entry: WORKER_ENTRY,
 							root,
 							cwd: root,
-							env: { [CHILD_FILE]: file },
+							env: { ...workerEnvironmentOf([], process.env), [CHILD_FILE]: file },
 							compile: sharedStore,
 							places: placesOf(widthOf(1)),
 							execArgv: process.execArgv,
@@ -163,7 +164,7 @@ export const loadsNever = property.exhaust(finite(boolean), {
 							entry: WORKER_ENTRY,
 							root,
 							cwd: root,
-							env: {},
+							env: workerEnvironmentOf([], process.env),
 							compile: sharedStore,
 							places: placesOf(widthOf(1)),
 							execArgv: process.execArgv,
@@ -216,7 +217,7 @@ export const slowWorkerKept = property.exhaust(finite(boolean), {
 							entry: WORKER_ENTRY,
 							root,
 							cwd: root,
-							env: {},
+							env: workerEnvironmentOf([], process.env),
 							compile: sharedStore,
 							places: placesOf(widthOf(1)),
 							execArgv: process.execArgv,
@@ -266,7 +267,7 @@ export const silentBeforeReadying = property.exhaust(finite(boolean), {
 							entry: WORKER_ENTRY,
 							root,
 							cwd: root,
-							env: {},
+							env: workerEnvironmentOf([], process.env),
 							compile: sharedStore,
 							places: placesOf(widthOf(1)),
 							execArgv: process.execArgv,
@@ -322,7 +323,7 @@ export const lostNamesItsLeg = property.exhaust(finite(silenceSpace), {
 							entry: WORKER_ENTRY,
 							root,
 							cwd: root,
-							env: {},
+							env: workerEnvironmentOf([], process.env),
 							compile: sharedStore,
 							places: placesOf(widthOf(1)),
 							execArgv: process.execArgv,
@@ -406,7 +407,7 @@ export const unreadMessageEndsItsWorker = property.exhaust(finite(boolean), {
 							entry: WORKER_ENTRY,
 							root,
 							cwd: root,
-							env: {},
+							env: workerEnvironmentOf([], process.env),
 							compile: sharedStore,
 							places: placesOf(widthOf(1)),
 							execArgv: process.execArgv,
@@ -470,7 +471,7 @@ export const declaredWaitKept = property.exhaust(finite(declaredWaitDeadlines), 
 							entry: WORKER_ENTRY,
 							root,
 							cwd: root,
-							env: {},
+							env: workerEnvironmentOf([], process.env),
 							compile: sharedStore,
 							places: placesOf(widthOf(1)),
 							execArgv: process.execArgv,
@@ -543,7 +544,7 @@ export const countedOnAWorker = property.exhaust(finite(countsEvery), {
 							entry: WORKER_ENTRY,
 							root,
 							cwd: root,
-							env: {},
+							env: workerEnvironmentOf([], process.env),
 							compile: sharedStore,
 							places: placesOf(widthOf(1)),
 							execArgv: process.execArgv,
@@ -615,7 +616,7 @@ export const openDiesUnopened = property.exhaust(finite(boolean), {
 							entry: WORKER_ENTRY,
 							root,
 							cwd: root,
-							env: {},
+							env: workerEnvironmentOf([], process.env),
 							compile: sharedStore,
 							places: placesOf(widthOf(1)),
 							execArgv: process.execArgv,
@@ -670,7 +671,13 @@ export const closedOnReturn = property.exhaust(finite(boolean), {
 				const root = yield* releasingRoot(scratch)
 				const released = yield* Effect.scoped(
 					Effect.gen(function* () {
-						const outcome = yield* runPackage({ root, seed: 1, reach: "full", selected: [] })
+						const outcome = yield* runPackage({
+							root,
+							seedOf: () => 1,
+							observes: () => false,
+							reach: "full",
+							selected: []
+						})
 						const files = yield* fs.readDirectory(root)
 						return {
 							failed: Arr.filter(outcome.properties, (ran) => ran.verdict.kind === "failed").length,
@@ -720,7 +727,7 @@ export const workersTakeTheirPlaces = property.exhaust(
 								entry: WORKER_ENTRY,
 								root,
 								cwd: root,
-								env: {},
+								env: workerEnvironmentOf([], process.env),
 								compile: sharedStore,
 								places: { at: [at], of: widthOf(of) },
 								execArgv: process.execArgv,
@@ -837,7 +844,7 @@ export const startsNever = property.exhaust(finite(boolean), {
 							entry: WORKER_ENTRY,
 							root,
 							cwd: root,
-							env: {},
+							env: workerEnvironmentOf([], process.env),
 							compile: sharedStore,
 							places: placesOf(widthOf(1)),
 							execArgv: process.execArgv,

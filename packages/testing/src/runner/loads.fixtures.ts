@@ -106,7 +106,7 @@ const filesOf = (drawn: Package): ConsumerFiles => [
 	["package.json", manifestOf(layout)],
 	[
 		"test.config.ts",
-		'import { defineRunner, noMutation } from "@bjornpagen/testing/runner"\nimport { Layer } from "effect"\n\nexport default defineRunner({ include: ["test/*.test.ts"], smallStack: [], conditions: [], layer: Layer.empty, mutation: noMutation })\n'
+		'import { defineRunner, noMutation } from "@bjornpagen/testing/runner"\nimport { Layer } from "effect"\n\nexport default defineRunner({ include: ["test/*.test.ts"], smallStack: [], conditions: [], environment: [], layer: Layer.empty, mutation: noMutation })\n'
 	],
 	["test/plain.test.ts", `${PROLOGUE}export const plain = property.explore(int(0, 9), spec)\n`],
 	["test/shared.ts", FIXTURE],

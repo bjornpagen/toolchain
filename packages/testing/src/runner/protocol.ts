@@ -681,6 +681,14 @@ const ChildrenCpu = Schema.Union([
 
 export type ChildrenCpu = typeof ChildrenCpu.Type
 
+/** An observation as it crosses from a worker to its parent (runner/observe.ts Observation). */
+const ObservationWire = Schema.Union([
+	Schema.Struct({ kind: Schema.Literal("read"), call: Schema.String, path: Schema.String }),
+	Schema.Struct({ kind: Schema.Literal("child"), call: Schema.String, command: Schema.String }),
+	Schema.Struct({ kind: Schema.Literal("network"), call: Schema.String, target: Schema.String }),
+	Schema.Struct({ kind: Schema.Literal("thread"), entry: Schema.String })
+])
+
 /**
  * A message from a worker to the parent: it is ready, and how many milliseconds it took to start, and of CPU; it is readying
  * a unit's property, the first unit of it the worker took (importing its module, then opening its needs); it imported
@@ -724,6 +732,11 @@ export const FromWorker = Schema.Union([
 	}),
 	Schema.Struct({ kind: Schema.Literal("failed"), message: Schema.String }),
 	Schema.Struct({ kind: Schema.Literal("closure"), module: Schema.String }),
+	Schema.Struct({
+		kind: Schema.Literal("observed"),
+		unit: Schema.Finite,
+		observation: ObservationWire
+	}),
 	Schema.Struct({ kind: Schema.Literal("waiting") }),
 	Schema.Struct({ kind: Schema.Literal("waited") })
 ])

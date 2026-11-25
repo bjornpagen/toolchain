@@ -1,4 +1,4 @@
-import { isMainThread, Worker } from "node:worker_threads"
+import { isMainThread } from "node:worker_threads"
 import {
 	Array as Arr,
 	Clock,
@@ -11,6 +11,7 @@ import {
 	Tracer
 } from "effect"
 import { stalledShareOfCpu } from "#runner/limits.ts"
+import { unwatched } from "#runner/observe.ts"
 import {
 	type Bound,
 	type Claim,
@@ -540,10 +541,13 @@ const startedWatchdog = (): Watchdog => {
 		Arr.map(Rec.toEntries(LAYOUT), ([name, at]) => `${name}: ${at}`),
 		", "
 	)} }`
-	const worker = new Worker(`(${watchdogThread.toString()})(${layout}, ${hangOver.toString()})`, {
-		eval: true,
-		workerData: shared
-	})
+	const worker = new unwatched.Worker(
+		`(${watchdogThread.toString()})(${layout}, ${hangOver.toString()})`,
+		{
+			eval: true,
+			workerData: shared
+		}
+	)
 	const progressed = () => {
 		Atomics.add(counters, LAYOUT.progress, 1)
 	}
