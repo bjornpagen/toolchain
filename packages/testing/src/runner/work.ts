@@ -644,9 +644,19 @@ export const Overrun = Schema.Union([
 		progress: Schema.Finite,
 		window: Schema.Finite
 	})
-])
+]).pipe(Schema.brand("Overrun"))
 
+/**
+ * A judge's verdict on a piece of work, branded: minted here alone, by the judge's reading (standingOf), and decoded
+ * where a worker's crosses to its pool (runner/protocol.ts LostBy), so every hang and every loss a bound brought about
+ * (a case's, a worker's, a starting worker's, a need's open) carries what a judge of the work measured, and a race
+ * against the live clock, which measures the machine, cannot spell one (explore.ts's case guard did, QP-GATE,
+ * 2026-11-25). The testing library's oxlint configuration holds the brand to this module (brands-sole-mint).
+ */
 export type Overrun = typeof Overrun.Type
+
+/** An Overrun of what a judge measured: the brand's one mint. */
+const judged = (measured: typeof Overrun.Encoded): Overrun => Overrun.make(measured)
 
 /** Milliseconds as seconds to the tenth, as a report states them. */
 const seconds = (millis: number): string => `${(millis / millisPerSecond).toFixed(1)} s`
@@ -713,11 +723,11 @@ export const standingOf = (
 	const { began, window, now, bound } = input
 	const spent = now.cpu - began.cpu
 	if (spent >= bound.cpu) {
-		return { kind: "spent", spent, budget: bound.cpu }
+		return judged({ kind: "spent", spent, budget: bound.cpu })
 	}
 	const waitedAll = now.waited - began.waited
 	if (waitedAll >= bound.waited) {
-		return { kind: "waited", waited: waitedAll, bound: bound.waited }
+		return judged({ kind: "waited", waited: waitedAll, bound: bound.waited })
 	}
 	const waited = now.waited - window.waited
 	const queued = queuedBetween(window, now)
@@ -726,7 +736,7 @@ export const standingOf = (
 	const moved = now.cpu - window.cpu
 	const whole = over >= bound.stall
 	if (whole && moved < progress && !storedBetween(window, now)) {
-		return { kind: "stalled", moved, queued, over, waited, progress, window: bound.stall }
+		return judged({ kind: "stalled", moved, queued, over, waited, progress, window: bound.stall })
 	}
 	return {
 		kind: "working",

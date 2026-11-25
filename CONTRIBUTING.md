@@ -339,7 +339,9 @@ To measure `n`:
    on `perWorker` once more. A 53200 says measure again.
 
 `toolchain-test fuzz <fuzztime>` runs each round at reach `rotating`: a property's rotating stream alone, under a fresh
-seed, since its kept tokens, floor and steered phase are the same on every seed and every run and push checks them.
+seed, since its kept tokens, floor and steered phase are the same on every seed and every run and push checks them. A
+fuzz time in `ms`, `s`, `m` or `h` is of the run's CPU (its own, its workers' and their children's), never of wall time,
+so a budget reaches the same cases however loaded the machine is; `x` counts cases.
 
 ## Turbo's cache
 

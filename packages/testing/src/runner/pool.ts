@@ -13,7 +13,15 @@ import {
 	Scope,
 	String as Str
 } from "effect"
-import { HUNG_CLEANUP_GRACE, liveMillis, overrun, watchdogGraceMillis } from "#live.ts"
+import {
+	HUNG_CLEANUP_GRACE,
+	overrun,
+	processWorkNow,
+	stopwatch,
+	type WaitLedger,
+	waitLedger,
+	watchdogGraceMillis
+} from "#live.ts"
 import { type Served, servedArgv } from "#mutate/pool.ts"
 import { withLateUses } from "#runner/case.ts"
 import {
@@ -65,19 +73,7 @@ import {
 	summed,
 	unused
 } from "#runner/usage.ts"
-import {
-	type Bound,
-	boundOver,
-	deadlineBound,
-	noWaits,
-	type Overrun,
-	overrunText,
-	processWork,
-	waitedBy,
-	waitEntered,
-	waitLeft,
-	type Waits
-} from "#runner/work.ts"
+import { type Bound, boundOver, deadlineBound, type Overrun, overrunText } from "#runner/work.ts"
 import { allowanceVariable, nodePoolFlag, processors, type Width, widthOf } from "#workers.ts"
 
 /**
@@ -154,12 +150,13 @@ type Worker = {
 	ready: boolean
 	sent: Array<Unit>
 	running: Option.Option<Readonly<{ unit: Unit; phase: Phase; silence: Fiber.Fiber<void> }>>
+	starting: Option.Option<Fiber.Fiber<void>>
 	revokingFor: Option.Option<Worker>
 	awaiting: Option.Option<Worker>
 	output: string
 	heard: Option.Option<Readonly<{ kind: string; at: number }>>
 	ended: Option.Option<Ending>
-	waits: Waits
+	waits: WaitLedger
 	usage: { started: number; reported: number }
 	occupiedSince: number
 	readyingMillis: number
@@ -251,7 +248,8 @@ export const placesOf = (workers: Width): Places => ({
  * any unit. A worker the parent kills is forked again from the same spec, in the same place. `stall` is the stall window
  * the pool watches its workers' loads and opens under (runner/limits.ts needStallMillis; a meta-test's own, shorter):
  * within a load's bound (loadBoundOf) and the silence grace a worker must be ready (its runner config loaded, its
- * services declared), or it is ended as one that cannot start. `bounding` is how it bounds a unit's evaluation
+ * services declared), judged over its process tree's work as a phase is (live.ts processWorkNow: its CPU spent, or not
+ * moving over a whole window), never over the live clock, or it is ended as one that cannot start. `bounding` is how it bounds a unit's evaluation
  * (Bounding): summed for a run's pool, per case for the mutator's leases.
  */
 export type PoolSpec = Readonly<{
@@ -376,7 +374,7 @@ const endGroup = (child: ChildProcess): Effect.Effect<void> =>
  * which ends it, the error kept in what it last wrote, so its exit reports its unit lost with it. */
 type Event =
 	| Readonly<{ kind: "forked"; worker: Worker }>
-	| Readonly<{ kind: "unready"; worker: Worker }>
+	| Readonly<{ kind: "unready"; worker: Worker; overrun: Overrun }>
 	| Readonly<{ kind: "sent"; worker: Worker; unit: number }>
 	| Readonly<{ kind: "message"; worker: Worker; message: unknown }>
 	| Readonly<{ kind: "exit"; worker: Worker; code: number | null; signal: string | null }>
@@ -432,6 +430,13 @@ const boundOf = (unit: Unit, phase: Phase, stall: number, bounding: Bounding): B
 			return evaluationBound(unit.work, bounding)
 	}
 }
+
+/**
+ * A worker's work from now, as the pool watches it (live.ts processWorkNow): its process tree's CPU and stir, and the
+ * wall time its declared waits held it, which the worker told the pool of (WaitLedger).
+ */
+const watchedWork = (worker: Worker) =>
+	processWorkNow(Option.fromUndefinedOr(worker.child.pid), worker.waits.waited)
 
 /** A bound with the silence grace on each leg: past it, the worker's own guards have failed. */
 const graced = (bound: Bound): Bound => ({
@@ -534,7 +539,8 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 		const events = yield* Queue.unbounded<Event>()
 		const most = spec.places.at.length
 		const scheduler = schedulerOf<Unit>(most)
-		let now = yield* liveMillis
+		const clock = yield* stopwatch
+		let now = 0
 		const compiling = yield* Effect.mapError(compilingOf(spec), (missing) =>
 			PoolFailed.make({ message: `the compile cache has no directory: ${missing.message}` })
 		)
@@ -769,12 +775,13 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 				ready: false,
 				sent: [],
 				running: Option.none(),
+				starting: Option.none(),
 				revokingFor: Option.none(),
 				awaiting: Option.none(),
 				output: "",
 				heard: Option.none(),
 				ended: Option.none(),
-				waits: noWaits,
+				waits: waitLedger(),
 				usage: { started: 0, reported: 0 },
 				occupiedSince: now,
 				readyingMillis: 0,
@@ -829,14 +836,10 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 				if (Option.isNone(unit)) {
 					return
 				}
-				const began = yield* liveMillis
 				const silence = yield* Effect.forkIn(
 					Effect.flatMap(
-						overrun(
-							processWork(Option.fromUndefinedOr(worker.child.pid), began, (wall) =>
-								waitedBy(worker.waits, wall)
-							),
-							graced(boundOf(unit.value, phase, spec.stall, spec.bounding))
+						Effect.flatMap(watchedWork(worker), (work) =>
+							overrun(work, graced(boundOf(unit.value, phase, spec.stall, spec.bounding)))
 						),
 						(verdict) =>
 							Queue.offer(events, { kind: "silent", worker, unit: id, phase, overrun: verdict })
@@ -851,7 +854,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 		 * the pool forks no further worker. Once every worker forked is so, the pool cannot run a case: every unit queued
 		 * or sent is given back lost with the last worker's report, so no evaluator waits on a pool with no worker.
 		 */
-		const breaks = (worker: Worker, report: string) =>
+		const breaks = (worker: Worker, report: string, lostBy: LostBy) =>
 			Effect.sync(() => {
 				broken.add(worker.index)
 				if (broken.size < workers.length) {
@@ -864,30 +867,48 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 				for (const unit of stranded) {
 					Deferred.doneUnsafe(
 						unit.done,
-						Effect.succeed(doneWith(unit.work, lostResult(report, lostOtherwise)))
+						Effect.succeed(doneWith(unit.work, lostResult(report, lostBy)))
 					)
 				}
 			})
 
+		/** Ends the judge of a worker's start (the "forked" event's), once it is ready or has ended. */
+		const startJudged = (worker: Worker): Effect.Effect<void> =>
+			Option.match(worker.starting, {
+				onNone: () => Effect.void,
+				onSome: (judge) =>
+					Effect.andThen(
+						Effect.sync(() => {
+							worker.starting = Option.none()
+						}),
+						Fiber.interrupt(judge)
+					)
+			})
+
 		const handle = (event: Event): Effect.Effect<void> =>
 			Effect.gen(function* () {
-				now = yield* liveMillis
+				now = yield* clock.elapsed
 				const worker = event.worker
 				switch (event.kind) {
-					case "forked":
-						yield* Effect.forkIn(
-							Effect.andThen(
-								Effect.sleep(Duration.millis(loadBoundOf(spec.stall).stall + SILENCE_GRACE_MILLIS)),
-								Queue.offer(events, { kind: "unready", worker })
+					case "forked": {
+						const judge = yield* Effect.forkIn(
+							Effect.flatMap(
+								Effect.flatMap(watchedWork(worker), (work) =>
+									overrun(work, graced(loadBoundOf(spec.stall)))
+								),
+								(verdict) => Queue.offer(events, { kind: "unready", worker, overrun: verdict })
 							).pipe(Effect.asVoid),
 							scope
 						)
+						worker.starting = Option.some(judge)
 						return
+					}
 					case "unready":
 						if (!worker.ready && workers[worker.index] === worker) {
 							yield* breaks(
 								worker,
-								`a worker was not ready within a load's bound of ${formatted(loadBoundOf(spec.stall).stall)} and the grace (its runner config's load never ended, or its services never came), so it is ended and not forked again; what it last wrote:\n${worker.output}`
+								`a worker was not ready within a load's bound of ${formatted(loadBoundOf(spec.stall).cpu)} of CPU and the stall window of ${formatted(loadBoundOf(spec.stall).stall)}, and the grace (its runner config's load never ended, or its services never came), so it is ended and not forked again: ${overrunText(event.overrun)}; what it last wrote:\n${worker.output}`,
+								{ kind: "bound", overrun: event.overrun }
 							)
 							yield* endGroup(worker.child)
 						}
@@ -913,6 +934,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 						}
 						return
 					case "exit": {
+						yield* startJudged(worker)
 						yield* endGroup(worker.child)
 						const wasReady = worker.ready
 						const lost = yield* settle(worker)
@@ -936,7 +958,8 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 						if (!wasReady) {
 							yield* breaks(
 								worker,
-								`a worker ended (${event.signal ?? `exit ${event.code}`}) before it was ready, so it is not forked again; what it last wrote:\n${worker.output}`
+								`a worker ended (${event.signal ?? `exit ${event.code}`}) before it was ready, so it is not forked again; what it last wrote:\n${worker.output}`,
+								lostOtherwise
 							)
 						}
 						if (!closing && !broken.has(worker.index)) {
@@ -966,13 +989,14 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 								starts.millis += received.millis
 								starts.cpu += received.cpu
 								worker.ready = true
+								yield* startJudged(worker)
 								send(worker, { kind: "runs", values: spec.runs })
 								feedAll()
 								return
 							case "failed":
 								worker.output = Str.slice(-OUTPUT_TAIL)(`${worker.output}${received.message}\n`)
 								if (!worker.ready) {
-									yield* breaks(worker, received.message)
+									yield* breaks(worker, received.message, lostOtherwise)
 								}
 								return
 							case "readying":
@@ -1051,10 +1075,10 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 								)
 								return
 							case "waiting":
-								worker.waits = waitEntered(worker.waits, now)
+								yield* worker.waits.entered
 								return
 							case "waited":
-								worker.waits = waitLeft(worker.waits, now)
+								yield* worker.waits.left
 								return
 							case "closure": {
 								const module = received.module
@@ -1144,7 +1168,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 			stops: (read: A) => boolean
 		): Effect.Effect<ReadonlyArray<readonly [Unit, A]>> =>
 			Effect.gen(function* () {
-				now = yield* liveMillis
+				now = yield* clock.elapsed
 				const units = Arr.map(works, enqueue)
 				for (const module of new Set(Arr.map(units, (unit) => unit.module))) {
 					afterQueued(scheduler, view, apply, module)

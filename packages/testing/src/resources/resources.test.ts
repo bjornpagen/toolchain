@@ -26,7 +26,7 @@ import { assert } from "#assert.ts"
 import { awaitFact } from "#fact.ts"
 import type { Reached } from "#features.ts"
 import { array, boolean, finite, int } from "#gen.ts"
-import { liveMillis, liveSleep, overrun, waitingOn, waitingOnWork } from "#live.ts"
+import { liveSleep, overrun, ownWorkNow, waitingOn, waitingOnWork } from "#live.ts"
 import { Checkout } from "#mutate/checkout.ts"
 import { backendWorking } from "#pg/session.ts"
 import { type Case, property, ReplayToken } from "#property.ts"
@@ -67,7 +67,7 @@ import { collectedAround } from "#runner/run.ts"
 import { runValuesOf } from "#runner/runs.ts"
 import { ModuleClosure, RunValues, WorkerIndex } from "#runner/services.ts"
 import { deadlocks } from "#runner/work.fixtures.ts"
-import { deadlineBound, overrunText, ownCpu, ownWork, waitedOnNow } from "#runner/work.ts"
+import { deadlineBound, overrunText, waitedOnNow } from "#runner/work.ts"
 
 export const freshIsolation = property.explore(array(int(-5, 5), { min: 0, max: 6 }), {
 	needs: { db: Database.fresh(marksTemplate), services },
@@ -1094,11 +1094,11 @@ export const cloneDropWaitIsDeclared = property.exhaust(finite(deadlocks), {
 									yield* Effect.forkIn(Effect.orDie(released), outer)
 								})
 							)
-							const wall = yield* liveMillis
+							const work = yield* ownWorkNow
 							const verdict = yield* Effect.raceFirst(
 								Effect.as(dropped, "passed"),
 								Effect.map(
-									overrun(ownWork(wall, ownCpu()), {
+									overrun(work, {
 										...deadlineBound(shape.deadline),
 										cpu: Number.POSITIVE_INFINITY,
 										waited: Number.POSITIVE_INFINITY
@@ -1175,16 +1175,13 @@ export const sessionStatementIsDeclared = property.exhaust(finite(deadlocks), {
 							const clone = yield* opened.clone
 							const session = yield* cluster.connect(clone.member, clone.name)
 							const seconds = (shape.deadline * shape.deadlines) / 1000
-							const wall = yield* liveMillis
+							const work = yield* ownWorkNow
 							const verdict = yield* Effect.raceFirst(
 								Effect.as(
 									session.query("SELECT pg_catalog.pg_sleep($1::float8)", [String(seconds)]),
 									"passed"
 								),
-								Effect.map(
-									overrun(ownWork(wall, ownCpu()), deadlineBound(shape.deadline)),
-									overrunText
-								)
+								Effect.map(overrun(work, deadlineBound(shape.deadline)), overrunText)
 							)
 							assert.equal(verdict, "passed")
 						})
@@ -1223,7 +1220,7 @@ export const unansweredStatementIsHung = property.exhaust(finite(deadlocks), {
 							const clone = yield* opened.clone
 							const session = yield* cluster.connect(clone.member, clone.name)
 							const pid = yield* single(session, "SELECT pg_catalog.pg_backend_pid()::text", [])
-							const wall = yield* liveMillis
+							const work = yield* ownWorkNow
 							const verdict = yield* Effect.raceAll([
 								Effect.as(
 									waitingOnWork(
@@ -1232,10 +1229,7 @@ export const unansweredStatementIsHung = property.exhaust(finite(deadlocks), {
 									)(Effect.never),
 									"answered"
 								),
-								Effect.map(
-									overrun(ownWork(wall, ownCpu()), deadlineBound(shape.deadline)),
-									(judged) => judged.kind
-								),
+								Effect.map(overrun(work, deadlineBound(shape.deadline)), (judged) => judged.kind),
 								Effect.as(liveSleep(Duration.millis(shape.deadline * 40)), "never judged")
 							])
 							assert.equal(verdict, "stalled")
@@ -1274,7 +1268,7 @@ export const pollLoopIsHung = property.exhaust(finite(deadlocks), {
 							const opened = yield* marksTemplate.open
 							const clone = yield* opened.clone
 							const session = yield* cluster.connect(clone.member, clone.name)
-							const wall = yield* liveMillis
+							const work = yield* ownWorkNow
 							const verdict = yield* Effect.raceAll([
 								Effect.as(
 									Effect.forever(
@@ -1286,7 +1280,7 @@ export const pollLoopIsHung = property.exhaust(finite(deadlocks), {
 									"ended"
 								),
 								Effect.map(
-									overrun(ownWork(wall, ownCpu()), {
+									overrun(work, {
 										...deadlineBound(shape.deadline),
 										cpu: Number.POSITIVE_INFINITY
 									}),
@@ -1338,13 +1332,10 @@ export const lockedStatementIsDeclared = property.exhaust(finite(deadlocks), {
 							const holding = yield* Effect.forkScoped(
 								Effect.andThen(holder(`SELECT pg_catalog.pg_sleep(${seconds})`), holder("COMMIT"))
 							)
-							const wall = yield* liveMillis
+							const work = yield* ownWorkNow
 							const verdict = yield* Effect.raceFirst(
 								Effect.as(waiter.query("SELECT count(*)::text FROM held", []), "passed"),
-								Effect.map(
-									overrun(ownWork(wall, ownCpu()), deadlineBound(shape.deadline)),
-									overrunText
-								)
+								Effect.map(overrun(work, deadlineBound(shape.deadline)), overrunText)
 							).pipe(Effect.ensuring(Effect.orDie(Fiber.join(holding))))
 							assert.equal(verdict, "passed")
 						})
@@ -1387,13 +1378,10 @@ export const lockedByItsClientIsHung = property.exhaust(finite(deadlocks), {
 							yield* runIn(waiter, "CREATE TABLE held (x int)", [])
 							yield* holder("BEGIN")
 							yield* holder("LOCK TABLE held IN ACCESS EXCLUSIVE MODE")
-							const wall = yield* liveMillis
+							const work = yield* ownWorkNow
 							const verdict = yield* Effect.raceAll([
 								Effect.as(waiter.query("SELECT count(*)::text FROM held", []), "answered"),
-								Effect.map(
-									overrun(ownWork(wall, ownCpu()), deadlineBound(shape.deadline)),
-									(judged) => judged.kind
-								),
+								Effect.map(overrun(work, deadlineBound(shape.deadline)), (judged) => judged.kind),
 								Effect.as(liveSleep(Duration.millis(shape.deadline * 40)), "never judged")
 							]).pipe(Effect.ensuring(Effect.orDie(holder("ROLLBACK"))))
 							assert.equal(verdict, "stalled")

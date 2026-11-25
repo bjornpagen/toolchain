@@ -355,11 +355,19 @@ const SLOW_BURST_MILLIS = 20
 
 const SLOW_STALL_MILLIS = 500
 
-/** The program a slow planted case's child runs: the bursts and stalls of the case itself, then it exits. */
-const SLOW_CHILD_PROGRAM = `const cpu = () => { const u = process.cpuUsage(); return (u.user + u.system) / 1000 }
+/**
+ * The slow planted work as a program's text: SLOW_BURSTS bursts of SLOW_BURST_MILLIS of CPU, one every
+ * SLOW_STALL_MILLIS of the live clock, then `then`, a statement.
+ */
+const slowSteps = (
+	then: string
+): string => `const cpu = () => { const u = process.cpuUsage(); return (u.user + u.system) / 1000 }
 const burst = () => { const until = cpu() + ${SLOW_BURST_MILLIS}; while (cpu() < until) {} }
-const step = (left) => { if (left === 0) { return } burst(); setTimeout(() => step(left - 1), ${SLOW_STALL_MILLIS}) }
+const step = (left) => { if (left === 0) { ${then}; return } burst(); setTimeout(() => step(left - 1), ${SLOW_STALL_MILLIS}) }
 step(${SLOW_BURSTS})`
+
+/** The program a slow planted case's child runs: the bursts and stalls of the case itself, then it exits. */
+const SLOW_CHILD_PROGRAM = slowSteps("")
 
 /** One burst of a slow planted case's own CPU. */
 const slowBurst = Effect.sync(() => {
@@ -509,6 +517,56 @@ export const unreadyRoot = (directory: string) =>
 					`import { withNeeds } from "${import.meta.resolve("#runner/loops.fixtures.ts")}"`,
 					"export default defineRunner({ include: [], smallStack: [], conditions: [], environment: [], layer: Layer.empty, mutation: noMutation })",
 					"export const looping = withNeeds",
+					""
+				],
+				"\n"
+			)
+		)
+		return directory
+	})
+
+/** The identity of the one property of a slowly starting package (slowStartRoot), relative to its root. */
+export const SLOW_START_PROPERTY = "starts.test.ts#startedSlowly"
+
+/**
+ * Writes into `directory` a package whose worker starts slowly while it works, and gives the directory: its runner
+ * config's load spends the slow planted work (slowSteps), 20 ms of CPU every 500 ms of the live clock for 19 s, past a
+ * 1 s load bound and the 15 s silence grace in wall time and within them in CPU, its work moving in every window, as a
+ * repository's runner config loads on a machine that gives its worker a few percent of a core; then its one property,
+ * of no need, passes. Each import is the file URL this module resolves, as unreadyRoot's are.
+ */
+export const slowStartRoot = (directory: string) =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		yield* fs.writeFileString(
+			`${directory}/test.config.ts`,
+			Arr.join(
+				[
+					`import { Layer } from "${import.meta.resolve("effect")}"`,
+					`import { defineRunner, noMutation } from "${import.meta.resolve("#runner/config.ts")}"`,
+					`await new Promise((done) => { ${slowSteps("done(undefined)")} })`,
+					'export default defineRunner({ include: ["starts.test.ts"], smallStack: [], conditions: [], environment: [], layer: Layer.empty, mutation: noMutation })',
+					""
+				],
+				"\n"
+			)
+		)
+		yield* fs.writeFileString(
+			`${directory}/starts.test.ts`,
+			Arr.join(
+				[
+					`import { Effect } from "${import.meta.resolve("effect")}"`,
+					`import { finite, int } from "${import.meta.resolve("#gen.ts")}"`,
+					`import { property } from "${import.meta.resolve("#property.ts")}"`,
+					"export const startedSlowly = property.exhaust(finite(int(0, 1)), {",
+					'\tbox: "two values",',
+					"\tneeds: {},",
+					"\tsituations: [],",
+					"\tcheck: () => () => Effect.void,",
+					'\toracle: { kind: "specification", name: "a property planted in a package whose worker starts slowly" },',
+					"\tkept: [],",
+					"\tkills: []",
+					"})",
 					""
 				],
 				"\n"

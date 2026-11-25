@@ -1,6 +1,6 @@
 import { Array as Arr, Config, Duration, Effect, FileSystem, String as Str } from "effect"
 import { array, element, type Gen, int, map } from "#gen.ts"
-import { liveMillis, liveSleep, waitingOn, waitingOnWork } from "#live.ts"
+import { liveSleep, ownWorkNow, waitingOn, waitingOnWork } from "#live.ts"
 import { type Property, property } from "#property.ts"
 import { type Limits, runnerLimits } from "#runner/limits.ts"
 import { fullRun, type InnerRun } from "#runner/search.fixtures.ts"
@@ -8,7 +8,6 @@ import {
 	type Bound,
 	deadlineBound,
 	ownCpu,
-	ownWork,
 	progressOver,
 	type Reading,
 	type Stir
@@ -102,9 +101,8 @@ export type ChildSeen = Readonly<{ childCpu: number; treeCpu: number }>
  * spent, while it is still alive and unreaped, reads the tree's CPU since the work began; then ends the child.
  */
 export const childSeen = (burnMillis: number): Effect.Effect<ChildSeen> =>
-	Effect.flatMap(liveMillis, (wall) =>
+	Effect.flatMap(ownWorkNow, (work) =>
 		Effect.callback<ChildSeen>((resume) => {
-			const work = ownWork(wall, ownCpu())
 			const child = process
 				.getBuiltinModule("node:child_process")
 				.spawn(process.execPath, ["-e", childProgram(burnMillis)], {
@@ -463,9 +461,8 @@ export const storageDirectory = Effect.gen(function* () {
  * reads its stir as this process's guard reads a child of its work (ownWork); then ends it.
  */
 export const childStir = (directory: string, bytes: number): Effect.Effect<Stir> =>
-	Effect.flatMap(liveMillis, (wall) =>
+	Effect.flatMap(ownWorkNow, (work) =>
 		Effect.callback<Stir>((resume) => {
-			const work = ownWork(wall, ownCpu())
 			const child = process
 				.getBuiltinModule("node:child_process")
 				.spawn(

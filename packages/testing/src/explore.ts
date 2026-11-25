@@ -44,13 +44,14 @@ import {
 	turnsOf,
 	unreachedOf
 } from "#features.ts"
-import type { Corpus, Fuzz, FuzzBudget } from "#fuzz.ts"
+import { type Corpus, describeBudget, type Fuzz, spent } from "#fuzz.ts"
 import type { Gen } from "#gen.ts"
 import {
 	abandon,
 	awaitWithinGrace,
-	liveMillis,
+	cpuMeter,
 	overrun,
+	ownWorkNow,
 	watchdogGraceMillis,
 	watchedCase
 } from "#live.ts"
@@ -70,9 +71,8 @@ import {
 import { type Drawn, type Replay, ReplayCase, replayTokenOf } from "#replay.ts"
 import {
 	deadlineBound,
+	type Overrun,
 	overrunText,
-	ownCpu,
-	ownWork,
 	waitedOnNow,
 	waitedOnText
 } from "#runner/work.ts"
@@ -107,8 +107,9 @@ import { type Tape, tokenOf, valuesFromToken } from "#tape.ts"
  *
  * @limitKind published
  * @owner Go 1.27.4's fuzzing coordinator (go test -fuzz), whose status interval the library's fuzz run takes
- * @unit milliseconds
- * @scope the wait between two status lines of one fuzz run
+ * @unit milliseconds, of the run's CPU (live.ts cpuMeter), where Go's are of wall time: the library reads no clock but
+ *   its guards' (live.ts), so a fuzz run's lines come every 3 s of its own work, however loaded the machine is
+ * @scope the work between two status lines of one fuzz run
  * @constraint compile-time constant
  * @source https://github.com/golang/go/blob/go1.27.4/src/internal/fuzz/fuzz.go#L205
  * @quote statTicker := time.NewTicker(3 * time.Second)
@@ -446,7 +447,7 @@ export type SearchFailure =
 type Outcome =
 	| Readonly<{ kind: "passed" }>
 	| Readonly<{ kind: "failed"; cause: Cause.Cause<unknown>; tape: Tape }>
-	| Readonly<{ kind: "hung"; leg: string; tape: Tape }>
+	| Readonly<{ kind: "hung"; overrun: Overrun; waitedOn: ReadonlyArray<string>; tape: Tape }>
 
 /**
  * A case's outcome as its search judges it: what it did, or misused, when a case that passed was used after it ended. A failure or a hang is judged as itself, whatever was done with the case after.
@@ -551,7 +552,14 @@ const steeredBy = <F extends string>(
 type Settled =
 	| Readonly<{ kind: "passed"; trace: Uint8Array }>
 	| Readonly<{ kind: "failed"; cause: Cause.Cause<unknown> }>
-	| Readonly<{ kind: "hung"; leg: string }>
+	| Readonly<{ kind: "hung"; overrun: Overrun; waitedOn: ReadonlyArray<string> }>
+
+/**
+ * A hung case's leg as its report states it: the leg its guard read, with what it measured (Overrun, a judge's), and
+ * the declared waits open then.
+ */
+const legOf = (hung: Readonly<{ overrun: Overrun; waitedOn: ReadonlyArray<string> }>): string =>
+	`${overrunText(hung.overrun)}${waitedOnText(hung.waitedOn)}`
 
 /** A case's outcome: as its property settled, a failed or hung case with its tape. */
 const outcomeOf = (recorded: Recording, settled: Settled): Outcome => {
@@ -561,7 +569,12 @@ const outcomeOf = (recorded: Recording, settled: Settled): Outcome => {
 		case "failed":
 			return { kind: "failed", cause: settled.cause, tape: recorded.tape() }
 		case "hung":
-			return { kind: "hung", leg: settled.leg, tape: recorded.tape() }
+			return {
+				kind: "hung",
+				overrun: settled.overrun,
+				waitedOn: settled.waitedOn,
+				tape: recorded.tape()
+			}
 	}
 }
 
@@ -771,8 +784,7 @@ const runRecorded = <S, T, F extends string, E, R, K>(
 			)
 		return Effect.uninterruptibleMask((restore) =>
 			Effect.gen(function* () {
-				const began = yield* liveMillis
-				const own = ownCpu()
+				const work = yield* ownWorkNow
 				const running = yield* Effect.forkDetach(settled, { startImmediately: true })
 				const ranThrough = running.pollUnsafe()
 				if (ranThrough !== undefined) {
@@ -782,13 +794,11 @@ const runRecorded = <S, T, F extends string, E, R, K>(
 				const guards: ReadonlyArray<Effect.Effect<Settled>> = [
 					Effect.map(Fiber.await(running), settledOf),
 					Effect.map(
-						overrun(
-							ownWork(began, own),
-							deadlineBound(Duration.toMillis(Duration.fromInputUnsafe(caseHang)))
-						),
+						overrun(work, deadlineBound(Duration.toMillis(Duration.fromInputUnsafe(caseHang)))),
 						(ran): Settled => ({
 							kind: "hung",
-							leg: `${overrunText(ran)}${waitedOnText(waitedOnNow())}`
+							overrun: ran,
+							waitedOn: waitedOnNow()
 						})
 					)
 				]
@@ -1012,7 +1022,7 @@ const replayOne = <S, T, F extends string, E, R, A>(
 					CaseHung.make({
 						suite: search.suite,
 						replay: Option.some(replayCaseOf(replayed.drawn, hung.tape)),
-						message: `${search.suite}: ${where} hung: ${hung.leg}: ${search.literal(caseRun.sketch)}`
+						message: `${search.suite}: ${where} hung: ${legOf(hung)}: ${search.literal(caseRun.sketch)}`
 					})
 				),
 			failed: (failed) => {
@@ -1061,31 +1071,8 @@ const liveLog = (line: string) =>
 const liveReport = (report: string) =>
 	Console.error(report).pipe(Effect.provideService(Console.Console, Console.Console.defaultValue()))
 
-/** How often a fuzz run reports its progress, in milliseconds of wall time: fuzzStatusEveryMillis. */
+/** How often a fuzz run reports its progress, in milliseconds of the run's CPU: fuzzStatusEveryMillis. */
 const STATUS_EVERY = fuzzStatusEveryMillis
-
-/** Whether a fuzz run has spent its budget, after `cases` cases and `elapsed` milliseconds. */
-const spent = (budget: FuzzBudget, cases: number, elapsed: number): boolean => {
-	switch (budget.kind) {
-		case "until-failure":
-			return false
-		case "cases":
-			return cases >= budget.cases
-		case "time":
-			return elapsed >= Duration.toMillis(budget.duration)
-	}
-}
-
-const describeBudget = (budget: FuzzBudget): string => {
-	switch (budget.kind) {
-		case "until-failure":
-			return "until a case fails"
-		case "cases":
-			return `for ${budget.cases} cases`
-		case "time":
-			return `for ${Duration.format(budget.duration)}`
-	}
-}
 
 /** One steered case in this many is a fresh draw rather than a mutant of a seed. */
 const FRESH_EVERY = 4
@@ -1301,7 +1288,7 @@ export const explore = <S, T, F extends string, E, R>(
 							CaseHung.make({
 								suite: spec.suite,
 								replay: Option.none(),
-								message: `${spec.suite}: ${where} hung: ${hung.leg}`
+								message: `${spec.suite}: ${where} hung: ${legOf(hung)}`
 							})
 						),
 					failed: (failed) =>
@@ -1349,7 +1336,7 @@ export const explore = <S, T, F extends string, E, R>(
 							CaseHung.make({
 								suite: spec.suite,
 								replay: Option.some(replayed),
-								message: `${spec.suite}: ${where} hung: ${hung.leg}: counterexample ${spec.literal(caseRun.sketch)}, replay it alone: TEST_REPLAY='${replayTokenOf(spec.suite, replayed)}'`
+								message: `${spec.suite}: ${where} hung: ${legOf(hung)}: counterexample ${spec.literal(caseRun.sketch)}, replay it alone: TEST_REPLAY='${replayTokenOf(spec.suite, replayed)}'`
 							})
 						)
 					},
@@ -1507,13 +1494,13 @@ export const explore = <S, T, F extends string, E, R>(
 						return keepIfNew(caseRun)
 					})
 				)
-				const started = yield* liveMillis
-				let reported = started
+				const cpuSince = yield* cpuMeter
+				let reported = 0
 				let found = 0
 				let fuzzedCases = 0
-				const status = (now: number) =>
+				const status = (cpu: number) =>
 					liveLog(
-						`fuzz: ${spec.suite}: elapsed: ${Math.round((now - started) / 1000)}s, execs: ${fuzzedCases} (${Math.round((fuzzedCases * 1000) / Math.max(1, now - started))}/sec), new interesting: ${found} (total: ${seeds.size()})`
+						`fuzz: ${spec.suite}: cpu: ${Math.round(cpu / 1000)}s, execs: ${fuzzedCases} (${Math.round((fuzzedCases * 1000) / Math.max(1, cpu))}/cpu sec), new interesting: ${found} (total: ${seeds.size()})`
 					)
 				yield* liveLog(
 					`fuzz: ${spec.suite}: ${replayed.replayed} cases of the corpus replayed, ${replayed.dropped} of them dropped as adding nothing, ${seeds.size()} seeds, fuzzing ${describeBudget(fuzz.budget)}`
@@ -1521,13 +1508,13 @@ export const explore = <S, T, F extends string, E, R>(
 				const save = (values: Float64Array) => fuzz.corpus.save(values, values.length)
 				yield* Effect.gen(function* () {
 					for (;;) {
-						const now = yield* liveMillis
-						if (spent(fuzz.budget, fuzzedCases, now - started)) {
-							return yield* status(now)
+						const cpu = yield* cpuSince
+						if (spent(fuzz.budget, fuzzedCases, cpu)) {
+							return yield* status(cpu)
 						}
-						if (now - reported >= STATUS_EVERY) {
-							reported = now
-							yield* status(now)
+						if (cpu - reported >= STATUS_EVERY) {
+							reported = cpu
+							yield* status(cpu)
 						}
 						const indices = Array.from({ length: spec.steerEvery }, (_, i) => fuzzedCases + i)
 						fuzzedCases += indices.length
@@ -1827,7 +1814,7 @@ export const exhaust = <A, F extends string, E, R>(
 								CaseHung.make({
 									suite: spec.suite,
 									replay: Option.some(replayed),
-									message: `${spec.suite}: ${where} hung: ${hung.leg}: counterexample ${spec.literal(caseRun.sketch)}, replay it alone: TEST_REPLAY='${replayTokenOf(spec.suite, replayed)}'`
+									message: `${spec.suite}: ${where} hung: ${legOf(hung)}: counterexample ${spec.literal(caseRun.sketch)}, replay it alone: TEST_REPLAY='${replayTokenOf(spec.suite, replayed)}'`
 								})
 							)
 						},

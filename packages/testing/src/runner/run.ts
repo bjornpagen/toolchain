@@ -16,7 +16,7 @@ import {
 } from "effect"
 import type { Oracle } from "#explore.ts"
 import { failureText } from "#failure.ts"
-import { liveMillis } from "#live.ts"
+import { stopwatch } from "#live.ts"
 import { type Property, type PropertyId, type PropertyKind, runNeedsOf } from "#property.ts"
 import { PgCluster } from "#resources/cluster.ts"
 import { collect, templatesOf } from "#resources/collect.ts"
@@ -384,7 +384,7 @@ export const runPackage = (
 	request: RunRequest
 ): Effect.Effect<RunOutcome, LoadFailed | PoolFailed, NodeServices> =>
 	Effect.gen(function* () {
-		const began = yield* liveMillis
+		const runTimed = yield* stopwatch
 		const { config, discovered, stackOf } = yield* loadPackage(request.root, request.selected)
 		const templates = Arr.flatMap(discovered, (found) => templatesOf(found.property.needs))
 		return yield* collectedAround(
@@ -444,7 +444,7 @@ export const runPackage = (
 						runs,
 						({ found, stack }) =>
 							Effect.gen(function* () {
-								const start = yield* liveMillis
+								const propertyTimed = yield* stopwatch
 								const label = labelOf(found.id, stack)
 								const pool = yield* Effect.mapError(
 									Effect.fromOption(
@@ -463,7 +463,7 @@ export const runPackage = (
 									reach: request.reach
 								})
 								yield* pool.retire(label)
-								const end = yield* liveMillis
+								const landed = yield* propertyTimed.elapsed
 								const usage = yield* pool.usage
 								const observed = yield* pool.observed(label)
 								const wall = Arr.reduce(
@@ -474,7 +474,7 @@ export const runPackage = (
 								yield* Console.log(
 									Arr.join(
 										[
-											`${lineOf(label, found.property.oracle, verdict)}; ${landedText(end - start, wall)}`,
+											`${lineOf(label, found.property.oracle, verdict)}; ${landedText(landed, wall)}`,
 											...Option.match(observed.unclean, {
 												onNone: () => [],
 												onSome: (observation) => [
@@ -494,7 +494,7 @@ export const runPackage = (
 									kind: found.property.kind,
 									oracle: found.property.oracle,
 									verdict,
-									millis: end - start,
+									millis: landed,
 									observed
 								}
 							}),
@@ -510,10 +510,10 @@ export const runPackage = (
 						(pool) => pool.usage
 					)
 					const parent = yield* Effect.sync(() => process.cpuUsage())
-					const ended = yield* liveMillis
+					const ran = yield* runTimed.elapsed
 					return {
 						properties,
-						millis: ended - began,
+						millis: ran,
 						workers: Arr.flatten(counted),
 						held: Arr.flatten(held),
 						usage: {

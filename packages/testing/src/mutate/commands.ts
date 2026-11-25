@@ -14,7 +14,7 @@ import {
 	String as Str
 } from "effect"
 import type { ChildProcessSpawner } from "effect/process"
-import { liveMillis } from "#live.ts"
+import { stopwatch } from "#live.ts"
 import { applied, OPERATORS } from "#mutants.ts"
 import { type Catch, type Counted, censusOf, type Reading, type Standing } from "#mutate/census.ts"
 import { loadingOf } from "#mutate/checkout.ts"
@@ -127,7 +127,7 @@ const failingLine = (judged: Judged): ReadonlyArray<string> => {
 export const killsCommand = (root: string, selected: ReadonlyArray<string>) =>
 	Effect.scoped(
 		Effect.gen(function* () {
-			const began = yield* liveMillis
+			const timed = yield* stopwatch
 			const checkout = yield* checkoutOf(root)
 			const packageRoot = yield* realPathOf(root)
 			const { config, discovered } = yield* loadPackage(root, selected)
@@ -151,7 +151,7 @@ export const killsCommand = (root: string, selected: ReadonlyArray<string>) =>
 				subjects
 			)
 			yield* verdicts.record(judged)
-			const ended = yield* liveMillis
+			const took = yield* timed.elapsed
 			const byProperty = Arr.map(subjects, (subject): readonly [Subject, ReadonlyArray<Judged>] => [
 				subject,
 				Arr.filter(judged, (one) => one.property === subject.id)
@@ -170,7 +170,7 @@ export const killsCommand = (root: string, selected: ReadonlyArray<string>) =>
 							(one) => `${one.property}: killed (a cached verdict): ${one.kill.why}`
 						),
 						"",
-						`${String(judged.length)} kills of ${String(subjects.length)} properties: ${String(count("killed"))} killed, ${String(count("survived"))} survived, ${String(count("stale"))} stale, ${String(count("unjudged"))} unjudged, in ${String(Math.round(ended - began))} ms on ${String(pool.width)} workers; ${String(cached.length)} kills a cached verdict answered`
+						`${String(judged.length)} kills of ${String(subjects.length)} properties: ${String(count("killed"))} killed, ${String(count("survived"))} survived, ${String(count("stale"))} stale, ${String(count("unjudged"))} unjudged, in ${String(Math.round(took))} ms on ${String(pool.width)} workers; ${String(cached.length)} kills a cached verdict answered`
 					],
 					"\n"
 				)
@@ -310,7 +310,7 @@ export const mutateCommand = (root: string, args: ReadonlyArray<string>) =>
 	Effect.scoped(
 		Effect.gen(function* () {
 			const path = yield* Path.Path
-			const began = yield* liveMillis
+			const timed = yield* stopwatch
 			const parsed = yield* mutateArgsOf(args)
 			const checkout = yield* checkoutOf(root)
 			const packageRoot = yield* realPathOf(root)
@@ -383,7 +383,7 @@ export const mutateCommand = (root: string, args: ReadonlyArray<string>) =>
 						: Effect.void,
 				{ discard: true }
 			).pipe(Effect.provide(hashing))
-			const ended = yield* liveMillis
+			const took = yield* timed.elapsed
 			const count = (kind: MutantJudged<string>["verdict"]["kind"]) =>
 				Arr.filter(judged, ({ verdict }) => verdict.kind === kind).length
 			const killed = count("killed")
@@ -391,7 +391,7 @@ export const mutateCommand = (root: string, args: ReadonlyArray<string>) =>
 			yield* Console.log(
 				Arr.join(
 					[
-						`mutate: ${String(judged.length)} mutants of ${Arr.join(files, ", ")} against ${String(subjects.length)} properties: ${String(killed)} killed, ${String(survived)} survived, ${String(count("invalid"))} invalid, ${String(count("uncovered"))} uncovered, ${String(count("equivalent"))} equivalent; score ${String(killed)}/${String(killed + survived)}, in ${String(Math.round(ended - began))} ms on ${String(pool.width)} workers`,
+						`mutate: ${String(judged.length)} mutants of ${Arr.join(files, ", ")} against ${String(subjects.length)} properties: ${String(killed)} killed, ${String(survived)} survived, ${String(count("invalid"))} invalid, ${String(count("uncovered"))} uncovered, ${String(count("equivalent"))} equivalent; score ${String(killed)}/${String(killed + survived)}, in ${String(Math.round(took))} ms on ${String(pool.width)} workers`,
 						operatorsLine(Arr.dedupe(operators), judged),
 						...(survived > 0
 							? ["survivors, by file and operator:", ...listedReport(judged, "survived")]
@@ -535,7 +535,7 @@ export const censusCommand = (root: string, args: ReadonlyArray<string>) =>
 	Effect.scoped(
 		Effect.gen(function* () {
 			const path = yield* Path.Path
-			const began = yield* liveMillis
+			const timed = yield* stopwatch
 			const parsed = yield* censusArgsOf(args)
 			const checkout = yield* checkoutOf(root)
 			const packageRoot = yield* realPathOf(root)
@@ -623,12 +623,12 @@ export const censusCommand = (root: string, args: ReadonlyArray<string>) =>
 				...Arr.map(ofForeign, (one) => censusRow(one.id, one))
 			]
 			const counted = [...ofProperties, ...ofForeign]
-			const ended = yield* liveMillis
+			const took = yield* timed.elapsed
 			const count = (kind: Counted["standing"]["kind"]) =>
 				Arr.filter(counted, (one) => one.standing.kind === kind).length
 			yield* Console.log(Arr.join([Arr.join(CENSUS_HEADER, "\t"), ...rows], "\n"))
 			yield* Console.error(
-				`census: ${String(counted.length)} tests: ${String(count("catches"))} catch, ${String(count("never-caught"))} never caught, ${String(count("unjudged"))} unjudged; ${String(Arr.reduce(counted, 0, (sum, one) => sum + one.tried))} mutants tried over ${String(sources.length)} product files, in ${String(Math.round(ended - began))} ms on ${String(pool.width)} workers`
+				`census: ${String(counted.length)} tests: ${String(count("catches"))} catch, ${String(count("never-caught"))} never caught, ${String(count("unjudged"))} unjudged; ${String(Arr.reduce(counted, 0, (sum, one) => sum + one.tried))} mutants tried over ${String(sources.length)} product files, in ${String(Math.round(took))} ms on ${String(pool.width)} workers`
 			)
 			return count("catches") === counted.length ? 0 : 1
 		})

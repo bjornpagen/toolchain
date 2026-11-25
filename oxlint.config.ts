@@ -22,7 +22,8 @@ export default defineConfig(
 				mints: [
 					{ doors: ["packages/testing/src/random.ts"], brands: ["LabelStream", "RunStream"] },
 					{ doors: ["packages/testing/src/mutate/mutated.ts"], brands: ["RealPath"] },
-					{ doors: ["packages/testing/src/mutate/checkout.ts"], brands: ["CheckoutDir"] }
+					{ doors: ["packages/testing/src/mutate/checkout.ts"], brands: ["CheckoutDir"] },
+					{ doors: ["packages/testing/src/runner/work.ts"], brands: ["Overrun"] }
 				]
 			},
 			"import-doors": { doors: [] },
@@ -61,7 +62,12 @@ export default defineConfig(
 			"test-no-spelled-names": { markers: [] }
 		},
 		ownPlugins: [],
-		tests: { library: "installed", clockFree: ["packages/testing/src/**"] },
+		/** Every package of the toolchain is clock-free, its tools' code as its testing library's: no verdict of a gate it
+		 * runs rests on the machine's speed. The modules whose job is the clock are the overrides' exceptions. */
+		tests: {
+			library: "installed",
+			clockFree: ["packages/*/src/**", "packages/*/scripts/**", "packages/*/bin/**"]
+		},
 		overrides: [
 			{
 				files: ["packages/testing/src/assert.ts"],
@@ -116,10 +122,21 @@ export default defineConfig(
 				rules: active({})
 			},
 			{
+				files: ["packages/testing/scripts/codemod/main.ts"],
+				rules: active({
+					/** The codemod's one date, today's, which it writes as the `since` of each case it keeps: a record's date,
+					 * which no verdict reads. */
+					"testing/no-wall-clock-verdict": "off"
+				})
+			},
+			{
 				files: ["packages/testing/src/blocking.fixtures.ts"],
 				rules: active({
 					/** A planted property that sleeps past its hang limit: the hang guard's case is the wait itself. */
-					"testing/no-sleep-wait": "off"
+					"testing/no-sleep-wait": "off",
+					/** The watchdog's own property, which measures the watchdog's lateness on the live clock against the
+					 * grace of wall time it is specified by (live.ts watchdogGraceMillis). */
+					"testing/no-wall-clock-verdict": "off"
 				})
 			},
 			{

@@ -1,6 +1,6 @@
-import { Array as Arr, Console, Duration, Effect, Option, Random, Schema } from "effect"
-import { budgetOf, type FuzzBudget, FuzzTime } from "#fuzz.ts"
-import { liveMillis } from "#live.ts"
+import { Array as Arr, Console, Effect, Option, Random, Schema } from "effect"
+import { budgetOf, FuzzTime, spent } from "#fuzz.ts"
+import { cpuMeter } from "#live.ts"
 import { runNeedsOf } from "#property.ts"
 import { sharedStore } from "#runner/compile-cache.ts"
 import { workerEnvironmentOf } from "#runner/environment.ts"
@@ -18,7 +18,9 @@ import { testWorkers } from "#workers.ts"
  * reach `rotating`, each round under a fresh run seed, so each round is new cases alone (a property's kept tokens, floor
  * and steered phase are the same on every seed, and every run and push already checks them), until a case fails or
  * the budget is spent. The budget is Go's `-fuzztime`, which the scheduler that runs the command states: `30m` or `2h`
- * of wall time, or `100000x` cases, checked after each round. It never reads or writes the verdict cache and never runs
+ * of the run's CPU (its own, its workers' and their children's: live.ts cpuMeter, begun before its pool forks a worker),
+ * never of wall time, so it reaches the same cases however loaded the machine is; or `100000x` cases, checked after
+ * each round. It never reads or writes the verdict cache and never runs
  * in the push gate: a failure prints the round's TEST_SEED, which `toolchain-test run` reproduces, and each failing
  * case's replay token.
  *
@@ -45,18 +47,6 @@ const casesOf = (verdict: Verdict): number => {
 	}
 }
 
-/** Whether a budget is spent after `cases` cases and `millis` milliseconds. */
-const spent = (budget: FuzzBudget, cases: number, millis: number): boolean => {
-	switch (budget.kind) {
-		case "until-failure":
-			return false
-		case "time":
-			return millis >= Duration.toMillis(budget.duration)
-		case "cases":
-			return cases >= budget.cases
-	}
-}
-
 /** `fuzz <fuzztime> [paths | ids]` in the package at `root`: 1 when a case fails, 0 when the budget is spent. */
 export const fuzz = (root: string, args: ReadonlyArray<string>) =>
 	Effect.scoped(
@@ -76,6 +66,7 @@ export const fuzz = (root: string, args: ReadonlyArray<string>) =>
 				yield* Console.log("no sampled property to fuzz")
 				return 0
 			}
+			const cpuSince = yield* cpuMeter
 			const pool = yield* poolOf({
 				entry: WORKER_ENTRY,
 				root,
@@ -96,7 +87,6 @@ export const fuzz = (root: string, args: ReadonlyArray<string>) =>
 				stall: needStallMillis,
 				bounding: "summed"
 			})
-			const began = yield* liveMillis
 			let rounds = 0
 			let cases = 0
 			for (;;) {
@@ -138,10 +128,10 @@ export const fuzz = (root: string, args: ReadonlyArray<string>) =>
 					)
 					return 1
 				}
-				const now = yield* liveMillis
-				if (spent(budget, cases, now - began)) {
+				const cpu = yield* cpuSince
+				if (spent(budget, cases, cpu)) {
 					yield* Console.log(
-						`${sampled.length} properties fuzzed: ${rounds} rounds, ${cases} cases, in ${Math.round(now - began)} ms, no case failed`
+						`${sampled.length} properties fuzzed: ${rounds} rounds, ${cases} cases, in ${Math.round(cpu)} ms of CPU, no case failed`
 					)
 					return 0
 				}

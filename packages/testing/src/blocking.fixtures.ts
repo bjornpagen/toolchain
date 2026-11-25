@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices"
 import { regex } from "arkregex"
 import {
 	Array as Arr,
+	Clock,
 	Console,
 	Duration,
 	Effect,
@@ -12,7 +13,7 @@ import {
 } from "effect"
 import { ChildProcess } from "effect/process"
 import { array, element, finite, type Gen, int } from "#gen.ts"
-import { liveMillis, liveSleep, type Silence, watchdogGraceMillis, watchdogWakes } from "#live.ts"
+import { liveSleep, type Silence, watchdogGraceMillis, watchdogWakes } from "#live.ts"
 import type { CheckoutDir } from "#mutate/checkout.ts"
 import { type Property, property } from "#property.ts"
 import { HARDENED_FLAGS } from "#runner/config.ts"
@@ -265,6 +266,16 @@ export const settledHere = (planted: Planted, seed: number) =>
 const asleepDeadlineMillis = 4 * watchdogGraceMillis
 
 /**
+ * The live clock's time, in milliseconds since the epoch, the scale the watchdog states its wake moments in
+ * (watchdogWakes): what the watchdog's own property measures its lateness by, the one verdict whose oracle is a span of
+ * wall time, since the watchdog ends a main thread that holds without yielding past a grace of it (live.ts
+ * watchdogGraceMillis). No other test reads the clock (oxlint.config.ts).
+ */
+const wallNow = Clock.currentTimeMillis.pipe(
+	Effect.provideService(Clock.Clock, Clock.Clock.defaultValue())
+)
+
+/**
  * Waits, yielding a millisecond at a time, until the process's watchdog thread has said when it will next wake of
  * itself. Run as a case, the thread's first, the moment it says is that case's own: it reads the earliest moment of the
  * cases in flight when it starts.
@@ -312,7 +323,7 @@ const searchedAsProgram = (planted: Planted, seed: number) =>
 					limits: { ...runnerLimits, deadline: asleepDeadlineMillis },
 					stall: needStallMillis
 				})
-				const began = yield* liveMillis
+				const began = yield* wallNow
 				const wakes = yield* watchdogWakes
 				yield* Console.log(`began: ${began}`)
 				yield* Console.log(
@@ -415,7 +426,7 @@ export const programRun = (program: string, planted: Planted, seed: number) =>
 				],
 				{ concurrency: "unbounded" }
 			)
-			const ended = yield* liveMillis
+			const ended = yield* wallNow
 			return {
 				began: Option.map(Option.fromNullishOr(BEGAN_LINE.exec(stdout)?.groups.moment), Number),
 				wakes: Option.map(Option.fromNullishOr(WAKES_LINE.exec(stdout)?.groups.moment), Number),

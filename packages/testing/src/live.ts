@@ -20,15 +20,21 @@ import {
 	enterWait,
 	judgeOf,
 	leaveWait,
+	noWaits,
 	type Overrun,
 	overrunText,
 	ownCpu,
 	ownWork,
+	processWork,
 	type Reading,
 	readingOf,
 	standingOf,
 	TICK_MILLIS,
-	type TreeWork
+	type TreeWork,
+	waitedBy,
+	waitEntered,
+	waitLeft,
+	type Waits
 } from "#runner/work.ts"
 
 /**
@@ -92,20 +98,40 @@ const hungCleanupGraceSeconds = 5
 export const liveSleep = (duration: Duration.Input) =>
 	Effect.sleep(duration).pipe(Effect.provideService(Clock.Clock, Clock.Clock.defaultValue()))
 
-/** The live clock's time, whatever clock the caller runs under: a budget of wall time reads it. */
-export const liveMillis = Clock.currentTimeMillis.pipe(
+/**
+ * The live clock's time, whatever clock the caller runs under. Read here alone: a guard's readings of the work it judges
+ * (overrun), a declared wait's span, a stopwatch's start; no module outside this one and runner/work.ts holds a reading
+ * of it (the testing plugin's no-wall-clock-verdict counts each of this module's readers as a read of the clock), so no
+ * verdict rests on the machine's speed.
+ */
+const liveMillis = Clock.currentTimeMillis.pipe(
 	Effect.provideService(Clock.Clock, Clock.Clock.defaultValue())
 )
 
-/** The live clock's time, read where no effect runs: a tracer's span as it opens (runner/case.ts spansOpenOver). */
-export const liveMillisNow = (): number => Clock.Clock.defaultValue().currentTimeMillisUnsafe()
+/** The live clock's time, read where no effect runs: a tracer's span as it opens (spansOpenOver). */
+const liveMillisNow = (): number => Clock.Clock.defaultValue().currentTimeMillisUnsafe()
+
+/**
+ * A stopwatch on the live clock from now, for what a report states and a scheduler estimates (how long a run, a case or
+ * a worker's unit took), never a verdict, which a guard judges by the work it reads (overrun): `elapsed` is the
+ * milliseconds since it started, as an effect, and `elapsedNow` the same where no effect runs.
+ */
+export type Stopwatch = Readonly<{ elapsed: Effect.Effect<number>; elapsedNow: () => number }>
+
+/** A Stopwatch started now, read in nanoseconds, so a case of a fraction of a millisecond is measured as one. */
+export const stopwatch: Effect.Effect<Stopwatch> = Effect.sync(() => {
+	const clock = Clock.Clock.defaultValue()
+	const started = clock.currentTimeNanosUnsafe()
+	const since = () => Number(clock.currentTimeNanosUnsafe() - started) / 1e6
+	return { elapsed: Effect.sync(since), elapsedNow: since }
+})
 
 /**
  * A sleep on the live clock until it reads `moment`, in milliseconds since the epoch, or later. A timer may fire a
  * millisecond before the clock reads its moment, so the sleep sleeps again until it does, and whatever reads the clock
  * once it has ended finds the moment passed.
  */
-export const liveSleepUntil = (moment: number): Effect.Effect<void> =>
+const liveSleepUntil = (moment: number): Effect.Effect<void> =>
 	Effect.flatMap(liveMillis, (now) =>
 		now >= moment
 			? Effect.void
@@ -648,10 +674,57 @@ export const watchedCase = <A, E, R>(
 	)
 }
 
-/** The live clock's time in nanoseconds, whatever clock the caller runs under: a case's measured time reads it. */
-export const liveNanos = Clock.currentTimeNanos.pipe(
-	Effect.provideService(Clock.Clock, Clock.Clock.defaultValue())
+/**
+ * This process's work as its guards read it (runner/work.ts ownWork), begun now: its CPU read before the work starts,
+ * so a guard begun here counts all of the work's and none of what came before.
+ */
+export const ownWorkNow: Effect.Effect<TreeWork> = Effect.map(liveMillis, (wall) =>
+	ownWork(wall, ownCpu())
 )
+
+/**
+ * Another process's work (runner/work.ts processWork), begun now: the pool's watch of a worker, `waited` the wall time
+ * the worker's declared waits held it (a WaitLedger's).
+ */
+export const processWorkNow = (
+	pid: Option.Option<number>,
+	waited: (wall: number) => number
+): Effect.Effect<TreeWork> => Effect.map(liveMillis, (wall) => processWork(pid, wall, waited))
+
+/**
+ * A meter of this process tree's CPU from now (ownWorkNow: its own, its reaped children's and its descendants' started
+ * since): each run of the effect it gives is the CPU, in milliseconds, the tree has spent since. What a fuzz run's
+ * budget and its status lines read, so the cases a budget reaches are the same however loaded the machine is.
+ */
+export const cpuMeter: Effect.Effect<Effect.Effect<number>> = Effect.map(ownWorkNow, (work) =>
+	Effect.sync(() => work.effort().cpu - work.began.cpu)
+)
+
+/**
+ * Another process's declared waits as its parent learns of them (runner/protocol.ts FromWorker waiting and waited):
+ * `entered` when its first wait opens, `left` when its last closes, each at the live clock's reading then, and `waited`
+ * the wall milliseconds they held it by a reading (runner/work.ts waitedBy), what a watch of the process
+ * (processWorkNow) counts none of in its stall leg.
+ */
+export type WaitLedger = Readonly<{
+	entered: Effect.Effect<void>
+	left: Effect.Effect<void>
+	waited: (wall: number) => number
+}>
+
+/** A WaitLedger of no wait yet. */
+export const waitLedger = (): WaitLedger => {
+	let waits: Waits = noWaits
+	return {
+		entered: Effect.map(liveMillis, (wall) => {
+			waits = waitEntered(waits, wall)
+		}),
+		left: Effect.map(liveMillis, (wall) => {
+			waits = waitLeft(waits, wall)
+		}),
+		waited: (wall) => waitedBy(waits, wall)
+	}
+}
 
 /**
  * `effect` as a declared wait of this process on work other processes do, named by what it waits on, `on` (runner/work.ts
@@ -716,15 +789,18 @@ export const overrun = (work: TreeWork, bound: Bound): Effect.Effect<Overrun> =>
 export const spentOn = <A, E, R>(
 	effect: Effect.Effect<A, E, R>
 ): Effect.Effect<readonly [A, number], E, R> =>
-	Effect.flatMap(liveMillis, (wall) =>
-		Effect.suspend(() => {
-			const work = ownWork(wall, ownCpu())
-			return Effect.map(effect, (outcome) => [outcome, work.effort().cpu - work.began.cpu] as const)
-		})
+	Effect.flatMap(cpuMeter, (spentSince) =>
+		Effect.zipWith(effect, spentSince, (outcome, cpu) => [outcome, cpu] as const)
 	)
 
 /** A span a piece of work opened and had not closed: its name, and when it opened, in milliseconds on the live clock. */
-export type OpenSpan = Readonly<{ name: string; opened: number }>
+type OpenSpan = Readonly<{ name: string; opened: number }>
+
+/**
+ * The span a piece of work stood in when its guard ended it: the innermost it had opened and not closed, its name, and
+ * how long it had been open then, in milliseconds.
+ */
+export type StoodIn = Readonly<{ name: string; openFor: number }>
 
 /**
  * A tracer that hands every span to `inner` and keeps the spans the case or work it traces opened and has not closed,
@@ -786,28 +862,32 @@ export const spansOpenOver = (inner: Tracer.Tracer) => {
 			},
 			...(inner.context === undefined ? {} : { context: inner.context })
 		}),
-		innermost: (): Option.Option<OpenSpan> => Arr.last(Arr.fromIterable(open.values()))
+		innermost: (): Option.Option<StoodIn> =>
+			Option.map(Arr.last(Arr.fromIterable(open.values())), (span) => ({
+				name: span.name,
+				openFor: liveMillisNow() - span.opened
+			}))
 	}
 }
 
-/** What a hung case's report adds of the span it stood in at its verdict, at `now` on the live clock: the innermost
- * open one, its name and how long before it opened, or nothing. */
-export const withinText = (within: Option.Option<OpenSpan>, now: number): string =>
+/** What a hung case's report adds of the span it stood in at its verdict: the innermost open one, its name and how
+ * long before it opened, or nothing. */
+export const withinText = (within: Option.Option<StoodIn>): string =>
 	Option.match(within, {
 		onNone: () => "",
 		onSome: (span) =>
-			`; it stood inside "${span.name}", opened ${((now - span.opened) / 1000).toFixed(1)} s before`
+			`; it stood inside "${span.name}", opened ${(span.openFor / 1000).toFixed(1)} s before`
 	})
 
 /**
  * What ended work its guard judged (withinBound): the leg of the guard that fired, with what it measured (Overrun), and
- * the span the work stood in then, the innermost open one (spansOpenOver), at `at` on the live clock.
+ * the span the work stood in then, the innermost open one (spansOpenOver).
  */
-export type Overran = Readonly<{ overrun: Overrun; within: Option.Option<OpenSpan>; at: number }>
+export type Overran = Readonly<{ overrun: Overrun; within: Option.Option<StoodIn> }>
 
 /** An Overran as a report states it: the leg that fired, what it measured, and the span the work stood inside. */
 export const overranText = (overran: Overran): string =>
-	`${overrunText(overran.overrun)}${withinText(overran.within, overran.at)}`
+	`${overrunText(overran.overrun)}${withinText(overran.within)}`
 
 /**
  * `effect` judged as this process's work from now under `bound` (overrun of runner/work.ts ownWork, which counts none
@@ -825,8 +905,8 @@ export const withinBound = <A, E, R>(
 		return Effect.raceFirst(
 			Effect.map(Effect.withTracer(effect, spans.tracer), (outcome) => Result.succeed(outcome)),
 			Effect.map(
-				Effect.flatMap(liveMillis, (wall) => overrun(ownWork(wall, ownCpu()), bound)),
-				(ran) => Result.fail({ overrun: ran, within: spans.innermost(), at: liveMillisNow() })
+				Effect.flatMap(ownWorkNow, (work) => overrun(work, bound)),
+				(ran) => Result.fail({ overrun: ran, within: spans.innermost() })
 			)
 		)
 	})

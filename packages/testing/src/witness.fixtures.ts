@@ -11,6 +11,7 @@ import {
 } from "#features.ts"
 import { int } from "#gen.ts"
 import { caseSeed, floorSeed, fuzzSeed, rotatingSeed, steeredSeed } from "#random.ts"
+import { overrunText } from "#runner/work.ts"
 import { notesOnly } from "#sense.ts"
 import { boundedShrink } from "#shrink.ts"
 import { sample } from "#source.ts"
@@ -18,7 +19,8 @@ import { sample } from "#source.ts"
 /**
  * The type tier of the witness verdict, checked by the package's typecheck: each `accepted` entry compiles, and each
  * `refused` entry is a type error its directive names, so a change that lets a case the run's seed drew decide a
- * verdict, or a witness phase draw from the run's seed, fails here before any test runs.
+ * verdict, or a witness phase draw from the run's seed, fails here before any test runs; and a hang or a loss spelled by
+ * anything but a judge of the work (runner/work.ts Overrun), so a race against the live clock cannot be reported as one.
  */
 const floor = floorSeed("witness types")
 
@@ -89,5 +91,7 @@ export const refused = Object.freeze([
 	// @ts-expect-error -- an exploration's requirement states the steered phase that reaches what its floor misses
 	exploration(requiredInSpace<"a">(["a"])),
 	// @ts-expect-error -- steering exists only inside a requirement, never beside no coverage
-	exploration({ kind: "none", steered: { cases: 1, sense: notesOnly } })
+	exploration({ kind: "none", steered: { cases: 1, sense: notesOnly } }),
+	// @ts-expect-error -- an Overrun is a judge's verdict on the work it read, minted by the judge alone, never written
+	overrunText({ kind: "spent", spent: 30_000, budget: 30_000 })
 ])

@@ -110,7 +110,7 @@ export const hangsOnTheLiveClock = property.explore(
 		kills: [
 			{
 				file: "packages/testing/src/runner/case.ts",
-				original: `leg: \`\${overrunText(settled.overrun)}\${waitedOnText(settled.waitedOn)}\${withinText(settled.within, settled.at)}\`,`,
+				original: `leg: \`\${overrunText(settled.overrun)}\${waitedOnText(settled.waitedOn)}\${withinText(settled.within)}\`,`,
 				replacement: 'leg: "",',
 				why: "A hung case is reported without the leg its guard read, so a hang under load says neither whether the case spent its CPU nor whether it waited on something no one declared (CONFINE's inductive control run, hung at case 0)."
 			},
@@ -154,16 +154,14 @@ export const hungNamesItsStep = property.explore(
 		kills: [
 			{
 				file: "packages/testing/src/runner/case.ts",
-				original: `leg: \`\${overrunText(settled.overrun)}\${waitedOnText(settled.waitedOn)}\${withinText(settled.within, settled.at)}\`,`,
+				original: `leg: \`\${overrunText(settled.overrun)}\${waitedOnText(settled.waitedOn)}\${withinText(settled.within)}\`,`,
 				replacement: `leg: \`\${overrunText(settled.overrun)}\${waitedOnText(settled.waitedOn)}\`,`,
 				why: "A hung case is reported without the span it stood in, as it was: a browser journey hung on a page that never comes says only that its tree stood still, not which step waited (metis's idle hangs, 2026-11-22: signOutLandsOnSignIn and resultsWithoutAssignmentGoHome hung with no step named); the property fails."
 			},
 			{
 				file: "packages/testing/src/live.ts",
-				original:
-					"innermost: (): Option.Option<OpenSpan> => Arr.last(Arr.fromIterable(open.values()))",
-				replacement:
-					"innermost: (): Option.Option<OpenSpan> => Arr.head(Arr.fromIterable(open.values()))",
+				original: "Option.map(Arr.last(Arr.fromIterable(open.values())), (span) => ({",
+				replacement: "Option.map(Arr.head(Arr.fromIterable(open.values())), (span) => ({",
 				why: "The outermost open span is named, so a journey hung in a step is reported with the journey around it, never the step that waited; the property fails."
 			}
 		]
@@ -403,8 +401,7 @@ export const unopenedOnce = property.explore(
 			},
 			{
 				file: "packages/testing/src/runner/opening.ts",
-				original:
-					"\t\t\tEffect.flatMap(liveMillis, (wall) => overrun(ownWork(wall, ownCpu()), bound)),",
+				original: "\t\t\tEffect.flatMap(ownWorkNow, (work) => overrun(work, bound)),",
 				replacement: "\t\t\tEffect.never,",
 				why: "A need's open has no bound, so one that never ends holds its process forever, and one past the bound opens late instead of failing its property; the outrunning need's property passes, and this property fails."
 			}

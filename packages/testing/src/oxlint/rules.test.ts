@@ -38,7 +38,8 @@ import {
 } from "#oxlint/rules.fixtures.ts"
 import { property } from "#property.ts"
 
-/** no-wall-clock-verdict reports exactly the reads of the clock and every finite timer a test API is given. */
+/** no-wall-clock-verdict reports exactly the reads of the clock, the live clock's readers imported among them, and every
+ * finite timer a test API is given. */
 export const noWallClockVerdict = ruleProperty(
 	"no-wall-clock-verdict",
 	inTests(programOf(clockSites)),
@@ -49,6 +50,12 @@ export const noWallClockVerdict = ruleProperty(
 				'\t\tNewExpression: (node) => {\n\t\t\tif (isNamed(context, node.callee, DATE_READS) && Arr.isReadonlyArrayEmpty(node.arguments)) {\n\t\t\t\tcontext.report({ node, messageId: "wallClock" })\n\t\t\t}\n\t\t},\n',
 			replacement: "",
 			why: "no-wall-clock-verdict reads `new Date()` as no read of the clock."
+		},
+		{
+			file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
+			original: "\t\t\tif (Arr.contains(LIVE_MODULES, node.source.value)) {\n",
+			replacement: "\t\t\tif (false) {\n",
+			why: "An import of the live clock's readers is no read of the clock, so a module outside live.ts holds one and judges by it unseen, as explore.ts's case guard raced its case against liveSleepUntil and judged the machine (QP-GATE, 2026-11-25); the property fails."
 		},
 		{
 			file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",

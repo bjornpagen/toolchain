@@ -15,11 +15,38 @@ export const CLOCK_READS: ReadonlyArray<string> = [
 	"process.hrtime"
 ]
 
+/**
+ * The specifiers of the testing library's live clock (live.ts), the one module whose job is the clock: a guard's
+ * readings of the work it judges, a declared wait's span, a stopwatch's start, the watchdog's moments. Inside the
+ * library it is `#live.ts`; a repository imports it as `@bjornpagen/testing/live`.
+ */
+export const LIVE_MODULES: ReadonlyArray<string> = ["#live.ts", "@bjornpagen/testing/live"]
+
+/**
+ * The live clock's readers, each a read of the current time wherever it is imported: its time in milliseconds and in
+ * nanoseconds, as an effect and where no effect runs, a sleep until a moment of it, and the watchdog's next wake
+ * moment. live.ts exports none but the last, so no module outside it holds a reading of the clock; an import of one
+ * is a read, so a reader exported again is refused where it is used (explore.ts's case guard raced a case against
+ * liveSleepUntil(began + caseHang), a read of the clock the rule saw nowhere, and judged the machine: QP-GATE,
+ * 2026-11-25).
+ */
+export const LIVE_READS: ReadonlyArray<string> = [
+	"liveMillis",
+	"liveMillisNow",
+	"liveNanos",
+	"liveSleepUntil",
+	"watchdogWakes"
+]
+
 /** The constructor whose call with no argument, or call as a function, reads the current time. */
 export const DATE_READS: ReadonlyArray<string> = ["Date"]
 
 /** The Vitest options whose finite value fails a test or a hook when the wall clock passes it. */
 export const VITEST_TIMEOUTS: ReadonlyArray<string> = ["testTimeout", "hookTimeout"]
+
+/** The name a named import imports, whatever local name it binds. */
+const importedOf = (specifier: NodeOf<"ImportSpecifier">): string =>
+	specifier.imported.type === "Literal" ? specifier.imported.value : specifier.imported.name
 
 /** Whether a timeout is none, as Vitest reads one: `0`, `Infinity` or `Number.POSITIVE_INFINITY`. */
 const isUnbounded = (value: AnyNode): boolean =>
@@ -159,7 +186,8 @@ const WALL_CLOCK =
 
 /**
  * No timer decides a verdict. A read of the current time in a test: `Date.now()`, `new Date()`, `performance.now()`,
- * Effect's `Clock` and `DateTime` reads, so a verdict depends on how long something took or when it ran. And every
+ * Effect's `Clock` and `DateTime` reads, and a named import of one of the live clock's readers (LIVE_READS from
+ * LIVE_MODULES), so a verdict depends on how long something took or when it ran. And every
  * finite timeout a test API is given, which fails a test the moment the wall clock passes it: a `testTimeout` or
  * `hookTimeout` in a Vitest configuration (the preset holds every Vite and Vitest config file to this rule,
  * @bjornpagen/testing/scope VITEST_CONFIGS) or `vi.setConfig`; a test's or a suite's (`it(name, fn, ms)`,
@@ -175,6 +203,18 @@ const WALL_CLOCK =
 export const noWallClockVerdict: CreateRule = {
 	meta: { type: "problem", fixable: "code", messages: { wallClock: WALL_CLOCK } },
 	create: (context) => ({
+		ImportDeclaration: (node) => {
+			if (Arr.contains(LIVE_MODULES, node.source.value)) {
+				for (const specifier of node.specifiers) {
+					if (
+						specifier.type === "ImportSpecifier" &&
+						Arr.contains(LIVE_READS, importedOf(specifier))
+					) {
+						context.report({ node: specifier, messageId: "wallClock" })
+					}
+				}
+			}
+		},
 		MemberExpression: (node) => {
 			if (isNamed(context, node, CLOCK_READS)) {
 				context.report({ node, messageId: "wallClock" })

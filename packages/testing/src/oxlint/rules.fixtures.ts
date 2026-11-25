@@ -59,7 +59,13 @@ import {
 	DICTIONARY_MODULES,
 	VERDICT_KEYS
 } from "#oxlint/rules/no-verdict-table.ts"
-import { CLOCK_READS, DATE_READS, VITEST_TIMEOUTS } from "#oxlint/rules/no-wall-clock-verdict.ts"
+import {
+	CLOCK_READS,
+	DATE_READS,
+	LIVE_MODULES,
+	LIVE_READS,
+	VITEST_TIMEOUTS
+} from "#oxlint/rules/no-wall-clock-verdict.ts"
 import { VITEST_MODULES } from "#oxlint/rules/test-module-shape.ts"
 import { EQUALITIES, ORDERED_EQUALITIES, TEST_ROOTS } from "#oxlint/syntax.ts"
 import { type Kill, type Property, property } from "#property.ts"
@@ -286,6 +292,23 @@ export const clockSites: Gen<Site> = weighted([
 		}
 	],
 	[1, (s) => site(`const day${OWN} = new ${s.draw(oneOf(DATE_READS))}(${s.draw(int(0, 9))})`, 0)],
+	[
+		2,
+		(s) =>
+			site(
+				`import { ${s.draw(oneOf(LIVE_READS))} as read${OWN} } from "${s.draw(oneOf(LIVE_MODULES))}"`,
+				1
+			)
+	],
+	[
+		1,
+		(s) =>
+			site(
+				`import { liveSleep as sleep${OWN}, stopwatch as watch${OWN} } from "${s.draw(oneOf(LIVE_MODULES))}"`,
+				0
+			)
+	],
+	[1, (s) => site(`import { ${s.draw(oneOf(LIVE_READS))} as near${OWN} } from "#clock.ts"`, 0)],
 	[
 		3,
 		(s) => {

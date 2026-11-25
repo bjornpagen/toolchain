@@ -40,6 +40,7 @@ import {
 	loopingProperty,
 	plantedCase,
 	RUNAWAY,
+	SLOW_START_PROPERTY,
 	SLOW_WORKER_DEADLINE,
 	shortCase,
 	declaredWaitDeadlines,
@@ -51,6 +52,7 @@ import {
 	UNREAD_DEADLINE,
 	WAITS_DECLARED,
 	slowlyWorkingProperty,
+	slowStartRoot,
 	unreadyRoot
 } from "#runner/pool.fixtures.ts"
 import { placesOf, placesShared, poolOf } from "#runner/pool.ts"
@@ -244,9 +246,10 @@ export const slowWorkerKept = property.exhaust(finite(boolean), {
 	kills: [
 		{
 			file: "packages/testing/src/runner/pool.ts",
-			original: "processWork(Option.fromUndefinedOr(worker.child.pid), began, (wall) =>",
-			replacement: "processWork(Option.none(), began, (wall) =>",
-			why: "The parent reads no worker's CPU, so a worker silent past its bound and grace is killed whatever it is doing, as the live clock's watch killed it: the slow worker's unit is lost; the slow-worker property fails."
+			original: "overrun(work, graced(boundOf(unit.value, phase, spec.stall, spec.bounding)))",
+			replacement:
+				"overrun({ ...work, effort: () => work.began }, graced(boundOf(unit.value, phase, spec.stall, spec.bounding)))",
+			why: "The parent's watch reads a worker's work as never moving, so a worker silent past its bound and grace is killed whatever it is doing, as the live clock's watch killed it: the slow worker's unit is lost; the slow-worker property fails."
 		}
 	]
 })
@@ -378,9 +381,9 @@ export const lostNamesItsLeg = property.exhaust(finite(silenceSpace), {
 		},
 		{
 			file: "packages/testing/src/runner/work.ts",
-			original: '\t\treturn { kind: "spent", spent, budget: bound.cpu }',
+			original: '\t\treturn judged({ kind: "spent", spent, budget: bound.cpu })',
 			replacement:
-				'\t\treturn { kind: "stalled", moved: spent, queued: 0, over: now.wall - window.wall, waited: 0, progress: 0, window: bound.stall }',
+				'\t\treturn judged({ kind: "stalled", moved: spent, queued: 0, over: now.wall - window.wall, waited: 0, progress: 0, window: bound.stall })',
 			why: "A CPU runaway reported as a stall, so the report names the wrong leg; the spinning worker's case fails."
 		},
 		{
@@ -509,7 +512,7 @@ export const declaredWaitKept = property.exhaust(finite(declaredWaitDeadlines), 
 	kills: [
 		{
 			file: "packages/testing/src/runner/pool.ts",
-			original: "\t\t\t\t\t\t\t\tworker.waits = waitEntered(worker.waits, now)\n",
+			original: "\t\t\t\t\t\t\t\tyield* worker.waits.entered\n",
 			replacement: "",
 			why: "The pool ignores a worker's declared waits, so it kills a worker whose case waits on another process's lease past its bound and grace, as the stall leg killed SELECTWHOLE's thirteen; the case is lost and the property fails."
 		},
@@ -877,6 +880,60 @@ export const startsNever = property.exhaust(finite(boolean), {
 			original: '\t\t\tQueue.offerUnsafe(events, { kind: "forked", worker })\n',
 			replacement: "",
 			why: "A worker is watched only once it is ready, as before: one whose runner config's load never ends (CATCH: a mutant of grizzle's engine, which the runner config's support loads) is never ended, nor its units given back, and its search never returns; this property's case hangs past its deadline."
+		}
+	]
+})
+
+export const slowStartKept = property.exhaust(finite(int(0, 1)), {
+	box: "a package whose runner config's load works slowly past a load's bound and the grace in wall time",
+	needs: { directory: Scratch.dir },
+	situations: [],
+	check:
+		({ directory }) =>
+		() =>
+			Effect.gen(function* () {
+				const scratch = yield* directory
+				const root = yield* slowStartRoot(scratch)
+				const outcomes = yield* Effect.scoped(
+					Effect.flatMap(
+						poolOf({
+							entry: WORKER_ENTRY,
+							root,
+							cwd: root,
+							env: workerEnvironmentOf([], process.env),
+							compile: sharedStore,
+							places: placesOf(widthOf(1)),
+							execArgv: process.execArgv,
+							served: Option.none(),
+							guide: "notes",
+							runs: [],
+							stall: 1000,
+							bounding: "summed"
+						}),
+						(pool) =>
+							Effect.map(
+								pool.evaluator.evaluate(
+									[shortCase(SLOW_START_PROPERTY, SLOW_WORKER_DEADLINE)],
+									() => true
+								),
+								(results) => Arr.map(Arr.flatten(results), (result) => result.outcome.kind)
+							)
+					)
+				)
+				assert.deepEqual(outcomes, ["passed"])
+			}),
+	oracle: {
+		kind: "specification",
+		name: "a worker whose start runs past a load's bound and the grace in wall time while its process tree's CPU moves and stays within them is left to start, never ended as one that cannot"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/runner/pool.ts",
+			original: "overrun(work, graced(loadBoundOf(spec.stall)))",
+			replacement:
+				"overrun({ ...work, effort: () => work.began }, graced(loadBoundOf(spec.stall)))",
+			why: "The parent reads a starting worker's work as never moving, so its start is judged by the live clock, as the pool's sleep judged it: a worker past a load's bound and the grace in wall time is ended as one that cannot start whatever it is doing, and the slowly starting package's unit is lost; this property fails."
 		}
 	]
 })

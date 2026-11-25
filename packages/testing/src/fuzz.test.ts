@@ -1,6 +1,6 @@
 /**
  * A fuzz time (fuzz.ts budgetOf) reads as Go's -fuzztime does: a whole count of cases, milliseconds, seconds, minutes
- * or hours, every count of 1 to 3 in each unit. Oracle: the specification, Go's grammar.
+ * or hours, each span of the run's CPU, every count of 1 to 3 in each unit. Oracle: the specification, Go's grammar.
  */
 import { Effect } from "effect"
 import { assert } from "#assert.ts"
@@ -21,7 +21,7 @@ export const goFuzzTime = property.exhaust(finite(fuzzTimes), {
 					budgetOf(`${count}${unit}`),
 					unit === "x"
 						? { kind: "cases", cases: count }
-						: { kind: "time", duration: DURATIONS[unit](count) }
+						: { kind: "cpu", duration: DURATIONS[unit](count) }
 				)
 			),
 	oracle: {

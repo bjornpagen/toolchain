@@ -50,9 +50,8 @@ export const searchSlowIsNotHung = property.exhaust(finite(slowShapes), {
 	kills: [
 		{
 			file: "packages/testing/src/explore.ts",
-			original: "\t\t\t\t\t\t\townWork(began, own),\n",
-			replacement:
-				"\t\t\t\t\t\t\t{ ...ownWork(began, own), effort: () => ({ cpu: own, stir: { queued: 0, stored: 0 } }) },\n",
+			original: "overrun(work, deadlineBound(",
+			replacement: "overrun({ ...work, effort: () => work.began }, deadlineBound(",
 			why: "A search's case is judged by work that never moves, so it is hung once a hang limit of wall time passes, as the live clock judged it (pantry's test/inclusion-cycles at load 290): the slow case, whose CPU moves and stays a tenth of its limit, is hung; the slow-search property fails."
 		}
 	]
@@ -78,8 +77,8 @@ export const searchRunawayIsHung = property.exhaust(finite(runaways), {
 	kills: [
 		{
 			file: "packages/testing/src/explore.ts",
-			original: `\t\t\t\t\t\t\tleg: \`\${overrunText(ran)}\${waitedOnText(waitedOnNow())}\`\n`,
-			replacement: '\t\t\t\t\t\t\tleg: ""\n',
+			original: `\t\`\${overrunText(hung.overrun)}\${waitedOnText(hung.waitedOn)}\`\n`,
+			replacement: '\t""\n',
 			why: 'A hung case is reported without the leg its guard read, as it was ("ran past 30s"), so a hang says neither whether the case spent its CPU nor whether it waited on something; the runaway property fails.'
 		}
 	]
@@ -105,10 +104,9 @@ export const searchDeadlockIsHung = property.exhaust(finite(deadlocks), {
 	kills: [
 		{
 			file: "packages/testing/src/explore.ts",
-			original:
-				"\t\t\t\t\t\t\tdeadlineBound(Duration.toMillis(Duration.fromInputUnsafe(caseHang)))\n",
+			original: "deadlineBound(Duration.toMillis(Duration.fromInputUnsafe(caseHang)))),",
 			replacement:
-				"\t\t\t\t\t\t\t{ ...deadlineBound(Duration.toMillis(Duration.fromInputUnsafe(caseHang))), stall: Infinity }\n",
+				"{ ...deadlineBound(Duration.toMillis(Duration.fromInputUnsafe(caseHang))), stall: Infinity }),",
 			why: "No window of a search's case is ever whole, so a case that waits spends nothing, never reaches its CPU budget, and waits to its end; the deadlock property fails."
 		}
 	]

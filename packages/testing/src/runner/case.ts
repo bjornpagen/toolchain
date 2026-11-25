@@ -23,12 +23,11 @@ import type { Gen } from "#gen.ts"
 import {
 	abandon,
 	awaitWithinGrace,
-	liveMillis,
-	liveMillisNow,
-	liveNanos,
-	type OpenSpan,
 	overrun,
+	ownWorkNow,
 	spansOpenOver,
+	type StoodIn,
+	stopwatch,
 	watchedCase,
 	withinText
 } from "#live.ts"
@@ -62,8 +61,6 @@ import {
 	deadlineBound,
 	type Overrun,
 	overrunText,
-	ownCpu,
-	ownWork,
 	waitedOnNow,
 	waitedOnText
 } from "#runner/work.ts"
@@ -550,8 +547,7 @@ type Settled =
 			kind: "hung"
 			overrun: Overrun
 			waitedOn: ReadonlyArray<string>
-			within: Option.Option<OpenSpan>
-			at: number
+			within: Option.Option<StoodIn>
 	  }>
 	| Readonly<{ kind: "unopened"; unopened: NeedFailed }>
 
@@ -623,8 +619,7 @@ const guarded = <E, R>(
 	Effect.uninterruptibleMask((restore) =>
 		Effect.gen(function* () {
 			const stopped = yield* Stopped
-			const wall = yield* liveMillis
-			const own = ownCpu()
+			const work = yield* ownWorkNow
 			const tracer = yield* Effect.tracer
 			const spans = spansOpenOver(tracer)
 			const running = yield* Effect.forkDetach(
@@ -640,12 +635,11 @@ const guarded = <E, R>(
 			const ended = yield* restore(
 				Effect.raceFirst(
 					Effect.map(Fiber.await(running), settledOf),
-					Effect.map(overrun(ownWork(wall, own), deadlineBound(deadline)), (ran): Settled => ({
+					Effect.map(overrun(work, deadlineBound(deadline)), (ran): Settled => ({
 						kind: "hung",
 						overrun: ran,
 						waitedOn: waitedOnNow(),
-						within: spans.innermost(),
-						at: liveMillisNow()
+						within: spans.innermost()
 					}))
 				)
 			).pipe(
@@ -666,9 +660,6 @@ const guarded = <E, R>(
 			return ended
 		})
 	)
-
-/** Milliseconds since a moment of liveNanos. */
-const millisSince = (began: bigint) => Effect.map(liveNanos, (now) => Number(now - began) / 1e6)
 
 /** This process's CPU so far, user and system: what a case's CPU is measured from. */
 const cpuNow = Effect.sync(() => process.cpuUsage())
@@ -710,7 +701,7 @@ const outcomeOf = (
 		case "hung":
 			return {
 				kind: "hung",
-				leg: `${overrunText(settled.overrun)}${waitedOnText(settled.waitedOn)}${withinText(settled.within, settled.at)}`,
+				leg: `${overrunText(settled.overrun)}${waitedOnText(settled.waitedOn)}${withinText(settled.within)}`,
 				tape: recorded.tape(),
 				printed: printed()
 			}
@@ -939,7 +930,7 @@ const evaluateCase =
 	) =>
 	(order: CaseOrder): Effect.Effect<CaseResult, never, CaseEnv> =>
 		Effect.gen(function* () {
-			const began = yield* liveNanos
+			const timed = yield* stopwatch
 			const cpuBegan = yield* cpuNow
 			const lateUses = yield* LateUses
 			const slot = slotOf(drawing, lateUses, order, 0)
@@ -977,7 +968,7 @@ const evaluateCase =
 				})
 			)
 			const recorded = slot.kind === "drawn" ? slot.drawn.recorded : slot.recorded
-			const millis = yield* millisSince(began)
+			const millis = yield* timed.elapsed
 			const cpu = yield* cpuSince(cpuBegan)
 			return resultOf(recorded, ran, millis, cpu)
 		})
@@ -1011,7 +1002,7 @@ const evaluateBatch =
 	): Evaluation["cases"] =>
 	(batch) =>
 		Effect.gen(function* () {
-			const began = yield* liveNanos
+			const timed = yield* stopwatch
 			const cpuBegan = yield* cpuNow
 			const lateUses = yield* LateUses
 			const [, slots] = Arr.mapAccum(batch, 0, (drawnSoFar, order) => {
@@ -1023,7 +1014,7 @@ const evaluateBatch =
 				blockedReport(slots, drawing.print),
 				runsOf(drawing, needs, checkAll, slots, deadlineOf(batch))
 			)
-			const millis = (yield* millisSince(began)) / batch.length
+			const millis = (yield* timed.elapsed) / batch.length
 			const cpu = (yield* cpuSince(cpuBegan)) / batch.length
 			return Arr.zipWith(slots, runs, (slot, ran) =>
 				resultOf(slot.kind === "drawn" ? slot.drawn.recorded : slot.recorded, ran, millis, cpu)

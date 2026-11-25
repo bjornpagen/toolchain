@@ -164,8 +164,8 @@ export const watchdog = property.explore(aimed(settlingRuns, bodyAims), {
 		{
 			file: "packages/testing/src/runner/work.ts",
 			original:
-				'\t\treturn { kind: "stalled", moved, queued, over, waited, progress, window: bound.stall }\n',
-			replacement: '\t\treturn { kind: "spent", spent: moved, budget: bound.cpu } as const\n',
+				'\t\treturn judged({ kind: "stalled", moved, queued, over, waited, progress, window: bound.stall })\n',
+			replacement: '\t\treturn judged({ kind: "spent", spent: moved, budget: bound.cpu })\n',
 			why: "A case that stood still is reported as one that spent its deadline, so a wait the stir misses reads as a CPU blow-up; the property fails on the body that waits."
 		}
 	]

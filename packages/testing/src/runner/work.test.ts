@@ -500,14 +500,14 @@ export const boundedOutsideACase = property.exhaust(finite(outsides), {
 		{
 			file: "packages/testing/src/live.ts",
 			original:
-				"\t\t\t\tEffect.flatMap(liveMillis, (wall) => overrun(ownWork(wall, ownCpu()), bound)),\n\t\t\t\t(ran) => Result.fail(",
+				"\t\t\t\tEffect.flatMap(ownWorkNow, (work) => overrun(work, bound)),\n\t\t\t\t(ran) => Result.fail(",
 			replacement: "\t\t\t\tEffect.never,\n\t\t\t\t(ran) => Result.fail(",
 			why: "Work under withinBound has no guard, so a mutant's hung trial holds its caller forever, as syzkaller-browser's journeys kills did on 2026-11-22 (the refresh journey's first kill, stopped after twenty minutes); the runaway and the deadlocked wait end of themselves, and this property fails."
 		},
 		{
 			file: "packages/testing/src/live.ts",
-			original: "[outcome, work.effort().cpu - work.began.cpu] as const",
-			replacement: "[outcome, 0] as const",
+			original: "Effect.sync(() => work.effort().cpu - work.began.cpu)",
+			replacement: "Effect.sync(() => 0)",
 			why: "The work's spending reads nothing, so a caller that bounds a trial by its baseline's spending bounds it by nothing; this property fails."
 		},
 		{
