@@ -38,7 +38,7 @@ import {
 } from "#oxlint/rules.fixtures.ts"
 import { property } from "#property.ts"
 
-/** no-wall-clock-verdict reports exactly the reads of the clock and the finite Vitest timeouts. */
+/** no-wall-clock-verdict reports exactly the reads of the clock and every finite timer a test API is given. */
 export const noWallClockVerdict = ruleProperty(
 	"no-wall-clock-verdict",
 	inTests(programOf(clockSites)),
@@ -62,6 +62,45 @@ export const noWallClockVerdict = ruleProperty(
 			original: '\t(value.type === "Literal" && value.value === 0) ||\n',
 			replacement: "\tfalse ||\n",
 			why: "A timeout of 0, which Vitest reads as none, is refused as finite; the property fails."
+		},
+		{
+			file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
+			original: "\t\t\t...Arr.filter(Option.toArray(Arr.get(call.arguments, 2)), (third) =>\n",
+			replacement: "\t\t\t...Arr.filter(Option.toArray(Arr.get(call.arguments, 3)), (third) =>\n",
+			why: "A test's or a suite's timeout argument, `it(name, fn, 60_000)`, passes; the property fails."
+		},
+		{
+			file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
+			original:
+				'\t\t\t\t\tproperty.type === "Property" && Option.exists(keyOf(property), (key) => key === "timeout")\n',
+			replacement:
+				'\t\t\t\t\tproperty.type === "Property" && Option.exists(keyOf(property), (key) => key === "timeouts")\n',
+			why: "An options object's `timeout` passes, on a test, a suite, a layer or a wait, written there or in a const; the property fails."
+		},
+		{
+			file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
+			original: "\t\t\t...Arr.filter(Option.toArray(Arr.get(call.arguments, 1)), (second) =>\n",
+			replacement: "\t\t\t...Arr.filter(Option.toArray(Arr.get(call.arguments, 9)), (second) =>\n",
+			why: "A hook's timeout argument, `beforeAll(fn, 30_000)`, passes; the property fails."
+		},
+		{
+			file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
+			original:
+				'\t(call.callee.type === "CallExpression" && Option.isSome(testPathOf(context, call.callee.callee)))\n',
+			replacement: "\tfalse\n",
+			why: "A table's test, `it.each(rows)(name, fn, 60_000)`, is no test call, so its timeout passes; the property fails."
+		},
+		{
+			file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
+			original: '\t"layer",\n',
+			replacement: "",
+			why: "A layer's timeout, `layer(Live, { timeout: 60_000 })`, as qti-pie's pantry writes it, passes; the property fails."
+		},
+		{
+			file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
+			original: '\t"vi.waitFor",\n',
+			replacement: "",
+			why: "A wait's timeout, `vi.waitFor(fn, { timeout })`, passes; the property fails."
 		}
 	]
 )

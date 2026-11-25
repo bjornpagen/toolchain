@@ -216,6 +216,30 @@ const judged = (name: RuleName, header: string, program: Program): Option.Option
 	})
 }
 
+/** A finite timeout as a test may write one: a literal, a name, a value computed at load. */
+const FINITE_TIMERS = element(["60_000", "limit", "process.env.CI ? 0 : 60_000"] as const)
+
+/** A timeout of none, as Vitest reads one. */
+const NO_TIMERS = element(["0", "Infinity", "Number.POSITIVE_INFINITY"] as const)
+
+/** Every form a test API takes a timer in, given `timer`, each once, so a site of them reaches every form: a test's or a
+ * suite's third argument and options, a table's, a hook's second argument, a layer's options, a wait's, and options a
+ * `const` holds. */
+const timedCalls = (timer: string) =>
+	[
+		`it("case ${OWN}", () => check(), ${timer})`,
+		`test("case ${OWN}", { timeout: ${timer} }, () => check())`,
+		`describe("suite ${OWN}", () => check(), { timeout: ${timer} })`,
+		`it.effect("case ${OWN}", () => Effect.void, ${timer})`,
+		`it.each([1])("case ${OWN}", (n) => check(n), ${timer})`,
+		`beforeAll(() => check(), ${timer})`,
+		`afterEach(() => check(), ${timer})`,
+		`layer(Live${OWN}, { timeout: ${timer} })("suite ${OWN}", (it) => check(it))`,
+		`vi.waitFor(() => check(), { timeout: ${timer} })`,
+		`expect.poll(() => check(), { timeout: ${timer} })`,
+		`const options${OWN} = { timeout: ${timer} }\nit("case ${OWN}", options${OWN}, () => check())`
+	] as const
+
 /** A reference that reads the clock, a Date of now, or a near name of either, which reads nothing; and a Vitest
  * timeout, finite (a literal, a name, a value computed at load) or none (0, Infinity), or a near name of one. */
 export const clockSites: Gen<Site> = weighted([
@@ -250,7 +274,30 @@ export const clockSites: Gen<Site> = weighted([
 				0
 			)
 	],
-	[1, (s) => site(`const near${OWN} = { ${s.draw(oneOf(VITEST_TIMEOUTS))}Ms: 60_000 }`, 0)]
+	[1, (s) => site(`const near${OWN} = { ${s.draw(oneOf(VITEST_TIMEOUTS))}Ms: 60_000 }`, 0)],
+	[
+		8,
+		(s) => {
+			const bounded = s.draw(element([true, false] as const))
+			const calls = timedCalls(s.draw(bounded ? FINITE_TIMERS : NO_TIMERS))
+			return site(Arr.join(calls, "\n"), bounded ? calls.length : 0)
+		}
+	],
+	[
+		2,
+		(s) =>
+			site(
+				s.draw(
+					element([
+						`it("case ${OWN}", () => check())`,
+						`beforeAll(() => check())`,
+						`run${OWN}("case ${OWN}", () => check(), 60_000)`,
+						`const options${OWN} = { retry: 0 }\nit("case ${OWN}", options${OWN}, () => check())`
+					] as const)
+				),
+				0
+			)
+	]
 ])
 
 /** The names of a list written bare, with no module before them. */

@@ -24,13 +24,16 @@ passed. No verdict rests on the wall clock now, by two constructions:
   its case count under each case's hang guard (caseHang, a bound on the case's own work), and a hang is the gate's
   progress watch to stop. `Deadline`, `noDeadline`, `PRINT_MARGIN_MILLIS`, `DeadlineReached` and a shrink's `deadline`
   end are gone. `defineTestConfig` takes no `timeouts`: every test and hook runs under testTimeout and hookTimeout 0.
-- **The gate refuses a timer.** `testing/no-wall-clock-verdict` refuses a finite `testTimeout` or `hookTimeout`, anything
-  but `0`, `Infinity` or `Number.POSITIVE_INFINITY`, and the preset holds every Vite and Vitest configuration file to it
+- **The gate refuses a timer.** `testing/no-wall-clock-verdict` refuses every finite timeout a test API is given,
+  anything but `0`, `Infinity` or `Number.POSITIVE_INFINITY`: a `testTimeout` or `hookTimeout` in a configuration or
+  `vi.setConfig`, a test's or a suite's (`it(name, fn, ms)`, `{ timeout }` on it, test or describe, a table's included),
+  a hook's (`beforeAll(fn, ms)`), a layer's (`layer(Live, { timeout })`) and a wait's (`vi.waitFor`, `vi.waitUntil`,
+  `expect.poll`); and the preset holds every Vite and Vitest configuration file to it
   (`@bjornpagen/testing/scope` VITEST_CONFIGS: `vite.config.ts`, `vitest.config.ts`, `vitest.*.config.ts` and their
   `.mts`, `vitest.workspace.ts`).
 
-To migrate: delete `timeouts` from every `defineTestConfig`, and every finite `testTimeout` and `hookTimeout` from every
-Vite and Vitest configuration.
+To migrate: delete `timeouts` from every `defineTestConfig`, every finite `testTimeout` and `hookTimeout` from every
+Vite and Vitest configuration, and every finite timeout a test, a suite, a hook, a layer or a wait is given.
 
 ## Consumer migration: one version through every workspace (2026-11-25)
 
