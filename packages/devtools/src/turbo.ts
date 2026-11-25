@@ -1,6 +1,7 @@
 #!/usr/bin/env -S node
 
 import { compileCacheOf } from "@bjornpagen/testing/compile-cache"
+import { processors, runAllowanceVariable } from "@bjornpagen/testing/workers"
 import { Effect, Schema, Stdio } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { failureFrom } from "#shared/devtool.ts"
@@ -9,8 +10,10 @@ import { runWidth } from "#shared/threads.ts"
 
 /**
  * toolchain-turbo: `turbo run` with every argument it is given, at the width it executes at (shared/threads.ts
- * runWidth: the fewer of turbo's concurrency and the tasks its dry run plans), which it sets as TURBO_CONCURRENCY:
- * turbo runs at it and passes it to every task, whose tool's wrapper hands its tool its run's CPU allowance (testing's processors) over it.
+ * runWidth: the fewer of turbo's concurrency and the tasks its dry run plans), which it sets as TURBO_CONCURRENCY, and
+ * its own CPU allowance, which it sets as TURBO_TOOLCHAIN_CPU_ALLOWANCE (testing's runAllowanceVariable): turbo runs at
+ * the width and passes both to every task, which takes the allowance over the width as its share (testing's processors),
+ * every tool's threads and every test pool's workers.
  * So a check of six tasks at a concurrency of every processor hands each tool a sixth of the machine, where the
  * concurrency alone would have handed it one thread, and a run of more tasks than processors hands each one. It sets
  * NODE_COMPILE_CACHE to the repository root's compile cache (testing's runner/compile-cache.ts: its own directory in
@@ -39,7 +42,11 @@ const main = Effect.gen(function* () {
 	return yield* spawner
 		.exitCode(
 			ChildProcess.make("turbo", args, {
-				env: { TURBO_CONCURRENCY: `${width}`, NODE_COMPILE_CACHE: compiled },
+				env: {
+					TURBO_CONCURRENCY: `${width}`,
+					[runAllowanceVariable]: `${processors}`,
+					NODE_COMPILE_CACHE: compiled
+				},
 				extendEnv: true,
 				stdin: "inherit",
 				stdout: "inherit",

@@ -44,8 +44,8 @@ export const compileCacheOnDisk = property.exhaust(finite(boolean), {
 	kills: [
 		{
 			file: "packages/devtools/src/turbo.ts",
-			original: `env: { TURBO_CONCURRENCY: \`\${width}\`, NODE_COMPILE_CACHE: compiled },`,
-			replacement: `env: { TURBO_CONCURRENCY: \`\${width}\` },`,
+			original: "\t\t\t\t\tNODE_COMPILE_CACHE: compiled\n",
+			replacement: "",
 			why: "toolchain-turbo hands its tasks no compile cache, as before, so a tool a task runs that enables Node's compile cache naming no directory keeps it under os.tmpdir(), the tmpfs whose inodes ran out on cassowary (435,000 node-compile-cache entries); the property fails, the cache under the run's TMPDIR."
 		}
 	]

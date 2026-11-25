@@ -3,7 +3,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import type { LoadCache, LoadKey } from "#runner/cache.ts"
 import type { RunnerConfig } from "#runner/config.ts"
 import { configOf, matchedBy } from "#runner/load.ts"
-import { testWorkers } from "#workers.ts"
+import { nodePoolFlag, testWorkers } from "#workers.ts"
 
 /**
  * `toolchain-test load`, the cheap check that every test module of a package loads, for a repository's `pnpm check`
@@ -45,10 +45,14 @@ const loadedApart = (root: string, module: string) =>
 		Effect.gen(function* () {
 			const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
 			const handle = yield* spawner.spawn(
-				ChildProcess.make(process.execPath, [...process.execArgv, LOAD_ENTRY, root, module], {
-					cwd: root,
-					stdin: "ignore"
-				})
+				ChildProcess.make(
+					process.execPath,
+					[...process.execArgv, nodePoolFlag, LOAD_ENTRY, root, module],
+					{
+						cwd: root,
+						stdin: "ignore"
+					}
+				)
 			)
 			const [stdout, stderr, exitCode] = yield* Effect.all(
 				[

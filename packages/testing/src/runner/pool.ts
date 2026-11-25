@@ -78,7 +78,7 @@ import {
 	waitLeft,
 	type Waits
 } from "#runner/work.ts"
-import { allowanceVariable, processors, type Width, widthOf } from "#workers.ts"
+import { allowanceVariable, nodePoolFlag, processors, type Width, widthOf } from "#workers.ts"
 
 /**
  * The pool: worker processes, at most one a core and forked as the queue wants them (one for each module no worker
@@ -746,6 +746,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 		const spawn = (index: number): Worker => {
 			const launch = launchOf(process.execPath, [
 				...spec.execArgv,
+				nodePoolFlag,
 				...servedArgv(spec.served),
 				spec.entry,
 				spec.root,

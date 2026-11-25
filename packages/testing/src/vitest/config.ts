@@ -3,7 +3,7 @@ import { Array as Arr, Config, Effect, Option, Result, String as Str } from "eff
 import { defineConfig } from "vitest/config"
 import { HARDENED_FLAGS, SMALL_STACK } from "#runner/config.ts"
 import { type Examples, residualReporter } from "#vitest/reporter.ts"
-import { allowanceVariable, processors, testWorkers } from "#workers.ts"
+import { allowanceVariable, nodePoolFlag, processors, testWorkers } from "#workers.ts"
 
 export { HARDENED_FLAGS, testWorkers }
 
@@ -84,6 +84,7 @@ export const defineTestConfig = (config: TestConfig) => {
 	)
 	const execArgv = [
 		...HARDENED_FLAGS,
+		nodePoolFlag,
 		...Arr.map(config.conditions, (condition) => `--conditions=${condition}`)
 	]
 	return defineConfig({
