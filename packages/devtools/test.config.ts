@@ -15,6 +15,7 @@ export default defineRunner({
 		"src/preset-types.test.ts",
 		"src/oxlint/environment.test.ts",
 		"src/workspace/tsconfigs.test.ts",
+		"src/workspace/core-lint.test.ts",
 		"src/oxlint/rules/bearer-owners.test.ts",
 		"src/oxlint/rules/side-effect-free.test.ts",
 		"src/oxlint/rules/no-case-list.test.ts",

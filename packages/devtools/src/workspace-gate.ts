@@ -17,6 +17,7 @@ import { relativeTo, Repository } from "#shared/repository.ts"
 import { runDevtool } from "#shared/run.ts"
 import { bannedPackageFindings, LOCKFILE, WORKSPACE_MANIFEST } from "#workspace/banned-packages.ts"
 import { compileCacheFindings } from "#workspace/compile-cache.ts"
+import { repositoryCoreLintFindings } from "#workspace/core-lint.ts"
 import { deadPathFindings } from "#workspace/dead-paths.ts"
 import { tsOnlyExtensionFindings } from "#workspace/extensions.ts"
 import { parentSnapshot } from "#workspace/parent.ts"
@@ -41,7 +42,9 @@ import { tsconfigFindings, workspaceFixtureMismatches } from "#workspace/tsconfi
  * test system's gates (workspace/test-system.ts): no worker flag in a script, and, in a repository that runs the
  * properties pack, no Vitest configuration, no plant and no numbered shard of a test module; and the banned-packages
  * law (workspace/banned-packages.ts): no manifest, catalog or lockfile importer of the repository names a banned
- * package, which no exception excuses.
+ * package, which no exception excuses; and the core lint set (workspace/core-lint.ts): every oxlint configuration the
+ * repository holds loads the dev tools' plugin and holds every core rule at error, as oxlint resolves it, which no
+ * exception excuses either.
  * The repository's decisions come from its toolchain.config.ts: its rejected diagnostics, its Effect-free packages, and
  * its exceptions, which excuse the files they list from one of these rules and name no other. `--fixtures` runs the
  * tsconfig gate against its fixture workspaces instead. Exit status 1 means findings, 2 that the gate itself failed.
@@ -201,7 +204,8 @@ const checkRepository = Effect.gen(function* () {
 			],
 			(finding) => !isExcepted(config.exceptions, root, finding)
 		),
-		...bannedPackages
+		...bannedPackages,
+		...(yield* repositoryCoreLintFindings(root, files, packages))
 	]
 	yield* Console.log(renderFindings({ tool: "workspace-gate", root, findings }))
 	return statusOf(findings)

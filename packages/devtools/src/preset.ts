@@ -1,3 +1,4 @@
+import { CLOCK_RULES, EVERY_FILE_RULES, MODULE_RULES, TEST_RULES } from "@bjornpagen/testing/oxlint"
 import { TEST_SCOPE, TEST_SUFFIXES } from "@bjornpagen/testing/scope"
 import { Array as Arr, Option, Record, Result, String as Str } from "effect"
 import type { DummyRule, DummyRuleMap, OxlintConfig, OxlintOverride } from "oxlint"
@@ -542,6 +543,22 @@ const PLACES = {
 	"test-no-spelled-names": { part: "grizzle", scope: "test files" }
 } as const satisfies { readonly [R in PluginRule]: Readonly<{ part: Part; scope: Scope }> }
 
+/** The dev tools' oxlint plugin module, as every configuration the standard builds loads it. */
+export const PLUGIN_MODULE = `${import.meta.dirname}/oxlint-plugin.ts`
+
+/**
+ * The core lint set: every rule of the plugin's core that runs on every file, as a configuration names it. Every
+ * configuration the standard builds holds each at error, and the workspace gate refuses a configuration of the
+ * repository that does not, as oxlint resolves it (workspace/core-lint.ts).
+ */
+export const CORE_RULES: ReadonlyArray<string> = Arr.map(
+	Arr.filter(
+		Record.keys(PLACES),
+		(rule) => PLACES[rule].part === "core" && PLACES[rule].scope === "every file"
+	),
+	(rule) => `${plugin.meta.name}/${rule}`
+)
+
 /** The plugin rules of the parts `P` that take a repository's names in its oxlint.config.ts. A rule of a Tailwind app
  * takes the app's names from the web pack instead. */
 type NamedRule<P extends Part> = {
@@ -687,19 +704,18 @@ export type Tests =
 	| Readonly<{ library: "none" }>
 	| Readonly<{
 			library: "installed"
-			jsPlugin: string
-			rules: DummyRuleMap
-			/** A test module's own shape, which holds only a repository whose tests are properties (the properties pack). */
-			modules: DummyRuleMap
-			everyFile: DummyRuleMap
-			/** Clock-free code beyond the test files, and the plugin's clock rules it is held to: the testing library and the
+			/** Clock-free code beyond the test files, held to the testing plugin's clock rules: the testing library and the
 			 * tests' support, so no verdict rests on a hidden clock. A module whose job is the clock is an override's
 			 * exception. */
-			clock: Readonly<{ files: ReadonlyArray<string>; rules: DummyRuleMap }>
+			clockFree: ReadonlyArray<string>
 	  }>
 
+/** The testing library's oxlint plugin, as every configuration of a repository that installs it loads it. */
+export const TESTING_PLUGIN = "@bjornpagen/testing/oxlint"
+
 /** What the testing library adds to a configuration: its plugin, the rules it holds test scope, test modules and every
- * file to, and its clock rules over the clock-free files. A repository with none adds nothing. */
+ * file to, and its clock rules over the clock-free files, each the library's own (@bjornpagen/testing/oxlint), so no
+ * repository names the plugin or its rules. A repository with none adds nothing. */
 type TestingAdds = Readonly<{
 	jsPlugins: ReadonlyArray<string>
 	rules: DummyRuleMap
@@ -720,11 +736,11 @@ const testingAdds = (tests: Tests): TestingAdds => {
 			}
 		case "installed":
 			return {
-				jsPlugins: [tests.jsPlugin],
-				rules: tests.rules,
-				modules: tests.modules,
-				everyFile: tests.everyFile,
-				clock: tests.clock
+				jsPlugins: [TESTING_PLUGIN],
+				rules: TEST_RULES,
+				modules: MODULE_RULES,
+				everyFile: EVERY_FILE_RULES,
+				clock: { files: tests.clockFree, rules: CLOCK_RULES }
 			}
 	}
 }
@@ -905,7 +921,7 @@ export const standard = <const T extends Toolchain>(
 			return {
 				plugins: [...plugins],
 				jsPlugins: [
-					`${import.meta.dirname}/oxlint-plugin.ts`,
+					PLUGIN_MODULE,
 					...(Arr.isReadonlyArrayNonEmpty(apps) ? [TAILWIND_PLUGIN_PATH] : []),
 					...testing.jsPlugins,
 					...Arr.map(project.ownPlugins, (own) => own.specifier)

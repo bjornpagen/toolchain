@@ -41,6 +41,13 @@
 	},
 	"boundaries": {
 		"zones": [
+			// The testing library's oxlint plugin, its rules and the rule sets every configuration holds: the dev tools'
+			// preset loads it and holds its rules wherever a repository installs the library, so no configuration names
+			// the plugin or its rules itself (the core lint set), and so the preset may import it.
+			{
+				"name": "testing-lint",
+				"patterns": ["packages/testing/src/oxlint/plugin.ts"]
+			},
 			// Test scope (what a test module and its support are), one definition the dev tools' lint scopes and the
 			// testing library's census read, so it is a zone of its own that both packages may import.
 			{
@@ -86,19 +93,23 @@
 		"rules": [
 			{
 				"from": "devtools-suites",
-				"allow": ["devtools", "testing", "width"]
+				"allow": ["devtools", "testing", "width", "testing-lint"]
 			},
 			{
 				"from": "testing",
-				"allow": ["scope", "width", "caches"]
+				"allow": ["scope", "width", "caches", "testing-lint"]
 			},
 			{
 				"from": "devtools",
-				"allow": ["scope", "width", "caches"]
+				"allow": ["scope", "width", "caches", "testing-lint"]
+			},
+			{
+				"from": "testing-lint",
+				"allow": ["testing"]
 			},
 			{
 				"from": "configs",
-				"allow": ["devtools", "testing"]
+				"allow": ["devtools", "testing", "testing-lint"]
 			}
 		],
 		"coverage": {

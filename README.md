@@ -14,6 +14,27 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: one core lint set, held by the gate (2026-11-25)
+
+qti-pie's package configuration, built on another preset, loaded no dev tools plugin, so none of the core rules ran on
+its files, no-variadic-callback among them; a configuration that names the plugin and its rules by hand misses each
+rule the toolchain adds after it. Two constructions close the class:
+
+- **The preset is the one core set.** `@bjornpagen/devtools/preset`'s `standard(toolchain).lintConfig(project)` loads
+  the dev tools' plugin and holds every core rule (`CORE_RULES`), and loads the testing library's plugin and holds its
+  rules wherever the repository installs it: `tests` is `{ library: "installed", clockFree: [...] }`, the clock-free
+  files alone, or `{ library: "none" }`. No configuration names a plugin or a plugin's rule list: `jsPlugin`, `rules`,
+  `modules`, `everyFile` and `clock` are gone from `tests`, and TEST_RULES, MODULE_RULES, EVERY_FILE_RULES and
+  CLOCK_RULES are the preset's to read (`CASE_LISTS` and `PROPERTY_SEARCHES` stay the repository's options).
+- **The workspace gate refuses a configuration without it** (`core-lint`): every oxlint configuration the repository
+  tracks (`oxlint.config.ts`, `oxlint.<variant>.config.ts`, `.oxlintrc.json`, a package's own among them) must load the
+  dev tools' plugin and hold every core rule at error, as `oxlint -c <configuration> --print-config` resolves it, never
+  as its text reads. No exception excuses it.
+
+To migrate: write `tests: { library: "installed", clockFree: <the old clock.files> }` and drop the testing imports
+the old fields read; build every oxlint configuration of the repository, a package's own included, with the preset's
+`lintConfig`, or delete it so the root's holds its files.
+
 ## Consumer migration: `run` reads the machine-wide verdict cache (2026-11-24)
 
 About fifteen lanes each ran main's full tiers on trees where most properties' code was main's (load 600 and more in
