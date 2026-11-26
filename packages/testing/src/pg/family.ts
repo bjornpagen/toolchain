@@ -144,9 +144,8 @@ export const homesHere: Effect.Effect<Homes, ClusterFailed> = Effect.mapError(
  * A checkout's family of a cluster as a process of a run of `width` workers reaches it: the cluster's spec, the
  * checkout, its name (familyOf) and its homes, and the width its state and its members are sized for, the run's
  * testWorkers (workers.ts), which its members' count and each member's share of the workers derive from (settings.ts
- * membersOf, shareOf). A family's name is its checkout's alone: a run of another width reaches the same family, its state
- * and members settled at that run's width where they are not (settle.ts memberBroughtUp), so no width's run is refused
- * a family another width's settled.
+ * membersOf, shareOf). Its name is as its cluster's durability names it (Naming): a kept family's by its checkout
+ * alone, a throwaway family's by everything its members' settings are a function of.
  */
 export type CheckoutFamily = Readonly<{
 	cluster: LocalCluster
@@ -169,20 +168,49 @@ const keyDigits = 8
 const familyKey = regex("^[0-9a-f]{8}$")
 
 /**
- * `cluster`'s family's name at `checkout` for a run of `width` workers: `<unit>-<the first 8 hex digits of the SHA-256 of
- * the checkout, the width and the cluster's spec>`, everything its members' settings are a function of (settings.ts:
- * max_connections, max_wal_senders and the lock table sized by the width; the rest by the spec). So two holders of one
- * member never want it settled differently, and no settle restarts a member under another holder for its own settings:
- * two runs of one checkout at different widths shared one family, and each run's settle sized its members for its own
- * width and restarted them under the other's connections, which the server ended (57P01, STOREDERIVE4's soundness gate,
+ * What a family is named by, by what its cluster's data is worth (spec.ts Durability). A kept family, a person's own data,
+ * by its checkout alone, the name every family had before a family was named by its settings: so a change of its
+ * spec, its lock table, its sessions or its port, reaches the same member and its data, and is applied by a restart
+ * (settle.ts memberSettled), where a name that held the spec opened an empty cluster at every change of a setting, its
+ * data left under the old name (METIS-DBOPT, 2026-11-26: metis's development family metis-dev-5f2815d9, then 9e8880aa
+ * at 4096 locks and 8b48216c at 4097). A kept cluster has no workers (spec.ts SessionsSizing), so no run's width moves
+ * it. A throwaway family by everything its members' settings are a function of (settings.ts: max_connections,
+ * max_wal_senders and the lock table sized by the width; the rest by the spec), so two holders of one member never
+ * want it settled differently, and no settle restarts a member under another holder for its own settings: two runs of
+ * one checkout at different widths shared one family, and each run's settle sized its members for its own width and
+ * restarted them under the other's connections, which the server ended (57P01, STOREDERIVE4's soundness gate,
  * 2026-11-25: member 0 of STOREDERIVE4-fix's family restarted at 21:16:05 and 21:16:11Z, its connections terminated by
  * administrator command at those instants).
+ */
+type Naming =
+	| Readonly<{ kind: "kept"; checkout: Checkout }>
+	| Readonly<{ kind: "throwaway"; checkout: Checkout; width: number; cluster: LocalCluster }>
+
+/** `cluster`'s naming at `checkout` for a run of `width` workers (Naming), by its durability. */
+const namingOf = (cluster: LocalCluster, checkout: Checkout, width: number): Naming =>
+	cluster.durability === "kept"
+		? { kind: "kept", checkout }
+		: { kind: "throwaway", checkout, width, cluster }
+
+/** The text a family's name hashes (Naming): a kept family's checkout; a throwaway family's checkout, width and spec. */
+const namedBy = (naming: Naming): string => {
+	switch (naming.kind) {
+		case "kept":
+			return naming.checkout
+		case "throwaway":
+			return `${naming.checkout}\n${String(naming.width)}\n${Formatter.format(naming.cluster)}`
+	}
+}
+
+/**
+ * `cluster`'s family's name at `checkout` for a run of `width` workers: `<unit>-<the first 8 hex digits of the SHA-256 of
+ * what it is named by (Naming)>`.
  */
 const familyNameOf = (cluster: LocalCluster, checkout: Checkout, width: number): UnitName => {
 	const digest = process
 		.getBuiltinModule("node:crypto")
 		.createHash("sha256")
-		.update(`${checkout}\n${String(width)}\n${Formatter.format(cluster)}`)
+		.update(namedBy(namingOf(cluster, checkout, width)))
 		.digest("hex")
 	return UnitName(`${cluster.unit}-${Str.slice(0, keyDigits)(digest)}`)
 }

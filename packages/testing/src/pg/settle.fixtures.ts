@@ -36,6 +36,7 @@ import {
 	type LocalCluster,
 	localCluster,
 	type PredicateRoom,
+	type SessionsSizing,
 	type WorkerSizing
 } from "#pg/spec.ts"
 import { allowanceVariable, testWorkers } from "#workers.ts"
@@ -158,10 +159,11 @@ const freePorts = (count: number): Effect.Effect<number, never, FileSystem.FileS
 	})
 
 /**
- * A case's cluster's unit name (`tcs-` and 8 random hex digits, clusterOf), a family's of it (`-` and its key's 8 hex
- * digits after it) or a member's or its data directory's (the family's name and `-<i>`): `cluster` is the cluster's.
+ * A case's cluster's unit name (`tcs-` and 8 random hex digits, clusterOf; `tck-` for a kept one, keptCluster), a
+ * family's of it (`-` and its key's 8 hex digits after it) or a member's or its data directory's (the family's name and
+ * `-<i>`): `cluster` is the cluster's.
  */
-const CASE_NAME = regex("^(?<cluster>tcs-[0-9a-f]{8})(?:-[0-9a-f]{8})?(?:-[0-9]+)?$")
+const CASE_NAME = regex("^(?<cluster>tc[sk]-[0-9a-f]{8})(?:-[0-9a-f]{8})?(?:-[0-9]+)?$")
 
 /**
  * The name a case's cluster is held by: an abstract Unix socket's (Linux's unix(7): a name in no directory, its first
@@ -198,7 +200,8 @@ const namesIn = (directory: string) =>
  * pattern over the units it has loaded, every family's), and every other unit named after it (`<unit>-*`: its
  * families' holds, leases and settles, a hold property's runs, which a kill trial's mutant may leave running), and
  * their failures forgotten, then every member's data directory (`<data>/<unit>-*`, the workbench's) removed: a member
- * in memory (the workbench's memory list names `tcs-*`) takes its data with its unit's stop. Its families' state and
+ * in memory (the workbench's memory list names `tcs-*`) takes its data with its unit's stop, and a kept one's (`tck-*`,
+ * on disk) is removed here. Its families' state and
  * claims are in the case's scratch directory, gone with it.
  */
 const clusterRemoved = (unit: string) =>
@@ -252,6 +255,22 @@ const swept = Effect.gen(function* () {
 })
 
 /**
+ * A case cluster's unit name of its own, `prefix` and 8 random hex digits (`tcs`, a throwaway case's; `tck`, a kept
+ * case's), held by this process for the enclosing scope (holdTaken). Drawing it first removes every case cluster no
+ * process holds (swept).
+ */
+const caseUnit = (prefix: "tcs" | "tck") =>
+	Effect.gen(function* () {
+		const unit = `${prefix}-${process.getBuiltinModule("node:crypto").randomBytes(4).toString("hex")}`
+		const hold = yield* holdTaken(unit)
+		if (Option.isNone(hold)) {
+			return yield* Effect.die(`a case's cluster's name, ${unit}, is held by another process`)
+		}
+		yield* swept
+		return unit
+	})
+
+/**
  * What a case cluster states of its members beside its unit name and ports: whether its clients reach them over TLS,
  * its family (one member, or a spread of members each serving `workersPerMember` of a run's workers) and its predicate
  * lock room.
@@ -259,10 +278,9 @@ const swept = Effect.gen(function* () {
 type Sized = Readonly<{ tls: boolean; family: Family; room: PredicateRoom }>
 
 /**
- * A case's cluster `sized` so: a unit name of its own (`tcs-` and 8 random hex digits), held by this process for the
- * enclosing scope (holdTaken), its workers' capacity sized by a busy backend of the package's own (pg.config.ts's), and
- * over TLS its families' ports claimed from one that `members` consecutive ports are free from (freePorts). Drawing it
- * first removes every case cluster no process holds (swept).
+ * A case's cluster `sized` so: a unit name of its own (caseUnit, `tcs-`), its workers' capacity sized by a busy
+ * backend of the package's own (pg.config.ts's), and over TLS its families' ports claimed from one that `members`
+ * consecutive ports are free from (freePorts).
  */
 const clusterSized = (
 	sized: Sized,
@@ -273,12 +291,7 @@ const clusterSized = (
 	FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner | Scope.Scope
 > =>
 	Effect.gen(function* () {
-		const unit = `tcs-${process.getBuiltinModule("node:crypto").randomBytes(4).toString("hex")}`
-		const hold = yield* holdTaken(unit)
-		if (Option.isNone(hold)) {
-			return yield* Effect.die(`a case's cluster's name, ${unit}, is held by another process`)
-		}
-		yield* swept
+		const unit = yield* caseUnit("tcs")
 		const port = sized.tls ? yield* freePorts(members) : 0
 		return localCluster({
 			unit,
@@ -300,6 +313,49 @@ const clusterSized = (
 			}
 		})
 	})
+
+/**
+ * A kept case cluster (caseUnit, `tck-`), whose members' data is on disk, since the workbench's memory list names no
+ * `tck-*`, so a member's data outlives its unit's stop as a person's development cluster's does; sized by its sessions,
+ * over TLS from a free port or over its socket. What it answers states the cluster with its lock table holding `locks`
+ * at once, one unit and network for every `locks`, so two of its specs differ in their lock table alone.
+ */
+export const keptCluster = (tls: boolean) =>
+	Effect.gen(function* () {
+		const unit = yield* caseUnit("tck")
+		const port = tls ? yield* freePorts(1) : 0
+		return (locks: number): LocalCluster<SessionsSizing> =>
+			localCluster({
+				unit,
+				network: tls ? { kind: "tls", from: port } : { kind: "socket" },
+				owner: "toolchain_settle",
+				template: "toolchain_settle_template",
+				extensions: [],
+				preload: [],
+				ownerParameters: [],
+				durability: "kept",
+				sizing: { kind: "sessions", sessions: 4, locks: { kind: "held", locks } }
+			})
+	})
+
+/**
+ * The lock tables a kept case's two specs hold, each past PostgreSQL's default per transaction on a member of a kept
+ * case cluster's few sessions, so a move between them changes max_locks_per_transaction, a setting only a restart
+ * applies.
+ */
+export const keptLocks = { few: 10_000, many: 20_000 } as const
+
+/**
+ * How a kept case moves its cluster's spec: its lock table grown (`more`) or shrunk (`fewer`), over TLS or over its
+ * socket.
+ */
+export type KeptCase = Readonly<{ move: "more" | "fewer"; tls: boolean }>
+
+/** Every kept case, one each. */
+export const keptCases: Gen<KeptCase> = (source) => ({
+	move: source.draw(element(["more", "fewer"])),
+	tls: source.draw(boolean)
+})
 
 /**
  * A case's cluster of `shape` (clusterSized): two members when `spread` (a family whose members serve half the run's

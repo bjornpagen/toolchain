@@ -811,7 +811,7 @@ export const memberSettled = (
 				if (ranBefore) {
 					return yield* failed(
 						at,
-						`${name} runs with settings its family's name does not fix (${pending} wait for a restart), and a settle restarts only a member it started itself, never one another process may hold: stop the member's holds and settle again`
+						`${name} runs with settings its spec no longer states (${pending} wait for a restart), and a settle restarts only a member it started itself, never one another process may hold: stop the member's holds and settle again, which applies them by a restart`
 					)
 				}
 				yield* leaseRestarted(family, name, at)

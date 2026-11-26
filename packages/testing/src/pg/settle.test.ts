@@ -17,7 +17,7 @@
  * unit name of its own, its family at a checkout of the case's own, its units stopped and its data, claims and state
  * removed when the case ends. Oracle: the specification, stated in the checks.
  */
-import { Array as Arr, Effect, FileSystem, Option, String as Str } from "effect"
+import { Array as Arr, Effect, Exit, FileSystem, Option, Scope, String as Str } from "effect"
 import { assert } from "#assert.ts"
 import { boolean, finite, int } from "#gen.ts"
 import { Checkout } from "#mutate/checkout.ts"
@@ -37,6 +37,9 @@ import {
 	postmasterOf,
 	presenceOf,
 	joinedSettler,
+	keptCases,
+	keptCluster,
+	keptLocks,
 	removedAtEnd,
 	settledAsItsUnit,
 	settledWhole,
@@ -346,8 +349,8 @@ export const runsOfTwoWidthsKeepTheirOwnFamilies = property.exhaust(finite(width
 	kills: [
 		{
 			file: "packages/testing/src/pg/family.ts",
-			original: `\t\t.update(\`\${checkout}\\n\${String(width)}\\n\${Formatter.format(cluster)}\`)\n`,
-			replacement: `\t\t.update(\`\${checkout}\\n\${Formatter.format(cluster)}\`)\n`,
+			original: `\t\t\treturn \`\${naming.checkout}\\n\${String(naming.width)}\\n\${Formatter.format(naming.cluster)}\`\n`,
+			replacement: `\t\t\treturn \`\${naming.checkout}\\n\${Formatter.format(naming.cluster)}\`\n`,
 			why: "A family is named by its checkout alone, as it was: runs of one checkout at two widths share it, and each run's settle sizes its members for its own width and restarts them under the other's connections, which the server ends (57P01, STOREDERIVE4's soundness gate, 2026-11-25); the property fails, the other width's family settled over."
 		},
 		{
@@ -515,6 +518,81 @@ export const leftClustersSwept = property.exhaust(finite(lefts), {
 			original: "\t\tconst hold = yield* holdTaken(unit)\n",
 			replacement: "\t\tconst hold = Option.some(unit)\n",
 			why: "A case's cluster is held by no process, so the next case's sweep takes it for one left and removes it while its case runs; the property fails, the live case's cluster removed."
+		}
+	]
+})
+
+export const aKeptFamilyKeepsItsDataThroughItsSettings = property.exhaust(finite(keptCases), {
+	box: "a kept cluster settled over TLS or over its socket, a row written in its maintenance database, its member stopped as a person stops it, then its spec's lock table grown or shrunk and its family settled again",
+	needs: {},
+	situations: [],
+	check: () => (kept) =>
+		Effect.scoped(
+			Effect.gen(function* () {
+				const at = yield* keptCluster(kept.tls)
+				const [before, after] =
+					kept.move === "more" ? [keptLocks.few, keptLocks.many] : [keptLocks.many, keptLocks.few]
+				yield* removedAtEnd(at(before))
+				const family = yield* familyIn(at(before), widths.narrow)
+				const step = { cluster: family.name, doing: "the property" }
+				const bin = yield* serverBin(step)
+				const holding = yield* Scope.make()
+				const settledFirst = yield* Scope.provide(holding)(settledWhole(family))
+				const first = Arr.headNonEmpty(settledFirst)
+				yield* adminSql(
+					bin,
+					{ socket: first.socket, port: first.port },
+					"postgres",
+					["CREATE TABLE kept (note text)", "INSERT INTO kept VALUES ('kept')"],
+					step
+				)
+				const [locksBefore = ""] = yield* adminSql(
+					bin,
+					{ socket: first.socket, port: first.port },
+					"postgres",
+					["SHOW max_locks_per_transaction"],
+					step
+				)
+				yield* Scope.close(holding, Exit.void)
+				yield* memberStopped(Arr.headNonEmpty(memberNames(family)))
+				const resized = familyOf(at(after), family.checkout, family.homes, family.width)
+				const settledAgain = yield* settledWhole(resized)
+				const again = Arr.headNonEmpty(settledAgain)
+				const [note = ""] = yield* adminSql(
+					bin,
+					{ socket: again.socket, port: again.port },
+					"postgres",
+					["SELECT note FROM kept"],
+					step
+				)
+				const [locksAfter = ""] = yield* adminSql(
+					bin,
+					{ socket: again.socket, port: again.port },
+					"postgres",
+					["SHOW max_locks_per_transaction"],
+					step
+				)
+				assert.deepEqual(
+					{
+						sameFamily: resized.name === family.name,
+						note,
+						lockTableMoved: locksAfter !== locksBefore
+					},
+					{ sameFamily: true, note: "kept", lockTableMoved: true }
+				)
+			})
+		),
+	oracle: {
+		kind: "specification",
+		name: "a kept family is named by its checkout alone (family.ts Naming), so a change of its spec's lock table reaches the same member and its data, the change applied by the restart its settle makes; a family named by its spec opened an empty member at the change (METIS-DBOPT, 2026-11-26: metis-dev-5f2815d9, then 9e8880aa at 4096 locks and 8b48216c at 4097)"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/pg/family.ts",
+			original: '\tcluster.durability === "kept"\n',
+			replacement: "\tcluster.durability !== cluster.durability\n",
+			why: "A kept family is named by its spec, as every family was once a family was named by its settings: a change of its lock table opens an empty member, a person's development data left under the old name; the property fails, the row gone."
 		}
 	]
 })
