@@ -1,4 +1,11 @@
 import { Array as Arr, Effect, Option, Result, Schema, String as Str } from "effect"
+import {
+	backendsOf,
+	carriersOf,
+	observedMicros,
+	observerPids,
+	refreshBackends
+} from "#runner/backends.ts"
 import { stalledShareOfCpu, waitedWindows } from "#runner/limits.ts"
 import { unwatched } from "#runner/observe.ts"
 
@@ -90,14 +97,20 @@ const childrenOf = (pid: string): ReadonlyArray<string> =>
  * (a helper a need left running) is another case's, or no case's, and none of its own descendants is either. A
  * descendant reaped between two reads is counted in its reaper's waited-for children from then on.
  */
-const descendantsOf = (pid: string, since: number): ReadonlyArray<string> =>
-	Arr.flatMap(childrenOf(pid), (child) =>
+const descendantsOf = (pid: string, since: number): ReadonlyArray<string> => {
+	const observers = observerPids()
+	const children: ReadonlyArray<string> = Arr.filter(
+		childrenOf(pid),
+		(child) => !observers.has(child)
+	)
+	return Arr.flatMap(children, (child): ReadonlyArray<string> =>
 		Option.match(statOf(child), {
 			onNone: () => [],
 			onSome: (field) =>
 				field(PROC.started) + TICK_MILLIS < since ? [] : [child, ...descendantsOf(child, since)]
 		})
 	)
+}
 
 /**
  * What a process tree has done that a guard counts beside its CPU: `queued`, the milliseconds its processes waited on a
@@ -129,10 +142,10 @@ const SCHEDSTAT = {
  * waited-for children's, and what they did beside (Stir), read in one walk of the tree, so a reading costs its process
  * no more than its CPU's reading did.
  */
-export type Effort = Readonly<{ cpu: number; stir: Stir }>
+export type Effort = Readonly<{ cpu: number; stir: Stir; carried: number }>
 
 /** No effort: no process. */
-const noEffort: Effort = { cpu: 0, stir: noStir }
+const noEffort: Effort = { cpu: 0, stir: noStir, carried: 0 }
 
 /**
  * What a process has done, its CPU and its stir: the time it waited to run while runnable, in milliseconds
@@ -158,7 +171,8 @@ const effortOfFields = (pid: string, field: (field: number) => number): Effort =
 	return {
 		cpu:
 			ticks(PROC.user) + ticks(PROC.system) + ticks(PROC.childrenUser) + ticks(PROC.childrenSystem),
-		stir: { queued, stored: io + field(PROC.majorFaults) }
+		stir: { queued, stored: io + field(PROC.majorFaults) },
+		carried: 0
 	}
 }
 
@@ -230,10 +244,69 @@ const keptEffort = (): ((pids: ReadonlyArray<string>) => Effort) => {
 		)
 		return {
 			cpu: Arr.reduce(read, 0, (total, [, effort]) => total + effort.cpu),
-			stir: stirOfLedger(ledger)
+			stir: stirOfLedger(ledger),
+			carried: 0
 		}
 	}
 }
+
+/** A process a work counts beside its tree: a backend it is the client of, or a process carrying its backend's wait. */
+type Served = Readonly<{ pid: string; started: number }>
+
+/**
+ * The effort of the processes a work counts beside its tree, as it reads them again and again: each from the reading it
+ * was first seen at, or all of its effort where it started since the work began (`since`, ms since the machine booted),
+ * and frozen at its last reading once it leaves the set, so a pooled connection's backend counts only what it did for
+ * this work, and the total only grows.
+ */
+const keptServed = (since: Option.Option<number>): ((members: ReadonlyArray<Served>) => Effort) => {
+	const counted = new Map<string, Readonly<{ base: Effort; last: Effort }>>()
+	return (members) => {
+		for (const member of members) {
+			const key = `${member.pid}@${String(member.started)}`
+			const now = effortOfProcess(member.pid)
+			const seen = counted.get(key)
+			const fresh = Option.exists(since, (at) => member.started + TICK_MILLIS >= at)
+			counted.set(key, { base: seen?.base ?? (fresh ? noEffort : now), last: now })
+		}
+		return Arr.reduce(Arr.fromIterable(counted.values()), noEffort, (total, { base, last }) => ({
+			cpu: total.cpu + last.cpu - base.cpu,
+			stir: {
+				queued: total.stir.queued + last.stir.queued - base.stir.queued,
+				stored: total.stir.stored + last.stir.stored - base.stir.stored
+			},
+			carried: 0
+		}))
+	}
+}
+
+/**
+ * What a tree's backends add to its effort (runner/backends.ts): each backend's CPU and stir as the tree's own, and the
+ * CPU of the processes carrying a backend's wait (a lock's holders that work, the checkpointer) as `carried`, which moves
+ * the work and spends none of its budget.
+ */
+const keptBackends = (since: Option.Option<number>): ((tree: ReadonlyArray<string>) => Effort) => {
+	const served = keptServed(since)
+	const carriers = keptServed(since)
+	return (tree) => {
+		const backends = backendsOf(tree)
+		const own = served(
+			Arr.map(backends, (backend) => ({ pid: backend.pid, started: startedMillis(backend.pid) }))
+		)
+		const mine = new Set(Arr.map(backends, (backend) => backend.pid))
+		const carrying = carriers(
+			Arr.map(
+				Arr.filter(Arr.dedupe(Arr.flatMap(backends, carriersOf)), (pid) => !mine.has(pid)),
+				(pid) => ({ pid, started: startedMillis(pid) })
+			)
+		)
+		return { cpu: own.cpu, stir: own.stir, carried: carrying.cpu }
+	}
+}
+
+/** When a process started, in ms since the machine booted; 0 for a process gone. */
+const startedMillis = (pid: string): number =>
+	Option.match(statOf(pid), { onNone: () => 0, onSome: (field) => field(PROC.started) })
 
 /**
  * This process's own CPU so far, every thread's but what it spent observing its cases, in milliseconds:
@@ -252,7 +325,7 @@ export const ownCpu = (): number => {
 		onNone: () => 0,
 		onSome: (watchdog) => watchdog.observed()
 	})
-	return (own.user + own.system - observed) / microsPerMilli
+	return (own.user + own.system - observed - observedMicros()) / microsPerMilli
 }
 
 /** The CPU (ms) of the children a process has waited for. */
@@ -304,28 +377,17 @@ export const waitedBy = (waits: Waits, wall: number): number =>
  */
 export type WaitChange = Readonly<{ kind: "waiting" }> | Readonly<{ kind: "waited" }>
 
-/**
- * What a declared wait claims of the work it waits on: nothing a guard can check (`trusted`: a template's build, a lock
- * another process holds), or that a server works on it, which `working` asks the server (`checked`: a statement, whose
- * backend the member says is working or not, pg/session.ts backendWorking).
- */
-export type Claim =
-	| Readonly<{ kind: "trusted" }>
-	| Readonly<{ kind: "checked"; working: Effect.Effect<boolean> }>
-
-/** An open declared wait: its own id, what it waits on (`on`, its name), and what it claims (Claim). */
-type OpenWait = Readonly<{ id: number; on: string; claim: Claim }>
+/** An open declared wait: its own id, and what it waits on (`on`, its name). */
+type OpenWait = Readonly<{ id: number; on: string }>
 
 /**
- * A process's declared waits, each open one (its name: the statement a member runs for it, a template's build; and its
- * claim), the next wait's id, and where it reports each change of them: to its pool, in a worker (runner/worker.ts),
- * since the pool watches the worker from outside it; nowhere in a process no pool watches.
+ * A process's declared waits, each open one (its name: a template's build), the next wait's id, and where it reports
+ * each change of them: to its pool, in a worker (runner/worker.ts), since the pool watches the worker from outside it;
+ * nowhere in a process no pool watches.
  */
 type ProcessWaits = {
 	waits: Waits
 	open: ReadonlyArray<OpenWait>
-	idle: Map<number, number>
-	asking: Map<number, { answer: Option.Option<boolean> }>
 	next: number
 	report: Option.Option<(change: WaitChange) => void>
 }
@@ -339,8 +401,6 @@ const processWaits = (): ProcessWaits => {
 	globalThis.bjornpagenTestingWaits ??= {
 		waits: noWaits,
 		open: [],
-		idle: new Map(),
-		asking: new Map(),
 		next: 0,
 		report: Option.none()
 	}
@@ -353,86 +413,33 @@ export const reportWaitsTo = (report: (change: WaitChange) => void): void => {
 }
 
 /**
- * One of this process's declared waits opens at `wall`, waiting on `on` and claiming `claim` (live.ts waitingOn,
- * waitingOnWork), reported when it is the first open: its id, which closes it.
+ * One of this process's declared waits opens at `wall`, waiting on `on` (live.ts waitingOn), reported when it is the
+ * first open: its id, which closes it.
  */
-export const enterWait = (wall: number, on: string, claim: Claim): number => {
+export const enterWait = (wall: number, on: string): number => {
 	const ledger = processWaits()
 	const id = ledger.next
 	ledger.next = id + 1
 	ledger.waits = waitEntered(ledger.waits, wall)
-	ledger.open = [...ledger.open, { id, on, claim }]
+	ledger.open = [...ledger.open, { id, on }]
 	if (ledger.waits.open === 1) {
 		Option.map(ledger.report, (report) => report({ kind: "waiting" }))
 	}
 	return id
 }
 
-/**
- * The declared wait `id` closes at `wall`, reported when it was the last open; a wait already closed (its claim found
- * false, lapsedWait) closes nothing again.
- */
+/** The declared wait `id` closes at `wall`, reported when it was the last open. */
 export const leaveWait = (wall: number, id: number): void => {
 	const ledger = processWaits()
 	Option.map(
 		Arr.findFirstIndex(ledger.open, (open) => open.id === id),
 		(at) => {
 			ledger.open = Arr.remove(ledger.open, at)
-			ledger.idle.delete(id)
-			ledger.asking.delete(id)
 			ledger.waits = waitLeft(ledger.waits, wall)
 			if (ledger.waits.open === 0) {
 				Option.map(ledger.report, (report) => report({ kind: "waited" }))
 			}
 		}
-	)
-}
-
-/**
- * Each open checked wait's claim asked again at `wall` (a guard's reading, live.ts overrun), never waited for: a reading
- * takes the answer the last ask gave, if it has come, and only then asks again, in a fiber of its own, so no guard
- * blocks on its own claim check (trunk@toolchain at e8b7ecec, 2026-11-22: a kill trial's guard waited 69 minutes on a
- * check whose connect a busy member never answered, and judged nothing). A wait whose server has answered that it is not
- * working on it at two readings in a row, a whole window apart, closes at the first of them, as if its work had ended
- * then, so the guard counts the wall time after it as the stall it is: the client awaits an answer no server is working
- * on (a promise that never settles, a backend gone). One answer alone closes nothing: a backend between two pipelined
- * statements of its session is idle for an instant. An ask not answered yet says nothing either way, as one that cannot
- * be made holds: a slow member's answer, past a 150 ms window under trunk's load, closed waits whose backends worked
- * (cloneDropWaitIsDeclared and sessionStatementIsDeclared at da272aeb, 2026-11-22), and a member that takes the ask and
- * never answers leaves its wait to the waited leg, which judges it.
- */
-export const checkedClaims = (wall: number): Effect.Effect<void> => {
-	const ledger = processWaits()
-	const checked = Arr.flatMap(ledger.open, (open) =>
-		open.claim.kind === "checked" ? [{ id: open.id, working: open.claim.working }] : []
-	)
-	return Effect.forEach(
-		checked,
-		({ id, working }) =>
-			Effect.gen(function* () {
-				const asked = ledger.asking.get(id)
-				if (asked === undefined || Option.isSome(asked.answer)) {
-					const slot: { answer: Option.Option<boolean> } = { answer: Option.none() }
-					ledger.asking.set(id, slot)
-					yield* Effect.forkDetach(
-						Effect.map(working, (works) => {
-							slot.answer = Option.some(works)
-						})
-					)
-				}
-				if (asked === undefined || Option.isNone(asked.answer)) {
-					return
-				}
-				const since = ledger.idle.get(id)
-				if (asked.answer.value) {
-					ledger.idle.delete(id)
-				} else if (since === undefined) {
-					ledger.idle.set(id, wall)
-				} else {
-					leaveWait(since, id)
-				}
-			}),
-		{ discard: true }
 	)
 }
 
@@ -460,12 +467,19 @@ export type TreeWork = Readonly<{
 	began: Reading
 	waited: (wall: number) => number
 	effort: () => Effort
+	refresh: Effect.Effect<void>
 }>
 
 /** A reading of `work` at `wall` on the live clock. */
 export const readingOf = (work: TreeWork, wall: number): Reading => {
 	const effort = work.effort()
-	return { wall, cpu: effort.cpu, waited: work.waited(wall), stir: effort.stir }
+	return {
+		wall,
+		cpu: effort.cpu,
+		waited: work.waited(wall),
+		stir: effort.stir,
+		carried: effort.carried
+	}
 }
 
 /**
@@ -486,27 +500,34 @@ export const ownWork = (wall: number, own: number): TreeWork => {
 	const reaped = (stat: Option.Option<(field: number) => number>) =>
 		Option.match(stat, { onNone: () => 0, onSome: reapedOf })
 	const kept = keptEffort()
+	const backends = keptBackends(since)
+	const tree = (): ReadonlyArray<string> => [
+		"self",
+		...Option.match(since, { onNone: () => [], onSome: (at) => descendantsOf("self", at) })
+	]
 	return {
 		began: {
 			wall,
 			cpu: own + reaped(self),
 			waited: ownWaited(wall),
-			stir: stirOwn()
+			stir: stirOwn(),
+			carried: 0
 		},
 		waited: ownWaited,
 		effort: () => {
 			const reading = process.threadCpuUsage()
 			const cpu = ownCpu() + reaped(statOf("self"))
-			const descendants = kept(
-				Option.match(since, { onNone: () => [], onSome: (at) => descendantsOf("self", at) })
-			)
-			const stir = stirPlus(stirOwn(), descendants.stir)
+			const members = tree()
+			const descendants = kept(Arr.drop(members, 1))
+			const served = backends(members)
+			const stir = stirPlus(stirPlus(stirOwn(), descendants.stir), served.stir)
 			const spent = process.threadCpuUsage(reading)
 			Option.map(Option.fromUndefinedOr(globalThis.bjornpagenTestingWatchdog), (watchdog) =>
 				watchdog.observing(spent.user + spent.system)
 			)
-			return { cpu: cpu + descendants.cpu, stir }
-		}
+			return { cpu: cpu + descendants.cpu + served.cpu, stir, carried: served.carried }
+		},
+		refresh: refreshBackends(tree)
 	}
 }
 
@@ -532,26 +553,35 @@ export const processWork = (
 			}
 		)
 	const kept = keptEffort()
-	const descendants = (): Effort =>
-		kept(
-			Option.getOrElse(
-				Option.zipWith(pid, since, (id, at) => descendantsOf(String(id), at)),
-				(): ReadonlyArray<string> => []
-			)
+	const backends = keptBackends(since)
+	const descendants = (): ReadonlyArray<string> =>
+		Option.getOrElse(
+			Option.zipWith(pid, since, (id, at) => descendantsOf(String(id), at)),
+			(): ReadonlyArray<string> => []
 		)
+	const tree = (): ReadonlyArray<string> => [
+		...Option.toArray(Option.map(pid, String)),
+		...descendants()
+	]
 	const effort = (): Effort => {
-		const theirs = descendants()
+		const theirs = kept(descendants())
+		const served = backends(tree())
 		const its = Option.match(pid, {
 			onNone: () => noStir,
 			onSome: (id) => effortOfProcess(String(id)).stir
 		})
-		return { cpu: own() + theirs.cpu, stir: stirPlus(its, theirs.stir) }
+		return {
+			cpu: own() + theirs.cpu + served.cpu,
+			stir: stirPlus(stirPlus(its, theirs.stir), served.stir),
+			carried: served.carried
+		}
 	}
 	const began = effort()
 	return {
-		began: { wall, cpu: began.cpu, waited: waited(wall), stir: began.stir },
+		began: { wall, cpu: began.cpu, waited: waited(wall), stir: began.stir, carried: began.carried },
 		waited,
-		effort
+		effort,
+		refresh: refreshBackends(tree)
 	}
 }
 
@@ -612,6 +642,7 @@ export type Reading = Readonly<{
 	cpu: number
 	waited: number
 	stir: Stir
+	carried: number
 }>
 
 /**
@@ -733,7 +764,7 @@ export const standingOf = (
 	const queued = queuedBetween(window, now)
 	const over = now.wall - window.wall - waited - queued
 	const progress = progressOver(bound.stall)
-	const moved = now.cpu - window.cpu
+	const moved = now.cpu + now.carried - (window.cpu + window.carried)
 	const whole = over >= bound.stall
 	if (whole && moved < progress && !storedBetween(window, now)) {
 		return judged({ kind: "stalled", moved, queued, over, waited, progress, window: bound.stall })

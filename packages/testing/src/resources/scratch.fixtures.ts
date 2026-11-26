@@ -1,20 +1,11 @@
 import * as NodeServices from "@effect/platform-node/NodeServices"
-import {
-	Array as Arr,
-	Effect,
-	FileSystem,
-	Option,
-	Predicate,
-	Result,
-	Stream,
-	String as Str
-} from "effect"
-import { ChildProcess } from "effect/process"
+import { Array as Arr, Effect, FileSystem, Option, Predicate, Result, String as Str } from "effect"
 import { awaitFact } from "#fact.ts"
 import { element, type Gen, int } from "#gen.ts"
 import type { CheckoutDir } from "#mutate/checkout.ts"
 import { cachedScratch, processScratch } from "#resources/scratch.ts"
 import { HARDENED_FLAGS } from "#runner/config.ts"
+import { unwatched } from "#runner/observe.ts"
 
 /**
  * The bound scratch property (scratch.test.ts scratchOutlivesNoProcess) needs a process that makes a scratch directory
@@ -95,33 +86,56 @@ const madeAsProgram = (made: Made) =>
 /**
  * The scratch directory a program made as `made` says, once the program has ended as told (the case kills a program
  * told it was killed, with SIGKILL) and the directory's remover has ended too: what the remover leaves is all there is.
+ * The program is started by Node's spawn as it was before the worker's guard wrapped it (runner/observe.ts unwatched):
+ * it and its remover are the runner's own machinery under test (scratch.ts processScratch), and under the guard's strace
+ * the SIGKILL reached strace, whose --kill-on-exit killed the remover with it, so a killed program's directory was left
+ * (scratchOutlivesNoProcess under the toolchain merge's gate, 2026-11-26), as orphans.fixtures.ts heldProgram's worker
+ * was.
  */
 export const madeAndEnded = (checkout: CheckoutDir, made: Made) =>
-	Effect.scoped(
-		Effect.gen(function* () {
-			const handle = yield* ChildProcess.make(
+	Effect.gen(function* () {
+		const printed = yield* Effect.callback<string>((resume) => {
+			const child = unwatched.spawn(
 				process.execPath,
 				[...HARDENED_FLAGS, programIn(checkout), made.ending, made.place, String(made.files)],
-				{ stdin: "ignore", stderr: "ignore", detached: false }
+				{ stdio: ["ignore", "pipe", "ignore"] }
 			)
-			const line = yield* Stream.runHead(Stream.splitLines(Stream.decodeText(handle.stdout)))
-			const printed = yield* Option.match(line, {
-				onNone: () => Effect.die("the program ended before it printed its scratch directory"),
-				onSome: Effect.succeed
+			let text = ""
+			let line = Option.none<string>()
+			child.stdout.setEncoding("utf8")
+			child.stdout.on("data", (chunk: string) => {
+				if (Option.isSome(line)) {
+					return
+				}
+				text += chunk
+				line = Option.map(Str.indexOf("\n")(text), (end) => Str.slice(0, end)(text))
+				if (Option.isSome(line) && made.ending === "it was killed") {
+					child.kill("SIGKILL")
+				}
 			})
-			const [directory, ...removers] = Str.split(" ")(printed)
-			if (made.ending === "it was killed") {
-				yield* handle.kill({ killSignal: "SIGKILL" })
-			}
-			yield* Effect.ignore(handle.exitCode)
-			yield* awaitFact(
-				Effect.sync(() =>
-					Arr.some(removers, (pid) => processRuns(Number(pid))) ? Option.none() : Option.some(true)
+			child.once("error", (cause) => {
+				resume(Effect.die(cause))
+			})
+			child.once("exit", () => {
+				resume(
+					Option.match(line, {
+						onNone: () => Effect.die("the program ended before it printed its scratch directory"),
+						onSome: Effect.succeed
+					})
 				)
-			)
-			return { directory, removers: removers.length }
+			})
+			return Effect.sync(() => {
+				child.kill("SIGKILL")
+			})
 		})
-	)
+		const [directory, ...removers] = Str.split(" ")(printed)
+		yield* awaitFact(
+			Effect.sync(() =>
+				Arr.some(removers, (pid) => processRuns(Number(pid))) ? Option.none() : Option.some(true)
+			)
+		)
+		return { directory, removers: removers.length }
+	})
 
 if (import.meta.main) {
 	const [ending, place, files] = process.argv.slice(2)

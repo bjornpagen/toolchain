@@ -26,9 +26,17 @@ import {
 	stoppedOf
 } from "#runner/case.ts"
 import { askedClosuresOf } from "#runner/closure-requests.ts"
+import { collectingNow } from "#runner/collected.ts"
+import { asInfrastructure, inInfrastructure } from "#runner/infrastructure.ts"
 import { needStallMillis } from "#runner/limits.ts"
 import { configOf, propertyAt } from "#runner/load.ts"
-import { guardWindow } from "#runner/observe.ts"
+import {
+	guardChildren,
+	guardCollecting,
+	guardDrain,
+	guardRunnerOwn,
+	guardWindow
+} from "#runner/observe.ts"
 import { Perception, perceptionOf } from "#runner/perceive.ts"
 import {
 	FromWorker,
@@ -41,6 +49,7 @@ import {
 import { runValuesOf } from "#runner/runs.ts"
 import { ModuleClosure, RunValues, WorkerIndex } from "#runner/services.ts"
 import { runOfLabel } from "#runner/stack.ts"
+import { childActsOf } from "#runner/strace.ts"
 import { childrenCpuNow, childrenSince } from "#runner/usage.ts"
 import { reportWaitsTo } from "#runner/work.ts"
 import { startProcessCoverage } from "#sense.ts"
@@ -100,6 +109,9 @@ const main = Effect.gen(function* () {
 	if (guide === "blocks") {
 		yield* startProcessCoverage
 	}
+	guardChildren(childActsOf)
+	guardRunnerOwn(inInfrastructure)
+	guardCollecting(collectingNow)
 	const config = yield* configOf(root)
 	const scope = yield* Scope.Scope
 	const platform = yield* Effect.context<NodeServices.NodeServices>()
@@ -119,8 +131,9 @@ const main = Effect.gen(function* () {
 		encoded: (key) => Effect.suspend(() => runs.encoded(key))
 	}
 	const services = yield* Effect.cached(
-		Effect.map(Scope.provide(scope)(Effect.provideContext(config.services, runner)), (built) =>
-			Context.add(Context.merge(runner, built), RunValues, runValues)
+		Effect.map(
+			asInfrastructure(Scope.provide(scope)(Effect.provideContext(config.services, runner))),
+			(built) => Context.add(Context.merge(runner, built), RunValues, runValues)
 		)
 	)
 	const cache = needCacheOf(services, needStallMillis)
@@ -249,7 +262,8 @@ const main = Effect.gen(function* () {
 						millis: Duration.toMillis(took),
 						imported: made.imported,
 						cpu: millisOf(process.cpuUsage(cpu)),
-						children: childrenSince(children)
+						children: childrenSince(children),
+						drained: guardDrain()
 					})
 					return made.readied
 				})
@@ -294,7 +308,8 @@ const main = Effect.gen(function* () {
 				unit: unit.unit,
 				done,
 				cpu: millisOf(process.cpuUsage()),
-				children: childrenSince(children)
+				children: childrenSince(children),
+				drained: guardDrain()
 			})
 		})
 

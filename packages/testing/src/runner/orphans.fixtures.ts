@@ -1,11 +1,11 @@
 import * as NodeServices from "@effect/platform-node/NodeServices"
 import { Array as Arr, Effect, FileSystem, Option, String as Str } from "effect"
-import { ChildProcess } from "effect/process"
 import { liveSleep } from "#live.ts"
 import type { CheckoutDir } from "#mutate/checkout.ts"
 import { sharedStore } from "#runner/compile-cache.ts"
 import { HARDENED_FLAGS } from "#runner/config.ts"
 import { workerEnvironmentOf } from "#runner/environment.ts"
+import { unwatched } from "#runner/observe.ts"
 import { CHILD_FILE } from "#runner/pool.fixtures.ts"
 import { placesOf, poolOf } from "#runner/pool.ts"
 import { WORKER_ENTRY } from "#runner/run.ts"
@@ -105,17 +105,37 @@ const writtenIn = (file: string) =>
 	)
 
 /**
- * The program started from `program` as `holding` says: the program's own process id and every process its pool's
- * worker holds (the worker, and the child its case started when it starts one), once their files hold them, however
- * long its start takes: no clock decides, as one did (half a case deadline, which a start under load outran), and a
- * program that never writes them holds its case, whose guard reports it hung.
+ * The program started from `program` as `holding` says, killed as the enclosing scope closes: the program's own process
+ * id and every process its pool's worker holds (the worker, and the child its case started when it starts one), once
+ * their files hold them, however long its start takes: no clock decides, as one did (half a case deadline, which a
+ * start under load outran), and a program that never writes them holds its case, whose guard reports it hung. It is
+ * started by Node's spawn as it was before the worker's guard wrapped it (runner/observe.ts unwatched): the program and
+ * its pool are the runner's own machinery under test, which the toolchain digest keys, and under the guard's strace a
+ * SIGKILL to the started process killed every process strace traced (its --kill-on-exit), the worker among them, while
+ * strace's writes of a held worker's calls counted as its case's progress, so the worker's own end with its parent went
+ * untested (its kill survived, lane TOOLTRUST2, 2026-11-26).
  */
 export const heldProgram = (program: string, holding: Holding) =>
 	Effect.gen(function* () {
-		const handle = yield* ChildProcess.make(
-			process.execPath,
-			[...HARDENED_FLAGS, program, holding.root, holding.held, holding.pidFile, holding.childFile],
-			{ stdin: "ignore", stdout: "ignore", stderr: "ignore", detached: false }
+		const handle = yield* Effect.acquireRelease(
+			Effect.sync(() =>
+				unwatched.spawn(
+					process.execPath,
+					[
+						...HARDENED_FLAGS,
+						program,
+						holding.root,
+						holding.held,
+						holding.pidFile,
+						holding.childFile
+					],
+					{ stdio: "ignore" }
+				)
+			),
+			(started) =>
+				Effect.sync(() => {
+					started.kill("SIGKILL")
+				})
 		)
 		for (;;) {
 			const worker = yield* writtenIn(holding.pidFile)

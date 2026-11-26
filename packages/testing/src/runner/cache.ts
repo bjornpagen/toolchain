@@ -9,12 +9,13 @@ import { type ContentHash, contentHashOf, repoPathOf, specifiersOf } from "#runn
  * for as long as its key stands and is never recomputed. A key is a property's identity, the closure hash of its module
  * (closure.ts; under an edit, joined with the edited file's, runner/affected.ts editKeyOf), the toolchain that runs it
  * (the digest of the runner's package, every file of it), the environment its workers are given (runner/environment.ts),
- * the PostgreSQL its databases are served by where it declares a database template (the digest of the installation and
- * of the machine's cluster configuration), how the run seeded its cases, and the edit it ran under, none for its search
+ * how the run seeded its cases, and the edit it ran under, none for its search
  * of the program as it stands: a file, its own bytes and its bytes edited (a kill applied, or an operator mutant). Only
  * passes are stored, as files named by the hash of their key: a failure removes the pass its own key held and writes
  * nothing, so a failure is never read as a pass. A pass of a property that observed past its key (runner/observe.ts)
- * is no pass to store: it is recorded as a failure, so it runs again every time.
+ * is no pass to store: it is recorded as a failure, so it runs again every time. What a property reads at run time (a
+ * fixture, what its child reads, the PostgreSQL serving a member it connects to) is its pass's trace, kept beside its
+ * record and checked whenever its key is read (runner/traces.ts).
  *
  * Records are content-addressed and immutable: every pass is kept under its own key, so lanes that push different
  * trees one after another each find the passes of the trees before theirs, and no write removes another key's record.
@@ -85,7 +86,6 @@ export type VerdictKey = Readonly<{
 	closure: ClosureHash
 	toolchain: ContentHash
 	environment: ContentHash
-	postgres: Option.Option<ContentHash>
 	seeds: SeedPolicy
 	edit: Option.Option<Edit>
 }>
@@ -126,7 +126,6 @@ const KeyRecord = Schema.fromJsonString(
 		closure: Schema.String,
 		toolchain: Schema.String,
 		environment: Schema.String,
-		postgres: Schema.NullOr(Schema.String),
 		seeds: Schema.String,
 		edit: Schema.NullOr(
 			Schema.Struct({ file: Schema.String, content: Schema.String, mutated: Schema.String })
@@ -144,7 +143,6 @@ export const recordOf = (key: VerdictKey): Effect.Effect<string> =>
 			closure: key.closure,
 			toolchain: key.toolchain,
 			environment: key.environment,
-			postgres: Option.getOrNull(key.postgres),
 			seeds: key.seeds,
 			edit: Option.getOrNull(key.edit)
 		})

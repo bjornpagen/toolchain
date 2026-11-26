@@ -134,3 +134,12 @@ export const expectedOf = (repository: string, read: Read): Stood => {
 	}
 	return { digest: digest(), placed: true }
 }
+
+/**
+ * How a file is changed after a mark of the file system's clock: edited in place; or edited, then its first bytes put
+ * back with the modification time of a backup a minute older than the mark, as cp -p or rsync -a restores one (utimes).
+ */
+export const AFTER_A_MARK = [
+	"edited in place",
+	"edited, then restored with an older modification time"
+] as const

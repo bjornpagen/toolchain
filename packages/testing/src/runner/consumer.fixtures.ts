@@ -202,7 +202,7 @@ export const runnerFilesOf = (layout: Layout): ConsumerFiles => {
 		],
 		[
 			"run-inline.mjs",
-			`import * as NodeServices from "@effect/platform-node/NodeServices"\nimport { Effect, Option, Result } from "effect"\nimport { inlineRun, searchInline } from "${library}/src/runner/inline.ts"\nimport { emptyOutcome, loadPackage } from "${library}/src/runner/run.ts"\nimport { affectedModule } from "${library}/src/runner/settle.ts"\n\nconst root = process.cwd()\nconst program = Effect.gen(function* () {\n\tconst keying = yield* Effect.flatMap(Effect.result(affectedModule), Result.match({ onSuccess: (module) => module.runKeyingAt(root, [], { kind: "given", seed: 1 }), onFailure: (unloaded) => Effect.succeed({ kind: "unkeyed", why: unloaded.message }) }))\n\tif (keying.kind === "unkeyed") {\n\t\tprocess.stdout.write(\`verdicts not read or recorded: \${keying.why}\\n\`)\n\t}\n\tconst { discovered } = yield* loadPackage(root, [])\n\tconst properties = yield* Effect.forEach(discovered, (found) =>\n\t\tEffect.map(Effect.scoped(searchInline(found.property, inlineRun(found.id, 1))), (verdict) => ({ id: found.id, stack: "default", label: found.id, module: found.module, kind: found.property.kind, oracle: found.property.oracle, verdict, millis: 0, observed: { unclean: Option.none(), own: Option.none() } }))\n\t)\n\tif (keying.kind === "keyed") {\n\t\tyield* keying.record({ ...emptyOutcome, properties })\n\t}\n\tprocess.stdout.write(JSON.stringify({ verdicts: properties.map((ran) => ran.verdict.kind) }) + "\\n")\n})\nEffect.runPromise(Effect.scoped(program).pipe(Effect.provide(NodeServices.layer))).catch((cause) => {\n\tconsole.error(cause)\n\tprocess.exitCode = 1\n})\n`
+			`import * as NodeServices from "@effect/platform-node/NodeServices"\nimport { Effect, Option, Result } from "effect"\nimport { inlineRun, searchInline } from "${library}/src/runner/inline.ts"\nimport { emptyOutcome, loadPackage } from "${library}/src/runner/run.ts"\nimport { affectedModule } from "${library}/src/runner/settle.ts"\n\nconst root = process.cwd()\nconst program = Effect.gen(function* () {\n\tconst keying = yield* Effect.flatMap(Effect.result(affectedModule), Result.match({ onSuccess: (module) => module.runKeyingAt(root, [], { kind: "given", seed: 1 }), onFailure: (unloaded) => Effect.succeed({ kind: "unkeyed", why: unloaded.message }) }))\n\tif (keying.kind === "unkeyed") {\n\t\tprocess.stdout.write(\`verdicts not read or recorded: \${keying.why}\\n\`)\n\t}\n\tconst { discovered } = yield* loadPackage(root, [])\n\tconst properties = yield* Effect.forEach(discovered, (found) =>\n\t\tEffect.map(Effect.scoped(searchInline(found.property, inlineRun(found.id, 1))), (verdict) => ({ id: found.id, stack: "default", label: found.id, module: found.module, kind: found.property.kind, oracle: found.property.oracle, verdict, millis: 0, observed: { unclean: Option.none(), traces: [], own: Option.none(), readBy: "none" } }))\n\t)\n\tif (keying.kind === "keyed") {\n\t\tyield* keying.record({ ...emptyOutcome, properties })\n\t}\n\tprocess.stdout.write(JSON.stringify({ verdicts: properties.map((ran) => ran.verdict.kind) }) + "\\n")\n})\nEffect.runPromise(Effect.scoped(program).pipe(Effect.provide(NodeServices.layer))).catch((cause) => {\n\tconsole.error(cause)\n\tprocess.exitCode = 1\n})\n`
 		]
 	]
 }
@@ -210,7 +210,8 @@ export const runnerFilesOf = (layout: Layout): ConsumerFiles => {
 /**
  * Writes a consumer of `layout` into `directory` from the checkout whose testing package is at `packageDirectory`
  * (Checkout.dir, so a mutant the mutator writes into a worker tree is in the library the consumer holds): its `files`;
- * the library's packages, linked from vendor/ or installed as files under node_modules/@bjornpagen; every other package
+ * the library's packages (their manifests, sources and scripts: a member's settle runs toolchain-pg.sh), linked from
+ * vendor/ or installed as files under node_modules/@bjornpagen; every other package
  * of the checkout's node_modules linked in, TypeScript's only when it has TypeScript; its lockfile when it has one; and
  * a git repository when it lies in one.
  */
@@ -237,6 +238,7 @@ export const consumerIn = Effect.fn("consumerIn")(function* (
 		yield* fs.makeDirectory(held, { recursive: true })
 		yield* fs.copyFile(`${checkout}/packages/${name}/package.json`, `${held}/package.json`)
 		yield* copied(`${checkout}/packages/${name}/src`, `${held}/src`)
+		yield* copied(`${checkout}/packages/${name}/scripts`, `${held}/scripts`)
 		if (layout.library === "link") {
 			yield* fs.symlink(`../../vendor/${name}`, `${directory}/node_modules/@bjornpagen/${name}`)
 		}

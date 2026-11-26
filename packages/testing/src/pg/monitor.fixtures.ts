@@ -2,7 +2,7 @@ import { Effect, Option, Redacted, type Scope } from "effect"
 import type { PgMember } from "#pg/settle.ts"
 
 /**
- * A member that takes every connection and never answers, for the claim checks' monitor (pg/session.ts monitorOf): a
+ * A member that takes every connection and never answers, for the carrier asks' monitor (pg/session.ts monitorOf): a
  * socket at a member's path in a directory of the scope's own, whose server accepts and writes nothing.
  *
  * @module

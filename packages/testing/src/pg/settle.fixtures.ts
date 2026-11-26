@@ -20,7 +20,7 @@ import {
 	memberNames,
 	unitOf
 } from "#pg/family.ts"
-import { familyHeld } from "#pg/hold.ts"
+import { familyHeld, leaseOf } from "#pg/hold.ts"
 import { failed, succeeded } from "#pg/server.ts"
 import {
 	familySettled,
@@ -186,6 +186,15 @@ export const holdTaken = (unit: string) =>
 		(listener) => closedAll(Option.toArray(listener))
 	)
 
+/**
+ * What case cluster `unit`'s families keep in the account's states home: each state directory named after it, none
+ * where every settle of them kept its family's state in the family's own states home (settle.ts settleEnvironment).
+ */
+export const accountStatesOf = (unit: string) =>
+	Effect.flatMap(machineHomes, (homes) =>
+		Effect.map(namesIn(homes.states), Arr.filter(Str.startsWith(`${unit}-`)))
+	)
+
 /** A member's data directory, the workbench's postgres@ unit's: `<data>/<name>`. */
 export const dataOf = (name: string) => Effect.map(machineHomes, (homes) => `${homes.data}/${name}`)
 
@@ -196,12 +205,11 @@ const namesIn = (directory: string) =>
 	)
 
 /**
- * Case cluster `unit` gone, whatever is left of it: its members' units stopped (`postgres@<unit>-*`, systemctl's
- * pattern over the units it has loaded, every family's), and every other unit named after it (`<unit>-*`: its
- * families' holds, leases and settles, a hold property's runs, which a kill trial's mutant may leave running), and
- * their failures forgotten, then every member's data directory (`<data>/<unit>-*`, the workbench's) removed: a member
- * in memory (the workbench's memory list names `tcs-*`) takes its data with its unit's stop, and a kept one's (`tck-*`,
- * on disk) is removed here. Its families' state and
+ * Case cluster `unit` gone, whatever is left of it: every unit named after it stopped (`<unit>-*`: its families' holds,
+ * leases and settles, a hold property's runs, which a kill trial's mutant may leave running), each lease's stop stopping
+ * its member (pg/hold.ts), and their failures forgotten, then every member's data directory (`<data>/<unit>-*`, the
+ * workbench's) removed: a member in memory (the workbench's memory list names `tcs-*`) takes its data with its unit's
+ * stop, and a kept one's (`tck-*`, on disk) is removed here. Its families' state and
  * claims are in the case's scratch directory, gone with it.
  */
 const clusterRemoved = (unit: string) =>
@@ -212,9 +220,7 @@ const clusterRemoved = (unit: string) =>
 			["stop", "reset-failed"],
 			(verb) =>
 				Effect.ignore(
-					spawner.exitCode(
-						ChildProcess.make("systemctl", ["--user", verb, unitOf(`${unit}-*`), `${unit}-*`])
-					)
+					spawner.exitCode(ChildProcess.make("systemctl", ["--user", verb, `${unit}-*`]))
 				),
 			{ discard: true }
 		)
@@ -257,9 +263,10 @@ const swept = Effect.gen(function* () {
 /**
  * A case cluster's unit name of its own, `prefix` and 8 random hex digits (`tcs`, a throwaway case's; `tck`, a kept
  * case's), held by this process for the enclosing scope (holdTaken). Drawing it first removes every case cluster no
- * process holds (swept).
+ * process holds (swept): the cluster of a case here (clusterSized, keptCluster), or of a consumer whose runs make it in
+ * processes of their own (runner/reuse.fixtures.ts), which the case removes at its end (unitRemovedAtEnd).
  */
-const caseUnit = (prefix: "tcs" | "tck") =>
+export const caseUnit = (prefix: "tcs" | "tck") =>
 	Effect.gen(function* () {
 		const unit = `${prefix}-${process.getBuiltinModule("node:crypto").randomBytes(4).toString("hex")}`
 		const hold = yield* holdTaken(unit)
@@ -450,9 +457,9 @@ export const specWritten = (family: CheckoutFamily) =>
 
 /**
  * Member `index` of `family` settled by exactly what its settle unit runs (settle.ts settleArgv) with exactly what the
- * unit is given (settleEnvironment), in the checkout, whose pg.config.ts states the case's cluster (specWritten), as a
- * child of this process rather than a unit of systemd's: its states home the family's (XDG_STATE_HOME, family.ts
- * homesHere), and its own CPU allowance `own` (workers.ts allowanceVariable), standing in for the slice a unit runs in,
+ * unit is given (settleEnvironment, its states home the family's among it), in the checkout, whose pg.config.ts states
+ * the case's cluster (specWritten), as a child of this process rather than a unit of systemd's, with its own CPU
+ * allowance `own` (workers.ts allowanceVariable), standing in for the slice a unit runs in,
  * whose run's width is not the family's. Its stdout, or its failure with what it printed. The command is the one the
  * loaded settle.ts names, so a property that runs it needs Checkout.dir: its kills then run in a worker tree, whose
  * command on disk holds the kill's edit, where the module hook would serve it to the worker alone.
@@ -465,11 +472,7 @@ export const settledAsItsUnit = (family: CheckoutFamily, index: number, own: num
 			{ cluster: family.name, doing: `settling its member ${index} as its unit would` },
 			ChildProcess.make(program, args, {
 				cwd: family.checkout,
-				env: {
-					...settleEnvironment(family),
-					XDG_STATE_HOME: process.getBuiltinModule("node:path").dirname(family.homes.states),
-					[allowanceVariable]: `${own}`
-				},
+				env: { ...settleEnvironment(family), [allowanceVariable]: `${own}` },
 				extendEnv: true
 			})
 		)
@@ -529,17 +532,26 @@ export const unitActive = (name: string) =>
 		)
 	)
 
-/** `cluster` gone as the enclosing scope closes, however it ends (clusterRemoved), while the scope still holds it. */
-export const removedAtEnd = (cluster: LocalCluster) =>
-	Effect.addFinalizer(() => clusterRemoved(cluster.unit))
+/** Case cluster `unit` gone as the enclosing scope closes, however it ends (clusterRemoved), while the scope still holds it. */
+export const unitRemovedAtEnd = (unit: string) => Effect.addFinalizer(() => clusterRemoved(unit))
+
+/** `cluster` gone as the enclosing scope closes (unitRemovedAtEnd). */
+export const removedAtEnd = (cluster: LocalCluster) => unitRemovedAtEnd(cluster.unit)
 
 /**
- * `name`'s member unit stopped (`systemctl --user stop`), as a person does: a case cluster's member is in memory
- * (`tcs-*`), so its data goes with the stop and the next settle makes it again.
+ * `name`'s member stopped by its lease's stop (pg/hold.ts leaseOf), the one way a member stops, and the member's own stop
+ * job, which the lease's stop brings about (PropagatesStopTo=), waited for in the same call: `systemctl stop` of the
+ * lease alone waits for the lease's job, which ends at once, so the member still listened at its port as it returned
+ * (aHeldPortRefusesItsSettle under the toolchain merge's gate at load 700, 2026-11-26: "port 28844 is held already"). A
+ * case cluster's member is in memory (`tcs-*`), so its data goes with the stop and the next settle makes it again.
  */
 export const memberStopped = (name: string) =>
 	Effect.flatMap(ChildProcessSpawner.ChildProcessSpawner, (spawner) =>
-		Effect.orDie(spawner.exitCode(ChildProcess.make("systemctl", ["--user", "stop", unitOf(name)])))
+		Effect.orDie(
+			spawner.exitCode(
+				ChildProcess.make("systemctl", ["--user", "stop", leaseOf(name), unitOf(name)])
+			)
+		)
 	)
 
 /**

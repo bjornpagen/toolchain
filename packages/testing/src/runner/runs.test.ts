@@ -35,7 +35,7 @@ export const runNeedOpensOnce = property.exhaust(finite(int(1, 3)), {
 				const outcome = yield* runPackage({
 					root,
 					seedOf: () => 1,
-					observes: () => false,
+					conductOf: () => "clean",
 					reach: "full",
 					selected: []
 				})

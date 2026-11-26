@@ -1,8 +1,18 @@
 import * as NodeServices from "@effect/platform-node/NodeServices"
-import { Array as Arr, Brand, Context, Effect, Layer, Option, type Scope } from "effect"
+import {
+	Array as Arr,
+	Brand,
+	Context,
+	Effect,
+	Layer,
+	Option,
+	Queue,
+	type Scope,
+	Stream
+} from "effect"
 import { ChildProcess } from "effect/process"
 import pg from "pg"
-import { boolean, characterOf, type Gen, int, string } from "#gen.ts"
+import { boolean, characterOf, type Gen, int, map, string } from "#gen.ts"
 import testingCluster from "#pg.config.ts"
 import { bootstrapSuperuser, serverBin } from "#pg/server.ts"
 import { pgOwnerSession, pgSuperuserSession } from "#pg/session.ts"
@@ -23,6 +33,7 @@ import {
 } from "#resources/cluster.ts"
 import type { TemplateDatabase } from "#resources/database.ts"
 import { type DatabaseTemplate, Template } from "#resources/template.ts"
+import { unwatched } from "#runner/observe.ts"
 import { ModuleClosure, NeedFailed, RunValues, WorkerIndex } from "#runner/services.ts"
 
 /** A database name the fixture read back from the cluster. */
@@ -131,6 +142,72 @@ export const undeclaredSession = (
 				})
 			)
 	)
+
+/**
+ * The deadlines the backend properties judge under (resources.test.ts statementWorkIsTheCases and the others over a
+ * case's backends), and how many of them a statement's work lasts: long enough that a guard's readings, each asking the
+ * case's servers what carries its backends' waits, take their answers into account at a machine's load.
+ */
+export const backendShapes: Gen<Readonly<{ deadline: number; deadlines: number }>> = map(
+	int(0, 1),
+	(step) => ({
+		deadline: 1000 + 1000 * step,
+		deadlines: 4
+	})
+)
+
+/**
+ * A statement that keeps its backend running on a CPU for `millis` milliseconds and then ends: a busy loop on
+ * clock_timestamp, the stand-in for a statement whose work is long (a large install's, a scan), where pg_sleep spends
+ * nothing and is no work.
+ */
+export const busyFor = (millis: number): string =>
+	`DO $$ DECLARE stop timestamptz := pg_catalog.clock_timestamp() + ${String(millis)} * interval '1 millisecond'; BEGIN WHILE pg_catalog.clock_timestamp() < stop LOOP END LOOP; END $$`
+
+/**
+ * A session of the member's bootstrap superuser in `database` over its socket, in a psql the scope starts now and ends
+ * with it: another process's session, as a sibling case's or another run's is, by construction. Its psql runs in a
+ * transient unit of the account's manager (`systemd-run --pipe`), its standard input the pipe this process writes,
+ * so it is no descendant of this process and its backend no work's of this process (runner/backends.ts), whenever any
+ * work began; a psql started as this process's child was the work's own when the work began within a clock tick of its
+ * start (runner/work.ts descendantsOf), and its busy backend spent the case's budget (siblingWorkIsNoCases and
+ * lockedByAnIdleHolderIsHung under the toolchain merge's gate, 2026-11-26: "spent" where they stalled). It runs each
+ * statement it is handed, in order, without answering, and ends when this process closes the pipe.
+ */
+export const outsideSession = (member: PgMember, database: string) =>
+	Effect.gen(function* () {
+		const bin = yield* Effect.mapError(
+			serverBin({ cluster: member.name, doing: "an outside session" }),
+			(failure) => NeedFailed.make({ need: "pg", message: failure.message })
+		)
+		const handle = yield* ChildProcess.make(
+			"systemd-run",
+			[
+				"--user",
+				"--quiet",
+				"--pipe",
+				"--collect",
+				"--",
+				`${bin}/psql`,
+				"-X",
+				"-q",
+				"-h",
+				member.socket,
+				"-p",
+				`${member.port}`,
+				"-U",
+				bootstrapSuperuser(),
+				"-d",
+				database
+			],
+			{ stdin: "pipe", stdout: "ignore", stderr: "ignore" }
+		)
+		const statements = yield* Queue.unbounded<string>()
+		yield* Effect.forkScoped(
+			Effect.ignore(Stream.run(Stream.encodeText(Stream.fromQueue(statements)), handle.stdin))
+		)
+		return (sql: string) => Effect.asVoid(Queue.offer(statements, `${sql};\n`))
+	})
 
 /**
  * Drops every claim of the templates under `prefix` on `member` (pg/settle.ts templateClaimsTable), as collection drops
@@ -317,6 +394,55 @@ export const runsOf = (together: ReadonlyArray<boolean>): ReadonlyArray<Readonly
 /** The name of a template a property found by its comment, as the fixture drops it. */
 export const templateNameOf = databaseNameOf
 
+/**
+ * `script` (an ES module's text) run with `args` by a Node process of its own that no guard watches (runner/observe.ts
+ * unwatched: Node's spawn as it was before the guard wrapped it), its work on `path`. What another process wrote is no
+ * data of the reader's own, so a template's build that reads it makes a keyable read (runner/observe.ts), as a build
+ * reads a repository's file; what the case's own process wrote is its own data, which no key holds.
+ */
+const ranElsewhere = (
+	script: string,
+	args: ReadonlyArray<string>,
+	path: string
+): Effect.Effect<void, NeedFailed> =>
+	Effect.callback<void, NeedFailed>((resume) => {
+		const child = unwatched.spawn(
+			process.execPath,
+			["--input-type=module", "-e", script, ...args],
+			{
+				stdio: "ignore"
+			}
+		)
+		child.once("error", (failure) =>
+			resume(Effect.fail(NeedFailed.make({ need: path, message: failure.message })))
+		)
+		child.once("exit", (code) =>
+			resume(
+				code === 0
+					? Effect.void
+					: Effect.fail(
+							NeedFailed.make({ need: path, message: `its writer exited ${String(code)}` })
+						)
+			)
+		)
+	})
+
+/** `text` written at `file` by a process of its own (ranElsewhere), its directory made. */
+export const writtenElsewhere = (file: string, text: string) =>
+	ranElsewhere(
+		'import { mkdirSync, writeFileSync } from "node:fs"; import { dirname } from "node:path"; const [file, text] = process.argv.slice(1); mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, text)',
+		[file, text],
+		file
+	)
+
+/** `path` and everything under it removed by a process of its own (ranElsewhere). */
+export const removedElsewhere = (path: string) =>
+	ranElsewhere(
+		'import { rmSync } from "node:fs"; rmSync(process.argv[1], { recursive: true, force: true })',
+		[path],
+		path
+	)
+
 /** This module's URL: a module whose closure differs from a test module's that imports it, so its hash is another. */
 export const fixturesModule = import.meta.url
 
@@ -373,3 +499,37 @@ export const superuserSessions = (
  */
 export const freshHex =
 	"SELECT pg_catalog.substr(pg_catalog.replace(pg_catalog.gen_random_uuid()::text, '-', ''), 1, 12)"
+
+/**
+ * What changes between two opens of a template whose build reads a file: nothing; the file rewritten with the text it
+ * held; rewritten with another; or rewritten by another process while the first open's first build ran, after the build
+ * read it.
+ */
+export const BUILD_READ_CHANGES = [
+	"the file left as it was",
+	"the file rewritten alike",
+	"the file rewritten otherwise",
+	"the file rewritten while its first build ran"
+] as const
+
+export type BuildReadChange = (typeof BUILD_READ_CHANGES)[number]
+
+/**
+ * Each change as a case makes it and what the specification says of it: the texts written over the file between the
+ * opens, whether another process rewrites it while the first build runs, and whether the second open builds again.
+ */
+export const BUILD_READ_CASES: Readonly<
+	Record<
+		BuildReadChange,
+		Readonly<{ rewrites: ReadonlyArray<string>; whileBuilt: boolean; builtAgain: boolean }>
+	>
+> = {
+	"the file left as it was": { rewrites: [], whileBuilt: false, builtAgain: false },
+	"the file rewritten alike": { rewrites: ["first"], whileBuilt: false, builtAgain: false },
+	"the file rewritten otherwise": { rewrites: ["second"], whileBuilt: false, builtAgain: true },
+	"the file rewritten while its first build ran": {
+		rewrites: [],
+		whileBuilt: true,
+		builtAgain: false
+	}
+}

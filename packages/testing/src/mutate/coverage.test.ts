@@ -29,11 +29,11 @@ import {
 	mainText,
 	moduleText,
 	nodeGen,
+	passEnded,
 	ranByHand,
 	wellFormed
 } from "#mutate/coverage.fixtures.ts"
 import { CoverageLost, coverageMapOf, ranIn, ranOf } from "#mutate/coverage.ts"
-import { startedMark } from "#mutate/image.ts"
 import { realPathOf } from "#mutate/mutated.ts"
 import { property } from "#property.ts"
 
@@ -184,26 +184,13 @@ export const lostCoverage = property.exhaust(finite(lostGen), {
 			yield* fs.writeFileString(path.join(directory, "main.ts"), lostMainText(lost))
 			yield* fs.writeFileString(path.join(directory, "child.ts"), childText)
 			const dumps = path.join(directory, "dumps")
-			const handle = yield* ChildProcess.make(
-				process.execPath,
-				[...startedMark(process.pid), "main.ts"],
-				{ cwd: directory, env: { NODE_V8_COVERAGE: dumps }, extendEnv: true, stdin: "ignore" }
-			)
-			yield* handle.stdout.pipe(
-				Stream.decodeText(),
-				Stream.takeUntil((text) => Str.includes("ready")(text)),
-				Stream.runDrain
-			)
-			if (lost.main === "killed") {
-				yield* handle.kill({ killSignal: "SIGKILL" })
-			}
-			yield* Effect.exit(handle.exitCode)
+			const pid = yield* passEnded(directory, dumps, lost.main)
 			const read = yield* Effect.result(ranIn("the process", dumps, []))
 			assert.deepEqual(
 				read._tag === "Failure" && Schema.is(CoverageLost)(read.failure)
 					? Option.some(Arr.copy(read.failure.processes))
 					: Option.none(),
-				lost.main === "killed" ? Option.some([String(handle.pid)]) : Option.none()
+				lost.main === "killed" ? Option.some([String(pid)]) : Option.none()
 			)
 		}),
 	oracle: {

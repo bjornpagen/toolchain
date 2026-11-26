@@ -117,9 +117,9 @@ export const hangsOnTheLiveClock = property.explore(
 			{
 				file: "packages/testing/src/live.ts",
 				original:
-					"\t\t\tEffect.andThen(liveSleepUntil(readAt), Effect.tap(liveMillis, checkedClaims)),",
+					"\t\t\tEffect.andThen(liveSleepUntil(readAt), Effect.andThen(work.refresh, liveMillis)),",
 				replacement:
-					"\t\t\tEffect.andThen(Effect.sleep(Duration.millis(readAt - window.wall)), Effect.tap(liveMillis, checkedClaims)),",
+					"\t\t\tEffect.andThen(Effect.sleep(Duration.millis(readAt - window.wall)), Effect.andThen(work.refresh, liveMillis)),",
 				why: "The case deadline's timer sleeps on the Effect clock, which a TestClock never moves, so a hanging case under one is never read and never stopped (hang-on-test-clock, re-anchored from guarded's race to live.ts overrun's reading timer); the hanging case property fails, red by its own case deadline."
 			}
 		]

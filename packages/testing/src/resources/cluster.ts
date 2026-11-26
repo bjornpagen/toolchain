@@ -22,7 +22,9 @@ import {
 	unitSettler
 } from "#pg/settle.ts"
 import type { LocalCluster, WorkerSizing } from "#pg/spec.ts"
+import { asInfrastructure } from "#runner/infrastructure.ts"
 import { runnerLimits } from "#runner/limits.ts"
+import { guardServers } from "#runner/observe.ts"
 import { NeedFailed, WorkerIndex } from "#runner/services.ts"
 import { testWorkers } from "#workers.ts"
 
@@ -32,10 +34,9 @@ export type { PgMember } from "#pg/settle.ts"
  * A session on one member as the cluster's owner role (the role that may CREATE DATABASE and owns what it creates),
  * which the repository opens over its own client: one statement at a time, concurrent callers taking turns, each with
  * text parameters. Every statement this library sends casts each column it reads to text, so a row's columns arrive as
- * strings, or null, from any client. Its `query` is a declared wait of its process while the member works on the
- * statement (live.ts waitingOnWork, its claim checked against the session's backend, as pg/session.ts pgSession's is; or
- * live.ts waitingOn): the session declares its statements, the library's (run) and its caller's alike, so a statement
- * the member keeps busy is no stall of its case.
+ * strings, or null, from any client. No statement is a declared wait: the session's backend is the peer of a socket
+ * its process holds, so a guard counts its CPU as its case's own (runner/backends.ts), whatever client the repository
+ * opens it over, and a statement the member keeps busy is no stall of its case.
  */
 export interface PgSession {
 	readonly query: (
@@ -298,6 +299,18 @@ const openOwner = (
 		return { member, session, key, serial: Ref.updateAndGet(serial, (n) => n + 1) }
 	})
 
+/**
+ * Every address a client reaches `member` at: its socket's file in its runtime directory, and its port at the loopback's
+ * names, which a property's own client may use (TLS over TCP): what the guard counts a connection to the run's own
+ * server by (runner/observe.ts guardServers).
+ */
+const serverAddressesOf = (member: PgMember): ReadonlyArray<string> => [
+	`${member.socket}/.s.PGSQL.${member.port}`,
+	`localhost:${member.port}`,
+	`127.0.0.1:${member.port}`,
+	`::1:${member.port}`
+]
+
 /** The runner service of a repository's PostgreSQL cluster, from which every Template.database and Database comes. */
 export class PgCluster extends Context.Service<PgCluster, PgClusterShape>()(
 	"@bjornpagen/testing/resources/cluster/PgCluster"
@@ -340,26 +353,34 @@ export class PgCluster extends Context.Service<PgCluster, PgClusterShape>()(
 				)
 				const brought = new Map<number, Deferred.Deferred<PgMember, NeedFailed>>()
 				const memberAt = (index: number): Effect.Effect<PgMember, NeedFailed> =>
-					Effect.flatMap(held, (reached) => {
-						const at = index % memberNames(reached).length
-						return Option.match(Option.fromUndefinedOr(brought.get(at)), {
-							onSome: Deferred.await,
-							onNone: () => {
-								const bringing = Deferred.makeUnsafe<PgMember, NeedFailed>()
-								brought.set(at, bringing)
-								return Effect.andThen(
-									Deferred.into(
-										Effect.mapError(
-											Effect.provideContext(memberBroughtUp(reached, at, unitSettler), platform),
-											clusterFailed
+					asInfrastructure(
+						Effect.flatMap(held, (reached) => {
+							const at = index % memberNames(reached).length
+							return Option.match(Option.fromUndefinedOr(brought.get(at)), {
+								onSome: Deferred.await,
+								onNone: () => {
+									const bringing = Deferred.makeUnsafe<PgMember, NeedFailed>()
+									brought.set(at, bringing)
+									return Effect.andThen(
+										Deferred.into(
+											Effect.tap(
+												Effect.mapError(
+													Effect.provideContext(
+														memberBroughtUp(reached, at, unitSettler),
+														platform
+													),
+													clusterFailed
+												),
+												(member) => Effect.sync(() => guardServers(serverAddressesOf(member)))
+											),
+											bringing
 										),
-										bringing
-									),
-									Deferred.await(bringing)
-								)
-							}
+										Deferred.await(bringing)
+									)
+								}
+							})
 						})
-					})
+					)
 				const running = Effect.flatMap(family, (reached) =>
 					Effect.mapError(
 						Effect.provideContext(
@@ -374,25 +395,27 @@ export class PgCluster extends Context.Service<PgCluster, PgClusterShape>()(
 					prefix: spec.prefix,
 					base: spec.cluster.template,
 					maintenance: spec.cluster.owner,
-					connect: spec.connect,
+					connect: (member, database) => asInfrastructure(spec.connect(member, database)),
 					superuser: spec.superuser,
 					memberAt,
 					memberOf: (worker) => memberAt(worker.index),
-					running,
-					checkout,
+					running: asInfrastructure(running),
+					checkout: asInfrastructure(checkout),
 					owner: (member) =>
-						Effect.suspend(() =>
-							Option.match(Option.fromUndefinedOr(owners.get(member.name)), {
-								onSome: Deferred.await,
-								onNone: () => {
-									const opened = Deferred.makeUnsafe<Owner, NeedFailed>()
-									owners.set(member.name, opened)
-									return Effect.andThen(
-										Deferred.into(openOwner(spec, member, scope), opened),
-										Deferred.await(opened)
-									)
-								}
-							})
+						asInfrastructure(
+							Effect.suspend(() =>
+								Option.match(Option.fromUndefinedOr(owners.get(member.name)), {
+									onSome: Deferred.await,
+									onNone: () => {
+										const opened = Deferred.makeUnsafe<Owner, NeedFailed>()
+										owners.set(member.name, opened)
+										return Effect.andThen(
+											Deferred.into(openOwner(spec, member, scope), opened),
+											Deferred.await(opened)
+										)
+									}
+								})
+							)
 						)
 				}
 			})

@@ -93,6 +93,13 @@ export default defineConfig(
 				})
 			},
 			{
+				files: ["packages/testing/src/oxlint/rules.test.ts"],
+				rules: active({
+					/** The rule's kills quote the phrases it refuses, to find them in its module. */
+					"testing/no-trigger-switch": "off"
+				})
+			},
+			{
 				files: ["packages/testing/src/witness.fixtures.ts"],
 				rules: active({
 					/** The type tier's refusals: a literal handed where a stream goes is the type error each entry proves. */
@@ -155,6 +162,7 @@ export default defineConfig(
 			{
 				files: [
 					"packages/testing/src/runner/cli-entry.ts",
+					"packages/testing/src/runner/load-entry.ts",
 					"packages/testing/src/runner/worker-entry.ts"
 				],
 				rules: active({

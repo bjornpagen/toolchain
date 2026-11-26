@@ -28,11 +28,11 @@
  *
  * Oracles are stated per property.
  */
-import { Array as Arr, Duration, Effect, Option, Result } from "effect"
+import { Array as Arr, Effect, Option, Result } from "effect"
 import { assert } from "#assert.ts"
 import type { Reached } from "#features.ts"
 import { finite } from "#gen.ts"
-import { boundOver, liveSleep, spentOn, withinBound } from "#live.ts"
+import { boundOver, spentOn, withinBound } from "#live.ts"
 import { property } from "#property.ts"
 import { searchedAt, verdictKind } from "#runner/search.fixtures.ts"
 import {
@@ -58,8 +58,6 @@ import {
 	slowShapes,
 	STATED_CPU_SHORTFALL_MILLIS,
 	storageDirectory,
-	UNJUDGED_DEADLINES,
-	unansweredClaimCase,
 	waitingCase,
 	waitingThreads,
 	waitingWindowOf,
@@ -119,8 +117,9 @@ export const childWorkCounts = property.exhaust(finite(childBurns), {
 	kills: [
 		{
 			file: "packages/testing/src/runner/work.ts",
-			original: "\t\t\treturn { cpu: cpu + descendants.cpu, stir }\n",
-			replacement: "\t\t\treturn { cpu, stir }\n",
+			original:
+				"\t\t\treturn { cpu: cpu + descendants.cpu + served.cpu, stir, carried: served.carried }\n",
+			replacement: "\t\t\treturn { cpu: cpu + served.cpu, stir, carried: served.carried }\n",
 			why: "A live child's CPU is left out until the child is reaped, so a case that waits on a working child spends nothing of its own and is stalled after a window; the child-work property fails."
 		}
 	]
@@ -207,7 +206,7 @@ export const declaredWaitIsNoStall = property.exhaust(finite(deadlocks), {
 		{
 			file: "packages/testing/src/live.ts",
 			original:
-				"\t\t\tEffect.flatMap(liveMillis, (wall) => Effect.sync(() => enterWait(wall, on, claim))),\n\t\t\t() => effect,\n\t\t\t(id) => Effect.flatMap(liveMillis, (wall) => Effect.sync(() => leaveWait(wall, id)))",
+				"\t\t\tEffect.flatMap(liveMillis, (wall) => Effect.sync(() => enterWait(wall, on))),\n\t\t\t() => effect,\n\t\t\t(id) => Effect.flatMap(liveMillis, (wall) => Effect.sync(() => leaveWait(wall, id)))",
 			replacement: "\t\t\tEffect.succeed(0),\n\t\t\t() => effect,\n\t\t\t() => Effect.void",
 			why: "waitingOn declares nothing, so a declared wait's wall time is a stall after all; the property fails."
 		}
@@ -215,7 +214,7 @@ export const declaredWaitIsNoStall = property.exhaust(finite(deadlocks), {
 })
 
 export const othersMoveTheWork = property.exhaust(finite(otherMoves), {
-	box: "a window of two deadlines of a work whose CPU did not move, in which nothing else moved, a child woke and waited to run a little, a thread waited to run for progress and slept the rest, a child waited to run all the window, or a child did the least storage work",
+	box: "a window of two deadlines of a work whose CPU did not move, in which nothing else moved, a child woke and waited to run a little, a thread waited to run for progress and slept the rest, a child waited to run all the window, a child did the least storage work, or a holder of the lock its backend waits behind spent progress of CPU, or a tick short of it",
 	needs: {},
 	situations: [],
 	check: () => (move) =>
@@ -223,14 +222,16 @@ export const othersMoveTheWork = property.exhaust(finite(otherMoves), {
 			const standing = standingOf({ began: windowOf(move).window, ...windowOf(move) })
 			assert.equal(
 				standing.kind,
-				move === "a child waited to run all the window" || move === "a child stored"
+				move === "a child waited to run all the window" ||
+					move === "a child stored" ||
+					move === "a holder of its backend's lock worked"
 					? "working"
 					: "stalled"
 			)
 		}),
 	oracle: {
 		kind: "specification",
-		name: "a window is stalled when a whole deadline of time the work could have run (its wall time outside declared waits, less its processes' waits to run) passed with its CPU short of progress and none of its processes doing storage work: a wait to run is never a move, so a thread that waited to run for progress and slept the rest is stalled, and a child starved for all the window leaves no time it could have run, so it is working"
+		name: "a window is stalled when a whole deadline of time the work could have run (its wall time outside declared waits, less its processes' waits to run) passed with its CPU, and the CPU carrying its backends' waits (runner/backends.ts), short of progress and none of its processes doing storage work: a wait to run is never a move, so a thread that waited to run for progress and slept the rest is stalled, a child starved for all the window leaves no time it could have run, so it is working, and a backend behind a lock whose holder spent progress is working"
 	},
 	kept: [],
 	kills: [
@@ -260,6 +261,12 @@ export const othersMoveTheWork = property.exhaust(finite(otherMoves), {
 			original: "\tif (whole && moved < progress && !storedBetween(window, now)) {",
 			replacement: "\tif (whole && moved + queued < progress && !storedBetween(window, now)) {",
 			why: "A wait to run counts as progress, as it did: a thread whose wake-ups waited to run for progress reads as working, so the watchdog's planted thread that waits a second at a time was never ended under trunk@toolchain's load (floor case 2 of seed 0xa5b59f36, 2026-11-22); the property fails on that thread."
+		},
+		{
+			file: "packages/testing/src/runner/work.ts",
+			original: "\tconst moved = now.cpu + now.carried - (window.cpu + window.carried)\n",
+			replacement: "\tconst moved = now.cpu - window.cpu\n",
+			why: "The CPU carrying a backend's wait is no move, as a statement was its client's silence: a case whose statement waits behind a lock another session holds while it works is stalled, as RECORDS-ATTACH's live cases were judged hung behind SSI waits (2026-11-21: 25 ms of CPU over 60 s); the property fails on the holder that worked."
 		},
 		{
 			file: "packages/testing/src/runner/work.ts",
@@ -319,39 +326,6 @@ export const waitingToRunIsNoProgress = property.explore(waitingThreads, {
 			original: "\tconst over = now.wall - window.wall - waited - queued\n",
 			replacement: "\tconst over = now.wall - window.wall - waited\n",
 			why: "A wait to run is not taken out of the window's time, so a thread the machine starved has a whole window in which it spent nothing, and is stalled though it could not run (the starved app servers of trunk@metis's browser runs, 86 to 96 s of 95 on the run queue, 2026-11-22); the property fails on the starved thread."
-		}
-	]
-})
-
-export const unansweredClaimIsJudged = property.exhaust(finite(deadlocks), {
-	box: "a case waiting inside a declared wait whose claim is asked and never answers, under each deadline",
-	needs: {},
-	situations: [],
-	check: () => (shape) =>
-		Effect.gen(function* () {
-			const verdict = yield* Effect.raceFirst(
-				Effect.map(
-					searchedAt(
-						unansweredClaimCase(shape),
-						innerRun("work/unanswered", INNER_SEED, shape.deadline)
-					),
-					verdictKind
-				),
-				Effect.as(liveSleep(Duration.millis(shape.deadline * UNJUDGED_DEADLINES)), "never judged")
-			)
-			assert.equal(verdict, "hung")
-		}),
-	oracle: {
-		kind: "specification",
-		name: "a guard never blocks on its own claim check: a case inside a declared wait whose server takes the ask and never answers is judged hung, by the waited leg its wait leaves it to (grizzle, 2026-11-22)"
-	},
-	kept: [],
-	kills: [
-		{
-			file: "packages/testing/src/runner/work.ts",
-			original: "\t\t\t\t\tyield* Effect.forkDetach(\n",
-			replacement: "\t\t\t\t\tyield* Effect.asVoid(\n",
-			why: "A reading waits for its claim's answer, as it did: a member that takes the ask and never answers holds the guard's reading for good, so the case is never judged (trunk@toolchain at e8b7ecec, 2026-11-22: a kill trial waited 69 minutes on a check's connect); the property fails, never judged."
 		}
 	]
 })

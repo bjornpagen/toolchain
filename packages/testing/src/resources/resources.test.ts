@@ -13,7 +13,6 @@ import {
 	Duration,
 	Effect,
 	Exit,
-	Fiber,
 	FileSystem,
 	Layer,
 	Number as Num,
@@ -22,14 +21,14 @@ import {
 	Scope,
 	String as Str
 } from "effect"
+import { ChildProcessSpawner } from "effect/process"
 import { assert } from "#assert.ts"
 import { awaitFact } from "#fact.ts"
 import type { Reached } from "#features.ts"
-import { array, boolean, finite, int } from "#gen.ts"
-import { liveSleep, overrun, ownWorkNow, waitingOn, waitingOnWork } from "#live.ts"
+import { array, boolean, element, finite, int } from "#gen.ts"
+import { liveSleep, overrun, ownWorkNow, waitingOn } from "#live.ts"
 import { Checkout } from "#mutate/checkout.ts"
-import { backendWorking } from "#pg/session.ts"
-import { type Case, property, ReplayToken } from "#property.ts"
+import { type Case, property } from "#property.ts"
 import { PgCluster, quoteIdent, run as runIn, single } from "#resources/cluster.ts"
 import {
 	type CollectionPhase,
@@ -39,6 +38,9 @@ import {
 } from "#resources/collect.ts"
 import { Database } from "#resources/database.ts"
 import {
+	BUILD_READ_CASES,
+	BUILD_READ_CHANGES,
+	type BuildReadChange,
 	claimedBy,
 	claimsGone,
 	derivedMarksTemplate,
@@ -52,16 +54,22 @@ import {
 	ownCluster,
 	runsOf,
 	services,
+	backendShapes,
+	busyFor,
+	outsideSession,
 	superuserSessionIn,
 	superuserSessions,
 	fixturesModule,
 	freshHex,
+	removedElsewhere,
 	templateNameOf,
 	tokenTemplate,
 	UTF8_COLLATIONS,
-	undeclaredSession
+	undeclaredSession,
+	writtenElsewhere
 } from "#resources/resources.fixtures.ts"
 import type { DatabaseTemplate } from "#resources/template.ts"
+import { collectedOf } from "#runner/collected.ts"
 import { defineRunner, noMutation } from "#runner/config.ts"
 import { collectedAround } from "#runner/run.ts"
 import { runValuesOf } from "#runner/runs.ts"
@@ -211,8 +219,9 @@ export const derivedKeepsItsOrigin = property.explore(int(0, 3), {
 	kills: [
 		{
 			file: "packages/testing/src/resources/template.ts",
-			original: "\t\t\t\t\tonSome: (origin) => replayed(origin.name, building)\n",
-			replacement: "\t\t\t\t\tonSome: () => Effect.void\n",
+			original:
+				"\t\t\t\t\tEffect.flatMap(replayOf(owner, origin.name), (inherited) =>\n\t\t\t\t\t\treplayedOn(cluster, member, gate, inherited(quoteIdent(building)))\n\t\t\t\t\t)\n",
+			replacement: "\t\t\t\t\tEffect.void\n",
 			why: "A template built from another is copied without its origin's settings and privileges, as before: grizzle's installTemplate over its base lost default_transaction_isolation and deadlock_timeout, and a build that writes failed (GZ-PG-RUNTIME); this property fails."
 		}
 	]
@@ -771,6 +780,141 @@ export const runnersKeepTheirOwnTemplates = property.exhaust(finite(boolean), {
 	]
 })
 
+export const aTemplateStandsWhileWhatItsBuildReadStands = property.exhaust(
+	finite((source): BuildReadChange => source.draw(element(BUILD_READ_CHANGES))),
+	{
+		box: "a template whose build reads a file another process wrote, opened by one runner, the file then left as it was, rewritten alike or otherwise, or rewritten while the first build ran, and opened by a second runner on a cluster scope of its own",
+		needs: { services },
+		situations: [],
+		check:
+			({ services: context }) =>
+			(change) =>
+				Effect.gen(function* () {
+					const ctx = yield* context
+					const worker = Context.get(ctx, WorkerIndex)
+					const runnerClosures = Context.get(ctx, ModuleClosure)
+					const made = BUILD_READ_CASES[change]
+					const outcome = yield* Effect.scoped(
+						Effect.gen(function* () {
+							const prefixToken = yield* Effect.provideContext(
+								Effect.gen(function* () {
+									const cluster = yield* PgCluster
+									const member = yield* cluster.memberAt(0)
+									return yield* Effect.scoped(
+										Effect.flatMap(cluster.connect(member, cluster.maintenance), (session) =>
+											single(session, freshHex, [])
+										)
+									)
+								}),
+								ctx
+							)
+							const prefix = `tbr${prefixToken ?? ""}_`
+							const directory = `${process.getBuiltinModule("node:os").tmpdir()}/toolchain-build-reads-${prefix}`
+							const file = `${directory}/read.txt`
+							yield* Effect.acquireRelease(writtenElsewhere(file, "first"), () =>
+								Effect.ignore(removedElsewhere(directory))
+							)
+							const builds = { first: 0, second: 0 }
+							const opening: { by: "first" | "second" } = { by: "first" }
+							const template = tokenTemplate(prefix, () =>
+								Effect.gen(function* () {
+									builds[opening.by] += 1
+									process.getBuiltinModule("node:fs").readFileSync(file, "utf8")
+									if (made.whileBuilt && opening.by === "first" && builds.first === 1) {
+										yield* writtenElsewhere(file, "rewritten while it was built")
+									}
+								})
+							)
+							/**
+							 * An open of the template by a runner of the checkout on a cluster scope of its own for the effect's
+							 * life, as a worker of another run opens it: its own owner session, holds and claims.
+							 */
+							const asRunner = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+								Effect.scoped(
+									Effect.flatMap(Layer.build(ownCluster(prefix)), (cluster) =>
+										Effect.provide(
+											effect,
+											Context.merge(
+												cluster,
+												Context.make(ModuleClosure, {
+													root: runnerClosures.root,
+													hashOf: () => runnerClosures.hashOf(fixturesModule)
+												}).pipe(
+													Context.add(WorkerIndex, worker),
+													Context.add(RunValues, runValuesOf([]))
+												)
+											)
+										)
+									)
+								)
+							const opened = Effect.flatMap(template.open, (open) => Effect.scoped(open.clone))
+							const first = yield* asRunner(opened)
+							yield* Effect.forEach(made.rewrites, (text) => writtenElsewhere(file, text), {
+								discard: true
+							})
+							opening.by = "second"
+							const [second, collected] = yield* opened.pipe(collectedOf, asRunner)
+							yield* asRunner(Effect.andThen(claimsGone(first.member, prefix), collect))
+							return {
+								builds,
+								same: first.template === second.template,
+								read: Arr.some(
+									collected.reads,
+									(read) => read.kind === "file" && read.path === file
+								)
+							}
+						})
+					)
+					assert.deepEqual(
+						{
+							rebuiltWhileRead: !made.whileBuilt || outcome.builds.first > 1,
+							builtAgain: outcome.builds.second > 0,
+							same: outcome.same,
+							read: outcome.read
+						},
+						{
+							rebuiltWhileRead: true,
+							builtAgain: made.builtAgain,
+							same: !made.builtAgain,
+							read: true
+						}
+					)
+				}),
+		oracle: {
+			kind: "specification",
+			name: "a template stands exactly while every file its build read reads alike: an open after the file was left or rewritten alike builds nothing and takes the first build, one after it was rewritten otherwise builds anew under another name, a build whose read changed while it ran is built again, and every open that did not build it is given its build's reads"
+		},
+		kept: [],
+		kills: [
+			{
+				file: "packages/testing/src/resources/template.ts",
+				original: "\t\t\t\t\t\t\treads: Arr.map(reads.reads, (read) => ({ ...read })),\n",
+				replacement: "\t\t\t\t\t\t\treads: [],\n",
+				why: "A template keeps none of its build's reads, so it stands whatever its build read: a schema's SQL rewritten leaves its old template in use, and the open after the file was rewritten otherwise takes the stale template; the property fails."
+			},
+			{
+				file: "packages/testing/src/runner/observe.ts",
+				original:
+					'\t\t\ttraced(read.kind, read.path, "a database template\'s build", guard.collecting())\n',
+				replacement: "\t\t\tvoid read\n",
+				why: "An open that finds its template standing is given none of its build's reads, so a verdict cached over a template another worker or run built answers after a file its build read changed; the open after the file was left is given no read of it, and the property fails."
+			},
+			{
+				file: "packages/testing/src/runner/observe.ts",
+				original: "\t\tinto?.reads.push({ kind, path: file })\n",
+				replacement: "",
+				why: "A build's reads are collected from none of its acts, so its template keeps no read and stands whatever its build read; the property fails."
+			},
+			{
+				file: "packages/testing/src/resources/template.ts",
+				original: "\t\t\t\tchanged = changed || standing.changed >= began\n",
+				replacement: "\t\t\t\tchanged = changed && standing.changed >= began\n",
+				why: "A build one of whose reads changed while it ran is kept, under the digest of what the file holds after, which its database may not hold; the file rewritten while the first build ran is built once, and the property fails."
+			}
+		]
+	}
+)
+
 export const claimedTemplatesKept = property.exhaust(finite(boolean), {
 	box: "a template no live worker holds, claimed by another checkout that exists or was removed",
 	needs: { services },
@@ -935,12 +1079,6 @@ export const inUseKept = property.exhaust(
 					'\t\t\t\t\t!(yield* took(collector, lockKey("$1"), digest)) ||\n\t\t\t\t\t(database.kind === "template" && !(yield* took(collector, useKey("$1"), digest)))',
 				replacement: '\t\t\t\t\t!(yield* took(collector, lockKey("$1"), digest))',
 				why: "Collection drops a template whatever worker holds it in use; this property fails."
-			},
-			{
-				file: "packages/testing/src/resources/template.ts",
-				original: "\t\t\tonSome: (origin) => holdInUse(owner, origin)",
-				replacement: "\t\t\tonSome: () => Effect.void",
-				why: "An opener holds its template in use but not the origin it was built from, which another run's collection then drops under a live worker; this property fails."
 			}
 		]
 	}
@@ -1142,8 +1280,8 @@ export const freshInItsLocale = property.explore(localeCases, {
  * wrongly; with its CPU leg at its 150 ms deadline, the clone, the sessions and the claim checks spent it under
  * trunk@toolchain's load at 93f4cedc, a verdict on the case's CPU, never on its wait (2026-11-22).
  */
-export const cloneDropWaitIsDeclared = property.exhaust(finite(deadlocks), {
-	box: "a clone's drop held for six deadlines by a lock a session in the clone holds while it works, under a deadline of 150 or 300 ms",
+export const cloneDropBehindAWorkingHolder = property.exhaust(finite(backendShapes), {
+	box: "a clone's drop held for four deadlines by a lock a session in the clone holds while it works, under a deadline of 1 or 2 s",
 	needs: { services },
 	situations: [],
 	check:
@@ -1156,31 +1294,22 @@ export const cloneDropWaitIsDeclared = property.exhaust(finite(deadlocks), {
 							const opened = yield* marksTemplate.open
 							const outer = yield* Effect.scope
 							const holding = yield* Scope.make()
-							const named = yield* Deferred.make<string>()
-							const seen =
-								yield* Deferred.make<Readonly<{ open: ReadonlyArray<string>; survived: boolean }>>()
-							const held = Duration.millis(shape.deadline * shape.deadlines)
+							const survivedHold = yield* Deferred.make<boolean>()
+							const held = shape.deadline * shape.deadlines
 							const dropped = Effect.scoped(
 								Effect.gen(function* () {
 									const clone = yield* opened.clone
-									yield* Deferred.succeed(named, clone.name)
-									const holder = yield* waitingOn("the holder's sign-in and its lock")(
-										Effect.gen(function* () {
-											const signedIn = yield* Scope.provide(
-												undeclaredSession(clone.member, clone.name),
-												holding
-											)
-											yield* signedIn("BEGIN")
-											yield* signedIn(`COMMENT ON DATABASE ${quoteIdent(clone.name)} IS 'held'`)
-											return signedIn
-										})
+									const holder = yield* Scope.provide(
+										undeclaredSession(clone.member, clone.name),
+										holding
 									)
+									yield* holder("BEGIN")
+									yield* holder(`COMMENT ON DATABASE ${quoteIdent(clone.name)} IS 'held'`)
 									const released = Effect.gen(function* () {
-										yield* holder(`SELECT pg_catalog.pg_sleep(${Duration.toSeconds(held)})`)
-										const open = waitedOnNow()
+										yield* holder(busyFor(held))
 										yield* holder("COMMIT")
 										const survived = yield* Effect.isSuccess(holder("SELECT 1"))
-										yield* Deferred.succeed(seen, { open, survived })
+										yield* Deferred.succeed(survivedHold, survived)
 										yield* Scope.close(holding, Exit.void)
 									})
 									yield* Effect.forkIn(Effect.orDie(released), outer)
@@ -1198,19 +1327,8 @@ export const cloneDropWaitIsDeclared = property.exhaust(finite(deadlocks), {
 									overrunText
 								)
 							)
-							const clone = yield* Deferred.await(named)
-							const after = yield* Deferred.await(seen)
-							assert.deepEqual(
-								{
-									verdict,
-									named: Arr.some(
-										after.open,
-										Str.startsWith(`DROP DATABASE IF EXISTS ${quoteIdent(clone)} (`)
-									),
-									survived: after.survived
-								},
-								{ verdict: "passed", named: true, survived: true }
-							)
+							const survived = yield* Deferred.await(survivedHold)
+							assert.deepEqual({ verdict, survived }, { verdict: "passed", survived: true })
 						})
 					),
 					ctx
@@ -1218,30 +1336,10 @@ export const cloneDropWaitIsDeclared = property.exhaust(finite(deadlocks), {
 			),
 	oracle: {
 		kind: "specification",
-		name: "a clone's drop that waits on the member past its case's deadline, behind a lock a session in the clone holds while it works, is a declared wait named by its statement: the case's guard judges none of it, this process's open waits name it while it waits, and it ends no session in the clone"
+		name: "a clone's drop that waits on the member past its case's deadline, behind a lock a session in the clone holds while it works, is its tree's work: the case's guard judges none of it, and the drop ends no session in the clone"
 	},
-	kept: [
-		{
-			token: ReplayToken("src/resources/resources.test.ts#cloneDropWaitIsDeclared:-:0"),
-			reason:
-				"a drop held 900 ms behind a working holder, whose case spent its 150 ms of CPU on the clone, the sessions and the claim checks under trunk@toolchain's load at 93f4cedc, judged spent where the property judges the stall alone (2026-11-22)",
-			since: "2026-11-22"
-		}
-	],
+	kept: [],
 	kills: [
-		{
-			file: "packages/testing/src/pg/session.ts",
-			original: "\t\t\t\twaitingOnWork(\n",
-			replacement:
-				"\t\t\t\t((_on: string, _working: unknown) => (effect: Effect.Effect<Array<Array<unknown>>, NeedFailed>) => effect)(\n",
-			why: "The library's statements are no declared waits, as its clone DDL was: a clone's drop behind the member's work is the case's silence, and its guard judges it hung (metis's 5451, 2026-11-20: hung at 22 ms of CPU over 60 s inside a clone's DROP DATABASE); the property fails, the drop judged."
-		},
-		{
-			file: "packages/testing/src/runner/work.ts",
-			original: "\tledger.open = [...ledger.open, { id, on, claim }]\n",
-			replacement: '\tledger.open = [...ledger.open, { id, on: "", claim }]\n',
-			why: "A declared wait names nothing, so a verdict on a case inside one says only that it waited, not on what; the property fails, the drop's wait unnamed."
-		},
 		{
 			file: "packages/testing/src/resources/template.ts",
 			original: 'databaseDroppedOn(owner.session, made, "awaited")',
@@ -1251,8 +1349,8 @@ export const cloneDropWaitIsDeclared = property.exhaust(finite(deadlocks), {
 	]
 })
 
-export const sessionStatementIsDeclared = property.exhaust(finite(deadlocks), {
-	box: "a statement of a case's own session that sleeps six deadlines server-side, under a deadline of 150 or 300 ms",
+export const statementWorkIsTheCases = property.exhaust(finite(backendShapes), {
+	box: "a statement of a case's own session whose backend works four deadlines, under a deadline of 1 or 2 s",
 	needs: { services },
 	situations: [],
 	check:
@@ -1266,14 +1364,16 @@ export const sessionStatementIsDeclared = property.exhaust(finite(deadlocks), {
 							const opened = yield* marksTemplate.open
 							const clone = yield* opened.clone
 							const session = yield* cluster.connect(clone.member, clone.name)
-							const seconds = (shape.deadline * shape.deadlines) / 1000
 							const work = yield* ownWorkNow
 							const verdict = yield* Effect.raceFirst(
-								Effect.as(
-									session.query("SELECT pg_catalog.pg_sleep($1::float8)", [String(seconds)]),
-									"passed"
-								),
-								Effect.map(overrun(work, deadlineBound(shape.deadline)), overrunText)
+								Effect.as(session.query(busyFor(shape.deadline * shape.deadlines), []), "passed"),
+								Effect.map(
+									overrun(work, {
+										...deadlineBound(shape.deadline),
+										cpu: Number.POSITIVE_INFINITY
+									}),
+									overrunText
+								)
 							)
 							assert.equal(verdict, "passed")
 						})
@@ -1283,21 +1383,21 @@ export const sessionStatementIsDeclared = property.exhaust(finite(deadlocks), {
 			),
 	oracle: {
 		kind: "specification",
-		name: "a statement of a session the library opens that the member keeps busy past its case's deadline, spending no CPU of the case's process, is a declared wait: the case's guard judges none of it"
+		name: "a statement whose backend works past its case's deadline, spending no CPU of the case's process, is the case's work: its backend, the peer of a socket the process holds, is counted, and the guard judges none of it"
 	},
 	kept: [],
 	kills: [
 		{
-			file: "packages/testing/src/pg/session.ts",
-			original: "\t\t\t\t\tbackendWorking(member, pid)\n",
-			replacement: "\t\t\t\t\tEffect.succeed(false)\n",
-			why: "A statement's claim is read as false whatever its backend does, so a statement the member holds up server-side (under SERIALIZABLE contention, a large install's about 2 s on the SSI locks) lapses at the guard's first reading and is the case's silence, and its guard judges a live case hung (RECORDS-ATTACH, 2026-11-21: 25 ms of CPU over 60 s); the property fails, the sleep judged."
+			file: "packages/testing/src/runner/work.ts",
+			original: "\t\treturn { cpu: own.cpu, stir: own.stir, carried: carrying.cpu }\n",
+			replacement: "\t\treturn { cpu: 0, stir: noStir, carried: carrying.cpu }\n",
+			why: "A backend's CPU is not counted, as no client's statement was: a statement the member works on past the deadline is the case's silence, and its guard judges a live case hung under load (RECORDS-ATTACH, 2026-11-21: 25 ms of CPU over 60 s; qti-pie's pantry run a1b, 2026-11-25: false 60 s failures); the property fails, the work judged stalled."
 		}
 	]
 })
 
-export const unansweredStatementIsHung = property.exhaust(finite(deadlocks), {
-	box: "a statement's declared wait whose answer never comes while its backend sits idle, under a deadline of 150 or 300 ms",
+export const siblingWorkIsNoCases = property.exhaust(finite(backendShapes), {
+	box: "a case whose own session sits idle while another process's session in the same database works, under a deadline of 1 or 2 s",
 	needs: { services },
 	situations: [],
 	check:
@@ -1310,19 +1410,15 @@ export const unansweredStatementIsHung = property.exhaust(finite(deadlocks), {
 							const cluster = yield* PgCluster
 							const opened = yield* marksTemplate.open
 							const clone = yield* opened.clone
+							const sibling = yield* outsideSession(clone.member, clone.name)
+							yield* sibling(busyFor(shape.deadline * 40))
 							const session = yield* cluster.connect(clone.member, clone.name)
-							const pid = yield* single(session, "SELECT pg_catalog.pg_backend_pid()::text", [])
+							yield* runIn(session, "SELECT '1'", [])
 							const work = yield* ownWorkNow
 							const verdict = yield* Effect.raceAll([
-								Effect.as(
-									waitingOnWork(
-										"a planted statement whose answer never comes",
-										backendWorking(clone.member, Number(pid))
-									)(Effect.never),
-									"answered"
-								),
+								Effect.as(Effect.never, "answered"),
 								Effect.map(overrun(work, deadlineBound(shape.deadline)), (judged) => judged.kind),
-								Effect.as(liveSleep(Duration.millis(shape.deadline * 40)), "never judged")
+								Effect.as(liveSleep(Duration.millis(shape.deadline * 20)), "never judged")
 							])
 							assert.equal(verdict, "stalled")
 						})
@@ -1332,63 +1428,49 @@ export const unansweredStatementIsHung = property.exhaust(finite(deadlocks), {
 			),
 	oracle: {
 		kind: "specification",
-		name: "a declared wait on a statement whose backend sits idle, its answer never coming, is checked against the member and judged: the stall leg counts it from the reading that found its backend idle"
+		name: "a case's backends are those whose client is its own process tree, never a database's: another process's session working in the case's database lends the case nothing, and a case whose own session sits idle is judged a stall"
 	},
 	kept: [],
 	kills: [
 		{
-			file: "packages/testing/src/runner/work.ts",
-			original: "\t\t\t\t\tleaveWait(since, id)\n",
-			replacement: "\t\t\t\t\tledger.idle.set(id, since)\n",
-			why: "A declared wait's claim is never held against its server, as every wait was a claim alone: a statement whose answer never comes, its backend idle (a promise node-postgres never settles, a backend gone), keeps its case's guard blind for good, and the run waits with nothing reported (JUDGEWRITE's 19 rule-* modules, 2026-11-21: 30 minutes flat, its backends idle in ClientRead); the property fails, never judged."
+			file: "packages/testing/src/runner/backends.ts",
+			original:
+				"\t\t\t\t? Option.toArray(Option.fromUndefinedOr(ledger.served.get(client.peer)))\n",
+			replacement: "\t\t\t\t? Arr.fromIterable(ledger.served.values())\n",
+			why: "Every backend a server serves is counted, as a database's name would count them: a sibling case's work on the shared server moves a hung case, so it is never judged (QP-GATE, 2026-11-25: vitest's sibling files share the lease databases); the property fails, never judged."
 		}
 	]
 })
 
 export const pollLoopIsHung = property.exhaust(finite(deadlocks), {
-	box: "a case that polls a statement of its own session one after another for good, each answered, under a deadline of 150 or 300 ms",
-	needs: { services },
+	box: "a case whose declared waits follow one another for good, each of them ending, under a deadline of 150 or 300 ms",
+	needs: {},
 	situations: [],
-	check:
-		({ services: context }) =>
-		(shape) =>
-			Effect.flatMap(context, (ctx) =>
-				Effect.provideContext(
-					Effect.scoped(
-						Effect.gen(function* () {
-							const cluster = yield* PgCluster
-							const opened = yield* marksTemplate.open
-							const clone = yield* opened.clone
-							const session = yield* cluster.connect(clone.member, clone.name)
-							const work = yield* ownWorkNow
-							const verdict = yield* Effect.raceAll([
-								Effect.as(
-									Effect.forever(
-										Effect.andThen(
-											session.query("SELECT pg_catalog.pg_sleep(0.05)", []),
-											Effect.yieldNow
-										)
-									),
-									"ended"
-								),
-								Effect.map(
-									overrun(work, {
-										...deadlineBound(shape.deadline),
-										cpu: Number.POSITIVE_INFINITY
-									}),
-									(judged) => judged.kind
-								),
-								Effect.as(liveSleep(Duration.millis(shape.deadline * 60)), "never judged")
-							])
-							assert.equal(verdict, "waited")
-						})
-					),
-					ctx
-				)
-			),
+	check: () => (shape) =>
+		Effect.gen(function* () {
+			const work = yield* ownWorkNow
+			const verdict = yield* Effect.raceAll([
+				Effect.as(
+					Duration.millis(50).pipe(liveSleep, waitingOn("the poll's wait"), Effect.forever),
+					{
+						kind: "ended",
+						named: false
+					}
+				),
+				Effect.map(
+					overrun(work, { ...deadlineBound(shape.deadline), cpu: Number.POSITIVE_INFINITY }),
+					(judged) => ({ kind: judged.kind, named: Arr.contains(waitedOnNow(), "the poll's wait") })
+				),
+				Effect.as(liveSleep(Duration.millis(shape.deadline * 60)), {
+					kind: "never judged",
+					named: false
+				})
+			])
+			assert.deepEqual(verdict, { kind: "waited", named: true })
+		}),
 	oracle: {
 		kind: "specification",
-		name: "a case whose declared waits follow one another for good, each answered by a backend that works on it, is judged once they have held it its bound's waited wall time in all, its leg the waits"
+		name: "a case whose declared waits follow one another for good, each ending, is judged once they have held it its bound's waited wall time in all, its leg the waits, and the waits open then are named"
 	},
 	kept: [],
 	kills: [
@@ -1396,13 +1478,19 @@ export const pollLoopIsHung = property.exhaust(finite(deadlocks), {
 			file: "packages/testing/src/runner/work.ts",
 			original: "\tif (waitedAll >= bound.waited) {\n",
 			replacement: "\tif (waitedAll < 0) {\n",
-			why: "Declared waits hold a case for as long as they follow one another, so a poll of statements with nothing between them, each answered, never makes a stall window whole and never spends the case's CPU, and the case is never judged (trunk@grizzle's pg tier at f1bf91a2f, 2026-11-22: three hours in budget.test.ts's barrier, ended by hand); the property fails, never judged."
+			why: "Declared waits hold a case for as long as they follow one another, so a poll of waits with nothing between them never makes a stall window whole and never spends the case's CPU, and the case is never judged (trunk@grizzle's pg tier at f1bf91a2f, 2026-11-22: three hours in budget.test.ts's barrier, ended by hand); the property fails, never judged."
+		},
+		{
+			file: "packages/testing/src/runner/work.ts",
+			original: "\tledger.open = [...ledger.open, { id, on }]\n",
+			replacement: '\tledger.open = [...ledger.open, { id, on: "" }]\n',
+			why: "A declared wait names nothing, so a verdict on a case inside one says only that it waited, not on what; the property fails, the poll's wait unnamed."
 		}
 	]
 })
 
-export const lockedStatementIsDeclared = property.exhaust(finite(deadlocks), {
-	box: "a statement of a case's session behind a lock another process's session holds while it works for six deadlines, under a deadline of 150 or 300 ms",
+export const lockedBehindAWorkingHolderIsWork = property.exhaust(finite(backendShapes), {
+	box: "a statement of a case's session behind a lock another process's session holds while it works four deadlines, under a deadline of 1 or 2 s",
 	needs: { services },
 	situations: [],
 	check:
@@ -1415,20 +1503,28 @@ export const lockedStatementIsDeclared = property.exhaust(finite(deadlocks), {
 							const cluster = yield* PgCluster
 							const opened = yield* marksTemplate.open
 							const clone = yield* opened.clone
-							const holder = yield* undeclaredSession(clone.member, clone.name)
 							const waiter = yield* cluster.connect(clone.member, clone.name)
 							yield* runIn(waiter, "CREATE TABLE held (x int)", [])
+							const holder = yield* outsideSession(clone.member, clone.name)
 							yield* holder("BEGIN")
 							yield* holder("LOCK TABLE held IN ACCESS EXCLUSIVE MODE")
-							const seconds = (shape.deadline * shape.deadlines) / 1000
-							const holding = yield* Effect.forkScoped(
-								Effect.andThen(holder(`SELECT pg_catalog.pg_sleep(${seconds})`), holder("COMMIT"))
+							yield* holder(busyFor(shape.deadline * shape.deadlines))
+							yield* holder("COMMIT")
+							yield* awaitFact(
+								Effect.map(
+									single(
+										waiter,
+										"SELECT count(*)::text FROM pg_catalog.pg_locks WHERE relation = 'held'::regclass AND granted",
+										[]
+									),
+									(granted) => (granted === "1" ? Option.some(true) : Option.none())
+								)
 							)
 							const work = yield* ownWorkNow
 							const verdict = yield* Effect.raceFirst(
 								Effect.as(waiter.query("SELECT count(*)::text FROM held", []), "passed"),
 								Effect.map(overrun(work, deadlineBound(shape.deadline)), overrunText)
-							).pipe(Effect.ensuring(Effect.orDie(Fiber.join(holding))))
+							)
 							assert.equal(verdict, "passed")
 						})
 					),
@@ -1437,22 +1533,22 @@ export const lockedStatementIsDeclared = property.exhaust(finite(deadlocks), {
 			),
 	oracle: {
 		kind: "specification",
-		name: "a statement the member holds behind a lock whose holder works is its backend's work, checked as working, and the case's guard judges none of it"
+		name: "a statement the member holds behind a lock whose holder, another process's session, works is carried by the holder's CPU (runner/backends.ts Carriers): the case's guard judges none of it, and the holder's CPU spends none of the case's budget"
 	},
 	kept: [],
 	kills: [
 		{
 			file: "packages/testing/src/pg/session.ts",
 			original:
-				"\t\tWHERE h.state = 'idle' OR (h.state = 'active' AND h.wait_event_type IS DISTINCT FROM 'Lock')\n",
+				"\t\tWHERE blockers.waiter = asked.pid AND h.state = 'active' AND h.wait_event_type IS DISTINCT FROM 'Lock'\n",
 			replacement: "\t\tWHERE false\n",
-			why: "A backend behind a heavyweight lock reads as working on nothing whoever holds the lock, so a statement the member holds up behind another session's work lapses at the guard's first reading and its live case is judged hung; the property fails, the locked read judged."
+			why: "A backend behind a lock is carried by no holder, as a statement was its client's silence: a case whose statement waits behind another session's work is stalled, as RECORDS-ATTACH's live cases were judged hung behind SSI waits (2026-11-21); the property fails, the locked read judged."
 		}
 	]
 })
 
-export const lockedByItsClientIsHung = property.exhaust(finite(deadlocks), {
-	box: "a statement of a case's session behind a lock a session holds idle in its transaction, under a deadline of 150 or 300 ms",
+export const lockedByAnIdleHolderIsHung = property.exhaust(finite(backendShapes), {
+	box: "a statement of a case's session behind a lock a session holds idle in its transaction, while another process's session works on the same server, under a deadline of 1 or 2 s",
 	needs: { services },
 	situations: [],
 	check:
@@ -1465,6 +1561,8 @@ export const lockedByItsClientIsHung = property.exhaust(finite(deadlocks), {
 							const cluster = yield* PgCluster
 							const opened = yield* marksTemplate.open
 							const clone = yield* opened.clone
+							const sibling = yield* outsideSession(clone.member, clone.name)
+							yield* sibling(busyFor(shape.deadline * 40))
 							const holder = yield* undeclaredSession(clone.member, clone.name)
 							const waiter = yield* cluster.connect(clone.member, clone.name)
 							yield* runIn(waiter, "CREATE TABLE held (x int)", [])
@@ -1474,7 +1572,7 @@ export const lockedByItsClientIsHung = property.exhaust(finite(deadlocks), {
 							const verdict = yield* Effect.raceAll([
 								Effect.as(waiter.query("SELECT count(*)::text FROM held", []), "answered"),
 								Effect.map(overrun(work, deadlineBound(shape.deadline)), (judged) => judged.kind),
-								Effect.as(liveSleep(Duration.millis(shape.deadline * 40)), "never judged")
+								Effect.as(liveSleep(Duration.millis(shape.deadline * 20)), "never judged")
 							]).pipe(Effect.ensuring(Effect.orDie(holder("ROLLBACK"))))
 							assert.equal(verdict, "stalled")
 						})
@@ -1484,15 +1582,17 @@ export const lockedByItsClientIsHung = property.exhaust(finite(deadlocks), {
 			),
 	oracle: {
 		kind: "specification",
-		name: "a declared wait on a statement behind a lock that only a session idle in its transaction holds waits on a client, not on the member: it is judged, the stall leg counting it from the reading that found it so"
+		name: "a statement behind a lock that only a session idle in its transaction holds waits on a client, not on the member: no holder carries it, the server's other work lends it nothing, and it is judged a stall"
 	},
 	kept: [],
 	kills: [
 		{
 			file: "packages/testing/src/pg/session.ts",
-			original: "\tWHEN a.wait_event_type IS DISTINCT FROM 'Lock' THEN true\n",
-			replacement: "\tWHEN true THEN true\n",
-			why: "A backend behind a heavyweight lock works whoever holds it, so a case whose own session holds the lock idle in its transaction while its client awaits the statement behind it is never judged (grizzle's budget.test.ts under its first kill, 2026-11-22: its cleanup closed a pool before the holder, the pool's reads behind the holder, 14 to 73 minutes and more with no verdict); the property fails, never judged."
+			original:
+				"\t\tSELECT h.pid::text FROM blockers JOIN pg_catalog.pg_stat_activity AS h ON h.pid = blockers.pid\n",
+			replacement:
+				"\t\tSELECT h.pid::text FROM pg_catalog.pg_stat_activity AS h CROSS JOIN (SELECT asked.pid AS waiter) AS blockers\n",
+			why: "A backend behind a lock is carried by every working backend of its server, whoever holds the lock, as a claim read a lock wait as work: a case whose own session holds the lock idle in its transaction while its client awaits the statement behind it is moved by others' work and never judged (grizzle's budget.test.ts under its first kill, 2026-11-22: 14 to 73 minutes and more with no verdict); the property fails, never judged."
 		}
 	]
 })
@@ -1562,6 +1662,84 @@ export const roleSettingCloned = property.explore(int(0, 3), {
 				"\t\t\t\t\tEffect.flatMap(cluster.superuser(member, cluster.maintenance), (superuser) =>\n",
 			replacement: "\t\t\t\t\tEffect.flatMap(Effect.succeed(session), (superuser) =>\n",
 			why: "A clone's role settings are made again on the owner's session, as they were: a role the build's superuser made is none the owner holds the ADMIN option on, and the server refuses its setting, so every clone of the template fails (5442, 2026-11-20: grizzle's laws/families and laws/projections, 42501); the property fails."
+		}
+	]
+})
+
+export const buildLeftSessionsEmptied = property.exhaust(finite(int(1, 3)), {
+	box: "a template whose build leaves one to three sessions of the bootstrap superuser open in its build database past its end",
+	needs: { services },
+	situations: [],
+	check:
+		({ services: context }) =>
+		(leftOpen) =>
+			Effect.flatMap(context, (ctx) =>
+				Effect.provideContext(
+					Effect.scoped(
+						Effect.gen(function* () {
+							const outer = yield* Effect.scope
+							const cluster = yield* PgCluster
+							const member = yield* cluster.memberAt(0)
+							const token = yield* Effect.scoped(
+								Effect.flatMap(cluster.connect(member, cluster.maintenance), (session) =>
+									single(session, freshHex, [])
+								)
+							)
+							const inBuild = yield* Effect.context<
+								ChildProcessSpawner.ChildProcessSpawner | PgCluster
+							>()
+							const template = tokenTemplate(`left open ${token ?? ""}`, (target) =>
+								Effect.provideContext(
+									Effect.asVoid(
+										Effect.andThen(
+											Effect.forEach(
+												Array.from({ length: leftOpen }),
+												() => Effect.orDie(Scope.provide(outer)(superuserSessionIn(target))),
+												{ discard: true }
+											),
+											awaitFact(
+												Effect.map(superuserSessions(target), (held) =>
+													held >= leftOpen ? Option.some(held) : Option.none()
+												)
+											)
+										)
+									),
+									inBuild
+								)
+							)
+							const opened = yield* Effect.result(
+								Effect.scoped(
+									Effect.gen(function* () {
+										const built = yield* template.open
+										const clone = yield* built.clone
+										return clone.template
+									})
+								)
+							)
+							if (opened._tag === "Success") {
+								yield* dropTemplate({ member, name: opened.success })
+							}
+							assert.deepEqual(
+								{ opened: opened._tag },
+								{ opened: "Success" },
+								`a template whose build left ${leftOpen} sessions in its build database opens: ${opened._tag === "Failure" ? opened.failure.message : ""}`
+							)
+						})
+					),
+					ctx
+				)
+			),
+	oracle: {
+		kind: "specification",
+		name: "a template whose build leaves sessions open in its build database is copied into its template: every backend still there is ended before the copy, which PostgreSQL refuses while any is"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/resources/template.ts",
+			original: "\t\t\t\tyield* emptied(cluster, member, building, template)\n",
+			replacement: "",
+			why: "The build database is copied with the build's sessions still in it, so CREATE DATABASE waits its five seconds and refuses the copy (55006, grizzle's network tier, 2026-11-22: fin/scale.test, source database gz_tpb_... is being accessed by other users); the property fails."
 		}
 	]
 })

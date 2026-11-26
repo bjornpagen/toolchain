@@ -744,6 +744,41 @@ const seededCall = (callee: string, at: number | "any", seed: string): string =>
 	return `${spelled(callee)}(${Arr.join([...others, "run.seed"], ", ")})`
 }
 
+/** The words of the trigger switch, kept apart in this module, which writes them only into the programs it draws. */
+const DISABLED_WORDS = ["DISABLE", "TRIGGER"] as const
+const DISABLED = Arr.join(DISABLED_WORDS, " ")
+const REPLICA_ROLE = Arr.join(["session", "replication", "role"], "_")
+
+/**
+ * SQL text a test writes: a trigger switched off, by its name, by USER or by ALL, in a string or in a template whose
+ * parts hold the switch between its expressions, in any case and spacing, and the replica role that fires no trigger,
+ * each reported; beside SQL that leaves the triggers on, a trigger enabled again, and the switch named in a comment,
+ * which holds no SQL a test sends.
+ */
+export const triggerSwitchSites: Gen<Site> = weighted([
+	[
+		2,
+		(s) =>
+			site(
+				`const sql${OWN} = "ALTER TABLE t ${DISABLED} ${s.draw(element(["USER", "ALL", "g"]))}"`,
+				1
+			)
+	],
+	[2, () => site(`const sql${OWN} = \`ALTER TABLE \${"t"} ${DISABLED} \${"g"}\``, 1)],
+	[
+		1,
+		() =>
+			site(
+				`const sql${OWN} = "alter table t ${Str.toLowerCase(Arr.join(DISABLED_WORDS, "\\n  "))} user"`,
+				1
+			)
+	],
+	[1, () => site(`const sql${OWN} = "SET LOCAL ${REPLICA_ROLE} = replica"`, 1)],
+	[2, () => site(`const sql${OWN} = "ALTER TABLE t ENABLE TRIGGER USER"`, 0)],
+	[2, () => site(`const sql${OWN} = \`ALTER TABLE \${"t"} ADD COLUMN c integer\``, 0)],
+	[1, () => site(`// a test never runs ${DISABLED}\nconst sql${OWN} = "SELECT 1"`, 0)]
+])
+
 /** A run or a seeded call given a drawn seed, a fixed seed at a place no callee reads one, and a `seed` field of data. */
 export const seedSites: Gen<Site> = weighted([
 	[

@@ -1,6 +1,8 @@
-import { Array as Arr } from "effect"
+import { Array as Arr, Effect, String as Str } from "effect"
 import { array, boolean, element, type Gen, int } from "#gen.ts"
 import type { Span } from "#mutants.ts"
+import { startedMark } from "#mutate/image.ts"
+import { unwatched } from "#runner/observe.ts"
 
 /** A range as V8 reports one: half-open, with the times it ran. */
 export type Ranged = Readonly<{ startOffset: number; endOffset: number; count: number }>
@@ -140,3 +142,35 @@ export const lostMainText = (lost: Lost) =>
 		],
 		"\n"
 	)
+
+/**
+ * Runs the pass's process, `main.ts` in `directory` under NODE_V8_COVERAGE at `dumps` with the pass's start mark
+ * (image.ts startedMark), to its end, killed with SIGKILL once it says `ready` when `main` is `killed`: its pid. It is
+ * started as a coverage pass's pool starts a worker, by Node's spawn as it was before the worker's guard wrapped it
+ * (runner/observe.ts unwatched, runner/pool.ts), so its parent is this process, as a pass's worker's is the pass's;
+ * started as a check's child, under the guard's strace, its parent was strace, it never marked itself, and its kill read
+ * as no loss.
+ */
+export const passEnded = (directory: string, dumps: string, main: Ending): Effect.Effect<number> =>
+	Effect.callback<number>((resume) => {
+		const child = unwatched.spawn(process.execPath, [...startedMark(process.pid), "main.ts"], {
+			cwd: directory,
+			env: { ...process.env, NODE_V8_COVERAGE: dumps },
+			stdio: ["ignore", "pipe", "ignore"]
+		})
+		child.stdout.setEncoding("utf8")
+		child.stdout.on("data", (text: string) => {
+			if (main === "killed" && Str.includes("ready")(text)) {
+				child.kill("SIGKILL")
+			}
+		})
+		child.once("error", (cause) => {
+			resume(Effect.die(cause))
+		})
+		child.once("exit", () => {
+			resume(Effect.succeed(child.pid ?? 0))
+		})
+		return Effect.sync(() => {
+			child.kill("SIGKILL")
+		})
+	})

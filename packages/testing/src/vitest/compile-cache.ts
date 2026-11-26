@@ -15,8 +15,9 @@ import { compileCached } from "#runner/compile-cache.ts"
  *
  * The cache as this process enabled it is what Node's environment variable hands to every process this one starts (a
  * command line under test, a compiler): `enableCompileCache` reaches this process's own loads alone, and a child reads
- * NODE_COMPILE_CACHE as it starts. A cache Node did not enable (NODE_DISABLE_COMPILE_CACHE) names no directory, and
- * its children start without one.
+ * NODE_COMPILE_CACHE as it starts. The account's switch (NODE_DISABLE_COMPILE_CACHE) is no reason to start without
+ * one: compileCached takes it out, as the cache has its folder; a cache Node did not enable names no directory, and its
+ * children start without one.
  */
 const enabled = Effect.runSync(compileCached(process.cwd()))
 

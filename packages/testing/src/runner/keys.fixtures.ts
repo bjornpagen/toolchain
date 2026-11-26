@@ -226,8 +226,7 @@ const keyOf = (run: Run) =>
 		})
 		const grounds: KeyGrounds = {
 			toolchain: yield* contentHashOf(new TextEncoder().encode("the toolchain")),
-			environment: yield* contentHashOf(new TextEncoder().encode("the environment")),
-			postgres: Option.none()
+			environment: yield* contentHashOf(new TextEncoder().encode("the environment"))
 		}
 		const edit = yield* Option.match(Result.getSuccess(killApplied(run.kill, run.edited)), {
 			onNone: () => Effect.succeedNone,
@@ -241,7 +240,7 @@ const keyOf = (run: Run) =>
 					edit
 				}),
 				({ searched, edited, edit: one }) =>
-					editKeyOf(PropertyId(`${MODULE}#p`), searched, edited, one, grounds, false)
+					editKeyOf(PropertyId(`${MODULE}#p`), searched, edited, one, grounds)
 			)
 		)
 	})

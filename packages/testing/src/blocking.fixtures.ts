@@ -1,17 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices"
 import { regex } from "arkregex"
-import {
-	Array as Arr,
-	Clock,
-	Console,
-	Duration,
-	Effect,
-	Exit,
-	Option,
-	Stream,
-	String as Str
-} from "effect"
-import { ChildProcess } from "effect/process"
+import { Array as Arr, Clock, Console, Duration, Effect, Option, String as Str } from "effect"
 import { array, element, finite, type Gen, int } from "#gen.ts"
 import { liveSleep, type Silence, watchdogGraceMillis, watchdogWakes } from "#live.ts"
 import type { CheckoutDir } from "#mutate/checkout.ts"
@@ -19,6 +8,7 @@ import { type Property, property } from "#property.ts"
 import { HARDENED_FLAGS } from "#runner/config.ts"
 import { searchInline } from "#runner/inline.ts"
 import { needStallMillis, runnerLimits } from "#runner/limits.ts"
+import { unwatched } from "#runner/observe.ts"
 
 /**
  * The watchdog's property (live.ts) runs planted searches in programs of their own, since a runaway ends its process:
@@ -400,12 +390,18 @@ const WAKES_LINE = regex("^wakes: (?<moment>\\d+)$", "m")
  * A planted program's run under a seed, from the program at `program`, to its end: what it printed (when its planted
  * search began, when the watchdog's thread then said it would wake, how the search ended), its exit code, and when it
  * ended. The program runs in its worker's process group, not one of its own, so a worker ended before the
- * program (a mutant's runaway its watchdog no longer ends, in a kill trial) ends it too (pool.ts endGroup).
+ * program (a mutant's runaway its watchdog no longer ends, in a kill trial) ends it too (pool.ts endGroup). It is started
+ * by Node's spawn as it was before the worker's guard wrapped it (runner/observe.ts unwatched): the program and its
+ * watchdog are the runner's own machinery under test, whose end the case times, and under the guard's strace its end
+ * reached the case only once strace had seen it and ended too, past its moment and its graces under load (watchdog
+ * under the toolchain merge's gate at load 600, 2026-11-26), as orphans.fixtures.ts heldProgram's worker's did.
  */
 export const programRun = (program: string, planted: Planted, seed: number) =>
-	Effect.scoped(
-		Effect.gen(function* () {
-			const handle = yield* ChildProcess.make(
+	Effect.gen(function* () {
+		const run = yield* Effect.callback<
+			Readonly<{ stdout: string; stderr: string; code: Option.Option<number> }>
+		>((resume) => {
+			const child = unwatched.spawn(
 				process.execPath,
 				[
 					...HARDENED_FLAGS,
@@ -416,32 +412,43 @@ export const programRun = (program: string, planted: Planted, seed: number) =>
 					String(planted.pauseMillis),
 					String(seed)
 				],
-				{ stdin: "ignore", detached: false }
+				{ stdio: ["ignore", "pipe", "pipe"] }
 			)
-			const [stdout, stderr, exit] = yield* Effect.all(
-				[
-					Stream.mkString(Stream.decodeText(handle.stdout)),
-					Stream.mkString(Stream.decodeText(handle.stderr)),
-					Effect.exit(handle.exitCode)
-				],
-				{ concurrency: "unbounded" }
-			)
-			const ended = yield* wallNow
-			return {
-				began: Option.map(Option.fromNullishOr(BEGAN_LINE.exec(stdout)?.groups.moment), Number),
-				wakes: Option.map(Option.fromNullishOr(WAKES_LINE.exec(stdout)?.groups.moment), Number),
-				ended,
-				ending: Option.fromNullishOr(ENDED_LINE.exec(stdout)?.groups.ending),
-				replay: Option.fromNullishOr(REPLAY_LINE.exec(stderr)?.groups.token),
-				leg: Option.map(Option.fromNullishOr(LEG_LINE.exec(stderr)?.groups.leg), legOf),
-				watchdogWaited: Option.getOrElse(
-					Option.map(Option.fromNullishOr(WAITED_LINE.exec(stderr)?.groups.millis), Number),
-					() => 0
-				),
-				exitCode: Exit.isSuccess(exit) ? Option.some(Number(exit.value)) : Option.none()
-			}
+			let stdout = ""
+			let stderr = ""
+			child.stdout.setEncoding("utf8")
+			child.stderr.setEncoding("utf8")
+			child.stdout.on("data", (chunk: string) => {
+				stdout += chunk
+			})
+			child.stderr.on("data", (chunk: string) => {
+				stderr += chunk
+			})
+			child.once("error", (cause) => {
+				resume(Effect.die(cause))
+			})
+			child.once("close", (code) => {
+				resume(Effect.succeed({ stdout, stderr, code: Option.fromNullishOr(code) }))
+			})
+			return Effect.sync(() => {
+				child.kill("SIGKILL")
+			})
 		})
-	)
+		const ended = yield* wallNow
+		return {
+			began: Option.map(Option.fromNullishOr(BEGAN_LINE.exec(run.stdout)?.groups.moment), Number),
+			wakes: Option.map(Option.fromNullishOr(WAKES_LINE.exec(run.stdout)?.groups.moment), Number),
+			ended,
+			ending: Option.fromNullishOr(ENDED_LINE.exec(run.stdout)?.groups.ending),
+			replay: Option.fromNullishOr(REPLAY_LINE.exec(run.stderr)?.groups.token),
+			leg: Option.map(Option.fromNullishOr(LEG_LINE.exec(run.stderr)?.groups.leg), legOf),
+			watchdogWaited: Option.getOrElse(
+				Option.map(Option.fromNullishOr(WAITED_LINE.exec(run.stderr)?.groups.millis), Number),
+				() => 0
+			),
+			exitCode: run.code
+		}
+	})
 
 /** How a well-behaved planted search ends in its program: its verdict, or none for a runaway, whose process is ended. */
 export const endingOf = (planted: Planted): Option.Option<string> => {

@@ -3,6 +3,7 @@ import type { Residual } from "#features.ts"
 import { wordsOf } from "#random.ts"
 import { ClosureAnswer } from "#runner/closure-hash.ts"
 import type { Limits } from "#runner/limits.ts"
+import { RUNNER_READ_KINDS } from "#runner/strace.ts"
 import { Overrun } from "#runner/work.ts"
 import {
 	type Chooser,
@@ -681,8 +682,23 @@ const ChildrenCpu = Schema.Union([
 
 export type ChildrenCpu = typeof ChildrenCpu.Type
 
-/** An observation as it crosses from a worker to its parent (runner/observe.ts Observation). */
-const ObservationWire = Schema.Union([
+/** A keyable read as it crosses from a worker to its parent (runner/strace.ts KeyedRead). */
+const TraceWire = Schema.Struct({
+	kind: Schema.Literals(RUNNER_READ_KINDS),
+	path: Schema.String
+})
+
+/** A worker's reads since its last drain as they cross to its parent (runner/observe.ts Drained). */
+const DrainedWire = Schema.Struct({
+	reads: Schema.Array(TraceWire),
+	by: Schema.Literals(["none", "process", "children"])
+})
+
+/**
+ * An observation as it crosses from a worker to its parent (runner/observe.ts Observation), and as a database template
+ * keeps its build's (resources/template.ts).
+ */
+export const ObservationWire = Schema.Union([
 	Schema.Struct({ kind: Schema.Literal("read"), call: Schema.String, path: Schema.String }),
 	Schema.Struct({ kind: Schema.Literal("child"), call: Schema.String, command: Schema.String }),
 	Schema.Struct({ kind: Schema.Literal("network"), call: Schema.String, target: Schema.String }),
@@ -713,7 +729,8 @@ export const FromWorker = Schema.Union([
 		millis: Schema.Finite,
 		imported: Schema.Finite,
 		cpu: Schema.Finite,
-		children: ChildrenCpu
+		children: ChildrenCpu,
+		drained: DrainedWire
 	}),
 	Schema.Struct({ kind: Schema.Literal("started"), unit: Schema.Finite }),
 	Schema.Struct({
@@ -721,7 +738,8 @@ export const FromWorker = Schema.Union([
 		unit: Schema.Finite,
 		done: Done,
 		cpu: Schema.Finite,
-		children: ChildrenCpu
+		children: ChildrenCpu,
+		drained: DrainedWire
 	}),
 	Schema.Struct({ kind: Schema.Literal("revoked"), units: Schema.Array(Schema.Finite) }),
 	Schema.Struct({

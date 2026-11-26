@@ -1,4 +1,6 @@
 import { Array as Arr, Order, Record as Rec, Result } from "effect"
+import { type CompileCache, compiledEnvironmentOf } from "#runner/compile-cache.ts"
+import { allowanceVariable, processors } from "#workers.ts"
 
 /**
  * The environment a run's workers are given, and nothing else of the runner's: a verdict is keyed by what its property
@@ -13,8 +15,9 @@ import { Array as Arr, Order, Record as Rec, Result } from "effect"
  * The variables of the runner's environment every worker is given, by what needs them: the account (HOME, USER,
  * LOGNAME, SHELL), where programs are (PATH), the locale and time zone (LANG, LC_ALL, TZ), the places the account's
  * tools keep their files (TMPDIR and the XDG directories), the account's systemd manager, which a cluster's holds and
- * leases ask (XDG_RUNTIME_DIR, DBUS_SESSION_BUS_ADDRESS), the clusters' certificate authority (PGSSLROOTCERT), and
- * Node's compile cache switch, which the machine sets (NODE_DISABLE_COMPILE_CACHE).
+ * leases ask (XDG_RUNTIME_DIR, DBUS_SESSION_BUS_ADDRESS), and the clusters' certificate authority (PGSSLROOTCERT). No
+ * compile cache variable is among them: a child's compile cache is the runner's to state (childEnvironmentOf), and the
+ * account's switch or folder never reaches one.
  */
 const WORKER_VARIABLES = [
 	"HOME",
@@ -32,8 +35,7 @@ const WORKER_VARIABLES = [
 	"XDG_DATA_HOME",
 	"XDG_STATE_HOME",
 	"DBUS_SESSION_BUS_ADDRESS",
-	"PGSSLROOTCERT",
-	"NODE_DISABLE_COMPILE_CACHE"
+	"PGSSLROOTCERT"
 ] as const
 
 /**
@@ -63,3 +65,15 @@ export const workerEnvironmentText = (environment: Readonly<Record<string, strin
 		),
 		""
 	)
+
+/**
+ * The environment a child of the runner's starts with, a pool's worker (runner/pool.ts) and a load's process
+ * (runner/loads.ts) alike: its worker environment (workerEnvironmentOf), this process's CPU share as its allowance
+ * (workers.ts allowanceVariable), so a child started late, after its cgroup's quota moved, is of the run's width still,
+ * and its compile cache as the runner states it (compile-cache.ts compiledEnvironmentOf), and nothing else.
+ */
+export const childEnvironmentOf = (
+	environment: Readonly<Record<string, string>>,
+	cache: CompileCache
+): Readonly<Record<string, string>> =>
+	compiledEnvironmentOf({ ...environment, [allowanceVariable]: `${processors}` }, cache)

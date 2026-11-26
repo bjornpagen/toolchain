@@ -93,14 +93,14 @@ const STUB_TOOL = `#!/bin/sh\nprintf '%s\\n' "$RAYON_NUM_THREADS" "$@" > "$${SEE
 
 /**
  * A test task, given the testing library's workers.ts in the checkout: it writes its share (processors), its test
- * pool's workers (testWorkers), the V8 pool flag of the processes it starts (nodePoolFlag), and each argument it was
- * handed, a line each, to the file SEEN names.
+ * pool's workers (testWorkers), the V8 pool flag of the processes it starts (nodePoolFlag), its load's processes
+ * (loadWorkers), and each argument it was handed, a line each, to the file SEEN names.
  */
 const testTask = (workers: string): string =>
 	Arr.join(
 		[
-			`import { nodePoolFlag, processors, testWorkers } from "${workers}"`,
-			`process.getBuiltinModule("node:fs").writeFileSync(process.env.${SEEN}, [processors, testWorkers, nodePoolFlag, ...process.argv.slice(2)].join("\\n"))`,
+			`import { loadWorkers, nodePoolFlag, processors, testWorkers } from "${workers}"`,
+			`process.getBuiltinModule("node:fs").writeFileSync(process.env.${SEEN}, [processors, testWorkers, nodePoolFlag, loadWorkers, ...process.argv.slice(2)].join("\\n"))`,
 			""
 		],
 		"\n"
@@ -138,11 +138,11 @@ const stubTurbo = (shape: Shape, wrapper: string): string => {
 
 /**
  * What a task was handed: a tool, the threads RAYON_NUM_THREADS said and those its flag said; a test task, its share,
- * its test pool's workers and its V8 pool's size.
+ * its test pool's workers, its V8 pool's size and its load's processes.
  */
 type Handed =
 	| Readonly<{ kind: "tool"; variable: number; flag: Option.Option<number> }>
-	| Readonly<{ kind: "test"; share: number; workers: number; pool: number }>
+	| Readonly<{ kind: "test"; share: number; workers: number; pool: number; load: number }>
 
 /** The threads a tool's arguments hand it by its flag. */
 const flagOf = (
@@ -230,7 +230,8 @@ export const handedTo = (packageRoot: string, directory: string, threaded: Threa
 						kind: "test",
 						share: Number(Arr.getUnsafe(lines, 0)),
 						workers: Number(Arr.getUnsafe(lines, 1)),
-						pool: Number(Str.slice("--v8-pool-size=".length)(Arr.getUnsafe(lines, 2)))
+						pool: Number(Str.slice("--v8-pool-size=".length)(Arr.getUnsafe(lines, 2))),
+						load: Number(Arr.getUnsafe(lines, 3))
 					}
 		return {
 			status: Number(status),

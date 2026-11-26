@@ -77,23 +77,35 @@ const failureOf = (error: PlatformError.PlatformError): string => {
 		: reason._tag
 }
 
-/** A file's modification time, in milliseconds since the epoch: 0 where its system states none. */
-const modifiedOf = (info: FileSystem.File.Info): number =>
-	Option.getOrElse(
-		Option.map(info.mtime, (at) => at.getTime()),
-		() => 0
+/**
+ * When a path last changed, in milliseconds since the epoch, as `status` (node:fs/promises' stat, which follows symbolic
+ * links, or lstat, which does not) reads it: the later of its modification time and its status change time, none where
+ * nothing is there. A tool that restores an older modification time (cp -p, rsync -a, a backup moved back: utimes)
+ * moves the status change time to the restore, which only the kernel sets, so a reverted edit never reads as unchanged
+ * since a run began (METIS-DBOPT, 2026-11-26: metis's level compile skip read such a revert as unchanged). Effect's
+ * File.Info states no status change time.
+ */
+const changeOf = (
+	status: (path: string) => Promise<Readonly<{ mtimeMs: number; ctimeMs: number }>>,
+	path: string
+): Effect.Effect<Option.Option<number>> =>
+	Effect.map(
+		Effect.option(Effect.tryPromise({ try: () => status(path), catch: () => "nothing there" })),
+		Option.map((info) => Math.max(info.mtimeMs, info.ctimeMs))
 	)
 
+/** node:fs/promises, whose stat and lstat state a path's status change time (changeOf). */
+const statuses = process.getBuiltinModule("node:fs").promises
+
 /**
- * When `path` itself last changed, no symbolic link followed: its own modification time, or its nearest existing
- * directory's where nothing is there.
+ * When `path` itself last changed, no symbolic link followed (changeOf over lstat), or its nearest existing directory
+ * where nothing is there.
  */
-const changedAt = (path: string): Effect.Effect<number, never, FileSystem.FileSystem> =>
+const changedAt = (path: string): Effect.Effect<number> =>
 	Effect.gen(function* () {
-		const fs = yield* FileSystem.FileSystem
-		const info = yield* Effect.option(fs.lstat(path))
-		if (Option.isSome(info)) {
-			return modifiedOf(info.value)
+		const changed = yield* changeOf(statuses.lstat, path)
+		if (Option.isSome(changed)) {
+			return changed.value
 		}
 		const parent = process.getBuiltinModule("node:path").dirname(path)
 		return parent === path ? 0 : yield* changedAt(parent)
@@ -141,7 +153,8 @@ export const standingOf = (
 				if (Option.isNone(info)) {
 					return { digest: "absent", changed: yield* changedAt(path) }
 				}
-				const changed = modifiedOf(info.value)
+				const change = yield* changeOf(statuses.stat, path)
+				const changed = Option.getOrElse(change, () => 0)
 				const type = info.value.type
 				if (kind === "presence") {
 					return {

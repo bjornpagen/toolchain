@@ -1,6 +1,6 @@
 import { Array as Arr, Config, Duration, Effect, FileSystem, String as Str } from "effect"
 import { array, element, type Gen, int, map } from "#gen.ts"
-import { liveSleep, ownWorkNow, waitingOn, waitingOnWork } from "#live.ts"
+import { liveSleep, ownWorkNow, waitingOn } from "#live.ts"
 import { type Property, property } from "#property.ts"
 import { type Limits, runnerLimits } from "#runner/limits.ts"
 import { fullRun, type InnerRun } from "#runner/search.fixtures.ts"
@@ -186,10 +186,6 @@ export const deadlocks: Gen<Deadlock> = map(int(0, 1), (step) => ({
  */
 const HUNG_DEADLINES = 20
 
-/** How many deadlines a property waits for a guard's verdict before it reads the case as never judged: past the twenty
- * a hung case is given, so a verdict that comes at all comes first. A test's own time, no limit. */
-export const UNJUDGED_DEADLINES = 60
-
 /** A deadlocked case's work: it waits on the live clock, spending nothing, the twenty deadlines a hung case is given
  * (HUNG_DEADLINES), so a guard that misjudges it lets it end. */
 export const deadlockedWork = (shape: Deadlock): Effect.Effect<void> =>
@@ -201,22 +197,6 @@ export const deadlockedCase = (shape: Deadlock): Property =>
 		needs: {},
 		situations: [],
 		check: () => () => deadlockedWork(shape),
-		oracle: planted,
-		kept: [],
-		kills: []
-	})
-
-/**
- * An inner search whose one case waits forever, spending nothing, inside a declared wait whose claim is asked and never
- * answers (live.ts waitingOnWork), as a statement waits on a member that takes the ask of its backend's work and never
- * replies: only its guard's waited leg ends it.
- */
-export const unansweredClaimCase = (_shape: Deadlock): Property =>
-	property.explore(int(0, 9), {
-		needs: {},
-		situations: [],
-		check: () => () =>
-			Effect.never.pipe(waitingOnWork("work.fixtures.ts unansweredClaimCase's wait", Effect.never)),
 		oracle: planted,
 		kept: [],
 		kills: []
@@ -320,6 +300,8 @@ export type OtherMove =
 	| "a thread waited to run for progress and slept the rest"
 	| "a child waited to run all the window"
 	| "a child stored"
+	| "a holder of its backend's lock worked"
+	| "a holder of its backend's lock worked short of progress"
 
 /** Every move, one case each. */
 export const otherMoves: Gen<OtherMove> = (source) =>
@@ -329,7 +311,9 @@ export const otherMoves: Gen<OtherMove> = (source) =>
 			"a child woke and waited a little",
 			"a thread waited to run for progress and slept the rest",
 			"a child waited to run all the window",
-			"a child stored"
+			"a child stored",
+			"a holder of its backend's lock worked",
+			"a holder of its backend's lock worked short of progress"
 		] as const)
 	)
 
@@ -351,7 +335,7 @@ export const windowOf = (
 	move: OtherMove
 ): Readonly<{ window: Reading; now: Reading; bound: Bound }> => {
 	const quiet: Stir = { queued: 10, stored: 10 }
-	const window: Reading = { wall: 0, cpu: 5, waited: 0, stir: quiet }
+	const window: Reading = { wall: 0, cpu: 5, waited: 0, stir: quiet, carried: 3 }
 	const later: Reading = { ...window, wall: WINDOW_WALL }
 	const stirred = (stir: Stir): Readonly<{ window: Reading; now: Reading; bound: Bound }> => ({
 		window,
@@ -369,6 +353,10 @@ export const windowOf = (
 			return stirred({ ...quiet, queued: quiet.queued + WINDOW_WALL })
 		case "a child stored":
 			return stirred({ ...quiet, stored: quiet.stored + 1 })
+		case "a holder of its backend's lock worked":
+			return { ...stirred(quiet), now: { ...later, carried: window.carried + WINDOW_PROGRESS } }
+		case "a holder of its backend's lock worked short of progress":
+			return { ...stirred(quiet), now: { ...later, carried: window.carried + WINDOW_PROGRESS - 1 } }
 	}
 }
 
@@ -410,14 +398,15 @@ export const waitingThreads: Gen<WaitingThread> = (source) => {
 export const waitingWindowOf = (
 	thread: WaitingThread
 ): Readonly<{ window: Reading; now: Reading; bound: Bound }> => {
-	const window: Reading = { wall: 0, cpu: 7, waited: 0, stir: { queued: 3, stored: 4 } }
+	const window: Reading = { wall: 0, cpu: 7, waited: 0, stir: { queued: 3, stored: 4 }, carried: 0 }
 	return {
 		window,
 		now: {
 			wall: thread.wall,
 			cpu: window.cpu + thread.moved,
 			waited: thread.waited,
-			stir: { queued: window.stir.queued + thread.queued, stored: window.stir.stored }
+			stir: { queued: window.stir.queued + thread.queued, stored: window.stir.stored },
+			carried: window.carried
 		},
 		bound: deadlineBound(thread.deadline)
 	}

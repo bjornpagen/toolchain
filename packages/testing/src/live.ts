@@ -14,8 +14,6 @@ import { stalledShareOfCpu } from "#runner/limits.ts"
 import { unwatched } from "#runner/observe.ts"
 import {
 	type Bound,
-	type Claim,
-	checkedClaims,
 	deadlineBound,
 	enterWait,
 	judgeOf,
@@ -727,44 +725,33 @@ export const waitLedger = (): WaitLedger => {
 }
 
 /**
- * `effect` as a declared wait of this process on work other processes do, named by what it waits on, `on` (runner/work.ts
- * Waits): a wait whose doers name no holder this process can read (a template's build lock, PostgreSQL's work behind a
- * statement), and whose wall time no guard's stall leg counts, from before it starts to after it ends, however it ends;
- * a verdict on the case while it is open names it (runner/work.ts waitedOnNow).
+ * `effect` as a declared wait of this process on work other processes do that names no process this one can read, named
+ * by what it waits on, `on` (runner/work.ts Waits): a template's build, which another worker's session holds its gate
+ * for while that worker's other connections build it. Its wall time no guard's stall leg counts, from before it starts
+ * to after it ends, however it ends, and the waited leg bounds it; a verdict on the case while it is open names it
+ * (runner/work.ts waitedOnNow). A statement is no declared wait: its backend is the case's own work (runner/backends.ts).
  */
-export const waitingOn = (on: string) => declared(on, { kind: "trusted" })
-
-/**
- * `effect` as a declared wait on a server's work, whose claim a guard checks (runner/work.ts Claim, checkedClaims): at
- * each reading of a guard's while it is open, `working` asks the server whether it works on it, and a wait it answers
- * no for closes then, so the wall time after it counts toward the stall as the silence it is. A statement waits so
- * (pg/session.ts): its backend working (active, behind a lock or an LWLock, in I/O, behind a checkpoint) is the member's
- * work, and a backend idle while its client still awaits the answer (a promise that never settles, a backend gone) is
- * not, which a claim alone would hide from every guard of the process for good.
- */
-export const waitingOnWork = (on: string, working: Effect.Effect<boolean>) =>
-	declared(on, { kind: "checked", working })
-
-/** `effect` as a declared wait on `on`, claiming `claim`, open from before it starts to after it ends, however it ends. */
-const declared =
-	(on: string, claim: Claim) =>
+export const waitingOn =
+	(on: string) =>
 	<A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
 		Effect.acquireUseRelease(
-			Effect.flatMap(liveMillis, (wall) => Effect.sync(() => enterWait(wall, on, claim))),
+			Effect.flatMap(liveMillis, (wall) => Effect.sync(() => enterWait(wall, on))),
 			() => effect,
 			(id) => Effect.flatMap(liveMillis, (wall) => Effect.sync(() => leaveWait(wall, id)))
 		)
 
 /**
  * Ends once `work` has spent its bound's CPU or its CPU has not moved over a whole stall window of wall time outside its
- * declared waits (runner/work.ts standingOf), with the leg that fired and what it measured (Overrun). It reads the work
- * only when its live-clock timer fires, at a window's end or when the CPU left could run out sooner, so work that ends
- * in time pays one timer and no reading.
+ * declared waits (runner/work.ts standingOf), its CPU its process tree's and its backends', moved as well by the CPU
+ * carrying a backend's wait (runner/backends.ts), with the leg that fired and what it measured (Overrun). It reads the
+ * work only when its live-clock timer fires, at a window's end or when the CPU left could run out sooner, so work that
+ * ends in time pays one timer and no reading; before each reading it reads the work's backends again and asks their
+ * servers what carries their waits, each ask bounded by its monitor (runner/backends.ts refreshBackends).
  */
 export const overrun = (work: TreeWork, bound: Bound): Effect.Effect<Overrun> => {
 	const watch = (window: Reading, readAt: number): Effect.Effect<Overrun> =>
 		Effect.flatMap(
-			Effect.andThen(liveSleepUntil(readAt), Effect.tap(liveMillis, checkedClaims)),
+			Effect.andThen(liveSleepUntil(readAt), Effect.andThen(work.refresh, liveMillis)),
 			(wall) => {
 				const standing = standingOf({
 					began: work.began,
@@ -777,7 +764,10 @@ export const overrun = (work: TreeWork, bound: Bound): Effect.Effect<Overrun> =>
 					: Effect.succeed(standing)
 			}
 		)
-	return watch(work.began, work.began.wall + Math.min(bound.cpu, bound.stall))
+	return Effect.andThen(
+		work.refresh,
+		watch(work.began, work.began.wall + Math.min(bound.cpu, bound.stall))
+	)
 }
 
 /**

@@ -13,6 +13,7 @@ import { noRetryOrConcurrency } from "#oxlint/rules/no-retry-or-concurrency.ts"
 import { noSerializedComparison } from "#oxlint/rules/no-serialized-comparison.ts"
 import { noSleepWait } from "#oxlint/rules/no-sleep-wait.ts"
 import { noStaleKill } from "#oxlint/rules/no-stale-kill.ts"
+import { noTriggerSwitch } from "#oxlint/rules/no-trigger-switch.ts"
 import { noVerdictTable } from "#oxlint/rules/no-verdict-table.ts"
 import { noWallClockVerdict } from "#oxlint/rules/no-wall-clock-verdict.ts"
 import { testModuleShape } from "#oxlint/rules/test-module-shape.ts"
@@ -31,6 +32,7 @@ const RULES = {
 	"no-serialized-comparison": noSerializedComparison,
 	"no-sleep-wait": noSleepWait,
 	"no-stale-kill": noStaleKill,
+	"no-trigger-switch": noTriggerSwitch,
 	"no-verdict-table": noVerdictTable,
 	"no-wall-clock-verdict": noWallClockVerdict,
 	"test-module-shape": testModuleShape
