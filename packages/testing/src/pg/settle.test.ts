@@ -399,7 +399,7 @@ export const aSettleUnitSettlesAtTheWidthItIsGiven = property.exhaust(finite(int
 })
 
 export const aHeldPortRefusesItsSettle = property.exhaust(finite(boolean), {
-	box: "a settled family over TLS of one member or two, its last member stopped and its port taken by a listener of the case's process",
+	box: "a settled family over TLS of one member or two, its last member stopped and its port taken by a listener of the case's process, then its first member, running, settled again at the port its own server holds",
 	needs: {},
 	situations: [],
 	check: () => (spread) =>
@@ -420,17 +420,20 @@ export const aHeldPortRefusesItsSettle = property.exhaust(finite(boolean), {
 				)
 				const startedUnder = yield* unitActive(name)
 				const read = yield* settledWhole(family)
+				const ownPortSettles = yield* Effect.isSuccess(memberSettled(family, 0))
 				assert.deepEqual(
 					{
 						namesThePort: Str.includes(`its port ${port}`)(refusal.message),
 						namesTheHolder: Str.includes(`(pid ${process.pid})`)(refusal.message),
 						startedUnder,
+						ownPortSettles,
 						settledOnceGone: Arr.map(read, (member) => [member.name, member.port])
 					},
 					{
 						namesThePort: true,
 						namesTheHolder: true,
 						startedUnder: false,
+						ownPortSettles: true,
 						settledOnceGone: Arr.map(memberNames(family), (member, index) => [
 							member,
 							Arr.getUnsafe(claims, index)
@@ -441,7 +444,7 @@ export const aHeldPortRefusesItsSettle = property.exhaust(finite(boolean), {
 		),
 	oracle: {
 		kind: "specification",
-		name: "a member whose claimed port another listener holds is refused by its settle before its unit starts, the refusal naming the port and the holder's process, and its family settled at the same ports once the listener is gone, the stopped member, whose data in memory went with its stop, made again"
+		name: "a member whose claimed port another listener holds is refused by its settle before its unit starts, the refusal naming the port and the holder's process, and its family settled at the same ports once the listener is gone, the stopped member, whose data in memory went with its stop, made again; a running member's settle, its port held by its own server, is no refusal"
 	},
 	kept: [],
 	kills: [

@@ -8,7 +8,7 @@
  * Every wait is on a process's exit or on a stop systemd has already begun, never a clock. Oracle: the specification,
  * stated in the checks.
  */
-import { Array as Arr, Effect } from "effect"
+import { Array as Arr, Effect, Fiber } from "effect"
 import { assert } from "#assert.ts"
 import { finite } from "#gen.ts"
 import { Checkout } from "#mutate/checkout.ts"
@@ -19,17 +19,20 @@ import {
 	type Afterwards,
 	leftOnceUnheld,
 	memberMade,
+	memberPid,
 	membersHeld,
 	runEnded,
+	runningStartsOf,
 	runStarted,
 	spreadShape,
 	whichMember
 } from "#pg/hold.fixtures.ts"
-import { leaseStarted } from "#pg/hold.ts"
+import { familyHeld, leaseRestarted, leaseStarted } from "#pg/hold.ts"
 import { clusterOf, failedOf, familyIn, removedAtEnd } from "#pg/settle.fixtures.ts"
 import { familySettled } from "#pg/settle.ts"
 import { property } from "#property.ts"
 import { Scratch } from "#resources/scratch.ts"
+import { exitOf } from "#runner/pool.fixtures.ts"
 import { testWorkers } from "#workers.ts"
 
 export const aRunsEndLeavesNoMemberRunning = property.exhaust(finite(endings), {
@@ -178,7 +181,7 @@ export const aLeaseNoHoldWantsLeavesNoMember = property.exhaust(finite(whichMemb
 			),
 	oracle: {
 		kind: "specification",
-		name: "a member's start where no process holds its family is refused: systemd stops its lease at once, no hold wanting it, and refuses the start, which requires the lease active, so the member is never made and nothing is left running"
+		name: "a member's start where no process holds its family is refused: systemd stops its lease at once, no hold wanting it, and the member's unit refuses to start without its lease active (postgres@ ExecStartPre=), so the member is never made and nothing is left running"
 	},
 	kept: [],
 	kills: [
@@ -187,12 +190,100 @@ export const aLeaseNoHoldWantsLeavesNoMember = property.exhaust(finite(whichMemb
 			original: '\t\t\t\t"StopWhenUnneeded=yes",\n',
 			replacement: '\t\t\t\t"StopWhenUnneeded=no",\n',
 			why: "A lease no hold wants stays, and its member with it, so a settle whose asker has ended leaves its member running for good; this property fails, the member left running."
-		},
+		}
+	]
+})
+
+export const aRestartUnderItsRunsEndEndsCleanly = property.exhaust(finite(endings), {
+	box: "a member of a family one run holds restarted by its lease while that run ends, killed by SIGKILL to its unit or stopped",
+	needs: { checkout: Checkout.dir, directory: Scratch.dir },
+	situations: [],
+	check:
+		({ checkout, directory }) =>
+		(ending) =>
+			Effect.scoped(
+				Effect.gen(function* () {
+					const dir = yield* checkout
+					const scratch = yield* directory
+					const cluster = yield* clusterOf(spreadShape)
+					yield* removedAtEnd(cluster)
+					const family = yield* familyIn(cluster, testWorkers)
+					const run = yield* runStarted(dir, family, 0)
+					const restarting = yield* Effect.forkChild(
+						Effect.result(
+							leaseRestarted(family, Arr.headNonEmpty(memberNames(family)), {
+								cluster: family.name,
+								doing: "restarting its first member as its run ends"
+							})
+						)
+					)
+					yield* runEnded(run, ending, scratch)
+					yield* Fiber.join(restarting)
+					const left = yield* leftOnceUnheld(family, scratch)
+					assert.deepEqual(left, {
+						members: Arr.map(memberNames(family), (): Afterwards => "stopped"),
+						leasesActive: false
+					})
+				})
+			),
+	oracle: {
+		kind: "specification",
+		name: "a member's restart under the end of the run that holds its family ends, done or refused, and no job of the account's manager waits on it: every member and lease stops once the run has ended"
+	},
+	kept: [],
+	kills: [
 		{
 			file: "packages/testing/src/pg/hold.ts",
-			original: `\t\t\t\t\`Requisite=\${lease}\`,\n`,
-			replacement: `\t\t\t\t\`Wants=\${lease}\`,\n`,
-			why: "A member's start pulls its lease in rather than requiring it active, so a settle whose asker has ended starts the member, which systemd stops once the start is done: a member made for no process; this property fails, the member made."
+			original: `\t\t\t\t\`PropagatesStopTo=\${unitOf(name)}\`\n`,
+			replacement: '\t\t\t\t"Description=lease"\n',
+			why: "A lease's stop leaves its member running, so a run's end mid-restart leaves the restarted member up with no hold; this property fails, the first member left running."
+		}
+	]
+})
+
+export const aLeasedRestartWaitsInNoStartJob = property.exhaust(finite(whichMember), {
+	box: "a running member of a held family, its first or its last, restarted by its lease, its start job's state read once its old server has exited",
+	needs: { directory: Scratch.dir },
+	situations: [],
+	check:
+		({ directory }) =>
+		(which) =>
+			Effect.scoped(
+				Effect.gen(function* () {
+					const scratch = yield* directory
+					const cluster = yield* clusterOf(spreadShape)
+					yield* removedAtEnd(cluster)
+					const family = yield* familyIn(cluster, testWorkers)
+					yield* familySettled(family)
+					yield* familyHeld(family)
+					const names = memberNames(family)
+					const name = which === "first" ? Arr.headNonEmpty(names) : Arr.lastNonEmpty(names)
+					yield* leaseStarted(family, name, { cluster: family.name, doing: "starting it" })
+					const old = yield* memberPid(name)
+					const restarting = yield* Effect.forkChild(
+						leaseRestarted(family, name, { cluster: family.name, doing: "restarting it" })
+					)
+					yield* exitOf(old, scratch)
+					const waiting = yield* runningStartsOf(`${name}-try-restart-`)
+					yield* Fiber.join(restarting)
+					assert.deepEqual(
+						waiting,
+						[],
+						"no start job of the restart's unit runs while the member restarts"
+					)
+				})
+			),
+	oracle: {
+		kind: "specification",
+		name: "a member's restart under its lease is waited on in its unit's active phase: once the member's old server has exited, mid-restart, the manager runs no start job of that unit, so no job of the manager can wait behind it"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/pg/hold.ts",
+			original: '\t\t\t\t"Type=exec",\n',
+			replacement: '\t\t\t\t"Type=oneshot",\n',
+			why: "The member's restart is waited on by a client inside its unit's start, a oneshot's, so a lease's stop ordered after that unit waits on its start while the restart waits on the stop: no job of the account's manager runs (2026-11-26 06:20Z, 147 jobs)."
 		}
 	]
 })

@@ -16,11 +16,11 @@ import { type ClusterFailed, failed, type Step, succeeded } from "#pg/server.ts"
  *   active unit wants it. The workbench's postgres@ unit, which every repository's members are instances of, takes no
  *   dependency at run time (`systemctl set-property` refuses BindsTo= on a loaded unit), so the dependency lives in the
  *   lease.
- * - A member is started and restarted only while its lease is active (whileLeased: leaseStarted, leaseRestarted), by a
- *   transient oneshot that runs the `systemctl` and requires the lease (Requisite=): systemd refuses it where the lease
- *   is stopped, and keeps the lease while it runs, so no start or restart is ever under way as a lease stops, which
- *   would leave the member's stop refused. The lease depends on the member in no way, so a member's restart is one
- *   restart, never a stop and a start that a member in memory loses its data by.
+ * - A member's start and restart are run by a transient unit of Type=exec (whileLeased: leaseStarted, leaseRestarted),
+ *   whose systemctl waits on the member's job in the unit's active phase, never inside its start, so no job of the
+ *   manager waits on a running start; the member's own unit refuses to start while its lease is not active
+ *   (postgres@'s ExecStartPre=). The lease depends on the member in no way, so a member's restart is one restart, never
+ *   a stop and a start that a member in memory loses its data by.
  * - What wants a lease is a hold (familyHeld), `<family>-hold-<random>.scope`, a transient scope that wants every
  *   member's lease, made by each process that needs the family for as long as it needs it, its one process a shell
  *   reading a pipe that only the holding process writes (HOLDER). The kernel closes a process's end of every pipe as
@@ -181,13 +181,21 @@ const leaseMade = (family: CheckoutFamily, name: string, step: Step) => {
 }
 
 /**
- * `systemctl --user <verb>` of member `name`'s unit run while its lease is active and kept so, for `step`, to its end:
- * the command of a transient oneshot `<member>-<verb>-<8 random hex digits>` in the family's repository's slice that
- * requires its lease active and runs after it (Requisite=, After=), so systemd refuses it, and the member is never
- * started or restarted, where the lease is stopped, its last hold ended; and while it runs the lease stays (its
- * requisite is needed), so a hold that ends meanwhile stops the member only once the command is done, never under a
- * start or a restart that systemd would refuse to stop. Its exit status and what it printed are systemd-run's
- * (`--wait --pipe`).
+ * Member `name`'s unit `<verb>`ed (`start` or `try-restart`), for `step`, to the end of the member's job: a transient
+ * unit of the family's repository's slice, `<member>-<verb>-<8 random hex digits>.service`, of Type=exec, running
+ * `systemctl --user <verb> <member>`, made, started and waited on by `systemd-run --wait`, whose exit is the
+ * systemctl's. Its start job ends as its command is executed, never as the command ends: the systemctl waits on the
+ * member's job in the unit's active phase, so no job of the account's manager is ever ordered behind a start that
+ * waits on a member's job. The lease is the member's own guard, kept by the workbench's postgres@ unit and by the lease:
+ * a member starts only while its lease is active (its ExecStartPre= refuses it otherwise), so a start or restart whose
+ * lease has stopped, its last hold ended, is refused; and a lease stops its member as it stops (PropagatesStopTo=), its
+ * stop job replacing a member's pending one, so a run's end mid-restart leaves nothing running.
+ *
+ * It was a oneshot running the same systemctl under Requisite= and After= the lease, whose start job waited for the
+ * member's job: when a run's teardown stopped the lease under it, the lease's stop waited for that start job and the
+ * member's job for the lease's stop, and the account's manager ran none of its jobs (2026-11-26, 06:20–06:28Z: 147 jobs
+ * waiting, every repository's runs with them, until the 14 restart jobs of VALUECELL's family 03d935aa were cancelled by
+ * hand). Its Requisite= kept nothing the member's ExecStartPre= does not.
  */
 const whileLeased = (
 	family: CheckoutFamily,
@@ -195,30 +203,25 @@ const whileLeased = (
 	verb: "start" | "try-restart",
 	step: Step
 ) => {
-	const lease = leaseOf(name)
+	const member = unitOf(name)
 	const unit = `${name}-${verb}-${process.getBuiltinModule("node:crypto").randomBytes(4).toString("hex")}.service`
 	return Effect.asVoid(
 		succeeded(
-			{ ...step, doing: `${step.doing}: systemctl --user ${verb} ${unitOf(name)} as ${unit}` },
+			{ ...step, doing: `${step.doing}: ${unit}` },
 			ChildProcess.make("systemd-run", [
 				"--user",
 				"--quiet",
 				"--collect",
 				"--wait",
-				"--pipe",
 				`--unit=${unit}`,
 				`--slice=${sliceOf(family.cluster)}`,
 				"-p",
-				"Type=oneshot",
-				"-p",
-				`Requisite=${lease}`,
-				"-p",
-				`After=${lease}`,
+				"Type=exec",
 				"--",
 				"systemctl",
 				"--user",
 				verb,
-				unitOf(name)
+				member
 			])
 		)
 	)

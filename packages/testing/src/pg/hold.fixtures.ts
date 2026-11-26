@@ -7,13 +7,13 @@ import {
 	Exit,
 	FileSystem,
 	Option,
+	Result,
 	Stream,
 	String as Str
 } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { failureText } from "#failure.ts"
 import { element, type Gen } from "#gen.ts"
-import { liveSleep } from "#live.ts"
 import type { CheckoutDir } from "#mutate/checkout.ts"
 import { specAt } from "#pg/config-file.ts"
 import {
@@ -242,6 +242,42 @@ const unitNow = (unit: string) =>
 		return now
 	})
 
+/**
+ * The end of every process of `unit`: its control group read once (`systemctl --user show -p ControlGroup`), then its
+ * cgroup.events watched (inotify) until it says no process is left (`populated 0`), which the kernel writes as the
+ * last one exits, its stop's own commands' (ExecStopPost=) included. systemd handles a child's exit before a question
+ * that comes after it, so a unit read once this ends is read as systemd has done with it, and no reading polls it.
+ */
+const emptied = (unit: string) =>
+	Effect.gen(function* () {
+		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+		const lines = yield* Effect.orDie(
+			spawner.string(ChildProcess.make("systemctl", ["--user", "show", "-p", "ControlGroup", unit]))
+		)
+		const group = shown(lines, "ControlGroup")
+		if (Str.isEmpty(group)) {
+			return
+		}
+		const events = `/sys/fs/cgroup${group}/cgroup.events`
+		const fs = process.getBuiltinModule("node:fs")
+		yield* Effect.callback<void>((resume) => {
+			const populated = (): boolean =>
+				Result.getOrElse(
+					Result.try(() => Str.includes("populated 1")(fs.readFileSync(events, "utf8"))),
+					() => false
+				)
+			const watcher = Result.try(() => fs.watch(events, () => settle()))
+			const settle = () => {
+				if (!populated()) {
+					Result.map(watcher, (watching) => watching.close())
+					resume(Effect.void)
+				}
+			}
+			settle()
+			return Effect.sync(() => Result.map(watcher, (watching) => watching.close()))
+		})
+	})
+
 /** Whether every member of `family` runs now, held: active, with no job of systemd's pending. */
 export const membersHeld = (family: CheckoutFamily) =>
 	Effect.map(
@@ -271,18 +307,43 @@ export const leftOnceUnheld = (family: CheckoutFamily, scratch: string) =>
 				if (now.pid > 0) {
 					yield* exitOf(now.pid, scratch)
 				}
-				for (;;) {
-					const after = yield* unitNow(unitOf(name))
-					if ((after.state === "inactive" || after.state === "failed") && Str.isEmpty(after.job)) {
-						const left: Afterwards = "stopped"
-						return left
-					}
-					yield* liveSleep("20 millis")
-				}
+				yield* emptied(unitOf(name))
+				const after = yield* unitNow(unitOf(name))
+				const left: Afterwards =
+					(after.state === "inactive" || after.state === "failed") && Str.isEmpty(after.job)
+						? "stopped"
+						: "left running"
+				return left
 			})
 		)
 		const leases = yield* Effect.forEach(memberNames(family), (name) => unitNow(leaseOf(name)))
 		return { members, leasesActive: Arr.some(leases, (now) => now.state === "active") }
+	})
+
+/** The process member `name`'s unit runs now, 0 where it runs none. */
+export const memberPid = (name: string) => Effect.map(unitNow(unitOf(name)), (now) => now.pid)
+
+/**
+ * The units named from `prefix` whose start job the account's manager is running now, read once from its job list
+ * (`systemctl --user list-jobs`: a job a line, its id, its unit, its type and its state).
+ */
+export const runningStartsOf = (prefix: string) =>
+	Effect.gen(function* () {
+		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+		const lines = yield* Effect.orDie(
+			spawner.string(
+				ChildProcess.make("systemctl", ["--user", "list-jobs", "--no-legend", "--plain"])
+			)
+		)
+		return Arr.flatMap(Str.split("\n")(lines), (line) => {
+			const [, unit, type, state] = Arr.filter(Str.split(" ")(Str.trim(line)), Str.isNonEmpty)
+			return unit !== undefined &&
+				Str.startsWith(prefix)(unit) &&
+				type === "start" &&
+				state === "running"
+				? [unit]
+				: []
+		})
 	})
 
 /** Whether member `name`'s data directory was ever made: its link, which its unit's first start makes, is there. */
