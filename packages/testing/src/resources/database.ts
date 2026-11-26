@@ -33,12 +33,12 @@ import { NeedFailed } from "#runner/services.ts"
  * @guards without a most, a pool whose cases outrun its clones adds a slot for every case that finds none ready, so a
  *   worker holds a clone in flight for every such case at once, each a database on its member and a drop after it
  * @measure on a family of grizzle's spec, the 13-file laws subset at 32 workers under TEST_SEED=2219874524 (lane
- *   PGFAMILY's arms), depths 2, 4 and 8 at once, the clones WAL_LOG: the take wait's p50 and p90, the runner's time and
+ *   PGFAMILY's arms), depths 2, 4 and 8 at once, the clones FILE_COPY: the take wait's p50 and p90, the runner's time and
  *   the members' forced checkpoints; keep the smallest depth past which neither falls
  * @origin measured at 4 on 2026-11-16 with the clones FILE_COPY (fsync off) on a private family of four idle members
  *   (~/.cache/grizzle-release/TESTSYS/RESOURCES/measure/pool/, lane RESOURCES's probe: at depth 4 nine takes in ten
  *   waited for no clone, p90 2 ms; at 3 the p90 was half a second); its revalidation fired when every clone became
- *   WAL_LOG (resources/template.ts strategy, lane PGFAMILY)
+ *   WAL_LOG (lane PGFAMILY), and every clone is FILE_COPY again (resources/template.ts strategy, METIS-DBOPT)
  * @recorded 2026-11-23
  */
 const freshPoolDepth = 4

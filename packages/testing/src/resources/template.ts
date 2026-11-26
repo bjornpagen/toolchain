@@ -188,22 +188,27 @@ const originKey = (origin: Origin): string => {
 }
 
 /**
- * The strategy every template and clone is copied with, CREATE DATABASE ... STRATEGY WAL_LOG, which copies the source's
- * blocks through WAL and forces no checkpoint, where FILE_COPY forces two, before and after its copy of the files
- * (PostgreSQL 19.0 dbcommands.c CreateDatabaseUsingFileCopy, RequestCheckpoint at L577 and L680), each waited for on
- * the member's one checkpointer, whatever fsync (a DROP DATABASE forces one more either way, dropdb L1885). Measured on a real
- * tier, lane PGFAMILY's arms (~/.cache/toolchain/PGFAMILY/packages/testing/out/pgfamily/ckpt: run-*.log, *.ckpt and
- * *.waits sampled every 30 s and 2 s by sample.sh, final-*.txt): grizzle c2e208938's 13 test/pg/laws files of two
- * properties or more, 73 properties at 32 workers on a family of its own of 2 members (fsync off), TEST_SEED=2219874524,
- * four runs at once on cassowary (64 cores, load about 350, IO pressure about 44%), 2026-11-23 01:10 to 02:05 UTC.
- * FILE_COPY: 40.0 min of the runner's properties, 2,596 and 2,930 forced checkpoints a member, 11.3% of the members'
- * busy backends waiting on CheckpointDone. WAL_LOG: 37.4 min, 860 and 771 forced checkpoints, 6.8%, 0 failed either way.
- * Where FILE_COPY was chosen with fsync off (1,335 clones a second against WAL_LOG's 760 on a private family of four
- * idle members, 2026-11-16), it measured a probe's clones alone, never a tier's checkpointer backlog behind them
- * (grizzle-test-1, 2026-11-22: 187,335 forced checkpoints, a DROP DATABASE 48 s on CheckpointDone). Unmeasured: a
- * member on memory-backed storage, where a checkpoint costs no disk.
+ * The strategy every template and clone is copied with, CREATE DATABASE ... STRATEGY FILE_COPY, one strategy for every
+ * size, since a size between two would be a number no measurement fixes. FILE_COPY copies the source's files and forces
+ * two checkpoints, before and after its copy (PostgreSQL 19.0 dbcommands.c CreateDatabaseUsingFileCopy, RequestCheckpoint
+ * at L577 and L680); WAL_LOG forces none but writes every block of the source into WAL, a page image each (a DROP
+ * DATABASE forces one checkpoint either way, dropdb L1885). Chosen by the member's CPU, the measure the machine's load
+ * moves least, in the regime tests clone in, several clones at once (METIS-DBOPT, 2026-11-26: k clones at once and then
+ * k drops of one template, three rounds each, on one member, fsync off, on ext4, at load 530 to 650;
+ * ~/.cache/metis/METIS-DBOPT/runs/clone-profile.tsv and clone-profile2.tsv, scripts scratch/clone-profile.sh and
+ * clone-profile2.sh). The member's CPU a round, in ms, FILE_COPY against WAL_LOG, at k = 1, 2 and 4:
+ * - 8 MB: 43-56 against 141-225; 83-93 against 161-397; 193-197 against 374-533.
+ * - 75 MB: 584-1,771 against 381-749; 343-1,237 against 859-1,353; 973-1,183 against 2,103-4,712.
+ * - 248 MB (metis's installed template, 62,359 shared dependencies): 808-1,842 against 1,612-2,910; 1,784-3,252
+ *   against 3,254-7,285; 3,153-3,539 against 11,945-13,029.
+ * FILE_COPY spends less of the member's CPU wherever clones run at once, and at 248 MB at every k; the one cell against
+ * it is a single clone of the 75 MB template, which no suite makes alone. Its wall time is 2 to 8 times lower at 248 MB
+ * from k = 2 (k = 4: 4.3-5.2 s against 26-42 s) and mixed at the small sizes within the load's noise; WAL_LOG's edge
+ * on a real tier of grizzle's small templates (lane PGFAMILY's arms, 2026-11-23: 37.4 min of the runner's properties
+ * against FILE_COPY's 40.0, 860 and 771 forced checkpoints a member against 2,596 and 2,930) is 7% of wall, inside that
+ * noise. Unmeasured: a member on memory-backed storage, where a checkpoint costs no disk.
  */
-const strategy = "WAL_LOG"
+const strategy = "FILE_COPY"
 
 /** The settings whose stored value is a list of quoted names, which a replay writes as it is stored (pg_dump's own list). */
 const listQuoted: ReadonlySet<string> = new Set([

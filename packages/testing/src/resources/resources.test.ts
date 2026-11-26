@@ -1666,6 +1666,101 @@ export const roleSettingCloned = property.explore(int(0, 3), {
 	]
 })
 
+/**
+ * Every clone is copied by FILE_COPY (resources/template.ts strategy), which writes none of its template's blocks into
+ * WAL: a clone of a template of one to three tables, made on the worker's owner session, writes fewer page images into
+ * WAL than half its template's blocks, read from that session's own counters (pg_stat_get_backend_wal), where WAL_LOG
+ * writes a page image of every block it copies, all but the few of a database's files that are no relation's.
+ */
+export const aCloneCopiesNoBlockThroughWal = property.exhaust(finite(int(1, 3)), {
+	box: "a template of one to three tables of 2,000 rows, built and then cloned on the worker's owner session",
+	needs: { services },
+	situations: [],
+	check:
+		({ services: context }) =>
+		(tables) =>
+			Effect.flatMap(context, (ctx) =>
+				Effect.provideContext(
+					Effect.scoped(
+						Effect.gen(function* () {
+							const cluster = yield* PgCluster
+							const member = yield* cluster.memberAt(0)
+							const token = yield* Effect.scoped(
+								Effect.flatMap(cluster.connect(member, cluster.maintenance), (session) =>
+									single(session, freshHex, [])
+								)
+							)
+							const inBuild = yield* Effect.context<PgCluster>()
+							const template = tokenTemplate(`copied ${token ?? ""}`, (target) =>
+								Effect.provideContext(
+									Effect.forEach(
+										Array.from({ length: tables }, (_, at) => at),
+										(at) =>
+											inDatabase(
+												target,
+												`CREATE TABLE copied_${String(at)} AS SELECT g, pg_catalog.repeat('x', 40) AS m FROM pg_catalog.generate_series(1, 2000) AS g`,
+												[]
+											),
+										{ discard: true }
+									),
+									inBuild
+								)
+							)
+							const built = yield* template.open
+							const owner = yield* cluster.owner(member)
+							const pid = yield* single(
+								owner.session,
+								"SELECT pg_catalog.pg_backend_pid()::text",
+								[]
+							)
+							const imagesNow = Effect.andThen(
+								runIn(owner.session, "SELECT pg_catalog.pg_stat_force_next_flush()", []),
+								single(
+									owner.session,
+									"SELECT wal_fpi::text FROM pg_catalog.pg_stat_get_backend_wal($1::int)",
+									[pid ?? ""]
+								)
+							)
+							const before = yield* imagesNow
+							const clone = yield* built.clone
+							const after = yield* imagesNow
+							const blocks = yield* single(
+								owner.session,
+								"SELECT (pg_catalog.pg_database_size($1) / pg_catalog.current_setting('block_size')::int)::text",
+								[clone.template]
+							)
+							yield* dropTemplate({ member, name: clone.template })
+							const images = Number(after) - Number(before)
+							assert.deepEqual(
+								{
+									images:
+										images * 2 < Number(blocks)
+											? "under half its template's blocks"
+											: String(images)
+								},
+								{ images: "under half its template's blocks" },
+								`a clone of a template of ${String(blocks)} blocks wrote ${String(images)} page images into WAL`
+							)
+						})
+					),
+					ctx
+				)
+			),
+	oracle: {
+		kind: "postgresql",
+		name: "the clone's session's own WAL counters (PostgreSQL 19 pg_stat_get_backend_wal), against its template's size"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/resources/template.ts",
+			original: 'const strategy = "FILE_COPY"\n',
+			replacement: 'const strategy = "WAL_LOG"\n',
+			why: "Every template and clone copied by WAL_LOG writes its source's every block into WAL, a page image each, at two to four times the member's CPU of FILE_COPY for clones at once and six to eight times the wall at metis's 248 MB template (METIS-DBOPT, 2026-11-26); the property fails, the clone's page images about its template's blocks."
+		}
+	]
+})
+
 export const buildLeftSessionsEmptied = property.exhaust(finite(int(1, 3)), {
 	box: "a template whose build leaves one to three sessions of the bootstrap superuser open in its build database past its end",
 	needs: { services },
