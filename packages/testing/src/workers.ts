@@ -248,20 +248,27 @@ const allowanceGiven = (name: string, given: string): Width => {
 }
 
 /**
+ * The CPU allowance of the turbo run this process is a task of, undivided: the allowance its run's starter handed its
+ * tasks (runAllowanceVariable), or what the kernel states of this process now (allowanceOf over cpuFactsAt the
+ * machine's root) where no run handed one, a process of no turbo run among them.
+ */
+const turboAllowanceHere = (): Width =>
+	Option.match(variable(runAllowanceVariable), {
+		onNone: () => allowanceOf(cpuFactsAt("")),
+		onSome: (given) => allowanceGiven(runAllowanceVariable, given)
+	})
+
+/**
  * This process's CPU share: its run's, where the process that started it gave it one (allowanceVariable); else its
- * task's share of its run's allowance, the allowance its turbo run's starter handed its tasks (runAllowanceVariable) or
- * what the kernel states of it now (allowanceOf over cpuFactsAt the machine's root), over the tasks its enclosing turbo
- * run executes at once (threadsPerTask, tasksAtOnceHere), so a test task beside three others of a
- * `pnpm check --concurrency=4` at an allowance of 4 holds one CPU, never all four. A variable that is no allowance is a
- * broken parent's, and fails the process.
+ * task's share of its run's allowance (turboAllowanceHere) over the tasks its enclosing turbo run executes at once
+ * (threadsPerTask, tasksAtOnceHere), so a test task beside three others of a `pnpm check --concurrency=4` at an
+ * allowance of 4 holds one CPU, never all four. A variable that is no allowance is a broken parent's, and fails the
+ * process.
  */
 const shareHere = (): Width =>
 	Option.match(variable(allowanceVariable), {
 		onNone: () => {
-			const allowance = Option.match(variable(runAllowanceVariable), {
-				onNone: () => allowanceOf(cpuFactsAt("")),
-				onSome: (given) => allowanceGiven(runAllowanceVariable, given)
-			})
+			const allowance = turboAllowanceHere()
 			return threadsPerTask(allowance, tasksAtOnceHere(allowance))
 		},
 		onSome: (given) => allowanceGiven(allowanceVariable, given)
@@ -294,10 +301,30 @@ export const workersOf = (allowance: Width): Width => widthOf(allowance / 2)
  * How many test workers a run holds: workersOf this process's CPU allowance (processors). Vitest's maxWorkers is this
  * number, and a suite tier that gives each worker a resource of its own (a cloned database, a claimed slot) creates and
  * claims this many, so one constant states the width everywhere: a mutation's pool, the width a cluster family's
- * members are sized for (pg/family.ts CheckoutFamily's width), a load's processes. It lives in a module of its own,
- * which loads no Vitest, so a script that sizes such a resource reads it without installing Vitest.
+ * members are sized for (pg/family.ts CheckoutFamily's width); a load alone takes its run's (loadWorkers). It lives in a
+ * module of its own, which loads no Vitest, so a script that sizes such a resource reads it without installing Vitest.
  */
 export const testWorkers: Width = workersOf(processors)
+
+/**
+ * The CPU allowance of the run this process is of, undivided by its tasks: the share a run's process gave it, which it
+ * takes as its whole (allowanceVariable), else its turbo run's allowance or the kernel's (turboAllowanceHere).
+ */
+const runAllowance: Width = Option.match(variable(allowanceVariable), {
+	onNone: turboAllowanceHere,
+	onSome: (share) => allowanceGiven(allowanceVariable, share)
+})
+
+/**
+ * How many modules a load (`toolchain-test load`, runner/loads.ts) loads at once, each in a process of its own:
+ * workersOf its run's allowance (runAllowance), never of its task's share (main's ruling, 2026-11-26, lane LOADFAST). A
+ * load is its check's long tail: grizzle's is 1,135 processes of about a CPU-second each, and the check's other tasks
+ * end within minutes, so a load held to its share of a check of 24 tasks at an allowance of 32, one CPU and one process,
+ * kept every landing waiting 1h50m while the CPUs its siblings had left stood idle. So while its siblings run, a run
+ * holds its tasks' shares, its allowance at most (threadsPerTask), and its load's processes beside them, half its
+ * allowance: one and a half times its allowance at most (devtools' threads.test.ts); once only the load runs, half.
+ */
+export const loadWorkers: Width = workersOf(runAllowance)
 
 /**
  * How many workers a run of `properties` properties holds: testWorkers, or fewer when it has fewer properties, one at

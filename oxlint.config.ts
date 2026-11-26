@@ -155,6 +155,7 @@ export default defineConfig(
 			{
 				files: [
 					"packages/testing/src/runner/cli-entry.ts",
+					"packages/testing/src/runner/load-entry.ts",
 					"packages/testing/src/runner/worker-entry.ts"
 				],
 				rules: active({

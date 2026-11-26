@@ -1,46 +1,15 @@
-import * as NodeRuntime from "@effect/platform-node/NodeRuntime"
-import * as NodeServices from "@effect/platform-node/NodeServices"
-import { Array as Arr, Cause, Effect, Option, Schema } from "effect"
-import { discover } from "#runner/load.ts"
+import { handedFrom, resolveKnown } from "#runner/resolutions.ts"
 
 /**
- * One test module loaded apart (`toolchain-test load`, loads.ts), in a process of its own: the module imported through
- * the runner's own discover, as a worker loads a property's module, so a module that throws as it loads, or exports
- * anything but properties, fails here as it fails a run. It prints what failed and exits 1; a module that loads exits
- * 0, whatever its load left open.
+ * A load's process (`toolchain-test load`, runner/loads.ts), started as a pool's worker starts (runner/worker-entry.ts):
+ * it takes the resolutions its parent wrote to its standard input and installs them before anything else loads
+ * (runner/resolutions.ts), so the runner's modules and its test module's closure resolve from what the load's parent
+ * and its earlier processes resolved, then loads its one module (runner/load-child.ts).
  *
  *   node runner/load-entry.ts <package root> <module>
  */
+const child = (): Promise<unknown> => import("#runner/load-child.ts")
 
-/** The entry was not given one package root and one module. */
-class LoadUnasked extends Schema.TaggedError<LoadUnasked, { readonly brand: unique symbol }>()(
-	"LoadUnasked",
-	{ message: Schema.String }
-) {}
-
-const main = Effect.gen(function* () {
-	const [root, module, ...extra] = Arr.drop(process.argv, 2)
-	if (root === undefined || module === undefined || Arr.isReadonlyArrayNonEmpty(extra)) {
-		return yield* LoadUnasked.make({ message: "load-entry.ts takes a package root and one module" })
-	}
-	yield* discover(root, [module])
-})
-
-NodeRuntime.runMain(
-	main.pipe(
-		Effect.matchCauseEffect({
-			onSuccess: () => Effect.sync(() => process.exit(0)),
-			onFailure: (cause) =>
-				Effect.sync(() => {
-					process.stderr.write(
-						`${Option.match(Cause.findErrorOption(cause), {
-							onNone: () => Cause.pretty(cause),
-							onSome: (error) => error.message
-						})}\n`
-					)
-					process.exit(1)
-				})
-		}),
-		Effect.provide(NodeServices.layer)
-	)
-)
+handedFrom(0)
+resolveKnown()
+await child()

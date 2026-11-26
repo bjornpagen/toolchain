@@ -14,6 +14,37 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: a load does each piece of work once, at its run's width (2026-11-26)
+
+grizzle's `pnpm check` waited 1h50m on `toolchain-test load`, for two reasons that multiplied. Its processes ran one at
+a time: a load took half its task's share, and a check of 24 tasks at an allowance of 32 leaves a task one CPU. And
+each process repeated what is a function of the files alone. It had no compile cache, since the account's switch
+reached it, and it was handed no resolution. So each of its 1,135 processes stripped, compiled and resolved its whole
+closure again: 2.77 CPU-s a process, where 0.96 is the process's own work. Now:
+
+- **A load's processes start as a pool's workers start** (`childEnvironmentOf`): with the worker environment (a load's
+  process inherited the parent's whole environment before), the root's compile cache, and the resolutions the parent
+  holds on standard input. A resolutions payload is now a sequence of chunks; a pool's payload is one chunk.
+- **A load's process reports, and its parent ends it.** It writes one report on its descriptor 3: its verdict, then
+  the chunk of what Node resolved for it. Then it closes the descriptor; it never calls `process.exit`. The parent reads
+  the report to its end, ends the process group, and hands every later process each resolution once. The verdict is
+  the report, not the exit status. This matters because `process.exit()` can wait forever, joining V8's threads, when a
+  background compile is parked waiting for a garbage collection (nodejs/node#54918). One of grizzle's load processes
+  sat 20 minutes that way after its module had loaded. So a module that exits as it loads now fails, where its exit
+  status 0 passed before. A module that leaves a handle open still loads, and holds nothing.
+- **A compile cache the runner names is on whatever the account's switch says.** Node turns the cache off whenever
+  `NODE_DISABLE_COMPILE_CACHE` is set, to any value. The switch is the account's, for caches nobody chose a folder for.
+  So a child the runner gives a cache directory is started without it, and the runner's own process deletes it before
+  enabling its root's directory. The switch is no longer among the worker variables. The account's
+  `NODE_COMPILE_CACHE` never reaches a child either: a child's cache directory is always its root's in toolchain-test's
+  store.
+- **A load runs at half its run's allowance** (`loadWorkers`), not half its task's share. While its sibling tasks run,
+  a check holds their shares and the load's processes, one and a half times its allowance at most; once only the load
+  runs, half.
+
+To migrate: nothing beyond the bump. On a machine that sets the switch, the worker environment loses a variable, so
+every verdict key changes once.
+
 ## Consumer migration: a closure names what its conditions resolve; a runner keeps its own templates (2026-11-26)
 
 metis rebuilt its database template at every switch between its `react-server` packages and its plain ones (338 s

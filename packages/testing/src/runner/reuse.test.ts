@@ -74,8 +74,8 @@ export const aRunAnswersFromItsKeyAlone = property.exhaust(changes, {
 		},
 		{
 			file: "packages/testing/src/runner/pool.ts",
-			original: `\t\t\t\tenv: { ...spec.env, [allowanceVariable]: \`\${processors}\`, ...compiling },\n`,
-			replacement: `\t\t\t\tenv: { ...process.env, ...spec.env, [allowanceVariable]: \`\${processors}\`, ...compiling },\n`,
+			original: "\t\t\t\tenv: childEnvironmentOf(spec.env, compiling),\n",
+			replacement: "\t\t\t\tenv: childEnvironmentOf({ ...process.env, ...spec.env }, compiling),\n",
 			why: "A worker is given the runner's whole environment, so a variable no key holds reaches the property; the property fails."
 		}
 	]

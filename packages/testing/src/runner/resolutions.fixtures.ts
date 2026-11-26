@@ -1,11 +1,17 @@
 import { registerHooks } from "node:module"
 import * as NodeServices from "@effect/platform-node/NodeServices"
-import { Array as Arr, Effect, FileSystem, Option, Schema } from "effect"
+import { Array as Arr, Effect, FileSystem, Option, Schema, String as Str } from "effect"
 import { ChildProcess } from "effect/process"
 import { subset, type Gen } from "#gen.ts"
 import type { CheckoutDir } from "#mutate/checkout.ts"
 import { HARDENED_FLAGS } from "#runner/config.ts"
-import { handedFrom, resolutionsPayload, resolveKnown } from "#runner/resolutions.ts"
+import {
+	framesOf,
+	freshChunksOf,
+	handedFrom,
+	resolutionsPayload,
+	resolveKnown
+} from "#runner/resolutions.ts"
 
 /**
  * The resolutions property (resolutions.test.ts) runs a program of its own twice over a module graph it writes: once
@@ -91,8 +97,53 @@ const Ran = Schema.Struct({
 	names: Schema.Array(Schema.String)
 })
 
-/** The program's role: a run's parent, handed nothing, or a pool's worker, handed what the parent run resolved. */
-export type Role = "parent" | "worker"
+/**
+ * The program's role: a run's parent, handed nothing; a pool's worker, handed what the parent run resolved; or a load's
+ * parent, which takes what two of its processes started together hand back, each the parent run's payload whole.
+ */
+export type Role = "parent" | "worker" | "merger"
+
+/**
+ * What a load's parent took of two processes' chunks, each the same resolutions (the merger's run): the resolutions the
+ * chunks it would hand later processes hold, those of them that are distinct, and those it would hand again when a
+ * third process handed the same back.
+ */
+const Merged = Schema.Struct({
+	handed: Schema.Finite,
+	distinct: Schema.Finite,
+	again: Schema.Finite
+})
+
+/** The resolutions the chunks of `chunks` hold, a line each, and their distinct keys (resolutions.ts resolutionsText). */
+const linesOf = (chunks: ReadonlyArray<Uint8Array>): readonly [lines: number, distinct: number] => {
+	const zlib = process.getBuiltinModule("node:zlib")
+	const lines = Arr.flatMap(framesOf(chunks), (deflated) =>
+		Arr.filter(Str.split("\n")(zlib.inflateRawSync(deflated).toString("utf8")), Str.isNonEmpty)
+	)
+	const keys = new Set(Arr.map(lines, (line) => Arr.join(Arr.take(Str.split("\t")(line), 3), "\t")))
+	return [lines.length, keys.size]
+}
+
+/**
+ * The merger's run over the payload a parent's run wrote in `directory`: its chunks taken twice at once, as from two
+ * processes started together, then once more, as from a third; what the load's parent would hand on, written down.
+ */
+export const mergedAs = (program: string, directory: string) =>
+	Effect.scoped(
+		Effect.gen(function* () {
+			const fs = yield* FileSystem.FileSystem
+			const mergedFile = `${directory}/merged.json`
+			yield* Effect.ignore(fs.remove(mergedFile))
+			const handle = yield* ChildProcess.make(
+				process.execPath,
+				[...HARDENED_FLAGS, program, directory, "merger"],
+				{ stdin: "ignore", stdout: "ignore", stderr: "ignore", detached: false }
+			)
+			yield* handle.exitCode
+			const written = yield* Effect.orElseSucceed(fs.readFileString(mergedFile), () => "")
+			return Option.getSuccess(Schema.decodeResult(Schema.fromJsonString(Merged))(written))
+		})
+	)
 
 /** The program's path in a checkout of the testing package. */
 export const resolutionsProgram = (checkout: CheckoutDir): string =>
@@ -132,6 +183,18 @@ const program = (directory: string, role: Role) =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem
 		const payloadFile = `${directory}/payload`
+		if (role === "merger") {
+			const payload = yield* fs.readFile(payloadFile)
+			const chunks = payload.subarray(4)
+			const [handed, distinct] = linesOf(freshChunksOf([chunks, chunks]))
+			const [again] = linesOf(freshChunksOf([chunks]))
+			const merged = yield* Schema.encodeEffect(Schema.fromJsonString(Merged))({
+				handed,
+				distinct,
+				again
+			})
+			return yield* fs.writeFileString(`${directory}/merged.json`, merged)
+		}
 		const counts = { resolved: 0, byNode: 0 }
 		registerHooks({
 			resolve: (specifier, context, nextResolve) => {
@@ -166,7 +229,7 @@ const program = (directory: string, role: Role) =>
 
 if (import.meta.main) {
 	const [directory, role] = process.argv.slice(2)
-	if (directory !== undefined && (role === "parent" || role === "worker")) {
+	if (directory !== undefined && (role === "parent" || role === "worker" || role === "merger")) {
 		await Effect.runPromise(program(directory, role).pipe(Effect.provide(NodeServices.layer)))
 	}
 }

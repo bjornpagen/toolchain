@@ -24,13 +24,8 @@ import {
 } from "#live.ts"
 import { type Served, servedArgv } from "#mutate/pool.ts"
 import { withLateUses } from "#runner/case.ts"
-import {
-	compileCacheIn,
-	compileEnvOf,
-	type CompileStore,
-	readsCoverage,
-	storeDirectory
-} from "#runner/compile-cache.ts"
+import { childCompileCacheOf, type CompileStore } from "#runner/compile-cache.ts"
+import { childEnvironmentOf } from "#runner/environment.ts"
 import { moduleClosureAt } from "#runner/module-closure.ts"
 import type { Observation } from "#runner/observe.ts"
 import {
@@ -74,7 +69,7 @@ import {
 	unused
 } from "#runner/usage.ts"
 import { type Bound, boundOver, deadlineBound, type Overrun, overrunText } from "#runner/work.ts"
-import { allowanceVariable, nodePoolFlag, processors, type Width, widthOf } from "#workers.ts"
+import { nodePoolFlag, type Width, widthOf } from "#workers.ts"
 
 /**
  * The pool: worker processes, at most one a core and forked as the queue wants them (one for each module no worker
@@ -508,19 +503,16 @@ const lostIn = (phase: Phase, stall: number): string => {
 }
 
 /**
- * What a worker's environment adds for Node's compile cache (runner/compile-cache.ts): its root's directory in the
- * pool's store, for workers that read no coverage (their guide is notes and neither their image nor this process names
- * NODE_V8_COVERAGE), and the cache turned off for the others, whatever compile cache this process was started with.
+ * A worker's compile cache (runner/compile-cache.ts childCompileCacheOf): its root's directory in the pool's store, for
+ * workers that read no coverage (their guide is notes and neither their image nor this process names
+ * NODE_V8_COVERAGE), and none for the others.
  */
 const compilingOf = (spec: PoolSpec) =>
-	Effect.gen(function* () {
-		const coverage = (yield* readsCoverage) || "NODE_V8_COVERAGE" in spec.env
-		if (spec.guide === "blocks" || coverage) {
-			return compileEnvOf({ kind: "off" })
-		}
-		const store = yield* storeDirectory(spec.compile)
-		return compileEnvOf({ kind: "at", directory: compileCacheIn(store, spec.root) })
-	})
+	childCompileCacheOf(
+		spec.compile,
+		spec.root,
+		spec.guide === "blocks" || "NODE_V8_COVERAGE" in spec.env
+	)
 
 /**
  * A pool in the run's scope, which forks its workers as its queue wants them, none before a unit is queued (a run with
@@ -762,7 +754,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 			])
 			const child = childProcesses.spawn(launch.command, launch.args, {
 				cwd: spec.cwd,
-				env: { ...spec.env, [allowanceVariable]: `${processors}`, ...compiling },
+				env: childEnvironmentOf(spec.env, compiling),
 				serialization: "advanced",
 				stdio: ["pipe", "pipe", "pipe", "ipc", "pipe"],
 				detached: true

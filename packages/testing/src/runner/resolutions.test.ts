@@ -14,6 +14,7 @@ import { Scratch } from "#resources/scratch.ts"
 import {
 	graphIn,
 	kindSets,
+	mergedAs,
 	namesOf,
 	ranAs,
 	resolutionsProgram
@@ -72,10 +73,54 @@ export const resolvedAsHanded = property.exhaust(finite(kindSets), {
 		},
 		{
 			file: "packages/testing/src/runner/resolutions.ts",
-			original: "known.set(line.groups.key, { url: line.groups.url, format: line.groups.format })",
-			replacement:
-				"known.set(line.groups.key, { url: line.groups.format, format: line.groups.url })",
+			original: "const answer = { url: line.groups.url, format: line.groups.format }",
+			replacement: "const answer = { url: line.groups.format, format: line.groups.url }",
 			why: "A handed resolution is read with its URL and format swapped, so a worker resolves a module to its format's name and cannot load it; this property fails."
+		}
+	]
+})
+
+/**
+ * A load's parent hands each resolution once (resolutions.ts freshChunksOf): the processes of a load that start
+ * together are handed the same and so hand back the same, and the parent keeps of each chunk only what it did not hold,
+ * so a later process is handed every resolution once, never each copy (grizzle's first sixteen processes handed back
+ * about 7,000 resolutions each, nearly all the same, and every later one parsed them all: 1.23 CPU-s a process where
+ * 0.96 is its own, 2026-11-26, lane LOADFAST). Oracle: the specification, each resolution once.
+ */
+export const handedOnce = property.exhaust(finite(kindSets), {
+	box: "a parent run's payload over every non-empty set of the kinds of specifier a module names, taken as two processes' chunks at once and then as a third's",
+	needs: { checkout: Checkout.dir, directory: Scratch.dir },
+	situations: [],
+	check:
+		({ checkout, directory }) =>
+		(kinds) =>
+			Effect.gen(function* () {
+				const dir = yield* checkout
+				const program = resolutionsProgram(dir)
+				const graph = yield* directory
+				yield* graphIn(graph, kinds)
+				const parent = yield* ranAs(program, graph, "parent")
+				const merged = yield* Option.match(parent, {
+					onNone: () => Effect.succeedNone,
+					onSome: () => mergedAs(program, graph)
+				})
+				assert.deepEqual(
+					Option.map(merged, (taken) => ({
+						eachOnce: taken.handed === taken.distinct,
+						some: taken.handed > 0,
+						again: taken.again
+					})),
+					Option.some({ eachOnce: true, some: true, again: 0 })
+				)
+			}),
+	oracle: { kind: "specification", name: "a load's parent hands each resolution once" },
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/runner/resolutions.ts",
+			original: "\t\tif (known.has(line.groups.key)) {\n",
+			replacement: "\t\tif (line.groups.key.length === 0) {\n",
+			why: "A load's parent keeps every resolution its processes hand back, each copy, so a later process is handed what its earlier ones resolved together once for each of them; the property fails."
 		}
 	]
 })

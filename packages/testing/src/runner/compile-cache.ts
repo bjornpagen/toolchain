@@ -1,4 +1,4 @@
-import { Config, Effect, Option, String as Str } from "effect"
+import { Config, Effect, Option, Record as Rec, String as Str } from "effect"
 import { toolchainTestCache } from "#runner/cache-home.ts"
 
 /**
@@ -78,19 +78,35 @@ export const storeDirectory = (store: CompileStore) => {
 }
 
 /**
- * A child's compile cache, as its environment states it: none (Node's own switch, which also turns off a cache an
- * inherited NODE_COMPILE_CACHE names, the account's among them), or the directory it keeps its entries in, which
- * NODE_DISABLE_COMPILE_CACHE in what the child inherits still turns off.
+ * A child's compile cache: none, or the directory it keeps its entries in, always one the runner names (a root's in a
+ * store), never one the child inherits: neither the account's NODE_COMPILE_CACHE (cassowary's
+ * ~/.cache/node-compile-cache, the one folder every process wrote, whose lock held 514 tasks on 2026-11-21) nor the
+ * account's switch, NODE_DISABLE_COMPILE_CACHE, which is for a cache nobody chose a folder for (cassowary's
+ * machine/parts/shell 60-node.conf and its node-compile-cache helper) and so never for this one.
  */
-type CompileCache = Readonly<{ kind: "off" }> | Readonly<{ kind: "at"; directory: string }>
+export type CompileCache = Readonly<{ kind: "off" }> | Readonly<{ kind: "at"; directory: string }>
 
-/** What a child's environment adds for its compile cache. */
-export const compileEnvOf = (cache: CompileCache): Readonly<Record<string, string>> => {
+/** The variable that names a compile cache's directory, and Node's switch that turns every compile cache off. */
+const DIRECTORY = "NODE_COMPILE_CACHE"
+const SWITCH = "NODE_DISABLE_COMPILE_CACHE"
+
+/**
+ * A child's environment, `env` with its compile cache as `cache` states it and as nothing in `env` does: off, Node's
+ * switch set and no directory named; at a directory, that directory named and no switch, whatever `env` held, since
+ * Node turns the cache off whenever the switch is present at all, empty or `0` as much as `1` (Node 26.13.1, lane
+ * LOADFAST), and the switch an account sets would otherwise turn off every cache the runner names (no load's child and
+ * no worker outside turbo, which strips it, had one on cassowary).
+ */
+export const compiledEnvironmentOf = (
+	env: Readonly<Record<string, string>>,
+	cache: CompileCache
+): Readonly<Record<string, string>> => {
+	const bare = Rec.remove(Rec.remove(env, DIRECTORY), SWITCH)
 	switch (cache.kind) {
 		case "off":
-			return { NODE_DISABLE_COMPILE_CACHE: "1" }
+			return { ...bare, [SWITCH]: "1" }
 		case "at":
-			return { NODE_COMPILE_CACHE: cache.directory }
+			return { ...bare, [DIRECTORY]: cache.directory }
 	}
 }
 
@@ -101,8 +117,25 @@ export const readsCoverage = Effect.map(
 )
 
 /**
+ * The compile cache of a child of the runner's that loads modules of `root`: off where it reads V8's coverage
+ * (`coverage`: a guided search's worker, one given NODE_V8_COVERAGE, or any child of a process that reads it), else the
+ * root's directory in `store`. A pool's workers (runner/pool.ts) and a load's processes (runner/loads.ts) take theirs
+ * from it.
+ */
+export const childCompileCacheOf = (store: CompileStore, root: string, coverage: boolean) =>
+	Effect.gen(function* () {
+		if (coverage || (yield* readsCoverage)) {
+			return { kind: "off" } satisfies CompileCache
+		}
+		const directory = yield* storeDirectory(store)
+		return { kind: "at", directory: compileCacheIn(directory, root) } satisfies CompileCache
+	})
+
+/**
  * Enables the compile cache of `root` for the rest of this process's loads, unless it reads V8's coverage, and answers
- * the directory Node took, if any (none when NODE_DISABLE_COMPILE_CACHE turns it off).
+ * the directory Node took: the root's directory in toolchain-test's store, which the runner names, so the account's
+ * switch (NODE_DISABLE_COMPILE_CACHE), which Node reads at the call, is taken out of this process's environment first,
+ * as compiledEnvironmentOf takes it out of a child's.
  */
 export const compileCached = (root: string) =>
 	Effect.gen(function* () {
@@ -110,8 +143,9 @@ export const compileCached = (root: string) =>
 			return Option.none<string>()
 		}
 		const directory = yield* compileCacheOf(root)
-		const enabled = yield* Effect.sync(() =>
-			process.getBuiltinModule("node:module").enableCompileCache(directory)
-		)
+		const enabled = yield* Effect.sync(() => {
+			Reflect.deleteProperty(process.env, SWITCH)
+			return process.getBuiltinModule("node:module").enableCompileCache(directory)
+		})
 		return Option.fromUndefinedOr(enabled.directory)
 	})
