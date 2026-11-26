@@ -13,6 +13,7 @@
 	"exports": {
 		"./assert": "./src/assert.ts",
 		"./checkout": "./src/mutate/checkout.ts",
+		"./closure": "./src/closure.ts",
 		"./compile-cache": "./src/runner/compile-cache.ts",
 		"./commands": "./src/commands.ts",
 		"./dictionary": "./src/dictionary.ts",

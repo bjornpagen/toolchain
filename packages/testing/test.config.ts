@@ -16,6 +16,7 @@ export default defineRunner({
 		"src/seeds.test.ts",
 		"src/interleave.test.ts",
 		"src/commands.test.ts",
+		"src/closure.test.ts",
 		"src/runner/closure.test.ts",
 		"src/runner/keep.test.ts",
 		"src/runner/cache.test.ts",
