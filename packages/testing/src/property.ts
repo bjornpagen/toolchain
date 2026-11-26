@@ -114,9 +114,12 @@ export type Need<A> = Readonly<{
 
 /**
  * What a run need's open may require: the run's scope, which what it makes (a build's directory, a server) lives in
- * until the run's pools have closed, and the platform.
+ * until the run's pools have closed; the platform; and the closures of the package its workers run in (ModuleClosure:
+ * a module's whole import closure's digest, the one the runner keys verdicts by), so an open that makes what a module
+ * closure determines (a compile of a program's sources) records that digest and skips its work while the digest it
+ * recorded stands: one make per distinct closure, never one per run.
  */
-export type RunNeedContext = Scope.Scope | NodeServices
+export type RunNeedContext = Scope.Scope | NodeServices | ModuleClosure
 
 /**
  * A resource made once per run, for every worker of it: `open` runs ONCE, in the runner's own process, before it forks

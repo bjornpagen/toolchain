@@ -1,4 +1,8 @@
-import { Array as Arr, Effect, FileSystem } from "effect"
+import { pathToFileURL } from "node:url"
+import { Array as Arr, Effect, FileSystem, Option, Schema } from "effect"
+import { plantedBudget } from "#planted.fixtures.ts"
+import type { RunNeed } from "#property.ts"
+import { ModuleClosure } from "#runner/services.ts"
 
 /** The file a planted run need's open appends its process's id to, in the package root its run's workers run in. */
 export const OPENED = "opened"
@@ -102,3 +106,60 @@ export const countedRunRoot = (directory: string, modules: number) =>
 		)
 		return directory
 	})
+
+/**
+ * Writes into `directory` a workspace (its lockfile, which marks it) whose module `entry.ts` imports a chain of `depth`
+ * modules, `link-1.ts` to `link-<depth>.ts`, each importing the next, the last giving `value`: the program a skipping
+ * run need's open digests the closure of (skipping), the last link rewritten between runs (lastLinkOf) to change the
+ * closure with every other file unchanged.
+ */
+export const closureWorkspaceIn = (directory: string, depth: number, value: number) =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		yield* fs.writeFileString(`${directory}/pnpm-lock.yaml`, "lockfileVersion: '9.0'\n")
+		yield* fs.writeFileString(
+			`${directory}/package.json`,
+			'{ "name": "closure", "type": "module" }\n'
+		)
+		yield* fs.writeFileString(
+			`${directory}/entry.ts`,
+			'import { link } from "./link-1.ts"\n\nexport const entry = link\n'
+		)
+		for (let at = 1; at < depth; at += 1) {
+			yield* fs.writeFileString(
+				`${directory}/link-${at}.ts`,
+				`import { link as next } from "./link-${at + 1}.ts"\n\nexport const link = next\n`
+			)
+		}
+		yield* fs.writeFileString(lastLinkOf(directory, depth), `export const link = ${value}\n`)
+	})
+
+/** The last module of a closure workspace's chain of `depth` (closureWorkspaceIn), the one a case rewrites. */
+export const lastLinkOf = (directory: string, depth: number): string =>
+	`${directory}/link-${depth}.ts`
+
+/** What a skipping run need's open did: ran its body, or skipped it, the closure's digest what it recorded. */
+const Did = Schema.Literals(["ran", "skipped"])
+
+/**
+ * A run need that makes what `entry.ts`'s closure determines once a closure: its open digests the closure
+ * (ModuleClosure hashOf), skips its body where `recorded` holds that digest, and otherwise records it, as a compile of a
+ * program's sources would before compiling them.
+ */
+export const skipping: RunNeed<typeof Did.Type> = {
+	key: "runs.fixtures.ts skipping",
+	budget: plantedBudget,
+	value: Did,
+	open: (directory) =>
+		Effect.gen(function* () {
+			const fs = yield* FileSystem.FileSystem
+			const closures = yield* ModuleClosure
+			const digest = yield* closures.hashOf(pathToFileURL(`${directory}/entry.ts`).href)
+			const recorded = yield* Effect.option(fs.readFileString(`${directory}/recorded`))
+			if (Option.contains(recorded, digest)) {
+				return "skipped"
+			}
+			yield* Effect.orDie(fs.writeFileString(`${directory}/recorded`, digest))
+			return "ran"
+		})
+}

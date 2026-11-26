@@ -313,8 +313,11 @@ section, in the same commit:
    identity: no template is rebuilt for it.
 3. **A resource a run makes once for every worker** (an app's build) is a `RunNeed`: `{ key, budget, value, open }`,
    where `value` is a Schema whose encoding is JSON and `open: (directory) => Effect<A, NeedFailed, Scope |
-   NodeServices>` gets the directory the run's workers run in (the package's directory, or a worker tree's under a
-   mutant). The runner opens it ONCE, in its own process, before it forks any worker, under its budget and the stall
+   NodeServices | ModuleClosure>` gets the directory the run's workers run in (the package's directory, or a worker
+   tree's under a mutant) and the package's closures: `ModuleClosure`'s `hashOf(moduleUrl)` is the digest of a
+   module's whole import closure, the one the runner keys verdicts by, so an open that makes what a closure determines
+   (a compile of a program's sources) records that digest beside what it made and skips its work while the digest
+   stands: one make per distinct closure, never one per run (2026-11-25). The runner opens it ONCE, in its own process, before it forks any worker, under its budget and the stall
    window, and sends its encoded value to every worker. A worker need reads it with `Need.overRun(run, { key, budget,
    open: (value) => ... })`, which declares it, so a run opens only the run needs its properties read. No worker builds
    it or waits on another that does: delete the build lock (a property reading a run need runs its mutants from worker

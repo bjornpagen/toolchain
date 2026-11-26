@@ -1,9 +1,10 @@
 import { Array as Arr, Cause, type Context, Effect, Option, Schema } from "effect"
 import { failureText } from "#failure.ts"
 import type { RunNeed, RunNeedContext } from "#property.ts"
+import { moduleClosureAt } from "#runner/module-closure.ts"
 import { judgedGroup } from "#runner/opening.ts"
 import type { RunValue } from "#runner/protocol.ts"
-import { NeedFailed, type RunValues } from "#runner/services.ts"
+import { ModuleClosure, NeedFailed, type RunValues } from "#runner/services.ts"
 
 /**
  * A run's run needs (property.ts RunNeed): opened ONCE, in the runner's own process, before it forks a worker of the
@@ -54,28 +55,38 @@ const openedOne = (
 /**
  * Opens `runs` here, each key once and all at once, given `directory`, the directory the run's workers run in: judged
  * as one group of work under their budgets summed and `stall`, the stall window (runner/opening.ts judgedGroup), in the
- * caller's scope, which holds what they make until the run's pools have closed. Each gives its value's JSON encoding, or
- * the NeedFailed it failed with, which every need reading it fails with on every worker, unopened: a run need that does
- * not open fails the properties that read it, never the run.
+ * caller's scope, which holds what they make until the run's pools have closed, each given the closures of the package
+ * at `directory` as its workers load it (runner/module-closure.ts moduleClosureAt: a mutant's worker tree's own, on
+ * disk). Each gives its value's JSON encoding, or the NeedFailed it failed with, which every need reading it fails with
+ * on every worker, unopened: a run need that does not open fails the properties that read it, never the run.
  */
 export const openedRuns = (
 	runs: ReadonlyArray<RunNeed<unknown>>,
 	directory: string,
 	stall: number
-): Effect.Effect<ReadonlyArray<RunValue>, never, RunNeedContext> =>
+): Effect.Effect<ReadonlyArray<RunValue>, never, Exclude<RunNeedContext, ModuleClosure>> =>
 	Arr.match(
 		Arr.dedupeWith(runs, (one, other) => one.key === other.key),
 		{
 			onEmpty: () => Effect.succeed([]),
 			onNonEmpty: (distinct) =>
-				Effect.flatMap(judgedGroup(distinct, stall), (judged) =>
-					Effect.ensuring(
-						Effect.forEach(distinct, (run) => openedOne(run, directory, judged.within), {
-							concurrency: "unbounded"
-						}),
+				Effect.gen(function* () {
+					const closures = yield* moduleClosureAt(directory, Option.none())
+					const judged = yield* judgedGroup(distinct, stall)
+					return yield* Effect.ensuring(
+						Effect.forEach(
+							distinct,
+							(run) =>
+								Effect.provideService(
+									openedOne(run, directory, judged.within),
+									ModuleClosure,
+									closures
+								),
+							{ concurrency: "unbounded" }
+						),
 						judged.ended
 					)
-				)
+				})
 		}
 	)
 
