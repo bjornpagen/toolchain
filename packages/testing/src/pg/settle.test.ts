@@ -584,7 +584,7 @@ export const aKeptFamilyKeepsItsDataThroughItsSettings = property.exhaust(finite
 		),
 	oracle: {
 		kind: "specification",
-		name: "a kept family is named by its checkout alone (family.ts Naming), so a change of its spec's lock table reaches the same member and its data, the change applied by the restart its settle makes; a family named by its spec opened an empty member at the change (METIS-DBOPT, 2026-11-26: metis-dev-5f2815d9, then 9e8880aa at 4096 locks and 8b48216c at 4097)"
+		name: "a kept family is named by its checkout alone (family.ts Naming), so a change of its spec's lock table reaches the same member and its data, the change applied by the restart its settle makes; a family named by its spec opened an empty member at the change (METIS-DBOPT, 2026-11-26: metis's development family's name, computed at 4096 locks and at 4097, was two names)"
 	},
 	kept: [],
 	kills: [

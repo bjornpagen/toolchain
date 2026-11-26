@@ -172,8 +172,8 @@ const familyKey = regex("^[0-9a-f]{8}$")
  * by its checkout alone, the name every family had before a family was named by its settings: so a change of its
  * spec, its lock table, its sessions or its port, reaches the same member and its data, and is applied by a restart
  * (settle.ts memberSettled), where a name that held the spec opened an empty cluster at every change of a setting, its
- * data left under the old name (METIS-DBOPT, 2026-11-26: metis's development family metis-dev-5f2815d9, then 9e8880aa
- * at 4096 locks and 8b48216c at 4097). A kept cluster has no workers (spec.ts SessionsSizing), so no run's width moves
+ * data left under the old name (METIS-DBOPT, 2026-11-26: metis's development family's name, computed for its spec at
+ * 4096 locks and at 4097, was two names). A kept cluster has no workers (spec.ts SessionsSizing), so no run's width moves
  * it. A throwaway family by everything its members' settings are a function of (settings.ts: max_connections,
  * max_wal_senders and the lock table sized by the width; the rest by the spec), so two holders of one member never
  * want it settled differently, and no settle restarts a member under another holder for its own settings: two runs of
