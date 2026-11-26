@@ -286,7 +286,7 @@ const timedCalls = (timer: string): ReadonlyArray<readonly [code: string, fixed:
 
 /** A reference that reads the clock, a Date of now, or a near name of either, which reads nothing; and a Vitest
  * timeout, finite (a literal, a name, a value computed at load) or none (0, Infinity), or a near name of one. */
-export const clockSites: Gen<Site> = weighted([
+const clockSites: Gen<Site> = weighted([
 	[4, (s) => site(`const now${OWN} = ${spelled(s.draw(oneOf(CLOCK_READS)))}`, 1)],
 	[1, (s) => site(`const now${OWN} = new ${s.draw(oneOf(DATE_READS))}()`, 1)],
 	[1, (s) => site(`const now${OWN} = ${s.draw(oneOf(DATE_READS))}()`, 1)],
@@ -1747,7 +1747,7 @@ const CONFIG_FILES = element([
  * (CONFIG_TIMEOUTS): reported once for the keys it leaves out, which the fix adds as `0` before its first property,
  * and once for each key stated as anything but the literal 0, which the fix writes as `0`.
  */
-export const vitestConfigSites: Gen<Site> = (s) => {
+const vitestConfigSites: Gen<Site> = (s) => {
 	const include = s.draw(boolean)
 	const drawn = Arr.map(VITEST_TIMEOUTS, (key) => [key, s.draw(CONFIG_TIMEOUTS)] as const)
 	const stated = Arr.filter(drawn, ([, value]) => value !== "absent")
@@ -1773,7 +1773,7 @@ export const vitestConfigSites: Gen<Site> = (s) => {
 }
 
 /** Programs of a Vitest configuration file, of one drawn name. */
-export const inVitestConfigs =
+const inVitestConfigs =
 	(programs: Gen<Program>): Space<RuleCase> =>
 	(source) => ({
 		header: "",
