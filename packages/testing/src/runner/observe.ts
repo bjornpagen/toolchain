@@ -45,7 +45,9 @@ import type { ChildActs, KeyedRead } from "#runner/strace.ts"
  * machine's live state are none: tsgo, a compiler's tools and the libraries they load read no time to decide a verdict.
  *
  * A database property's server is keyed by what it is: its template by the template's identity, in its closure (the
- * declaring module's import closure, the template's name and content); the PostgreSQL serving the run's own members by
+ * declaring module's import closure, the template's name and content), and by what its build read, which the template
+ * keeps and every opener that did not build it is given as its own reads (guardRecorded, resources/template.ts), a
+ * build's acts collected apart beside its window (guardCollecting, runner/collected.ts); the PostgreSQL serving the run's own members by
  * the `postgres` read every connection to one makes, the digest of every byte of the installation (its version, its
  * extensions) and of the workbench's postgres@.service and the files its lines name; the members' settings by
  * pg.config.ts, in every closure, from which settle writes them. A clone starts with its template's database settings
@@ -319,6 +321,8 @@ const guard: {
 	observed: (observation: Observation, unit: number) => void
 	servers: Set<string>
 	runnersOwn: () => boolean
+	collecting: () => Collected | undefined
+	recorded: (reads: ReadonlyArray<KeyedRead>, observation: Observation | undefined) => void
 } = {
 	window: { kind: "closed" },
 	seen: false,
@@ -331,7 +335,9 @@ const guard: {
 	parser: undefined,
 	observed: () => undefined,
 	servers: new Set(),
-	runnersOwn: () => false
+	runnersOwn: () => false,
+	collecting: () => undefined,
+	recorded: () => undefined
 }
 
 /**
@@ -374,6 +380,34 @@ export const guardServers = (addresses: ReadonlyArray<string>): void => {
 /** Gives the guard the parser of its children's traces (runner/strace.ts childActsOf): until then a child is no keyable act. */
 export const guardChildren = (parser: ChildParser): void => {
 	guard.parser = parser
+}
+
+/**
+ * What a piece of a property's work read and observed while it ran (runner/collected.ts collectedOf: a database
+ * template's build, resources/template.ts): every keyable read its process made, or a child it started then made, each
+ * as the guard keys it and whether or not the process had made it before; and its first observation past every key.
+ */
+export type Collected = { readonly reads: Array<KeyedRead>; observed: Observation | undefined }
+
+/**
+ * Gives the guard what tells it the collection the running fiber's acts go to, beside its window (runner/collected.ts
+ * collectingNow): none outside one. A child's acts go to the collection its start was made in.
+ */
+export const guardCollecting = (probe: () => Collected | undefined): void => {
+	guard.collecting = probe
+}
+
+/**
+ * Makes `reads` and `observation` acts of the property now running, as if its process had made them: what a database
+ * template's build read and observed, given to every opener of the template that did not build it
+ * (resources/template.ts), so a verdict that rests on what the template holds rests on what its build read. Nothing
+ * where no guard is installed, or where the runner's own work makes them.
+ */
+export const guardRecorded = (
+	reads: ReadonlyArray<KeyedRead>,
+	observation: Observation | undefined
+): void => {
+	guard.recorded(reads, observation)
 }
 
 /**
@@ -479,6 +513,10 @@ export const guardInstalled = (
 		if (!acting()) {
 			return
 		}
+		const into = guard.collecting()
+		if (into !== undefined && into.observed === undefined) {
+			into.observed = observation
+		}
 		if (guard.window.kind === "closed") {
 			guard.pending = guard.pending ?? observation
 			return
@@ -497,7 +535,12 @@ export const guardInstalled = (
 	 * An act on `file`: nothing where the file is the process's own; an observation where no key holds what it reads (a
 	 * status, a watch) or the file is the machine's live state; else a keyable read, kept once over the process's life.
 	 */
-	const traced = (kind: KeyedRead["kind"] | "unkeyable", file: string, call: string): void => {
+	const traced = (
+		kind: KeyedRead["kind"] | "unkeyable",
+		file: string,
+		call: string,
+		into: Collected | undefined
+	): void => {
 		if (kind !== "postgres" && isOwn(file)) {
 			return
 		}
@@ -505,6 +548,7 @@ export const guardInstalled = (
 			saw({ kind: "read", call, path: file })
 			return
 		}
+		into?.reads.push({ kind, path: file })
 		if (guard.window.kind === "open") {
 			guard.by = widerOf(guard.by, "process")
 		}
@@ -519,7 +563,7 @@ export const guardInstalled = (
 		(call: string, given: unknown): After => {
 			const read = pathOf(given)
 			if (acting() && read !== undefined) {
-				traced(kind, read, call)
+				traced(kind, read, call, guard.collecting())
 			}
 			return undefined
 		}
@@ -621,6 +665,7 @@ export const guardInstalled = (
 			return undefined
 		}
 		const parse = guard.parser
+		const into = guard.collecting()
 		const directory = original.mkdtempSync(
 			path.join(process.getBuiltinModule("node:os").tmpdir(), "toolchain-strace-")
 		)
@@ -634,7 +679,7 @@ export const guardInstalled = (
 					made(one.path, one.directory)
 				}
 				for (const one of acts.reads) {
-					traced(one.kind, one.path, `${call} ${command}`)
+					traced(one.kind, one.path, `${call} ${command}`, into)
 				}
 				guard.by = "children"
 			}
@@ -761,7 +806,7 @@ export const guardInstalled = (
 		(args) => {
 			const target = connectionTargetOf(args)
 			if (guard.loading === 0 && guard.servers.has(target)) {
-				traced("postgres", "", "connect")
+				traced("postgres", "", "connect", guard.collecting())
 				return undefined
 			}
 			saw({ kind: "network", call: "connect", target })
@@ -786,6 +831,17 @@ export const guardInstalled = (
 		constructor(filename: string | URL, options: WorkerOptions | undefined) {
 			saw({ kind: "thread", entry: String(filename) })
 			super(filename, options)
+		}
+	}
+	guard.recorded = (reads, observation) => {
+		if (!acting()) {
+			return
+		}
+		for (const read of reads) {
+			traced(read.kind, read.path, "a database template's build", guard.collecting())
+		}
+		if (observation !== undefined) {
+			saw(observation)
 		}
 	}
 	registerHooks({

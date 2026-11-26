@@ -26,10 +26,17 @@ import {
 	stoppedOf
 } from "#runner/case.ts"
 import { askedClosuresOf } from "#runner/closure-requests.ts"
+import { collectingNow } from "#runner/collected.ts"
 import { asInfrastructure, inInfrastructure } from "#runner/infrastructure.ts"
 import { needStallMillis } from "#runner/limits.ts"
 import { configOf, propertyAt } from "#runner/load.ts"
-import { guardChildren, guardDrain, guardRunnerOwn, guardWindow } from "#runner/observe.ts"
+import {
+	guardChildren,
+	guardCollecting,
+	guardDrain,
+	guardRunnerOwn,
+	guardWindow
+} from "#runner/observe.ts"
 import { Perception, perceptionOf } from "#runner/perceive.ts"
 import {
 	FromWorker,
@@ -104,6 +111,7 @@ const main = Effect.gen(function* () {
 	}
 	guardChildren(childActsOf)
 	guardRunnerOwn(inInfrastructure)
+	guardCollecting(collectingNow)
 	const config = yield* configOf(root)
 	const scope = yield* Scope.Scope
 	const platform = yield* Effect.context<NodeServices.NodeServices>()

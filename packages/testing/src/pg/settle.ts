@@ -948,12 +948,16 @@ const settleProgram = process
 
 /**
  * What a settle unit of `family` is given, beside its working directory, whose pg.config.ts states the cluster: the
- * family's checkout, so it settles that family wherever systemd starts it, and its width (settleWidthVariable), so it
- * settles the family at the width of the run that reaches it, never at its own.
+ * family's checkout, so it settles that family wherever systemd starts it; its width (settleWidthVariable), so it
+ * settles the family at the width of the run that reaches it, never at its own; and the family's states home, as
+ * XDG_STATE_HOME (family.ts homesHere), so it keeps the family's state where its starter reads it, never in the
+ * account's: a unit takes the manager's environment, not its starter's, and a test's run whose states home is its own
+ * had its settles write the account's (the reuse property's consumer, 2026-11-26).
  */
 export const settleEnvironment = (family: CheckoutFamily): Readonly<Record<string, string>> => ({
 	[settleWidthVariable]: `${family.width}`,
-	[checkoutVariable]: family.checkout
+	[checkoutVariable]: family.checkout,
+	XDG_STATE_HOME: process.getBuiltinModule("node:path").dirname(family.homes.states)
 })
 
 /** The command a settle unit of `target` runs (settleUnit): `toolchain-pg settle`, with the member's index for a member. */

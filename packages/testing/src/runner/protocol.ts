@@ -694,8 +694,11 @@ const DrainedWire = Schema.Struct({
 	by: Schema.Literals(["none", "process", "children"])
 })
 
-/** An observation as it crosses from a worker to its parent (runner/observe.ts Observation). */
-const ObservationWire = Schema.Union([
+/**
+ * An observation as it crosses from a worker to its parent (runner/observe.ts Observation), and as a database template
+ * keeps its build's (resources/template.ts).
+ */
+export const ObservationWire = Schema.Union([
 	Schema.Struct({ kind: Schema.Literal("read"), call: Schema.String, path: Schema.String }),
 	Schema.Struct({ kind: Schema.Literal("child"), call: Schema.String, command: Schema.String }),
 	Schema.Struct({ kind: Schema.Literal("network"), call: Schema.String, target: Schema.String }),

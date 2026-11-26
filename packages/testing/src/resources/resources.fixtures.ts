@@ -23,6 +23,7 @@ import {
 } from "#resources/cluster.ts"
 import type { TemplateDatabase } from "#resources/database.ts"
 import { type DatabaseTemplate, Template } from "#resources/template.ts"
+import { unwatched } from "#runner/observe.ts"
 import { ModuleClosure, NeedFailed, RunValues, WorkerIndex } from "#runner/services.ts"
 
 /** A database name the fixture read back from the cluster. */
@@ -316,6 +317,49 @@ export const runsOf = (together: ReadonlyArray<boolean>): ReadonlyArray<Readonly
 
 /** The name of a template a property found by its comment, as the fixture drops it. */
 export const templateNameOf = databaseNameOf
+
+/**
+ * `script` (an ES module's text) run with `args` by a Node process of its own that no guard watches (runner/observe.ts
+ * unwatched: Node's spawn as it was before the guard wrapped it), its work on `path`. What another process wrote is no
+ * data of the reader's own, so a template's build that reads it makes a keyable read (runner/observe.ts), as a build
+ * reads a repository's file; what the case's own process wrote is its own data, which no key holds.
+ */
+const ranElsewhere = (
+	script: string,
+	args: ReadonlyArray<string>,
+	path: string
+): Effect.Effect<void, NeedFailed> =>
+	Effect.callback<void, NeedFailed>((resume) => {
+		const child = unwatched.spawn(process.execPath, ["--input-type=module", "-e", script, ...args], {
+			stdio: "ignore"
+		})
+		child.once("error", (failure) =>
+			resume(Effect.fail(NeedFailed.make({ need: path, message: failure.message })))
+		)
+		child.once("exit", (code) =>
+			resume(
+				code === 0
+					? Effect.void
+					: Effect.fail(NeedFailed.make({ need: path, message: `its writer exited ${String(code)}` }))
+			)
+		)
+	})
+
+/** `text` written at `file` by a process of its own (ranElsewhere), its directory made. */
+export const writtenElsewhere = (file: string, text: string) =>
+	ranElsewhere(
+		'import { mkdirSync, writeFileSync } from "node:fs"; import { dirname } from "node:path"; const [file, text] = process.argv.slice(1); mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, text)',
+		[file, text],
+		file
+	)
+
+/** `path` and everything under it removed by a process of its own (ranElsewhere). */
+export const removedElsewhere = (path: string) =>
+	ranElsewhere(
+		'import { rmSync } from "node:fs"; rmSync(process.argv[1], { recursive: true, force: true })',
+		[path],
+		path
+	)
 
 /** This module's URL: a module whose closure differs from a test module's that imports it, so its hash is another. */
 export const fixturesModule = import.meta.url

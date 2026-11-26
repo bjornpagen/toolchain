@@ -14,6 +14,28 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: a template stands while what its build read stands (2026-11-26)
+
+A database template was named by its identity alone: its declaring module's closure, its name, its content and its
+origin. A build that reads a file no module loads (a schema's SQL, a fixture) left its template standing after the file
+changed, and a property that cloned a template another worker or run built had none of the build's reads in its trace,
+so its cached verdict stood too. Now:
+
+- **A template is named by its identity and its build's reads.** Everything a build reads (a file's bytes, a
+  directory's entries, a path's presence, where a path resolves to, a link's text, by its own process or a child it
+  starts) is collected apart from its window, kept in the template's comment with the digest of what it read, and
+  hashed into its name: `<prefix>tpl_<16 hex digits of the identity><16 of the reads>`. An open takes a built template
+  of its identity whose reads all read alike now, and builds a new one when none does. A build one of whose reads
+  changed while it ran is built again. Reads of the PostgreSQL serving the member are none of a template's: each opener
+  reads its server itself.
+- **An open that finds its template standing is given its build's reads** (and its build's first observation past
+  every key, if it made one) as its own, so a verdict cached over a template answers only while what the template was
+  built from stands, whichever worker or run built it.
+
+To migrate: nothing to change. Every template's name changes once (the identity's text is at version 3), so the first
+run after the bump builds its templates again and the next collection drops the old ones. A template whose build reads
+a file it writes itself, or one under a directory it made, keeps no read of it: that is the build's own data.
+
 ## Consumer migration: a run answers a property that reads at run time while what it read stands (2026-11-26)
 
 `toolchain-test run` answered from the cache only a property that read nothing at run time: one that read a file (a

@@ -25,7 +25,7 @@ import {
 import { assert } from "#assert.ts"
 import { awaitFact } from "#fact.ts"
 import type { Reached } from "#features.ts"
-import { array, boolean, finite, int } from "#gen.ts"
+import { array, boolean, element, finite, int } from "#gen.ts"
 import { liveSleep, overrun, ownWorkNow, waitingOn, waitingOnWork } from "#live.ts"
 import { Checkout } from "#mutate/checkout.ts"
 import { backendWorking } from "#pg/session.ts"
@@ -56,12 +56,15 @@ import {
 	superuserSessions,
 	fixturesModule,
 	freshHex,
+	removedElsewhere,
 	templateNameOf,
 	tokenTemplate,
 	UTF8_COLLATIONS,
-	undeclaredSession
+	undeclaredSession,
+	writtenElsewhere
 } from "#resources/resources.fixtures.ts"
 import type { DatabaseTemplate } from "#resources/template.ts"
+import { collectedOf } from "#runner/collected.ts"
 import { defineRunner, noMutation } from "#runner/config.ts"
 import { collectedAround } from "#runner/run.ts"
 import { runValuesOf } from "#runner/runs.ts"
@@ -770,6 +773,166 @@ export const runnersKeepTheirOwnTemplates = property.exhaust(finite(boolean), {
 		}
 	]
 })
+
+/**
+ * What changes between two opens of a template whose build reads a file: nothing; the file rewritten with the text it
+ * held; rewritten with another; or rewritten by another process while the first open's first build ran, after the build
+ * read it.
+ */
+const BUILD_READ_CHANGES = [
+	"the file left as it was",
+	"the file rewritten alike",
+	"the file rewritten otherwise",
+	"the file rewritten while its first build ran"
+] as const
+
+type BuildReadChange = (typeof BUILD_READ_CHANGES)[number]
+
+/**
+ * Each change as a case makes it and what the specification says of it: the texts written over the file between the
+ * opens, whether another process rewrites it while the first build runs, and whether the second open builds again.
+ */
+const BUILD_READ_CASES: Readonly<
+	Record<
+		BuildReadChange,
+		Readonly<{ rewrites: ReadonlyArray<string>; whileBuilt: boolean; builtAgain: boolean }>
+	>
+> = {
+	"the file left as it was": { rewrites: [], whileBuilt: false, builtAgain: false },
+	"the file rewritten alike": { rewrites: ["first"], whileBuilt: false, builtAgain: false },
+	"the file rewritten otherwise": { rewrites: ["second"], whileBuilt: false, builtAgain: true },
+	"the file rewritten while its first build ran": { rewrites: [], whileBuilt: true, builtAgain: false }
+}
+
+export const aTemplateStandsWhileWhatItsBuildReadStands = property.exhaust(
+	finite((source): BuildReadChange => source.draw(element(BUILD_READ_CHANGES))),
+	{
+		box: "a template whose build reads a file another process wrote, opened by one runner, the file then left as it was, rewritten alike or otherwise, or rewritten while the first build ran, and opened by a second runner on a cluster scope of its own",
+		needs: { services },
+		situations: [],
+		check:
+			({ services: context }) =>
+			(change) =>
+				Effect.gen(function* () {
+					const ctx = yield* context
+					const worker = Context.get(ctx, WorkerIndex)
+					const runnerClosures = Context.get(ctx, ModuleClosure)
+					const made = BUILD_READ_CASES[change]
+					const outcome = yield* Effect.scoped(
+						Effect.gen(function* () {
+							const prefixToken = yield* Effect.provideContext(
+								Effect.gen(function* () {
+									const cluster = yield* PgCluster
+									const member = yield* cluster.memberAt(0)
+									return yield* Effect.scoped(
+										Effect.flatMap(cluster.connect(member, cluster.maintenance), (session) =>
+											single(session, freshHex, [])
+										)
+									)
+								}),
+								ctx
+							)
+							const prefix = `tbr${prefixToken ?? ""}_`
+							const directory = `${process.getBuiltinModule("node:os").tmpdir()}/toolchain-build-reads-${prefix}`
+							const file = `${directory}/read.txt`
+							yield* Effect.acquireRelease(writtenElsewhere(file, "first"), () =>
+								Effect.ignore(removedElsewhere(directory))
+							)
+							const builds = { first: 0, second: 0 }
+							const opening = { by: "first" as "first" | "second" }
+							const template = tokenTemplate(prefix, () =>
+								Effect.gen(function* () {
+									builds[opening.by] += 1
+									process.getBuiltinModule("node:fs").readFileSync(file, "utf8")
+									if (made.whileBuilt && opening.by === "first" && builds.first === 1) {
+										yield* writtenElsewhere(file, "rewritten while it was built")
+									}
+								})
+							)
+							/**
+							 * An open of the template by a runner of the checkout on a cluster scope of its own for the effect's
+							 * life, as a worker of another run opens it: its own owner session, holds and claims.
+							 */
+							const asRunner = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+								Effect.scoped(
+									Effect.flatMap(Layer.build(ownCluster(prefix)), (cluster) =>
+										Effect.provide(
+											effect,
+											Context.merge(
+												cluster,
+												Context.make(ModuleClosure, {
+													root: runnerClosures.root,
+													hashOf: () => runnerClosures.hashOf(fixturesModule)
+												}).pipe(
+													Context.add(WorkerIndex, worker),
+													Context.add(RunValues, runValuesOf([]))
+												)
+											)
+										)
+									)
+								)
+							const opened = Effect.flatMap(template.open, (open) => Effect.scoped(open.clone))
+							const first = yield* asRunner(opened)
+							yield* Effect.forEach(made.rewrites, (text) => writtenElsewhere(file, text), {
+								discard: true
+							})
+							opening.by = "second"
+							const [second, collected] = yield* opened.pipe(collectedOf, asRunner)
+							yield* asRunner(Effect.andThen(claimsGone(first.member, prefix), collect))
+							return {
+								builds,
+								same: first.template === second.template,
+								read: Arr.some(
+									collected.reads,
+									(read) => read.kind === "file" && read.path === file
+								)
+							}
+						})
+					)
+					assert.deepEqual(
+						{
+							rebuiltWhileRead: !made.whileBuilt || outcome.builds.first > 1,
+							builtAgain: outcome.builds.second > 0,
+							same: outcome.same,
+							read: outcome.read
+						},
+						{ rebuiltWhileRead: true, builtAgain: made.builtAgain, same: !made.builtAgain, read: true }
+					)
+				}),
+		oracle: {
+			kind: "specification",
+			name: "a template stands exactly while every file its build read reads alike: an open after the file was left or rewritten alike builds nothing and takes the first build, one after it was rewritten otherwise builds anew under another name, a build whose read changed while it ran is built again, and every open that did not build it is given its build's reads"
+		},
+		kept: [],
+		kills: [
+			{
+				file: "packages/testing/src/resources/template.ts",
+				original: "\t\t\t\t\t\t\treads: Arr.map(reads.reads, (read) => ({ ...read })),\n",
+				replacement: "\t\t\t\t\t\t\treads: [],\n",
+				why: "A template keeps none of its build's reads, so it stands whatever its build read: a schema's SQL rewritten leaves its old template in use, and the open after the file was rewritten otherwise takes the stale template; the property fails."
+			},
+			{
+				file: "packages/testing/src/runner/observe.ts",
+				original:
+					'\t\t\ttraced(read.kind, read.path, "a database template\'s build", guard.collecting())\n',
+				replacement: "\t\t\tvoid read\n",
+				why: "An open that finds its template standing is given none of its build's reads, so a verdict cached over a template another worker or run built answers after a file its build read changed; the open after the file was left is given no read of it, and the property fails."
+			},
+			{
+				file: "packages/testing/src/runner/observe.ts",
+				original: "\t\tinto?.reads.push({ kind, path: file })\n",
+				replacement: "",
+				why: "A build's reads are collected from none of its acts, so its template keeps no read and stands whatever its build read; the property fails."
+			},
+			{
+				file: "packages/testing/src/resources/template.ts",
+				original: "\t\t\t\tchanged = changed || standing.changed >= began\n",
+				replacement: "\t\t\t\tchanged = changed && standing.changed >= began\n",
+				why: "A build one of whose reads changed while it ran is kept, under the digest of what the file holds after, which its database may not hold; the file rewritten while the first build ran is built once, and the property fails."
+			}
+		]
+	}
+)
 
 export const claimedTemplatesKept = property.exhaust(finite(boolean), {
 	box: "a template no live worker holds, claimed by another checkout that exists or was removed",

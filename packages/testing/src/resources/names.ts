@@ -4,20 +4,28 @@ import type { DatabaseName, DatabasePrefix, OwnerKey } from "#resources/cluster.
 
 /**
  * The names this library gives databases on a cluster, all after the repository's prefix, and the only place a
- * DatabaseName is minted: a template is `<prefix>tpl_<32 hex digits of its identity's digest>`, so its name is its
- * identity, and its build runs in `<prefix>tpb_<the same digits>` (buildName), which a builder drops once it has copied
- * it to the template's name; a clone is `<prefix>c_<its owner's key>_<the owner's serial>`, so its owner lock tells
+ * DatabaseName is minted: a template is `<prefix>tpl_<16 hex digits of its identity's digest><16 of its build's
+ * reads'>`, so its name is its identity and what its build read, and its build runs in `<prefix>tpb_<32 hex digits of
+ * the identity's digest>` (buildName), which a builder drops once it has copied it to the template's name; a clone is `<prefix>c_<its owner's key>_<the owner's serial>`, so its owner lock tells
  * whether the worker that made it still runs.
  */
 const databaseName = Brand.nominal<DatabaseName>()
 
-/** A template's name: the cluster's prefix, `tpl_`, and the first 32 hex digits of its identity's SHA-256. */
-export const templateName = (prefix: DatabasePrefix, digest: string): DatabaseName =>
-	databaseName(`${prefix}tpl_${Str.slice(0, 32)(digest)}`)
+/**
+ * A template's name: the cluster's prefix, `tpl_`, the first 16 hex digits of its identity's SHA-256 and the first 16 of
+ * its build's reads' (template.ts ensureBuilt), so a build that read anything otherwise is another template, and every
+ * build of one identity shares the digits that key its gate and its use (cluster.ts lockKey, useKey; collect.ts).
+ */
+export const templateName = (prefix: DatabasePrefix, identity: string, reads: string): DatabaseName =>
+	databaseName(`${prefix}tpl_${Str.slice(0, 16)(identity)}${Str.slice(0, 16)(reads)}`)
+
+/** What every database named after the identity `identity` begins with (templateName): its templates and their copies. */
+export const identityPrefixOf = (prefix: DatabasePrefix, identity: string): string =>
+	`${prefix}tpl_${Str.slice(0, 16)(identity)}`
 
 /**
- * The name of a template's build database: the cluster's prefix, `tpb_`, and the same 32 hex digits as the template's
- * name (template.ts ensureBuilt), so the two are one width and share the template's gate.
+ * The name of a template's build database: the cluster's prefix, `tpb_`, and the first 32 hex digits of the template's
+ * identity (template.ts ensureBuilt), so the two are one width and share the first 16 that key the template's gate.
  */
 export const buildName = (prefix: DatabasePrefix, digest: string): DatabaseName =>
 	databaseName(`${prefix}tpb_${Str.slice(0, 32)(digest)}`)

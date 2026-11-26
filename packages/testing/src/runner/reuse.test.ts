@@ -5,8 +5,11 @@
  * the toolchain no module imports, a variable the runner config gives its workers, or TEST_SEED changed; a property
  * that reads a fixture file at run time, or whose child process reads it, resolves a path or reads a link, is answered
  * cached while what it read stands and runs again once it changed (runner/traces.ts); another checkout of the
- * repository answers from the first's verdicts, its property resolving its own root; and one that reads a file's
- * status, which no key holds, runs every time (runner/observe.ts). Each case
+ * repository answers from the first's verdicts, its property resolving its own root; one that reads a file's
+ * status, which no key holds, runs every time (runner/observe.ts); and one that clones a database template on a
+ * cluster of the consumer's own, whose build reads a file, is answered cached while the file stands and runs again once
+ * it changed, its connections to its own member keyed by the PostgreSQL serving it, and its family's state kept in the
+ * case's own states home, none of it in the account's. Each case
  * writes the consumer from the checkout's own library (Checkout.dir, so a kill's mutant is in it) and runs the runner's
  * own entry in a child process, on one worker. Oracle: the specification, stated per case (reuse.fixtures.ts
  * expectedOf).
@@ -19,7 +22,7 @@ import { Scratch } from "#resources/scratch.ts"
 import { changes, expectedOf, reusedOf } from "#runner/reuse.fixtures.ts"
 
 export const aRunAnswersFromItsKeyAlone = property.exhaust(changes, {
-	box: "a consumer's property run twice, nothing changed between, or a module it imports, a toolchain file no module imports, a variable its workers are given, one they are not, or TEST_SEED; a property that reads a fixture, or whose child reads it, the fixture changed or not; one that resolves a link or reads it, the link changed or not; another checkout's run of one that resolves its root; and one that reads a file's status",
+	box: "a consumer's property run twice, nothing changed between, or a module it imports, a toolchain file no module imports, a variable its workers are given, one they are not, or TEST_SEED; a property that reads a fixture, or whose child reads it, the fixture changed or not; one that resolves a link or reads it, the link changed or not; another checkout's run of one that resolves its root; one that reads a file's status; and one that clones a template of its own cluster whose build reads a file, the file changed or not",
 	needs: { directory: Scratch.dir, checkout: Checkout.dir },
 	situations: [],
 	check:
@@ -86,6 +89,28 @@ export const aRunAnswersFromItsKeyAlone = property.exhaust(changes, {
 			original: '\tfor (const call of ["spawnSync", "execFileSync"] as const) {\n',
 			replacement: '\tfor (const call of ["execFileSync"] as const) {\n',
 			why: "The guard neither traces nor sees spawnSync, so a property whose child reads a fixture is answered from the cache after the fixture changed; the property fails."
+		},
+		{
+			file: "packages/testing/src/resources/cluster.ts",
+			original:
+				"\t\t\t\t\t\t\t\t\t\t\t\t(member) => Effect.sync(() => guardServers(serverAddressesOf(member)))\n",
+			replacement: "\t\t\t\t\t\t\t\t\t\t\t\t(member) => Effect.sync(() => guardServers([]))\n",
+			why: "The guard is told none of the run's own members, so a property's connection to its own cluster is an observation past every key, and a database property runs every time; the property whose template's build file stands is not answered, and the property fails."
+		},
+		{
+			file: "packages/testing/src/resources/template.ts",
+			original:
+				"\t\tconst [, collected] = yield* collectedOf(Effect.scoped(template.build({ member, name: building })))\n",
+			replacement:
+				"\t\tconst [, collected] = yield* collectedOf(asInfrastructure(Effect.scoped(template.build({ member, name: building }))))\n",
+			why: "A template's build is the runner's own work, so nothing it reads reaches its template or the trace of the property that built it; the property is answered after the file its template's build reads changed, and the property fails."
+		},
+		{
+			file: "packages/testing/src/pg/settle.ts",
+			original:
+				'\tXDG_STATE_HOME: process.getBuiltinModule("node:path").dirname(family.homes.states)\n',
+			replacement: "",
+			why: "A settle unit takes the manager's environment for its states home, the account's, so a run whose states home is its own has its family's state written outside it: the consumer's run finds its family unsettled and its settle's state is left in the account's states home; the property fails."
 		},
 		{
 			file: "packages/testing/src/runner/pool.ts",

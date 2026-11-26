@@ -184,6 +184,15 @@ export const holdTaken = (unit: string) =>
 		(listener) => closedAll(Option.toArray(listener))
 	)
 
+/**
+ * What case cluster `unit`'s families keep in the account's states home: each state directory named after it, none
+ * where every settle of them kept its family's state in the family's own states home (settle.ts settleEnvironment).
+ */
+export const accountStatesOf = (unit: string) =>
+	Effect.flatMap(machineHomes, (homes) =>
+		Effect.map(namesIn(homes.states), Arr.filter(Str.startsWith(`${unit}-`)))
+	)
+
 /** A member's data directory, the workbench's postgres@ unit's: `<data>/<name>`. */
 export const dataOf = (name: string) => Effect.map(machineHomes, (homes) => `${homes.data}/${name}`)
 
@@ -256,10 +265,29 @@ const swept = Effect.gen(function* () {
 type Sized = Readonly<{ tls: boolean; family: Family; room: PredicateRoom }>
 
 /**
- * A case's cluster `sized` so: a unit name of its own (`tcs-` and 8 random hex digits), held by this process for the
- * enclosing scope (holdTaken), its workers' capacity sized by a busy backend of the package's own (pg.config.ts's), and
- * over TLS its families' ports claimed from one that `members` consecutive ports are free from (freePorts). Drawing it
- * first removes every case cluster no process holds (swept).
+ * A case cluster's unit name of its own (`tcs-` and 8 random hex digits), held by this process for the enclosing scope
+ * (holdTaken), every case cluster no process holds removed first (swept): the cluster of a case here (clusterSized), or
+ * of a consumer whose runs make it in processes of their own (runner/reuse.fixtures.ts), which the case removes at its
+ * end (unitRemovedAtEnd).
+ */
+export const caseUnit: Effect.Effect<
+	string,
+	never,
+	FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner | Scope.Scope
+> = Effect.gen(function* () {
+	const unit = `tcs-${process.getBuiltinModule("node:crypto").randomBytes(4).toString("hex")}`
+	const hold = yield* holdTaken(unit)
+	if (Option.isNone(hold)) {
+		return yield* Effect.die(`a case's cluster's name, ${unit}, is held by another process`)
+	}
+	yield* swept
+	return unit
+})
+
+/**
+ * A case's cluster `sized` so: a unit name of its own (caseUnit), its workers' capacity sized by a busy backend of the
+ * package's own (pg.config.ts's), and over TLS its families' ports claimed from one that `members` consecutive ports are
+ * free from (freePorts).
  */
 const clusterSized = (
 	sized: Sized,
@@ -270,12 +298,7 @@ const clusterSized = (
 	FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner | Scope.Scope
 > =>
 	Effect.gen(function* () {
-		const unit = `tcs-${process.getBuiltinModule("node:crypto").randomBytes(4).toString("hex")}`
-		const hold = yield* holdTaken(unit)
-		if (Option.isNone(hold)) {
-			return yield* Effect.die(`a case's cluster's name, ${unit}, is held by another process`)
-		}
-		yield* swept
+		const unit = yield* caseUnit
 		const port = sized.tls ? yield* freePorts(members) : 0
 		return localCluster({
 			unit,
@@ -391,9 +414,9 @@ export const specWritten = (family: CheckoutFamily) =>
 
 /**
  * Member `index` of `family` settled by exactly what its settle unit runs (settle.ts settleArgv) with exactly what the
- * unit is given (settleEnvironment), in the checkout, whose pg.config.ts states the case's cluster (specWritten), as a
- * child of this process rather than a unit of systemd's: its states home the family's (XDG_STATE_HOME, family.ts
- * homesHere), and its own CPU allowance `own` (workers.ts allowanceVariable), standing in for the slice a unit runs in,
+ * unit is given (settleEnvironment, its states home the family's among it), in the checkout, whose pg.config.ts states
+ * the case's cluster (specWritten), as a child of this process rather than a unit of systemd's, with its own CPU
+ * allowance `own` (workers.ts allowanceVariable), standing in for the slice a unit runs in,
  * whose run's width is not the family's. Its stdout, or its failure with what it printed. The command is the one the
  * loaded settle.ts names, so a property that runs it needs Checkout.dir: its kills then run in a worker tree, whose
  * command on disk holds the kill's edit, where the module hook would serve it to the worker alone.
@@ -406,11 +429,7 @@ export const settledAsItsUnit = (family: CheckoutFamily, index: number, own: num
 			{ cluster: family.name, doing: `settling its member ${index} as its unit would` },
 			ChildProcess.make(program, args, {
 				cwd: family.checkout,
-				env: {
-					...settleEnvironment(family),
-					XDG_STATE_HOME: process.getBuiltinModule("node:path").dirname(family.homes.states),
-					[allowanceVariable]: `${own}`
-				},
+				env: { ...settleEnvironment(family), [allowanceVariable]: `${own}` },
 				extendEnv: true
 			})
 		)
@@ -470,9 +489,11 @@ export const unitActive = (name: string) =>
 		)
 	)
 
-/** `cluster` gone as the enclosing scope closes, however it ends (clusterRemoved), while the scope still holds it. */
-export const removedAtEnd = (cluster: LocalCluster) =>
-	Effect.addFinalizer(() => clusterRemoved(cluster.unit))
+/** Case cluster `unit` gone as the enclosing scope closes, however it ends (clusterRemoved), while the scope still holds it. */
+export const unitRemovedAtEnd = (unit: string) => Effect.addFinalizer(() => clusterRemoved(unit))
+
+/** `cluster` gone as the enclosing scope closes (unitRemovedAtEnd). */
+export const removedAtEnd = (cluster: LocalCluster) => unitRemovedAtEnd(cluster.unit)
 
 /**
  * `name`'s member stopped by its lease's stop (pg/hold.ts leaseOf), the one way a member stops: a case cluster's member

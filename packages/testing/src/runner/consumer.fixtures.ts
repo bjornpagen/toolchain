@@ -210,7 +210,8 @@ export const runnerFilesOf = (layout: Layout): ConsumerFiles => {
 /**
  * Writes a consumer of `layout` into `directory` from the checkout whose testing package is at `packageDirectory`
  * (Checkout.dir, so a mutant the mutator writes into a worker tree is in the library the consumer holds): its `files`;
- * the library's packages, linked from vendor/ or installed as files under node_modules/@bjornpagen; every other package
+ * the library's packages (their manifests, sources and scripts: a member's settle runs toolchain-pg.sh), linked from
+ * vendor/ or installed as files under node_modules/@bjornpagen; every other package
  * of the checkout's node_modules linked in, TypeScript's only when it has TypeScript; its lockfile when it has one; and
  * a git repository when it lies in one.
  */
@@ -237,6 +238,7 @@ export const consumerIn = Effect.fn("consumerIn")(function* (
 		yield* fs.makeDirectory(held, { recursive: true })
 		yield* fs.copyFile(`${checkout}/packages/${name}/package.json`, `${held}/package.json`)
 		yield* copied(`${checkout}/packages/${name}/src`, `${held}/src`)
+		yield* copied(`${checkout}/packages/${name}/scripts`, `${held}/scripts`)
 		if (layout.library === "link") {
 			yield* fs.symlink(`../../vendor/${name}`, `${directory}/node_modules/@bjornpagen/${name}`)
 		}
