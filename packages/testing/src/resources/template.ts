@@ -546,11 +546,14 @@ const holdInUse = (owner: Owner, identified: Identified): Effect.Effect<void, Ne
 	)
 
 /**
- * The identified template and every origin it is built from claimed by `checkout` (pg/settle.ts templateClaimsTable),
- * on the worker's owner session: a row of the template and the checkout, with the template's logical identity (its name
- * and its declaring module), upserted in one statement that also drops the checkout's claims of every other digest of
- * the same logical template. So a checkout that moves to a new closure gives up its old digest the moment it uses the
- * new one, and only its own claim of it; collection keeps a template while any existing checkout claims it (collect.ts),
+ * The identified template and every origin it is built from claimed by `runner`, the package directory of the runner
+ * whose worker opened it, of `checkout` (pg/settle.ts templateClaimsTable), on the worker's owner session: a row of the
+ * template, the checkout and the runner, with the template's logical identity (its name and its declaring module),
+ * upserted in one statement that also drops that runner's claims of every other digest of the same logical template.
+ * So a runner that moves to a new closure gives up its old digest the moment it uses the new one, and only its own
+ * claim of it, while another runner of the checkout that uses another digest of it (its conditions resolve a module
+ * otherwise) keeps its own: the two runners no longer drop each other's template at every switch (metis, 2026-11-25:
+ * 338 s readying and 63.5 s of migrate CPU a switch). Collection keeps a template while any existing checkout claims it (collect.ts),
  * whichever run collects. Made after the template is held in use (holdInUse) and built (ensureBuilt), so no collection
  * finds it unclaimed and unheld between the two. It runs at the owner session's READ COMMITTED (cluster.ts ownerLevel),
  * so claims of two checkouts at once both commit.
@@ -558,23 +561,25 @@ const holdInUse = (owner: Owner, identified: Identified): Effect.Effect<void, Ne
 const claimed = (
 	owner: Owner,
 	identified: Identified,
-	checkout: string
+	checkout: string,
+	runner: string
 ): Effect.Effect<void, NeedFailed> =>
 	Effect.andThen(
 		Option.match(identified.origin, {
 			onNone: () => Effect.void,
-			onSome: (origin) => claimed(owner, origin, checkout)
+			onSome: (origin) => claimed(owner, origin, checkout, runner)
 		}),
 		run(
 			owner.session,
-			`WITH superseded AS (DELETE FROM public.${templateClaimsTable} WHERE checkout = $1 AND logical = $2 AND template <> $3) INSERT INTO public.${templateClaimsTable} (template, checkout, logical) VALUES ($3, $1, $2) ON CONFLICT (template, checkout) DO UPDATE SET claimed = pg_catalog.clock_timestamp()`,
+			`WITH superseded AS (DELETE FROM public.${templateClaimsTable} WHERE checkout = $1 AND runner = $4 AND logical = $2 AND template <> $3) INSERT INTO public.${templateClaimsTable} (template, checkout, runner, logical) VALUES ($3, $1, $4, $2) ON CONFLICT (template, checkout, runner) DO UPDATE SET claimed = pg_catalog.clock_timestamp()`,
 			[
 				checkout,
 				canonicalText({
 					template: identified.template.name,
 					declaredIn: identified.template.declaredIn
 				}),
-				identified.name
+				identified.name,
+				runner
 			]
 		)
 	)
@@ -644,7 +649,12 @@ const openDatabaseTemplate = (
 		yield* holdInUse(owner, identified)
 		yield* ensureBuilt(cluster, identified, member, strategy)
 		const checkout = yield* cluster.checkout
-		yield* claimed(owner, identified, checkout)
+		yield* claimed(
+			owner,
+			identified,
+			checkout,
+			process.getBuiltinModule("node:path").relative(checkout, closures.root) || "."
+		)
 		const name = identified.name
 		const replay = yield* replayOf(owner, name)
 		const clone: Effect.Effect<Database, NeedFailed, Scope.Scope> = Effect.gen(function* () {

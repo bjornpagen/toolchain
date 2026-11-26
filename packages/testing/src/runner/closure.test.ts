@@ -1,5 +1,6 @@
 import { Array as Arr, Effect, Option } from "effect"
 import { Digest } from "effect/crypto"
+import { assert } from "#assert.ts"
 import { realPathOf } from "#mutate/mutated.ts"
 import { agree, exact } from "#oracle.ts"
 import { property } from "#property.ts"
@@ -12,6 +13,7 @@ import {
 	closuresIn,
 	moduleSituationsOf,
 	moduleUrlOf,
+	wiredAlike,
 	workspaces,
 	writtenTo,
 	filesOf,
@@ -191,8 +193,8 @@ export const closureHashFollowsTheClosure = property.explore(touchedWorkspaces, 
 		},
 		{
 			file: "packages/testing/src/runner/closure.ts",
-			original: "return reached === place",
-			replacement: "return true",
+			original: `\`closure \${Arr.getUnsafe(componentHashes, Arr.getUnsafe(componentOf, link.index))} \${Arr.getUnsafe(order, link.index)}\``,
+			replacement: `\`closure \${Arr.getUnsafe(order, link.index)}\``,
 			why: "a component hashed without the closures it reaches: an edit below it goes unseen"
 		}
 	]
@@ -374,6 +376,43 @@ export const moduleClosureFollowsWhatItsPoolLoads = property.explore(changedWork
 			original: "onNone: () => walkOf",
 			replacement: "onNone: () => Effect.succeed(shared)",
 			why: "a shared walk that no longer holds is hashed anyway: a lockfile entry or a module's imports changed and the pool hashes the closure as it was"
+		}
+	]
+})
+
+export const closureNamesItsConditionsOnlyThroughWhatTheyResolve = property.explore(workspaces, {
+	needs: { hashing },
+	situations: ["a module the conditions wire alike", "a module the conditions wire differently"],
+	check:
+		({ hashing: services }, c) =>
+		(workspace) =>
+			Effect.gen(function* () {
+				const parser = yield* services
+				const roots = yield* Effect.fromOption(rootsOf(workspace))
+				const tree = treeOf(filesOf(workspace, { kind: "nothing" }))
+				const set = yield* closuresIn({ ...workspace, configured: true }, tree, roots, parser)
+				const unset = yield* closuresIn({ ...workspace, configured: false }, tree, roots, parser)
+				for (const [at, root] of roots.entries()) {
+					const alike = wiredAlike(workspace, at)
+					c.note(
+						alike
+							? "a module the conditions wire alike"
+							: "a module the conditions wire differently"
+					)
+					assert.equal(set.get(root)?.hash === unset.get(root)?.hash, alike)
+				}
+			}),
+	oracle: {
+		kind: "specification",
+		name: "a module's closure under the runner config's condition and without it is one closure exactly when every module it reaches is wired alike under both"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/runner/closure.ts",
+			original: `\tconst context = \`runtime \${walk.runtime}\`\n`,
+			replacement: `\tconst context = \`runtime \${walk.runtime}\\nconditions \${Arr.join(Arr.sort(Arr.dedupe(walk.conditions), Str.Order), ",")}\`\n`,
+			why: "A closure names the runner config's conditions themselves, so two runners whose conditions resolve every module alike hold two closures: a template is two templates, each built anew as the runners alternate (metis, 2026-11-25: 338 s readying a switch); the alike modules fail."
 		}
 	]
 })

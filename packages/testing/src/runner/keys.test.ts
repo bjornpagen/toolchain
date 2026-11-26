@@ -12,7 +12,8 @@ import { answeredOf, KEY_SITUATIONS, keyCases, keysOf } from "#runner/keys.fixtu
  * A kill's cached red answers its next trial exactly when nothing the verdict reads has changed: the property's module
  * and every module it loads, the kill's file and every module that file loads (whether the property's closure holds the
  * file or not: a check that runs it in a child process), the kill's text, the runner config and every module it loads,
- * the runner's entry modules and every module they load, the runtime and the config's conditions. A kill whose text
+ * the runner's entry modules and every module they load, the runtime, and the config's conditions where they resolve a
+ * module otherwise (a condition that resolves every module alike changes nothing it reads). A kill whose text
  * loads a module its file does not keys nothing, nor does a runner that is another checkout's, so neither is answered
  * from the cache whatever changed. Each case records the red under its first run's key in a cache of its own and reads
  * it under its second's, both keys made as the kill census makes them. Oracle: the specification, keys.fixtures.ts

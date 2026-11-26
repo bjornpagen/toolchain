@@ -430,6 +430,7 @@ export const refusedDropCollected = property.exhaust(finite(int(1, 3)), {
 								cluster,
 								Context.merge(
 									Context.make(ModuleClosure, {
+										root: runnerClosures.root,
 										hashOf: () => runnerClosures.hashOf(fixturesModule)
 									}),
 									Context.make(WorkerIndex, worker).pipe(Context.add(RunValues, runValuesOf([])))
@@ -613,9 +614,10 @@ export const staleCollected = property.explore(int(1, 3), {
 						const template = tokenTemplate(prefix, () => Effect.void)
 						const runnerClosures = Context.get(ctx, ModuleClosure)
 						const closure = (module: string) =>
-							Context.make(ModuleClosure, { hashOf: () => runnerClosures.hashOf(module) }).pipe(
-								Context.add(RunValues, runValuesOf([]))
-							)
+							Context.make(ModuleClosure, {
+								root: runnerClosures.root,
+								hashOf: () => runnerClosures.hashOf(module)
+							}).pipe(Context.add(RunValues, runValuesOf([])))
 						const ended = yield* Scope.make()
 						const endedCluster = yield* Scope.provide(Layer.build(ownCluster(prefix)), ended)
 						const left = yield* Effect.provideContext(
@@ -672,9 +674,99 @@ export const staleCollected = property.explore(int(1, 3), {
 	kills: [
 		{
 			file: "packages/testing/src/resources/template.ts",
-			original: `\t\t\t\`WITH superseded AS (DELETE FROM public.\${templateClaimsTable} WHERE checkout = $1 AND logical = $2 AND template <> $3) INSERT INTO public.\${templateClaimsTable} (template, checkout, logical) VALUES ($3, $1, $2) ON CONFLICT (template, checkout) DO UPDATE SET claimed = pg_catalog.clock_timestamp()\`,\n`,
-			replacement: `\t\t\t\`INSERT INTO public.\${templateClaimsTable} (template, checkout, logical) VALUES ($3, $1, $2) ON CONFLICT (template, checkout) DO UPDATE SET claimed = pg_catalog.clock_timestamp()\`,\n`,
+			original: `\t\t\t\`WITH superseded AS (DELETE FROM public.\${templateClaimsTable} WHERE checkout = $1 AND runner = $4 AND logical = $2 AND template <> $3) INSERT INTO public.\${templateClaimsTable} (template, checkout, runner, logical) VALUES ($3, $1, $4, $2) ON CONFLICT (template, checkout, runner) DO UPDATE SET claimed = pg_catalog.clock_timestamp()\`,\n`,
+			replacement: `\t\t\t\`INSERT INTO public.\${templateClaimsTable} (template, checkout, runner, logical) VALUES ($3, $1, $4, $2) ON CONFLICT (template, checkout, runner) DO UPDATE SET claimed = pg_catalog.clock_timestamp()\`,\n`,
 			why: "A checkout that claims a new closure's template keeps its claim of the old one, so a closure it moved past is never collected while the checkout exists, one more template every closure; the property fails, the stale template kept."
+		}
+	]
+})
+
+export const runnersKeepTheirOwnTemplates = property.exhaust(finite(boolean), {
+	box: "two runners of one checkout opening one logical template in turn, twice each, then a collection: their closures alike, or one module of theirs resolved otherwise",
+	needs: { services },
+	situations: [],
+	check:
+		({ services: context }) =>
+		(alike) =>
+			Effect.gen(function* () {
+				const ctx = yield* context
+				const worker = Context.get(ctx, WorkerIndex)
+				const runnerClosures = Context.get(ctx, ModuleClosure)
+				const outcome = yield* Effect.scoped(
+					Effect.gen(function* () {
+						const prefixToken = yield* Effect.provideContext(
+							Effect.gen(function* () {
+								const cluster = yield* PgCluster
+								const member = yield* cluster.memberAt(0)
+								return yield* Effect.scoped(
+									Effect.flatMap(cluster.connect(member, cluster.maintenance), (session) =>
+										single(session, freshHex, [])
+									)
+								)
+							}),
+							ctx
+						)
+						const prefix = `tcr${prefixToken ?? ""}_`
+						const builds = { count: 0 }
+						const template = tokenTemplate(prefix, () =>
+							Effect.sync(() => {
+								builds.count += 1
+							})
+						)
+						/**
+						 * A runner of the checkout, at `root`, whose closures of the template's module are `module`'s, on a
+						 * cluster of its own for the effect's life, so the template it opened is in use by no one once it ends
+						 * and only claims keep it (holdInUse, collect.ts).
+						 */
+						const asRunner =
+							(root: string, module: string) =>
+							<A, E, R>(effect: Effect.Effect<A, E, R>) =>
+								Effect.scoped(
+									Effect.flatMap(Layer.build(ownCluster(prefix)), (cluster) =>
+										Effect.provide(
+											effect,
+											Context.merge(
+												cluster,
+												Context.make(ModuleClosure, {
+													root,
+													hashOf: () => runnerClosures.hashOf(module)
+												}).pipe(
+													Context.add(WorkerIndex, worker),
+													Context.add(RunValues, runValuesOf([]))
+												)
+											)
+										)
+									)
+								)
+						const first = asRunner("/runners/first", fixturesModule)
+						const second = asRunner("/runners/second", alike ? fixturesModule : import.meta.url)
+						const opened = Effect.flatMap(template.open, (open) => Effect.scoped(open.clone))
+						yield* first(opened)
+						yield* second(opened)
+						yield* first(opened)
+						yield* second(opened)
+						yield* first(collect)
+						const kept = yield* Effect.all([first(opened), second(opened)])
+						yield* first(Effect.andThen(claimsGone(Arr.getUnsafe(kept, 0).member, prefix), collect))
+						return {
+							builds: builds.count,
+							templates: Arr.dedupe(Arr.map(kept, (one) => one.template)).length
+						}
+					})
+				)
+				assert.deepEqual(outcome, alike ? { builds: 1, templates: 1 } : { builds: 2, templates: 2 })
+			}),
+	oracle: {
+		kind: "specification",
+		name: "each runner of a checkout keeps the template its closure gives: one template built once where their closures are alike, two built once each and both kept through alternating opens and a collection where they differ"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/resources/template.ts",
+			original: "WHERE checkout = $1 AND runner = $4 AND logical = $2 AND template <> $3",
+			replacement: "WHERE checkout = $1 AND logical = $2 AND template <> $3",
+			why: "A claim supersedes every other digest of its logical template in the checkout, whichever runner claimed it, so two runners whose closures differ drop each other's template, which the next collection removes and the runner rebuilds (metis, 2026-11-25); the differing case builds three times."
 		}
 	]
 })

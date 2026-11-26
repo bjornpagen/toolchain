@@ -103,7 +103,7 @@ const main = Effect.gen(function* () {
 	const config = yield* configOf(root)
 	const scope = yield* Scope.Scope
 	const platform = yield* Effect.context<NodeServices.NodeServices>()
-	const closures = askedClosuresOf((module) => send({ kind: "closure", module }))
+	const closures = askedClosuresOf(root, (module) => send({ kind: "closure", module }))
 	reportWaitsTo(sendNow)
 	const runner = Context.add(
 		Context.add(

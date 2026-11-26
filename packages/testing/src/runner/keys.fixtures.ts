@@ -13,8 +13,9 @@ import type { KeyGrounds } from "#runner/grounds.ts"
  * makes it (runner/affected.ts weighingOf): the runner's roots (runnerRootsIn), the closures of the property's module,
  * the runner config and the runner, and of the kill's file (closuresWeighedOf), the kill as its edit (cache.ts editOf),
  * and the key under it (editKeyOf). The repository is held in memory: the property's module, test/p.test.ts, loads
- * src/a.ts, and src/f.ts too where the kill's file lies inside its closure (where it lies outside, the property runs it
- * in a child process or reads it); src/f.ts, the file the kill edits, loads src/g.ts; src/h.ts is loaded by nothing but
+ * `#a`, which the package's imports map resolves to src/a.ts, or to src/a-custom.ts under the `custom` condition, and
+ * src/f.ts too where the kill's file lies inside its closure (where it lies outside, the property runs it in a child
+ * process or reads it); src/f.ts, the file the kill edits, loads src/g.ts; src/h.ts is loaded by nothing but
  * an edit that names it; the runner's entry modules, the CLI loading runner/search.ts; test.config.ts, loading
  * config/layer.ts.
  */
@@ -41,6 +42,7 @@ const CHANGES = [
 	"a module the runner loads",
 	"the runtime",
 	"the config's conditions",
+	"the config's conditions, resolving every module alike",
 	"a module only the kill's text loads",
 	"another checkout's runner, between its runs"
 ] as const
@@ -85,8 +87,54 @@ const CHANGED_FILE: Readonly<Record<Change, Option.Option<string>>> = {
 	"a module the runner loads": Option.some("runner/search.ts"),
 	"the runtime": Option.none(),
 	"the config's conditions": Option.none(),
+	"the config's conditions, resolving every module alike": Option.none(),
 	"a module only the kill's text loads": Option.some("src/h.ts"),
 	"another checkout's runner, between its runs": Option.none()
+}
+
+/**
+ * The config's conditions in a case's second run, by its change: `custom`, under which the imports map resolves `#a`
+ * to another file; `other`, which no map names, so every module resolves as with none; none for every other change.
+ */
+const CONDITIONS: Readonly<Record<Change, ReadonlyArray<string>>> = {
+	"nothing the verdict reads": [],
+	"the property's module": [],
+	"a module the property loads": [],
+	"the kill's file elsewhere": [],
+	"a module the kill's file loads": [],
+	"the kill's replacement": [],
+	"the runner config": [],
+	"a module the runner config loads": [],
+	"the runner's entry": [],
+	"a module the runner loads": [],
+	"the runtime": [],
+	"the config's conditions": ["custom"],
+	"the config's conditions, resolving every module alike": ["other"],
+	"a module only the kill's text loads": [],
+	"another checkout's runner, between its runs": []
+}
+
+/**
+ * Whether the second run of each change may take the first's red as its own: exactly when nothing its verdict reads
+ * changed, which a condition that resolves every module alike is not (runner/closure.ts: a closure names its conditions
+ * only through what they resolve).
+ */
+const ANSWERED: Readonly<Record<Change, boolean>> = {
+	"nothing the verdict reads": true,
+	"the property's module": false,
+	"a module the property loads": false,
+	"the kill's file elsewhere": false,
+	"a module the kill's file loads": false,
+	"the kill's replacement": false,
+	"the runner config": false,
+	"a module the runner config loads": false,
+	"the runner's entry": false,
+	"a module the runner loads": false,
+	"the runtime": false,
+	"the config's conditions": false,
+	"the config's conditions, resolving every module alike": true,
+	"a module only the kill's text loads": false,
+	"another checkout's runner, between its runs": false
 }
 
 /**
@@ -114,7 +162,10 @@ const runOf = (keyCase: KeyCase, second: boolean): Run => {
 	const loadsNew = keyCase.change === "a module only the kill's text loads"
 	return {
 		files: [
-			["package.json", '{ "name": "checkout", "type": "module" }\n'],
+			[
+				"package.json",
+				'{ "name": "checkout", "type": "module", "imports": { "#a": { "custom": "./src/a-custom.ts", "default": "./src/a.ts" } } }\n'
+			],
 			["pnpm-lock.yaml", "lockfileVersion: '9.0'\n\nimporters:\n\n  .: {}\n"],
 			file("runner/cli-entry.ts", 'import "./search.ts"\n'),
 			file("runner/worker-entry.ts", "export const worker = 0\n"),
@@ -124,17 +175,18 @@ const runOf = (keyCase: KeyCase, second: boolean): Run => {
 			file(
 				MODULE,
 				keyCase.place === "the kill's file inside the property's closure"
-					? 'import "../src/a.ts"\nimport "../src/f.ts"\n'
-					: 'import "../src/a.ts"\n'
+					? 'import "#a"\nimport "../src/f.ts"\n'
+					: 'import "#a"\n'
 			),
 			file("src/a.ts", "export const a = 0\n"),
+			file("src/a-custom.ts", "export const a = 1\n"),
 			[EDITED, edited],
 			file("src/g.ts", "export const g = 0\n"),
 			file("src/h.ts", "export const h = 0\n")
 		],
 		edited,
 		runtime: changed("the runtime") ? "v26.1.0" : "v26.0.0",
-		conditions: changed("the config's conditions") ? ["custom"] : [],
+		conditions: second ? CONDITIONS[keyCase.change] : [],
 		entries: [`${runner}/cli-entry.ts`, `${runner}/worker-entry.ts`],
 		kill: loadsNew
 			? {
@@ -198,6 +250,5 @@ const keyOf = (run: Run) =>
 export const keysOf = (keyCase: KeyCase) =>
 	Effect.all([keyOf(runOf(keyCase, false)), keyOf(runOf(keyCase, true))])
 
-/** Whether the second run of a case may take the first's red as its own: only when nothing its verdict reads changed. */
-export const answeredOf = (keyCase: KeyCase): boolean =>
-	keyCase.change === "nothing the verdict reads"
+/** Whether the second run of a case may take the first's red as its own (ANSWERED). */
+export const answeredOf = (keyCase: KeyCase): boolean => ANSWERED[keyCase.change]

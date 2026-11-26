@@ -7,6 +7,7 @@ import {
 	FileSystem,
 	Layer,
 	Option,
+	Order,
 	Schema,
 	Stream,
 	String as Str
@@ -1129,3 +1130,53 @@ export const loadsOf = (closure: Closure): Loads => ({
 	packages: Arr.map(closure.packages, (key) => Arr.headNonEmpty(Str.split("@")(key))),
 	builtins: closure.builtins
 })
+
+/** A target as one line of a module's wiring (wiredAlike). */
+const targetText = (target: Target): string => {
+	switch (target.kind) {
+		case "module":
+			return `module ${target.module}`
+		case "data":
+			return `data ${target.library ? "library" : "root"}`
+		case "external":
+			return `external ${target.external}`
+		case "builtin":
+			return `builtin ${target.builtin}`
+	}
+}
+
+/**
+ * Whether the runner config's `custom` condition leaves what module `root` loads unchanged: the wiring of every module
+ * it reaches (each module's runtime imports' targets, in order) is the same with `custom` set and without, so its
+ * closure under either is one closure, which the closure names its conditions only through.
+ */
+export const wiredAlike = (workspace: Workspace, root: number): boolean => {
+	const wiring = (configured: boolean): string => {
+		const under: Workspace = { ...workspace, configured }
+		const lines = new Map<number, string>()
+		const pending: Array<number> = [root]
+		for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
+			if (lines.has(next)) {
+				continue
+			}
+			const module = Arr.getUnsafe(workspace.modules, next)
+			const targets = Arr.map(Arr.filter(module.imports, isRuntime), (imported) =>
+				targetOf(under, module, imported)
+			)
+			lines.set(next, Arr.join(Arr.map(targets, targetText), ","))
+			for (const target of targets) {
+				if (target.kind === "module") {
+					pending.push(target.module)
+				}
+			}
+		}
+		return Arr.join(
+			Arr.map(
+				Arr.sort(Arr.fromIterable(lines.keys()), Order.Number),
+				(at) => `${at}: ${lines.get(at) ?? ""}`
+			),
+			"\n"
+		)
+	}
+	return wiring(true) === wiring(false)
+}

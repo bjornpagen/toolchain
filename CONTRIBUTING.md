@@ -169,8 +169,10 @@ process, and a value one property leaves in a module's state for another.
 A closure hash (`runner/closure.ts`) is the SHA-256 of everything a module loads as Node loads it: every file reached
 through static imports, re-exports and dynamic imports of a literal (never `import type` or `export type`, which Node
 erases), resolved by relative path, `imports` and `exports` maps under Node's conditions and the config's, and workspace
-packages; each external package by its lockfile entry and those of the packages it depends on; built-ins by name; the
-config's conditions and Node's version. Import cycles hash as one unit. A specifier that resolves to nothing, an
+packages, each module's links in order with the file each reaches; each external package by its lockfile entry and
+those of the packages it depends on, and the file its manifest's exports map gives for the subpath imported; built-ins
+by name; Node's version. The conditions count only through what they resolve: two condition sets that resolve every
+specifier alike give one closure. Import cycles hash as one unit. A specifier that resolves to nothing, an
 undeclared package or a key the lockfile lacks keys nothing, and the run runs every property, saying why.
 
 No run judges a kill (Bjorn, 2026-11-23: the release check is searches only; kill trials run as a census of their own

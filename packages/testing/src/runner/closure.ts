@@ -25,8 +25,13 @@ import { type SyntaxUnread, syntaxOf } from "#syntax.ts"
 /**
  * A module's import closure as one content hash: the module's own bytes, and those of every module it loads, as Node
  * loads them for these repositories, so two closures hash alike exactly when they hold the same files with the same
- * bytes, the same external packages at the same lockfile entries, the same built-ins, under the same conditions and
- * runtime. A cached verdict keyed by it is a known answer for as long as nothing the module can load has changed.
+ * bytes, wired alike (each module's links in order, to the same files), the same external packages at the same
+ * lockfile entries giving the same files for the same subpaths, the same built-ins, under the same runtime. Conditions
+ * count only through what they resolve: two condition sets that resolve every specifier alike give one closure (a
+ * template's identity, resources/template.ts, is one template for a [react-server] runner and a plain one where
+ * nothing they load differs: metis, 2026-11-25, rebuilt its template at every switch), and two that resolve one
+ * specifier differently give two. A cached verdict keyed by it is a known answer for as long as nothing the module can
+ * load has changed.
  *
  * What a module loads is read from its syntax alone (the library's one door to TypeScript's syntax, syntax.ts, one
  * parse per file per process): every
@@ -35,7 +40,8 @@ import { type SyntaxUnread, syntaxOf } from "#syntax.ts"
  * resolves it: relative paths exactly (no extension or index probing), a package's `imports` map for `#` specifiers, a
  * package's `exports` map with Node's own conditions and the runner config's, workspace packages by name, and external
  * packages as the lockfile declares them for the importing package. An external package is hashed by its lockfile
- * entry and those of every package it depends on, never by its files. A module that names a file that is not there, a
+ * entry and those of every package it depends on, and by the file its installed manifest's exports map (or main) gives
+ * for the subpath imported under the active conditions, never by its files' bytes. A module that names a file that is not there, a
  * package its package does not declare, or a package the lockfile lacks fails the closure: nothing about it is guessed.
  *
  * Import cycles are one unit: every module of a strongly connected component reaches every other, so they share one
@@ -694,7 +700,13 @@ type Link = Readonly<{ kind: "module"; index: number }> | Readonly<{ kind: "leaf
 
 /** A dependency a closure holds by name, not by bytes: an external package, a built-in, or a hooked specifier. */
 type Leaf =
-	| Readonly<{ kind: "package"; key: PackageKey; identity: string }>
+	| Readonly<{
+			kind: "package"
+			key: PackageKey
+			identity: string
+			subpath: string
+			target: string
+	  }>
 	| Readonly<{ kind: "builtin"; specifier: string }>
 	| Readonly<{ kind: "hooked"; specifier: string }>
 
@@ -744,7 +756,7 @@ const linesHashOf = Effect.fn("linesHashOf")(function* (lines: ReadonlyArray<str
 const leafLine = (leaf: Leaf): string => {
 	switch (leaf.kind) {
 		case "package":
-			return `package ${leaf.key} ${leaf.identity}`
+			return `package ${leaf.key} ${leaf.identity} ${leaf.subpath} -> ${leaf.target}`
 		case "builtin":
 			return `builtin ${leaf.specifier}`
 		case "hooked":
@@ -999,6 +1011,36 @@ export const walkOf = Effect.fn("walkOf")(function* (input: ClosureInput) {
 					})
 			})
 		)
+	/**
+	 * What an installed package at `directory` gives for `subpath` under the active conditions, as its manifest's exports
+	 * map (or its main) states it: the target path, `excluded`, `unexported`, or why its manifest gives none. A closure
+	 * holds an installed package by its lockfile entry and this target, so two condition sets that choose the same file
+	 * of it hold it alike, and two that choose different files do not (template.ts's identity, a verdict's key).
+	 */
+	const packageTarget = (
+		directory: string,
+		subpath: string
+	): Effect.Effect<string, never, Digest.Digest> =>
+		Effect.match(manifestAt(directory), {
+			onFailure: (failure) => `an unreadable package.json: ${failure._tag}`,
+			onSuccess: (manifest) =>
+				Option.match(manifest, {
+					onNone: () => "no package.json",
+					onSome: (found) =>
+						Option.match(found.exports, {
+							onNone: () =>
+								subpath === "." ? Option.getOrElse(found.main, () => "index.js") : subpath,
+							onSome: (entries) =>
+								Option.match(matchOf(entries, subpath), {
+									onNone: () => "unexported",
+									onSome: ({ target, star }) => {
+										const resolution = resolvedTarget(target, star, active)
+										return resolution.kind === "path" ? resolution.path : resolution.kind
+									}
+								})
+						})
+				})
+		})
 	const bare = (
 		module: RepoPath,
 		specifier: string,
@@ -1050,10 +1092,19 @@ export const walkOf = Effect.fn("walkOf")(function* (input: ClosureInput) {
 						)
 					}
 					const key = lockKeyOf(dependency, version)
-					return Effect.map(identityOf(key), (identity): Resolved => ({
-						kind: "leaf",
-						leaf: { kind: "package", key, identity }
-					}))
+					return Effect.zipWith(
+						identityOf(key),
+						packageTarget(
+							importerDirectory === ""
+								? `node_modules/${dependency}`
+								: `${importerDirectory}/node_modules/${dependency}`,
+							subpath
+						),
+						(identity, target): Resolved => ({
+							kind: "leaf",
+							leaf: { kind: "package", key, identity, subpath, target }
+						})
+					)
 				})
 		})
 	const resolve = (
@@ -1164,9 +1215,12 @@ export const walkOf = Effect.fn("walkOf")(function* (input: ClosureInput) {
 })
 
 /**
- * The closure of each root of a walk. The hash of a root is that of its component under the walk's conditions and
- * runtime, and a component's hash is that of its members' paths and bytes, the leaves they load and the hashes of the
- * components they reach.
+ * The closure of each root of a walk. The hash of a root is that of its component under the walk's runtime, and a
+ * component's hash is that of its members' paths and bytes and each member's links, every one by its member and its
+ * place among the member's imports (a line set is hashed sorted, so a link names where it is from and its place, or
+ * two wirings of the same files would hash alike), to a member of its own component by its path, to a leaf by what it
+ * is, to another component by its hash and the member it enters it at. The walk's conditions are no line of it:
+ * they count through what they resolved, which the links and leaves state.
  */
 export const closuresOfWalk = Effect.fn("closuresOfWalk")(function* (walk: Walk) {
 	const { walked, roots } = walk
@@ -1182,21 +1236,21 @@ export const closuresOfWalk = Effect.fn("closuresOfWalk")(function* (walk: Walk)
 			const node = Arr.getUnsafe(walked, member)
 			return [
 				`module ${node.path} ${node.content}`,
-				...Arr.filterMap(node.links, (link) => {
-					if (link.kind === "leaf") {
-						return Result.succeed(leafLine(link.leaf))
-					}
-					const reached = Arr.getUnsafe(componentOf, link.index)
-					return reached === place
-						? Result.failVoid
-						: Result.succeed(`closure ${Arr.getUnsafe(componentHashes, reached)}`)
+				...Arr.map(node.links, (link, at) => {
+					const to =
+						link.kind === "leaf"
+							? leafLine(link.leaf)
+							: Arr.getUnsafe(componentOf, link.index) === place
+								? `module ${Arr.getUnsafe(order, link.index)}`
+								: `closure ${Arr.getUnsafe(componentHashes, Arr.getUnsafe(componentOf, link.index))} ${Arr.getUnsafe(order, link.index)}`
+					return `link ${node.path} ${at} ${to}`
 				})
 			]
 		})
 		const hash = yield* linesHashOf(lines)
 		componentHashes.push(hash)
 	}
-	const context = `runtime ${walk.runtime}\nconditions ${Arr.join(Arr.sort(Arr.dedupe(walk.conditions), Str.Order), ",")}`
+	const context = `runtime ${walk.runtime}`
 	const closures = new Map<RepoPath, Closure>()
 	for (const root of roots) {
 		const path = Arr.getUnsafe(order, root)

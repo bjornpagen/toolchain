@@ -170,7 +170,7 @@ export const claimedBy = (
 			])
 			yield* run(
 				session,
-				`INSERT INTO public.${templateClaimsTable} (template, checkout, logical) VALUES ($1, $2, 'a checkout of its own')`,
+				`INSERT INTO public.${templateClaimsTable} (template, checkout, runner, logical) VALUES ($1, $2, '.', 'a checkout of its own')`,
 				[template, checkout]
 			)
 		})

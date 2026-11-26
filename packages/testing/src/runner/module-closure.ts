@@ -221,6 +221,7 @@ export const moduleClosureAt = (
 			})
 		const hashes = new Map<string, Deferred.Deferred<ClosureHash, NeedFailed>>()
 		return ModuleClosure.of({
+			root,
 			hashOf: (module) =>
 				Effect.suspend(() => {
 					const held = hashes.get(module)

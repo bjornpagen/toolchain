@@ -372,11 +372,16 @@ const readIfThere = (file: string) =>
  * owner and IS_TEMPLATE).
  */
 /**
- * The table in the owner's database that records which checkout claims which template (resources/template.ts claim,
- * resources/collect.ts): made by settle, the one writer of a cluster's structure, owned by the owner, whose sessions
- * write it.
+ * The table in the owner's database that records which runner of which checkout claims which template
+ * (resources/template.ts claim, resources/collect.ts): made by settle, the one writer of a cluster's structure, owned by
+ * the owner, whose sessions write it. A runner is the package whose runner config opened the template, so two runners of
+ * one checkout (metis's [react-server] packages and its plain ones) each keep the digest they use, and neither's claim
+ * supersedes the other's.
  */
-export const templateClaimsTable = "toolchain_template_claims"
+export const templateClaimsTable = "toolchain_template_claims_by_runner"
+
+/** The table claims were kept in before a claim named its runner (one a checkout), dropped where a member holds it. */
+const claimsByCheckout = "toolchain_template_claims"
 
 const owned = (cluster: LocalCluster, bin: string, at: SocketAt, password: string, step: Step) =>
 	Effect.gen(function* () {
@@ -445,7 +450,8 @@ const owned = (cluster: LocalCluster, bin: string, at: SocketAt, password: strin
 			at,
 			cluster.owner,
 			[
-				`CREATE TABLE IF NOT EXISTS public.${templateClaimsTable} (template text NOT NULL, checkout text NOT NULL, logical text NOT NULL, claimed timestamptz NOT NULL DEFAULT pg_catalog.clock_timestamp(), PRIMARY KEY (template, checkout))`,
+				`DROP TABLE IF EXISTS public.${claimsByCheckout}`,
+				`CREATE TABLE IF NOT EXISTS public.${templateClaimsTable} (template text NOT NULL, checkout text NOT NULL, runner text NOT NULL, logical text NOT NULL, claimed timestamptz NOT NULL DEFAULT pg_catalog.clock_timestamp(), PRIMARY KEY (template, checkout, runner))`,
 				`ALTER TABLE public.${templateClaimsTable} OWNER TO ${owner}`,
 				...Arr.map(cluster.preload, (library) => `CREATE EXTENSION IF NOT EXISTS ${ident(library)}`)
 			],

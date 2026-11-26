@@ -26,11 +26,13 @@ export class WorkerIndex extends Context.Service<
  * asking worker loads them, the mutant its module hook serves in place of its file's text (runner/module-closure.ts):
  * what a need whose identity is a module reads, so a template declared in a module is a new template exactly when that
  * module or anything it loads changed, on disk or under a kill trial's mutant. `hashOf` takes the module's URL
- * (`import.meta.url`); each process hashes a module once.
+ * (`import.meta.url`); each process hashes a module once. `root` is the directory of the package whose runner's
+ * workers these closures are of (its runner config's, under whose conditions they resolve): the runner a template's
+ * claim names (resources/template.ts), so two runners of one checkout keep the templates they use apart.
  */
 export class ModuleClosure extends Context.Service<
 	ModuleClosure,
-	Readonly<{ hashOf: (module: string) => Effect.Effect<ClosureHash, NeedFailed> }>
+	Readonly<{ root: string; hashOf: (module: string) => Effect.Effect<ClosureHash, NeedFailed> }>
 >()("@bjornpagen/testing/runner/services/ModuleClosure") {}
 
 /**

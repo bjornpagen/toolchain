@@ -14,6 +14,27 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: a closure names what its conditions resolve; a runner keeps its own templates (2026-11-26)
+
+metis rebuilt its database template at every switch between its `react-server` packages and its plain ones (338 s
+readying and 63.5 s of migrate CPU a switch): each closure hashed its runner config's condition list, so the two
+runners held two closures of one unchanged module, and each claim of a template dropped the checkout's claim of every
+other digest of it, so the next collection removed the other runner's template. Two changes fix that:
+
+- **A closure names its conditions only through what they resolve.** A closure hash no longer reads the condition
+  list. It reads each module's links in order, each to the file it reaches, and an installed package by its lockfile
+  entry plus the file its manifest's exports map gives for the subpath imported under the active conditions. Two runners
+  whose conditions resolve every module alike hold one closure, so one template and one verdict key. Two that resolve
+  one module otherwise hold two.
+- **A template claim names its runner**: the directory of the package whose runner config opened it, relative to the
+  checkout's root. Claiming a new digest of a logical template drops only that runner's claim of its old one, so two
+  runners of one checkout each keep their own template through alternating runs and collections.
+
+To migrate: run `toolchain-pg settle` after the bump. It makes `toolchain_template_claims_by_runner` and drops the old
+`toolchain_template_claims`, and a run refuses a member without the new table, naming settle. Every closure hash
+changes once, so every cached verdict and every template is new once: the first run after the bump builds its
+templates again, and the next collection drops the old ones.
+
 ## Consumer migration: no wall-clock verdicts (2026-11-25)
 
 qti-pie's crust went red with "DeadlineReached ... before any case failed" at 10,485 of 40,960 cases the moment the

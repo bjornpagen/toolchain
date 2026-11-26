@@ -15,10 +15,14 @@ export type AskedClosures = Readonly<{
 }>
 
 /** The ModuleClosure of a worker that asks the parent through `ask`: one question a module, every caller its answer. */
-export const askedClosuresOf = (ask: (module: string) => Effect.Effect<void>): AskedClosures => {
+export const askedClosuresOf = (
+	root: string,
+	ask: (module: string) => Effect.Effect<void>
+): AskedClosures => {
 	const asked = new Map<string, Deferred.Deferred<ClosureHash, NeedFailed>>()
 	return {
 		service: ModuleClosure.of({
+			root,
 			hashOf: (module) =>
 				Effect.suspend(() => {
 					const held = asked.get(module)
