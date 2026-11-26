@@ -193,20 +193,30 @@ const messageIdOf = (name: RuleName): string =>
  * many times as its contract says, each under its message, and its fixes turn it into its fixed text, else what the
  * tester threw.
  */
-const judged = (name: RuleName, header: string, program: Program): Option.Option<string> => {
+const judged = (
+	name: RuleName,
+	header: string,
+	program: Program,
+	filename: Option.Option<string>
+): Option.Option<string> => {
 	const code = `${header}${program.code}\n`
 	const fixed = `${header}${program.fixed}\n`
+	const named = Option.match(filename, {
+		onNone: () => ({}),
+		onSome: (file) => ({ filename: file })
+	})
 	const ran = Result.try(() =>
 		new RuleTester({ languageOptions: LANGUAGE }).run(
 			name,
 			plugin.rules[name],
 			program.reports === 0
-				? { valid: [{ code }], invalid: [] }
+				? { valid: [{ code, ...named }], invalid: [] }
 				: {
 						valid: [],
 						invalid: [
 							{
 								code,
+								...named,
 								output: fixed === code ? null : fixed,
 								errors: Array.from({ length: program.reports }, () => ({
 									messageId: messageIdOf(name)
@@ -312,27 +322,32 @@ export const clockSites: Gen<Site> = weighted([
 	[
 		3,
 		(s) => {
-			const timeout = `${s.draw(oneOf(VITEST_TIMEOUTS))}: ${s.draw(element(["60_000", "1", "limit", "process.env.CI ? 0 : 60_000"] as const))}`
+			const key = s.draw(oneOf(VITEST_TIMEOUTS))
+			const timeout = `${key}: ${s.draw(element(["60_000", "1", "limit", "process.env.CI ? 0 : 60_000", "Infinity", "Number.POSITIVE_INFINITY"] as const))}`
 			return s.draw(element([false, true] as const))
 				? fixedSite(
 						`const config${OWN} = { test: { include: ["a"], ${timeout} } }`,
 						1,
-						`const config${OWN} = { test: { include: ["a"] } }`
+						`const config${OWN} = { test: { include: ["a"], ${key}: 0 } }`
 					)
 				: fixedSite(
 						`const config${OWN} = { test: { ${timeout} } }`,
 						1,
-						`const config${OWN} = { test: {} }`
+						`const config${OWN} = { test: { ${key}: 0 } }`
 					)
 		}
 	],
+	[2, (s) => site(`const config${OWN} = { test: { ${s.draw(oneOf(VITEST_TIMEOUTS))}: 0 } }`, 0)],
 	[
-		2,
-		(s) =>
-			site(
-				`const config${OWN} = { test: { ${s.draw(oneOf(VITEST_TIMEOUTS))}: ${s.draw(element(["0", "Infinity", "Number.POSITIVE_INFINITY"] as const))} } }`,
-				0
+		1,
+		(s) => {
+			const key = s.draw(oneOf(VITEST_TIMEOUTS))
+			return fixedSite(
+				`const unbounded${OWN} = 0\nconst config${OWN} = { test: { ${key}: unbounded${OWN} } }`,
+				1,
+				`const unbounded${OWN} = 0\nconst config${OWN} = { test: { ${key}: 0 } }`
 			)
+		}
 	],
 	[1, (s) => site(`const near${OWN} = { ${s.draw(oneOf(VITEST_TIMEOUTS))}Ms: 60_000 }`, 0)],
 	[
@@ -1709,17 +1724,82 @@ export const concurrencySites: Gen<Site> = weighted([
 ])
 
 /** One case of a rule's property: the imports a program starts from, and the program. */
-export type RuleCase = Readonly<{ header: string; program: Program }>
+export type RuleCase = Readonly<{
+	header: string
+	program: Program
+	filename: Option.Option<string>
+}>
+
+/** A Vitest config's timeout as its test block may state it, or leave it out: the literal 0, a finite one, Infinity, a
+ * name bound to 0, or none at all. */
+const CONFIG_TIMEOUTS = element(["absent", "0", "60_000", "Infinity", "bound"] as const)
+
+/** A Vitest configuration file's name, at the root or in a package, as VITEST_CONFIGS globs them. */
+const CONFIG_FILES = element([
+	"vitest.config.ts",
+	"vite.config.mts",
+	"packages/a/vitest.unit.config.ts",
+	"vitest.workspace.ts"
+] as const)
+
+/**
+ * A Vitest config's test block, an include beside it or not and each of testTimeout and hookTimeout drawn
+ * (CONFIG_TIMEOUTS): reported once for the keys it leaves out, which the fix adds as `0` before its first property,
+ * and once for each key stated as anything but the literal 0, which the fix writes as `0`.
+ */
+export const vitestConfigSites: Gen<Site> = (s) => {
+	const include = s.draw(boolean)
+	const drawn = Arr.map(VITEST_TIMEOUTS, (key) => [key, s.draw(CONFIG_TIMEOUTS)] as const)
+	const stated = Arr.filter(drawn, ([, value]) => value !== "absent")
+	const missing = Arr.filter(drawn, ([, value]) => value === "absent")
+	const kept = include ? ['include: ["a"]'] : []
+	const props = [
+		...kept,
+		...Arr.map(stated, ([key, value]) => `${key}: ${value === "bound" ? `unbounded${OWN}` : value}`)
+	]
+	const fixedProps = [...kept, ...Arr.map(stated, ([key]) => `${key}: 0`)]
+	const written = Arr.map(missing, ([key]) => `${key}: 0`)
+	const block = (properties: ReadonlyArray<string>): string =>
+		Arr.isReadonlyArrayEmpty(properties) ? "{}" : `{ ${Arr.join(properties, ", ")} }`
+	const binding = Arr.some(stated, ([, value]) => value === "bound")
+		? `const unbounded${OWN} = 0\n`
+		: ""
+	return fixedSite(
+		`${binding}export const config${OWN} = { test: ${block(props)} }`,
+		(Arr.isReadonlyArrayEmpty(missing) ? 0 : 1) +
+			Arr.filter(stated, ([, value]) => value !== "0").length,
+		`${binding}export const config${OWN} = { test: ${block([...written, ...fixedProps])} }`
+	)
+}
+
+/** Programs of a Vitest configuration file, of one drawn name. */
+export const inVitestConfigs =
+	(programs: Gen<Program>): Space<RuleCase> =>
+	(source) => ({
+		header: "",
+		program: source.draw(programs),
+		filename: Option.some(source.draw(CONFIG_FILES))
+	})
 
 /** Programs of a test's body, after the imports of one drawn header. */
 export const inTests =
 	(programs: Gen<Program>): Space<RuleCase> =>
-	(source) => ({ header: source.draw(HEADERS), program: source.draw(programs) })
+	(source) => ({
+		header: source.draw(HEADERS),
+		program: source.draw(programs),
+		filename: Option.none()
+	})
 
 /** Programs of a test module's top level, after the header of a module of properties. */
 export const inModule =
 	(programs: Gen<Program>): Space<RuleCase> =>
-	(source) => ({ header: MODULE_HEADER, program: source.draw(programs) })
+	(source) => ({ header: MODULE_HEADER, program: source.draw(programs), filename: Option.none() })
+
+/** The clock rule's programs: a test's body, and a Vitest configuration file's test blocks. */
+export const clockCases: Space<RuleCase> = weighted([
+	[3, inTests(programOf(clockSites))],
+	[1, inVitestConfigs(programOf(vitestConfigSites))]
+])
 
 /**
  * A rule's property: programs of its grammar after a header, each judged by RuleTester against the reports and the
@@ -1735,7 +1815,7 @@ export const ruleProperty = (
 		situations: ["a site reported", "a site left alone", "a program of several sites"],
 		check:
 			(_resources, c) =>
-			({ header, program }) =>
+			({ header, program, filename }) =>
 				Effect.sync(() => {
 					for (const s of program.sites) {
 						c.note(s.reports > 0 ? "a site reported" : "a site left alone")
@@ -1743,7 +1823,7 @@ export const ruleProperty = (
 					if (program.sites.length > 1) {
 						c.note("a program of several sites")
 					}
-					assert.deepEqual(judged(name, header, program), Option.none())
+					assert.deepEqual(judged(name, header, program, filename), Option.none())
 				}),
 		oracle: {
 			kind: "specification",

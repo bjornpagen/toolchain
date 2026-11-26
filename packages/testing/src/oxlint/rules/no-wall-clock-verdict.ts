@@ -1,6 +1,7 @@
-import { Array as Arr, Option } from "effect"
+import { Array as Arr, Option, String as Str } from "effect"
 import type { AnyNode, Context, CreateRule, NodeOf } from "#oxlint/rule.ts"
 import { isNamed, keyOf, testPathOf, valueOf } from "#oxlint/syntax.ts"
+import { VITEST_CONFIGS } from "#scope.ts"
 
 /** The reads of the current time. */
 export const CLOCK_READS: ReadonlyArray<string> = [
@@ -50,7 +51,7 @@ const importedOf = (specifier: NodeOf<"ImportSpecifier">): string =>
 
 /** Whether a timeout is none, as Vitest reads one: `0`, `Infinity` or `Number.POSITIVE_INFINITY`. */
 const isUnbounded = (value: AnyNode): boolean =>
-	(value.type === "Literal" && value.value === 0) ||
+	isLiteralZero(value) ||
 	(value.type === "Identifier" && value.name === "Infinity") ||
 	(value.type === "MemberExpression" &&
 		!value.computed &&
@@ -58,6 +59,44 @@ const isUnbounded = (value: AnyNode): boolean =>
 		value.object.name === "Number" &&
 		value.property.type === "Identifier" &&
 		value.property.name === "POSITIVE_INFINITY")
+
+/** Whether a value is the literal `0`, written where it stands, never a name bound to it. */
+const isLiteralZero = (value: AnyNode): boolean => value.type === "Literal" && value.value === 0
+
+/**
+ * Whether `name` matches `glob`'s pieces, the text between its `*`s, in order: the first at its start, the last at its
+ * end, each `*` any run of characters between them.
+ */
+const piecesMatch = (name: string, pieces: Arr.NonEmptyReadonlyArray<string>): boolean => {
+	const [first, ...rest] = pieces
+	if (!Str.startsWith(first)(name)) {
+		return false
+	}
+	const last = Arr.last(rest)
+	if (Option.isNone(last)) {
+		return name === first
+	}
+	let at = first.length
+	for (const middle of Arr.dropRight(rest, 1)) {
+		const found = Str.indexOf(middle)(Str.slice(at)(name))
+		if (Option.isNone(found)) {
+			return false
+		}
+		at += found.value + middle.length
+	}
+	return name.length - last.value.length >= at && Str.endsWith(last.value)(name)
+}
+
+/**
+ * Whether a file is one of Vitest's configuration files (VITEST_CONFIGS, each a name under any directory, a `*` in the
+ * name any run of characters), by its name.
+ */
+const isVitestConfig = (file: string): boolean => {
+	const name = Arr.lastNonEmpty(Str.split("/")(file))
+	return Arr.some(VITEST_CONFIGS, (glob) =>
+		piecesMatch(name, Str.split("*")(Str.replace("**/", "")(glob)))
+	)
+}
 
 /** The hooks whose second argument is their timeout: `beforeAll(fn, ms)`. */
 const HOOKS: ReadonlyArray<string> = ["beforeAll", "beforeEach", "afterAll", "afterEach"]
@@ -182,7 +221,7 @@ const timersOf = (context: Context, call: NodeOf<"CallExpression">): ReadonlyArr
 }
 
 const WALL_CLOCK =
-	"No timer decides a verdict: this makes one rest on the wall clock, so it depends on the machine and the moment, a read of the clock, or a finite timeout (a Vitest testTimeout or hookTimeout, a test's, suite's, hook's or layer's timeout, a wait's), which fails a test when the clock passes it, so a slower machine fails what a faster one passes. Control time with TestClock under it.effect, or assert the fact itself; leave a timeout unset or 0, none: a search ends by its case count under each case's hang guard, and a hang is the gate's progress watch to stop."
+	"No timer decides a verdict: this makes one rest on the wall clock, so it depends on the machine and the moment, a read of the clock, or a finite timeout (a Vitest testTimeout or hookTimeout, a test's, suite's, hook's or layer's timeout, a wait's), which fails a test when the clock passes it, so a slower machine fails what a faster one passes. Control time with TestClock under it.effect, or assert the fact itself. A Vitest config states testTimeout and hookTimeout in its test block, each as the literal 0, written where it stands: one left out is Vitest's default, 5 s a test and 10 s a hook, a wall-clock verdict, and a name bound to 0 hides that it is none. Leave every other timeout unset or 0, none: a search ends by its case count under each case's hang guard, and a hang is the gate's progress watch to stop."
 
 /**
  * No timer decides a verdict. A read of the current time in a test: `Date.now()`, `new Date()`, `performance.now()`,
@@ -190,15 +229,19 @@ const WALL_CLOCK =
  * LIVE_MODULES), so a verdict depends on how long something took or when it ran. And every
  * finite timeout a test API is given, which fails a test the moment the wall clock passes it: a `testTimeout` or
  * `hookTimeout` in a Vitest configuration (the preset holds every Vite and Vitest config file to this rule,
- * @bjornpagen/testing/scope VITEST_CONFIGS) or `vi.setConfig`; a test's or a suite's (`it(name, fn, ms)`,
+ * @bjornpagen/testing/scope VITEST_CONFIGS) or `vi.setConfig`, each of which is the literal `0` and nothing else, and
+ * a Vitest config's `test` block that states either not at all, since Vitest then fails a test at 5 s and a hook at
+ * 10 s; a test's or a suite's (`it(name, fn, ms)`,
  * `{ timeout }` on it, test or describe, a table's included); a hook's (`beforeAll(fn, ms)`); a layer's (`layer(Live,
  * { timeout })`); and a wait's (`vi.waitFor`, `vi.waitUntil`, `expect.poll`). A timeout is none only as `0`, `Infinity`
  * or `Number.POSITIVE_INFINITY`; any other, a value computed at load among them, is refused, since a slower machine
  * changes neither the cases a search runs nor what they find, and a timer would. `oxlint --fix` deletes each such
- * timer: a timer is never load-bearing, since a search has no deadline and the gate owns hangs. It deletes a timeout
- * argument with its separator, a `timeout` property or a configuration's timeout with its separator, and an options
- * object the deletion leaves empty, as an argument a call is given, or `{}` where a `const` holds it or a
- * configuration nests it. A read of the clock it leaves to its author.
+ * timer a test API is given: a timer is never load-bearing, since a search has no deadline and the gate owns hangs. It
+ * deletes a timeout argument with its separator, a `timeout` property with its separator, and an options object the
+ * deletion leaves empty, as an argument a call is given, or `{}` where a `const` holds it. A configuration's
+ * testTimeout or hookTimeout it writes as the literal `0`, and one a config's `test` block leaves out it adds as `0`,
+ * never deleting it, which would bring Vitest's default back (edullm's HANGFREE, 2026-11-26: the fix deleted
+ * qti-pie's testTimeout, and its 5 s default failed crust). A read of the clock it leaves to its author.
  */
 export const noWallClockVerdict: CreateRule = {
 	meta: { type: "problem", fixable: "code", messages: { wallClock: WALL_CLOCK } },
@@ -240,25 +283,51 @@ export const noWallClockVerdict: CreateRule = {
 			}
 		},
 		Property: (node) => {
-			const object = node.parent
 			if (
 				node.computed ||
 				!Option.exists(keyOf(node), (key) => Arr.contains(VITEST_TIMEOUTS, key)) ||
-				isUnbounded(node.value) ||
-				object.type !== "ObjectExpression"
+				isLiteralZero(node.value)
 			) {
 				return
 			}
-			for (const at of Option.toArray(
-				Arr.findFirstIndex(object.properties, (property) => property === node)
-			)) {
-				const edit = propertyDeletion(object, at)
-				context.report({
-					node,
-					messageId: "wallClock",
-					fix: fixOf(edit)
-				})
+			context.report({
+				node,
+				messageId: "wallClock",
+				fix: fixOf({ range: node.value.range, text: "0" })
+			})
+		},
+		ObjectExpression: (node) => {
+			const parent = node.parent
+			if (
+				!isVitestConfig(context.physicalFilename) ||
+				parent.type !== "Property" ||
+				parent.computed ||
+				parent.value !== node ||
+				!Option.exists(keyOf(parent), (key) => key === "test")
+			) {
+				return
 			}
+			const stated = Arr.flatMap(node.properties, (property) =>
+				property.type === "Property" && !property.computed ? Option.toArray(keyOf(property)) : []
+			)
+			const missing = Arr.filter(VITEST_TIMEOUTS, (key) => !Arr.contains(stated, key))
+			if (Arr.isReadonlyArrayEmpty(missing)) {
+				return
+			}
+			const written = Arr.join(
+				Arr.map(missing, (key) => `${key}: 0`),
+				", "
+			)
+			context.report({
+				node,
+				messageId: "wallClock",
+				fix: fixOf(
+					Option.match(Arr.head(node.properties), {
+						onNone: () => ({ range: node.range, text: `{ ${written} }` }),
+						onSome: (first) => ({ range: [first.range[0], first.range[0]], text: `${written}, ` })
+					})
+				)
+			})
 		}
 	})
 }

@@ -17,7 +17,7 @@ import {
 	booleanSites,
 	type CaseKill,
 	clampedSites,
-	clockSites,
+	clockCases,
 	concurrencySites,
 	inModule,
 	inTests,
@@ -40,96 +40,112 @@ import { property } from "#property.ts"
 
 /** no-wall-clock-verdict reports exactly the reads of the clock, the live clock's readers imported among them, and every
  * finite timer a test API is given. */
-export const noWallClockVerdict = ruleProperty(
-	"no-wall-clock-verdict",
-	inTests(programOf(clockSites)),
-	[
-		{
-			file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
-			original:
-				'\t\tNewExpression: (node) => {\n\t\t\tif (isNamed(context, node.callee, DATE_READS) && Arr.isReadonlyArrayEmpty(node.arguments)) {\n\t\t\t\tcontext.report({ node, messageId: "wallClock" })\n\t\t\t}\n\t\t},\n',
-			replacement: "",
-			why: "no-wall-clock-verdict reads `new Date()` as no read of the clock."
-		},
-		{
-			file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
-			original: "\t\t\tif (Arr.contains(LIVE_MODULES, node.source.value)) {\n",
-			replacement: "\t\t\tif (false) {\n",
-			why: "An import of the live clock's readers is no read of the clock, so a module outside live.ts holds one and judges by it unseen, as explore.ts's case guard raced its case against liveSleepUntil and judged the machine (QP-GATE, 2026-11-25); the property fails."
-		},
-		{
-			file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
-			original:
-				"\t\t\t\t!Option.exists(keyOf(node), (key) => Arr.contains(VITEST_TIMEOUTS, key)) ||\n",
-			replacement: "\t\t\t\ttrue ||\n",
-			why: "A finite testTimeout or hookTimeout passes, so a Vitest config fails a test by the wall clock, as qti-pie's testTimeout: 60_000 failed crust on a slow machine; the property fails."
-		},
-		{
-			file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
-			original: '\t(value.type === "Literal" && value.value === 0) ||\n',
-			replacement: "\tfalse ||\n",
-			why: "A timeout of 0, which Vitest reads as none, is refused as finite; the property fails."
-		},
-		{
-			file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
-			original: "\t\treturn [...options, ...argumentTimer(context, call, 2)]\n",
-			replacement: "\t\treturn [...options, ...argumentTimer(context, call, 3)]\n",
-			why: "A test's or a suite's timeout argument, `it(name, fn, 60_000)`, passes; the property fails."
-		},
-		{
-			file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
-			original:
-				'\t\t\t\t\tproperty.type === "Property" && Option.exists(keyOf(property), (key) => key === "timeout")\n',
-			replacement:
-				'\t\t\t\t\tproperty.type === "Property" && Option.exists(keyOf(property), (key) => key === "timeouts")\n',
-			why: "An options object's `timeout` passes, on a test, a suite, a layer or a wait, written there or in a const; the property fails."
-		},
-		{
-			file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
-			original: "\t\treturn [...options, ...argumentTimer(context, call, 1)]\n",
-			replacement: "\t\treturn [...options, ...argumentTimer(context, call, 9)]\n",
-			why: "A hook's timeout argument, `beforeAll(fn, 30_000)`, passes; the property fails."
-		},
-		{
-			file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
-			original:
-				'\t(call.callee.type === "CallExpression" && Option.isSome(testPathOf(context, call.callee.callee)))\n',
-			replacement: "\tfalse\n",
-			why: "A table's test, `it.each(rows)(name, fn, 60_000)`, is no test call, so its timeout passes; the property fails."
-		},
-		{
-			file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
-			original: '\t"layer",\n',
-			replacement: "",
-			why: "A layer's timeout, `layer(Live, { timeout: 60_000 })`, as qti-pie's pantry writes it, passes; the property fails."
-		},
-		{
-			file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
-			original: '\t"vi.waitFor",\n',
-			replacement: "",
-			why: "A wait's timeout, `vi.waitFor(fn, { timeout })`, passes; the property fails."
-		},
-		{
-			file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
-			original: "\tfixer.replaceTextRange([edit.range[0], edit.range[1]], edit.text)\n",
-			replacement: "\tfixer.replaceTextRange([edit.range[0], edit.range[0]], edit.text)\n",
-			why: "The fix leaves every timer where it was, so `oxlint --fix` cuts nothing over; the property fails."
-		},
-		{
-			file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
-			original: "\t\t\t\t\t\t\t\t\t\toptions === argument && options.properties.length === 1\n",
-			replacement: "\t\t\t\t\t\t\t\t\t\tfalse\n",
-			why: "The fix leaves an empty options object behind, `test(name, {}, fn)`; the property fails."
-		},
-		{
-			file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
-			original:
-				'\t\t\t\tonSome: (after) => ({ range: [element.range[0], after.range[0]], text: "" }),\n',
-			replacement: '\t\t\t\tonSome: () => ({ range: element.range, text: "" }),\n',
-			why: "A first option's deletion leaves its separator, `{ , retry: 0 }`, which no longer parses; the property fails."
-		}
-	]
-)
+export const noWallClockVerdict = ruleProperty("no-wall-clock-verdict", clockCases, [
+	{
+		file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
+		original:
+			'\t\tNewExpression: (node) => {\n\t\t\tif (isNamed(context, node.callee, DATE_READS) && Arr.isReadonlyArrayEmpty(node.arguments)) {\n\t\t\t\tcontext.report({ node, messageId: "wallClock" })\n\t\t\t}\n\t\t},\n',
+		replacement: "",
+		why: "no-wall-clock-verdict reads `new Date()` as no read of the clock."
+	},
+	{
+		file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
+		original: "\t\t\tif (Arr.contains(LIVE_MODULES, node.source.value)) {\n",
+		replacement: "\t\t\tif (false) {\n",
+		why: "An import of the live clock's readers is no read of the clock, so a module outside live.ts holds one and judges by it unseen, as explore.ts's case guard raced its case against liveSleepUntil and judged the machine (QP-GATE, 2026-11-25); the property fails."
+	},
+	{
+		file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
+		original:
+			"\t\t\t\t!Option.exists(keyOf(node), (key) => Arr.contains(VITEST_TIMEOUTS, key)) ||\n",
+		replacement: "\t\t\t\ttrue ||\n",
+		why: "A finite testTimeout or hookTimeout passes, so a Vitest config fails a test by the wall clock, as qti-pie's testTimeout: 60_000 failed crust on a slow machine; the property fails."
+	},
+	{
+		file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
+		original: "\tisLiteralZero(value) ||\n",
+		replacement: "\tfalse ||\n",
+		why: "A timeout of 0, which Vitest reads as none, is refused as finite; the property fails."
+	},
+	{
+		file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
+		original: '\t\t\t\tfix: fixOf({ range: node.value.range, text: "0" })\n',
+		replacement: '\t\t\t\tfix: fixOf({ range: node.range, text: "" })\n',
+		why: "The fix deletes a Vitest config's testTimeout or hookTimeout, which brings back Vitest's 5 s and 10 s defaults, the wall-clock verdict the rule forbids (edullm's HANGFREE: the fix deleted qti-pie's testTimeout and crust failed at 5 s); the property fails."
+	},
+	{
+		file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
+		original:
+			'const isLiteralZero = (value: AnyNode): boolean => value.type === "Literal" && value.value === 0\n',
+		replacement:
+			'const isLiteralZero = (value: AnyNode): boolean =>\n\t(value.type === "Literal" && value.value === 0) || value.type === "Identifier"\n',
+		why: "A timeout bound by a name, `const unbounded = 0` or `limit`, passes as none, so whether a config's timeout is none rests on a binding the rule never reads; the property fails."
+	},
+	{
+		file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
+		original: "\t\t\tif (Arr.isReadonlyArrayEmpty(missing)) {\n",
+		replacement: "\t\t\tif (true) {\n",
+		why: "A Vitest config's test block that leaves testTimeout or hookTimeout out passes, so Vitest fails a test at 5 s and a hook at 10 s; the property fails."
+	},
+	{
+		file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
+		original: "\t\treturn [...options, ...argumentTimer(context, call, 2)]\n",
+		replacement: "\t\treturn [...options, ...argumentTimer(context, call, 3)]\n",
+		why: "A test's or a suite's timeout argument, `it(name, fn, 60_000)`, passes; the property fails."
+	},
+	{
+		file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
+		original:
+			'\t\t\t\t\tproperty.type === "Property" && Option.exists(keyOf(property), (key) => key === "timeout")\n',
+		replacement:
+			'\t\t\t\t\tproperty.type === "Property" && Option.exists(keyOf(property), (key) => key === "timeouts")\n',
+		why: "An options object's `timeout` passes, on a test, a suite, a layer or a wait, written there or in a const; the property fails."
+	},
+	{
+		file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
+		original: "\t\treturn [...options, ...argumentTimer(context, call, 1)]\n",
+		replacement: "\t\treturn [...options, ...argumentTimer(context, call, 9)]\n",
+		why: "A hook's timeout argument, `beforeAll(fn, 30_000)`, passes; the property fails."
+	},
+	{
+		file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
+		original:
+			'\t(call.callee.type === "CallExpression" && Option.isSome(testPathOf(context, call.callee.callee)))\n',
+		replacement: "\tfalse\n",
+		why: "A table's test, `it.each(rows)(name, fn, 60_000)`, is no test call, so its timeout passes; the property fails."
+	},
+	{
+		file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
+		original: '\t"layer",\n',
+		replacement: "",
+		why: "A layer's timeout, `layer(Live, { timeout: 60_000 })`, as qti-pie's pantry writes it, passes; the property fails."
+	},
+	{
+		file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
+		original: '\t"vi.waitFor",\n',
+		replacement: "",
+		why: "A wait's timeout, `vi.waitFor(fn, { timeout })`, passes; the property fails."
+	},
+	{
+		file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
+		original: "\tfixer.replaceTextRange([edit.range[0], edit.range[1]], edit.text)\n",
+		replacement: "\tfixer.replaceTextRange([edit.range[0], edit.range[0]], edit.text)\n",
+		why: "The fix leaves every timer where it was, so `oxlint --fix` cuts nothing over; the property fails."
+	},
+	{
+		file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
+		original: "\t\t\t\t\t\t\t\t\t\toptions === argument && options.properties.length === 1\n",
+		replacement: "\t\t\t\t\t\t\t\t\t\tfalse\n",
+		why: "The fix leaves an empty options object behind, `test(name, {}, fn)`; the property fails."
+	},
+	{
+		file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
+		original:
+			'\t\t\t\tonSome: (after) => ({ range: [element.range[0], after.range[0]], text: "" }),\n',
+		replacement: '\t\t\t\tonSome: () => ({ range: element.range, text: "" }),\n',
+		why: "A first option's deletion leaves its separator, `{ , retry: 0 }`, which no longer parses; the property fails."
+	}
+])
 
 /** no-sleep-wait reports exactly the calls that wait for time to pass. */
 export const noSleepWait = ruleProperty("no-sleep-wait", inTests(programOf(sleepSites)), [
