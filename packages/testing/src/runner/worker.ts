@@ -51,7 +51,7 @@ import { runValuesOf } from "#runner/runs.ts"
 import { ModuleClosure, RunValues, WorkerIndex } from "#runner/services.ts"
 import { runOfLabel } from "#runner/stack.ts"
 import { childrenCpuNow, childrenSince } from "#runner/usage.ts"
-import { reportWaitsTo } from "#runner/work.ts"
+import { reportWaitsTo, sessionsSpent } from "#runner/work.ts"
 import { startProcessCoverage } from "#sense.ts"
 
 /**
@@ -263,6 +263,7 @@ const main = Effect.gen(function* () {
 						imported: made.imported,
 						cpu: millisOf(process.cpuUsage(cpu)),
 						children: childrenSince(children),
+						backends: sessionsSpent(),
 						drained: guardDrain()
 					})
 					return made.readied
@@ -309,6 +310,7 @@ const main = Effect.gen(function* () {
 				done,
 				cpu: millisOf(process.cpuUsage()),
 				children: childrenSince(children),
+				backends: sessionsSpent(),
 				drained: guardDrain()
 			})
 		})

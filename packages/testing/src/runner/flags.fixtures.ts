@@ -1,5 +1,6 @@
 import { Array as Arr, Effect, FileSystem } from "effect"
 import { element, finite } from "#gen.ts"
+import { UNRUN_BUDGET } from "#runner/budgets.fixtures.ts"
 
 /**
  * What the flags property (flags.test.ts) draws and writes: a package stating no runner config, one whose config states
@@ -27,7 +28,7 @@ const configText = (stated: Exclude<Stated, "none">): string => {
 				[
 					`import { Layer } from "${import.meta.resolve("effect")}"`,
 					`import { defineRunner, noMutation } from "${import.meta.resolve("#runner/config.ts")}"`,
-					`export default defineRunner({ include: ["test/*.test.ts"], smallStack: [], conditions: [${Arr.join(
+					`export default defineRunner({ budget: { kind: "cpu", millis: ${String(UNRUN_BUDGET)} }, include: ["test/*.test.ts"], smallStack: [], conditions: [${Arr.join(
 						Arr.map(CONDITIONS, (condition) => `"${condition}"`),
 						", "
 					)}], layer: Layer.empty, mutation: noMutation })`,

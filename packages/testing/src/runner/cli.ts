@@ -32,7 +32,7 @@ import {
 	translateToken
 } from "#runner/run.ts"
 import { affectedModule } from "#runner/settle.ts"
-import { reportOf, type UsageReport, usageJson, usageLines } from "#runner/usage.ts"
+import { reportOf, spentOf, type UsageReport, usageJson, usageLines } from "#runner/usage.ts"
 
 /**
  * `toolchain-test`, the runner's command, run from a package's root (its test.config.ts):
@@ -107,8 +107,9 @@ const keyingOf = (selected: ReadonlyArray<string>, seeding: Seeding) =>
  * template, and its seeds, each its key's unless TEST_SEED names one for all), every other's search run (runPackage) and
  * its verdict kept under its key, a pass only where no worker that ran it had observed past its key
  * (runner/observe.ts); then the run's JSON record, every failure and the run's usage, and each property said cached or
- * run; 1 when any search failed. A package with no verdict key runs every property, saying why. It judges no kill: that
- * is the kill census (`kills`).
+ * run; 1 when any search failed, or when the run spent more CPU than its test.config.ts's budget (RunBudget), saying
+ * by how much. A package with no verdict key runs every property, saying why. It judges no kill: that is the kill
+ * census (`kills`).
  */
 const run = (selected: ReadonlyArray<string>) =>
 	Effect.scoped(
@@ -144,7 +145,7 @@ const run = (selected: ReadonlyArray<string>) =>
 				)
 			}
 			const answered = new Set(Arr.map(cached, (one) => one.id))
-			const { discovered } = yield* loadPackage(root, selected)
+			const { config, discovered } = yield* loadPackage(root, selected)
 			const due = Arr.filter(discovered, (found) => !answered.has(found.id))
 			const outcome = Arr.isReadonlyArrayNonEmpty(due)
 				? yield* runPackage({
@@ -159,6 +160,7 @@ const run = (selected: ReadonlyArray<string>) =>
 				yield* keying.record(outcome)
 			}
 			const usage = reportOf(outcome.usage, outcome.properties)
+			const spent = spentOf(usage, config.budget)
 			const written = yield* usageWritten(
 				root,
 				Option.getOrElse(given, () => drawn),
@@ -182,12 +184,13 @@ const run = (selected: ReadonlyArray<string>) =>
 						...usageLines(usage),
 						`its CPU and wall time, every property's, as JSON: ${written}`,
 						"",
-						`${discovered.length} properties: ${cached.length} cached, ${ranCount} run (${observed} observed past their keys, never cached), ${failing} failed, in ${Math.round(outcome.millis)} ms on ${outcome.workers.length} workers`
+						`${discovered.length} properties: ${cached.length} cached, ${ranCount} run (${observed} observed past their keys, never cached), ${failing} failed, in ${Math.round(outcome.millis)} ms on ${outcome.workers.length} workers`,
+						...(spent.kind === "over" ? [spent.line] : [])
 					],
 					"\n"
 				)
 			)
-			return failing > 0 ? 1 : 0
+			return failing > 0 || spent.kind === "over" ? 1 : 0
 		})
 	)
 

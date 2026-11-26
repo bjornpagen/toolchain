@@ -407,6 +407,57 @@ const processWaits = (): ProcessWaits => {
 	return globalThis.bjornpagenTestingWaits
 }
 
+/**
+ * The PostgreSQL backends this process's sessions opened (pg/session.ts pgSession), by pid, each with the CPU of it this
+ * process has counted (ms), and what the ones that closed since its last count spent past theirs: each backend counted
+ * by the one process that opened it, off its own /proc stat at each count and as its session ends, before its
+ * Terminate, so a backend that came and went between two counts is counted whole, and another process's never.
+ */
+type SessionBackends = { open: Map<string, number>; closed: number }
+
+declare global {
+	var bjornpagenTestingSessionBackends: SessionBackends | undefined
+}
+
+/** This process's session backends: one ledger a process, as a backend is its opener's whatever case opened it. */
+const sessionBackends = (): SessionBackends => {
+	globalThis.bjornpagenTestingSessionBackends ??= { open: new Map(), closed: 0 }
+	return globalThis.bjornpagenTestingSessionBackends
+}
+
+/** A backend's CPU so far (ms), none past `counted` for a backend gone. */
+const backendCpu = (pid: string, counted: number): number =>
+	Option.match(statOf(pid), { onNone: () => counted, onSome: allOf })
+
+/** A session of this process opened the backend `pid`, all of whose CPU is its own from its start. */
+export const sessionOpened = (pid: string): void => {
+	sessionBackends().open.set(pid, 0)
+}
+
+/** The session of the backend `pid` ends: what it spent past its last count is counted, read before its Terminate. */
+export const sessionClosed = (pid: string): void => {
+	const ledger = sessionBackends()
+	const counted = ledger.open.get(pid) ?? 0
+	ledger.closed += backendCpu(pid, counted) - counted
+	ledger.open.delete(pid)
+}
+
+/**
+ * What this process's session backends spent since its last count (ms): every open one's CPU past its count, each
+ * counted again at it, and every closed one's past its last count.
+ */
+export const sessionsSpent = (): number => {
+	const ledger = sessionBackends()
+	let spent = ledger.closed
+	ledger.closed = 0
+	for (const [pid, counted] of ledger.open) {
+		const now = backendCpu(pid, counted)
+		spent += now - counted
+		ledger.open.set(pid, now)
+	}
+	return spent
+}
+
 /** This process's declared waits are reported to `report` from now on, at each change. */
 export const reportWaitsTo = (report: (change: WaitChange) => void): void => {
 	processWaits().report = Option.some(report)

@@ -1,5 +1,6 @@
 import { Array as Arr, Effect, FileSystem } from "effect"
 import { array, boolean, element, type Gen } from "#gen.ts"
+import { UNRUN_BUDGET } from "#runner/budgets.fixtures.ts"
 
 /**
  * Packages for mutation.test.ts: a runner config whose Mutation is a module of the package, and that module, written
@@ -85,7 +86,7 @@ export const writtenPackage = (directory: string, written: Written) =>
 				[
 					`import { Layer } from "${import.meta.resolve("effect")}"`,
 					`import { defineRunner } from "${import.meta.resolve("#runner/config.ts")}"`,
-					'export default defineRunner({ include: [], smallStack: [], conditions: [], environment: [], layer: Layer.empty, mutation: () => import("./mutation.ts") })',
+					`export default defineRunner({ budget: { kind: "cpu", millis: ${String(UNRUN_BUDGET)} }, include: [], smallStack: [], conditions: [], environment: [], layer: Layer.empty, mutation: () => import("./mutation.ts") })`,
 					""
 				],
 				"\n"

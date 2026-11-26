@@ -12,6 +12,7 @@ import {
 } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { boolean, element, finite } from "#gen.ts"
+import { UNRUN_BUDGET } from "#runner/budgets.fixtures.ts"
 import { compileCacheOf } from "#runner/compile-cache.ts"
 import { HARDENED_FLAGS } from "#runner/config.ts"
 import {
@@ -138,7 +139,7 @@ const filesOf = (drawn: Package): ConsumerFiles => [
 	["package.json", manifestOf(layout)],
 	[
 		"test.config.ts",
-		'import { defineRunner, noMutation } from "@bjornpagen/testing/runner"\nimport { Layer } from "effect"\n\nexport default defineRunner({ include: ["test/*.test.ts"], smallStack: [], conditions: [], environment: [], layer: Layer.empty, mutation: noMutation })\n'
+		`import { defineRunner, noMutation } from "@bjornpagen/testing/runner"\nimport { Layer } from "effect"\n\nexport default defineRunner({ budget: { kind: "cpu", millis: ${String(UNRUN_BUDGET)} }, include: ["test/*.test.ts"], smallStack: [], conditions: [], environment: [], layer: Layer.empty, mutation: noMutation })\n`
 	],
 	["test/plain.test.ts", `${PROLOGUE}export const plain = property.explore(int(0, 9), spec)\n`],
 	["test/shared.ts", FIXTURE],
@@ -505,7 +506,7 @@ export const loadedApartOnce = (directory: string, library: string, drawn: Apart
 			["package.json", manifestOf(layout)],
 			[
 				"test.config.ts",
-				'import { defineRunner, noMutation } from "@bjornpagen/testing/runner"\nimport { Layer } from "effect"\n\nexport default defineRunner({ include: ["test/*.test.ts"], smallStack: [], conditions: [], environment: [], layer: Layer.empty, mutation: noMutation })\n'
+				`import { defineRunner, noMutation } from "@bjornpagen/testing/runner"\nimport { Layer } from "effect"\n\nexport default defineRunner({ budget: { kind: "cpu", millis: ${String(UNRUN_BUDGET)} }, include: ["test/*.test.ts"], smallStack: [], conditions: [], environment: [], layer: Layer.empty, mutation: noMutation })\n`
 			],
 			...Arr.map(modules, (module) => [module.path, textOf(module)] as const)
 		])

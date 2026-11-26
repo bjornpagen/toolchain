@@ -4,6 +4,7 @@ import { HUNG_CLEANUP_GRACE, liveSleep, waitingOn, watchdogGraceMillis } from "#
 import { plantedBudget } from "#planted.fixtures.ts"
 import { type Need, property } from "#property.ts"
 import { Scratch } from "#resources/scratch.ts"
+import { UNRUN_BUDGET } from "#runner/budgets.fixtures.ts"
 import { unwatched } from "#runner/observe.ts"
 import type { Batch } from "#runner/protocol.ts"
 import { WorkerIndex } from "#runner/services.ts"
@@ -517,7 +518,7 @@ export const unreadyRoot = (directory: string) =>
 					`import { Layer } from "${import.meta.resolve("effect")}"`,
 					`import { defineRunner, noMutation } from "${import.meta.resolve("#runner/config.ts")}"`,
 					`import { withNeeds } from "${import.meta.resolve("#runner/loops.fixtures.ts")}"`,
-					"export default defineRunner({ include: [], smallStack: [], conditions: [], environment: [], layer: Layer.empty, mutation: noMutation })",
+					`export default defineRunner({ budget: { kind: "cpu", millis: ${String(UNRUN_BUDGET)} }, include: [], smallStack: [], conditions: [], environment: [], layer: Layer.empty, mutation: noMutation })`,
 					"export const looping = withNeeds",
 					""
 				],
@@ -547,7 +548,7 @@ export const slowStartRoot = (directory: string) =>
 					`import { Layer } from "${import.meta.resolve("effect")}"`,
 					`import { defineRunner, noMutation } from "${import.meta.resolve("#runner/config.ts")}"`,
 					`await new Promise((done) => { ${slowSteps("done(undefined)")} })`,
-					'export default defineRunner({ include: ["starts.test.ts"], smallStack: [], conditions: [], environment: [], layer: Layer.empty, mutation: noMutation })',
+					`export default defineRunner({ budget: { kind: "cpu", millis: ${String(UNRUN_BUDGET)} }, include: ["starts.test.ts"], smallStack: [], conditions: [], environment: [], layer: Layer.empty, mutation: noMutation })`,
 					""
 				],
 				"\n"
@@ -667,6 +668,7 @@ export const releasingRoot = (directory: string) =>
 					`import { defineRunner, noMutation } from "${import.meta.resolve("#runner/config.ts")}"`,
 					'const { writeFileSync } = process.getBuiltinModule("node:fs")',
 					"export default defineRunner({",
+					`\tbudget: { kind: "cpu", millis: ${String(UNRUN_BUDGET)} },`,
 					'\tinclude: ["held.test.ts"],',
 					"\tsmallStack: [],",
 					"\tconditions: [],",

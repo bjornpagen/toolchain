@@ -69,6 +69,7 @@ import {
 	writtenElsewhere
 } from "#resources/resources.fixtures.ts"
 import type { DatabaseTemplate } from "#resources/template.ts"
+import { UNRUN_BUDGET } from "#runner/budgets.fixtures.ts"
 import { collectedOf } from "#runner/collected.ts"
 import { defineRunner, noMutation } from "#runner/config.ts"
 import { collectedAround } from "#runner/run.ts"
@@ -394,6 +395,7 @@ export const refusedDropCollected = property.exhaust(finite(int(1, 3)), {
 				const template = tokenTemplate(prefix, () => Effect.void)
 				const runnerClosures = Context.get(ctx, ModuleClosure)
 				const config = defineRunner({
+					budget: { kind: "cpu", millis: UNRUN_BUDGET },
 					include: [],
 					smallStack: [],
 					conditions: [],

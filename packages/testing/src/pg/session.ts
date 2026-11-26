@@ -6,6 +6,14 @@ import type { PgSession, Statements } from "#resources/cluster.ts"
 import { observeBackend, registerServerAt } from "#runner/backends.ts"
 import { needStallMillis } from "#runner/limits.ts"
 import { NeedFailed } from "#runner/services.ts"
+import { sessionClosed, sessionOpened } from "#runner/work.ts"
+
+/**
+ * How a repository's own client counts its backends as its run's (runner/work.ts): `sessionOpened(pid)` once it knows
+ * its backend's pid (node-postgres's BackendKeyData), `sessionClosed(pid)` before it ends the connection, as the
+ * runner's own sessions do (pgSession), so a driver a repository hands its code counts in its run's budget.
+ */
+export { sessionClosed, sessionOpened }
 
 /** A failure of a session on `member` as the need it failed: what it was doing, and what the driver said. */
 const sessionFailed = (member: PgMember, doing: string) => (cause: unknown) =>
@@ -197,7 +205,9 @@ const monitorOf = (member: PgMember, bound: number): Monitor => {
  * it, as it would any client's, where a statement held up server-side spent no CPU of this process and was judged hung
  * (RECORDS-ATTACH, 2026-11-21: SSI waits of about 2 s a statement, 25 ms of CPU over 60 s). The member it reaches was
  * registered with the process by the cluster that brought it up (memberRegistered), so a guard can ask it what its
- * backends wait on, whatever client a repository reaches it with.
+ * backends wait on, whatever client a repository reaches it with. The session registers the backends its pid statement
+ * names, its own, with the process's session ledger (runner/work.ts sessionOpened), which counts each one's CPU off its
+ * own /proc stat until the session ends, read before its Terminate, as the run's backends' CPU.
  */
 const pgSession = (
 	applicationName: string,
@@ -207,29 +217,50 @@ const pgSession = (
 ): Effect.Effect<PgSession, NeedFailed, Scope.Scope> =>
 	Effect.map(
 		Effect.acquireRelease(
-			Effect.tap(
-				Effect.sync(
-					() =>
-						new pg.Client({
-							...config,
-							port: member.port,
-							database,
-							application_name: applicationName,
-							pipeline: true
+			Effect.flatMap(
+				Effect.tap(
+					Effect.sync(
+						() =>
+							new pg.Client({
+								...config,
+								port: member.port,
+								database,
+								application_name: applicationName,
+								pipeline: true
+							})
+					),
+					(client) =>
+						Effect.tryPromise({
+							try: () => client.connect(),
+							catch: sessionFailed(member, `a session in ${database}`)
 						})
 				),
 				(client) =>
-					Effect.tryPromise({
-						try: () => client.connect(),
-						catch: sessionFailed(member, `a session in ${database}`)
-					})
+					Effect.map(
+						Effect.tryPromise({
+							try: () =>
+								client.query<[string]>({
+									text: "SELECT pg_catalog.pg_backend_pid()::text",
+									rowMode: "array"
+								}),
+							catch: sessionFailed(member, `its backend in ${database}`)
+						}),
+						(result) => {
+							const pids = Arr.map(result.rows, ([pid]) => pid)
+							Arr.forEach(pids, sessionOpened)
+							return { client, pids }
+						}
+					)
 			),
-			(client) =>
-				Effect.ignore(
-					Effect.tryPromise({ try: () => client.end(), catch: sessionFailed(member, "an end") })
+			({ client, pids }) =>
+				Effect.andThen(
+					Effect.sync(() => Arr.forEach(pids, sessionClosed)),
+					Effect.ignore(
+						Effect.tryPromise({ try: () => client.end(), catch: sessionFailed(member, "an end") })
+					)
 				)
 		),
-		(client): PgSession => ({
+		({ client }): PgSession => ({
 			query: (sql, params) =>
 				Effect.map(
 					Effect.tryPromise({

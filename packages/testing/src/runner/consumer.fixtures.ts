@@ -180,6 +180,31 @@ export const manifestOf = (layout: Layout): string =>
 	`{ "name": "consumer", "version": "0.0.0", "private": true, "type": "module", "dependencies": { "@bjornpagen/testing": "${layout.library === "link" ? "link:vendor/testing" : "file:testing.tgz"}", "effect": "4.1.4" } }\n`
 
 /**
+ * The CPU a run of the consumer (runnerConfigOf) may spend (runner/config.ts RunBudget).
+ * @limitKind measured
+ * @owner the testing library's fixtures
+ * @unit milliseconds of CPU, a run's processes' and its sessions' backends' (runner/usage.ts UsageReport metered)
+ * @scope each `toolchain-test run` of the consumer's two properties
+ * @evidence ~/.cache/metis/METIS-DBOPT/runs/budget/measure4.jsonl in lane METIS-DBOPT's tree: one line per
+ *   runPackage of any runner config during a whole run of the testing package (instrument.patch over runner/run.ts,
+ *   measure.sh, budget-measure.py, beside it), each with its config's placeholder budget and its report's metered CPU
+ * @observed 2026-11-27 02:40 to 04:04 UTC
+ * @environment cassowary, Ubuntu 26.04 (Linux 7.0.0-1018-aws) on AWS Graviton3, 64 arm64 CPUs, 247 GiB, load 260 to
+ *   420 from other sessions; Node 26.13.1; the toolchain at e14ae5de with the change that states these budgets
+ * @workload every property of the testing package, 275, at 4 workers (CPUQuota 800%), none answered from a
+ *   verdict cache (a fresh XDG_CACHE_HOME); each run of this config one the properties make in a consumer of their own
+ * @result 1 run of it, 4,393 ms (beside two earlier runs of the same consumer on this change's first form, 4,424 and 4,474 ms,
+ *   lane METIS-DBOPT's /tmp/dbopt-budget-measure.jsonl of 2026-11-27 01:30 UTC)
+ * @decision twice the most, 8,787 ms, rounded up to the millisecond
+ * @revalidate a change to the consumer's properties, to the runner's own work in a run, or another machine
+ */
+export const CONSUMER_BUDGET = 8_787
+
+/** The consumer's runner config: its test modules, nothing beyond the runner's own, and `millis` of CPU a run. */
+export const runnerConfigOf = (millis: number): string =>
+	`import { defineRunner, noMutation } from "@bjornpagen/testing/runner"\nimport { Layer } from "effect"\n\nexport default defineRunner({ budget: { kind: "cpu", millis: ${millis} }, include: ["test/*.test.ts"], smallStack: [], conditions: [], environment: [], layer: Layer.empty, mutation: noMutation })\n`
+
+/**
  * The consumer's files: its manifest, runner config, a passing property, a passing property whose kill survives (its
  * replacement is the same product), and the script that runs them inline.
  */
@@ -188,10 +213,7 @@ export const runnerFilesOf = (layout: Layout): ConsumerFiles => {
 		layout.library === "link" ? "./vendor/testing" : "./node_modules/@bjornpagen/testing"
 	return [
 		["package.json", manifestOf(layout)],
-		[
-			"test.config.ts",
-			`import { defineRunner, noMutation } from "@bjornpagen/testing/runner"\nimport { Layer } from "effect"\n\nexport default defineRunner({ include: ["test/*.test.ts"], smallStack: [], conditions: [], environment: [], layer: Layer.empty, mutation: noMutation })\n`
-		],
+		["test.config.ts", runnerConfigOf(CONSUMER_BUDGET)],
 		[
 			"test/sums.test.ts",
 			`import { Effect } from "effect"\nimport { int } from "@bjornpagen/testing/gen"\nimport { property } from "@bjornpagen/testing/property"\n\nexport const sums = property.explore(int(0, 9), {\n\tneeds: {},\n\tsituations: [],\n\tcheck: () => (a) => (a + (9 - a) === 9 ? Effect.void : Effect.die("not nine")),\n\toracle: { kind: "specification", name: "a + (9 - a) is 9" },\n\tkept: [],\n\tkills: []\n})\n`

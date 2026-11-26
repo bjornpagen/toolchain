@@ -50,7 +50,8 @@ export class RunnerServicesFailed extends Schema.TaggedError<
 >()("RunnerServicesFailed", { message: Schema.String }) {}
 
 /**
- * A package's runner config, `test.config.ts`'s default export: which files are its test modules (globs from the
+ * A package's runner config, `test.config.ts`'s default export: the CPU a run of it may spend (RunBudget), which files
+ * are its test modules (globs from the
  * package root), which of them run on workers with a small stack instead of the default (SMALL_STACK, so a per-element
  * use of the stack fails at the widths generators reach; a case runs alike on either stack but for that, so a run on
  * both would be the same cases twice), each such property's run reported and replayed as `<id>@small-stack`, the export
@@ -62,6 +63,7 @@ export class RunnerServicesFailed extends Schema.TaggedError<
  * `toolchain-test mutate` alone (Mutation). Its class is how the runner tells it from any other default export.
  */
 export class RunnerConfig {
+	readonly budget: RunBudget
 	readonly include: ReadonlyArray<string>
 	readonly smallStack: ReadonlyArray<string>
 	readonly conditions: ReadonlyArray<string>
@@ -74,6 +76,7 @@ export class RunnerConfig {
 	>
 
 	constructor(
+		budget: RunBudget,
 		include: ReadonlyArray<string>,
 		smallStack: ReadonlyArray<string>,
 		conditions: ReadonlyArray<string>,
@@ -81,6 +84,7 @@ export class RunnerConfig {
 		mutation: MutationLoad,
 		services: RunnerConfig["services"]
 	) {
+		this.budget = budget
 		this.include = include
 		this.smallStack = smallStack
 		this.conditions = conditions
@@ -111,11 +115,21 @@ export type MutationLoad = () => Promise<Mutation>
 export const noMutation: MutationLoad = () => Promise.resolve({ families: [], equivalent: [] })
 
 /**
- * What a package states in its test.config.ts: its test modules, those that run on a small stack instead, its export
+ * What a run of the package may spend: CPU, in ms, its processes' and the PostgreSQL backends' its workers served
+ * (usage.ts UsageReport metered: the parent's, its workers', their reaped children's, and the backends' as the budget
+ * meter reads them, a database suite's larger half), over which `toolchain-test run` fails, naming what it spent. A package states it as a measured
+ * limit (the indefensible-numbers skill): twice a whole run's report, every property run and none answered from the
+ * verdict cache, so a change that makes its suite spend more fails the run that pays for it.
+ */
+export type RunBudget = Readonly<{ kind: "cpu"; millis: number }>
+
+/**
+ * What a package states in its test.config.ts: its run's CPU budget, its test modules, those that run on a small stack instead, its export
  * conditions, the variables of the runner's environment its workers are given beyond the toolchain's own, its services'
  * layer, and how its mutation runs load what they add to the library's operators (`noMutation` for nothing).
  */
 export type RunnerSpec<E> = Readonly<{
+	budget: RunBudget
 	include: ReadonlyArray<string>
 	smallStack: ReadonlyArray<string>
 	conditions: ReadonlyArray<string>
@@ -129,13 +143,14 @@ const servicesFailed = <E>(cause: Cause.Cause<E>) =>
 	RunnerServicesFailed.make({ message: failureText(cause) })
 
 /**
- * A package's runner config: `export default defineRunner({ include: ["src/**\/*.test.ts"], smallStack: [],
- * conditions: [], environment: [], layer, mutation: noMutation })`, where `layer` provides the RunnerServices the repository declares
- * (Layer.empty when it declares none). There is no worker, width or timeout option: a run is testWorkers wide, a worker for every two CPUs of its allowance, and
- * budgets are the runner's Limits.
+ * A package's runner config: `export default defineRunner({ budget: { kind: "cpu", millis }, include:
+ * ["src/**\/*.test.ts"], smallStack: [], conditions: [], environment: [], layer, mutation: noMutation })`, where `layer` provides the RunnerServices the repository declares
+ * (Layer.empty when it declares none). There is no worker, width or timeout option: a run is testWorkers wide, a worker for every two CPUs of its allowance, a
+ * case's budgets are the runner's Limits, and the run's is its CPU budget.
  */
 export const defineRunner = <E>(spec: RunnerSpec<E>): RunnerConfig =>
 	new RunnerConfig(
+		spec.budget,
 		spec.include,
 		spec.smallStack,
 		spec.conditions,

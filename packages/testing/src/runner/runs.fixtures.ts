@@ -2,6 +2,7 @@ import { pathToFileURL } from "node:url"
 import { Array as Arr, Effect, FileSystem, Option, Schema } from "effect"
 import { plantedBudget } from "#planted.fixtures.ts"
 import type { RunNeed } from "#property.ts"
+import { UNRUN_BUDGET } from "#runner/budgets.fixtures.ts"
 import { ModuleClosure } from "#runner/services.ts"
 
 /** The file a planted run need's open appends its process's id to, in the package root its run's workers run in. */
@@ -26,6 +27,7 @@ export const countedRunRoot = (directory: string, modules: number) =>
 					`import { Layer } from "${effect}"`,
 					`import { defineRunner, noMutation } from "${import.meta.resolve("#runner/config.ts")}"`,
 					"export default defineRunner({",
+					`\tbudget: { kind: "cpu", millis: ${String(UNRUN_BUDGET)} },`,
 					`\tinclude: [${Arr.join(
 						Array.from({ length: modules }, (_, at) => `"reads-${at}.test.ts"`),
 						", "

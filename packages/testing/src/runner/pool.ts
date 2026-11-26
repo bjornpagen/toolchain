@@ -70,7 +70,14 @@ import {
 	summed,
 	unused
 } from "#runner/usage.ts"
-import { type Bound, boundOver, deadlineBound, type Overrun, overrunText } from "#runner/work.ts"
+import {
+	type Bound,
+	boundOver,
+	deadlineBound,
+	type Overrun,
+	overrunText,
+	type TreeWork
+} from "#runner/work.ts"
 import { nodePoolFlag, type Width, widthOf } from "#workers.ts"
 
 /**
@@ -141,12 +148,19 @@ type Ending =
 	| Readonly<{ kind: "silent"; overrun: Overrun }>
 	| Readonly<{ kind: "unread"; message: string }>
 
+/**
+ * A worker's unit in one of its phases, as the pool watches it: the watch of its silence, and the meter it reads, its
+ * process tree's work from the phase's start (live.ts processWorkNow: its CPU, its descendants' and the backends it
+ * serves), whose reading the phase's property is credited when the worker ends the phase.
+ */
+type Running = Readonly<{ unit: Unit; phase: Phase; silence: Fiber.Fiber<void>; work: TreeWork }>
+
 type Worker = {
 	readonly index: number
 	child: ChildProcess
 	ready: boolean
 	sent: Array<Unit>
-	running: Option.Option<Readonly<{ unit: Unit; phase: Phase; silence: Fiber.Fiber<void> }>>
+	running: Option.Option<Running>
 	starting: Option.Option<Fiber.Fiber<void>>
 	revokingFor: Option.Option<Worker>
 	awaiting: Option.Option<Worker>
@@ -832,7 +846,33 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 				if (Option.isSome(running)) {
 					yield* Fiber.interrupt(running.value.silence)
 				}
-				return Option.map(running, (ran) => ({ unit: ran.unit, phase: ran.phase }))
+				return running
+			})
+
+		/**
+		 * Credits a phase's property with what its meter read from the phase's start to now: a readying's (importing and
+		 * opening) or its cases' (evaluating), and each opening's own beside it, what a need's budget bounds.
+		 */
+		const credited = (ran: Running) => {
+			const metered = ran.work.effort().cpu - ran.work.began.cpu
+			switch (ran.phase.kind) {
+				case "importing":
+					return spent(ran.unit.property, { readyingWork: metered })
+				case "opening":
+					return spent(ran.unit.property, { readyingWork: metered, openings: [metered] })
+				case "evaluating":
+					return spent(ran.unit.property, { casesWork: metered })
+			}
+		}
+
+		/**
+		 * Ends the watch on a worker's running unit as the worker ends its phase (its next phase, or the unit done), its
+		 * process alive to be read, and credits the phase's property with its meter's reading.
+		 */
+		const closed = (worker: Worker) =>
+			Effect.map(settle(worker), (running) => {
+				Option.map(running, credited)
+				return running
 			})
 
 		/**
@@ -849,22 +889,21 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 		 */
 		const watch = (worker: Worker, id: number, phase: Phase) =>
 			Effect.gen(function* () {
-				yield* settle(worker)
+				yield* closed(worker)
 				const unit = Arr.findFirst(worker.sent, (sent) => sent.id === id)
 				if (Option.isNone(unit)) {
 					return
 				}
+				const work = yield* watchedWork(worker)
 				const silence = yield* Effect.forkIn(
 					Effect.flatMap(
-						Effect.flatMap(watchedWork(worker), (work) =>
-							overrun(work, graced(boundOf(unit.value, phase, spec.stall, spec.bounding)))
-						),
+						overrun(work, graced(boundOf(unit.value, phase, spec.stall, spec.bounding))),
 						(verdict) =>
 							Queue.offer(events, { kind: "silent", worker, unit: id, phase, overrun: verdict })
 					).pipe(Effect.asVoid),
 					scope
 				)
-				worker.running = Option.some({ unit: unit.value, phase, silence })
+				worker.running = Option.some({ unit: unit.value, phase, silence, work })
 			})
 
 		/**
@@ -1040,7 +1079,8 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 										spent(unit.property, {
 											readyingCpu: received.cpu,
 											childrenCpu: childrenMillis(received.children),
-											readyingWall: received.millis
+											readyingWall: received.millis,
+											backends: received.backends
 										})
 										afterFinished(scheduler, view, apply, worker.index, unit.module)
 										grow()
@@ -1054,7 +1094,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 								worker.usage.reported = received.cpu
 								const unit = Arr.findFirst(worker.sent, (sent) => sent.id === received.unit)
 								if (Option.isSome(unit)) {
-									yield* settle(worker)
+									yield* closed(worker)
 									const held = heldBy(worker)
 									scheduler.occupied(
 										worker.index,
@@ -1065,7 +1105,8 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 									answeredOn(worker, unit.value.property, received.drained)
 									spent(unit.value.property, {
 										childrenCpu: childrenMillis(received.children),
-										casesWall: held
+										casesWall: held,
+										backends: received.backends
 									})
 									finish(worker, unit.value, received.done)
 									afterFinished(scheduler, view, apply, worker.index, unit.value.module)

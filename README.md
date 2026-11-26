@@ -14,6 +14,37 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: a run spends at most its CPU budget, as the budget meter reads it (2026-11-27)
+
+A run had no bound. A suite that grew, or a toolchain change that made every clone dearer (WAL_LOG at metis's 248 MB
+template: four times the member's CPU at four clones at once), passed every gate while it spent hours more. Now every
+runner config states what a run of its package may spend, and the run is read the way the budget meter reads a case:
+
+- **`budget: { kind: "cpu", millis }` is required** in `defineRunner` (runner/config.ts RunBudget). `toolchain-test
+  run` fails a run whose `metered` CPU is past it, in one line naming what it spent and the budget.
+- **`metered` holds the backends.** It is `total` (the parent, the workers and their reaped children) and `backends`,
+  the CPU of the PostgreSQL backends the workers' sessions opened, a database suite's larger half, which no process of
+  the run holds. Each is counted by the worker that opened it, off its own /proc stat with each readying and unit and as
+  its session ends, before its Terminate (runner/work.ts sessionsSpent): one that came and went between two counts is
+  counted whole, a run sharing a member with another counts its own alone, and the cluster's own work (its
+  checkpointer, its vacuums) is no run's. A connection your code opens itself counts in none until it says so:
+  open it through the runner's sessions (the PgCluster spec's `connect` and `superuser`), or have your driver call
+  `sessionOpened(pid)` once it knows its backend's pid (node-postgres's BackendKeyData) and `sessionClosed(pid)` before
+  it ends the connection (`@bjornpagen/testing/pg-session`).
+- **Every report row carries the meter's readings**: `readyingWork` and `casesWork` beside `readyingCpu`, `casesCpu`
+  and `childrenCpu`, `openings`, each opening's own reading, which is what a need's budget bounds, and `backends`. A need's or a
+  run's budget evidence is then read straight off a report, with no probe.
+
+Before you move `vendor/toolchain` past this section:
+
+1. **Measure a whole run** of each package with a `test.config.ts`: every property run and none answered from the
+   verdict cache (a fresh `XDG_CACHE_HOME`), at your gate's width. Read `report.metered` from the run's JSON, whose path
+   the run prints (`~/.cache/toolchain-test/runs/<seed>-<pid>.json`).
+2. **State twice it** as the config's budget, a `measured` limit (the indefensible-numbers skill): the report's path as
+   its `@evidence`, the run's interval, machine, load and width, and what invalidates it.
+3. **A run past its budget is a regression to find**, never a number to raise. A budget moves only with a new
+   measurement and its cause named.
+
 ## Consumer migration: a worker's cluster registers each member it brings up (2026-11-26)
 
 A backend's lock wait behind an outside holder that works, and its wait on the server's I/O workers, is carried (moves

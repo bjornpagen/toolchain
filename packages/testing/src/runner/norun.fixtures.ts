@@ -1,5 +1,6 @@
 import { Effect, String as Str } from "effect"
 import { element, finite } from "#gen.ts"
+import { UNRUN_BUDGET } from "#runner/budgets.fixtures.ts"
 import {
 	type ConsumerFiles,
 	consumerIn,
@@ -51,8 +52,7 @@ const REPORTER_ALONE =
 	'import { defineConfig } from "vitest/config"\n\nexport default defineConfig({ test: { pool: "forks", include: ["test/*.test.ts"], reporters: ["default", ["@bjornpagen/testing/vitest/reporter", { examples: { kind: "allowed" } }]] } })\n'
 
 /** The consumer's runner config, whose include matches no module. */
-const EMPTY_RUNNER =
-	'import { defineRunner, noMutation } from "@bjornpagen/testing/runner"\nimport { Layer } from "effect"\n\nexport default defineRunner({ include: ["test/*.test.ts"], smallStack: [], conditions: [], environment: [], layer: Layer.empty, mutation: noMutation })\n'
+const EMPTY_RUNNER = `import { defineRunner, noMutation } from "@bjornpagen/testing/runner"\nimport { Layer } from "effect"\n\nexport default defineRunner({ budget: { kind: "cpu", millis: ${String(UNRUN_BUDGET)} }, include: ["test/*.test.ts"], smallStack: [], conditions: [], environment: [], layer: Layer.empty, mutation: noMutation })\n`
 
 /** A case's consumer files, the command it runs (a program and its arguments) and the environment it adds. */
 type Invocation = Readonly<{

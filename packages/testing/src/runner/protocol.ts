@@ -710,8 +710,9 @@ export const ObservationWire = Schema.Union([
  * a unit's property, the first unit of it the worker took (importing its module, then opening its needs); it imported
  * the module and opens the needs not yet open on it, at once, within `budget`, their budgets summed (ms of CPU); it
  * readied it, in how many milliseconds, of which how many importing its module (none when it had before),
- * what scheduling measures readying by, and how many of CPU, its children's beside; it started a unit's cases; it finished one, with each order's result, the worker's CPU so
- * far and its children's CPU while it ran; it gave back
+ * what scheduling measures readying by, and how many of CPU, its children's beside and its session backends' since its
+ * last count (runner/work.ts sessionsSpent); it started a unit's cases; it finished one, with each order's result, the
+ * worker's CPU so far, its children's CPU while it ran and its session backends' since its last count; it gave back
  * these units, of those the parent revoked, none of which it had started; a case (a unit's `at`-th order) was used
  * after it ended, printed as it ran; it failed, and why (before it was ready, it cannot start; after, it ends, and the
  * unit it ran is lost with this as the last it wrote); it asks for a module's closure hash, which the parent
@@ -730,6 +731,7 @@ export const FromWorker = Schema.Union([
 		imported: Schema.Finite,
 		cpu: Schema.Finite,
 		children: ChildrenCpu,
+		backends: Schema.Finite,
 		drained: DrainedWire
 	}),
 	Schema.Struct({ kind: Schema.Literal("started"), unit: Schema.Finite }),
@@ -739,6 +741,7 @@ export const FromWorker = Schema.Union([
 		done: Done,
 		cpu: Schema.Finite,
 		children: ChildrenCpu,
+		backends: Schema.Finite,
 		drained: DrainedWire
 	}),
 	Schema.Struct({ kind: Schema.Literal("revoked"), units: Schema.Array(Schema.Finite) }),

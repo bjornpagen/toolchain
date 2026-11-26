@@ -1,5 +1,6 @@
 import { Array as Arr, Effect, FileSystem, Result, String as Str } from "effect"
 import { subset } from "#gen.ts"
+import { UNRUN_BUDGET } from "#runner/budgets.fixtures.ts"
 import type { Discovered, LoadFailed } from "#runner/load.ts"
 
 /**
@@ -148,7 +149,7 @@ export const writtenPackage = (directory: string) =>
 				[
 					`import { Layer } from "${import.meta.resolve("effect")}"`,
 					`import { defineRunner, noMutation } from "${import.meta.resolve("#runner/config.ts")}"`,
-					'export default defineRunner({ include: ["test/*.test.ts"], smallStack: [], conditions: [], environment: [], layer: Layer.empty, mutation: noMutation })',
+					`export default defineRunner({ budget: { kind: "cpu", millis: ${String(UNRUN_BUDGET)} }, include: ["test/*.test.ts"], smallStack: [], conditions: [], environment: [], layer: Layer.empty, mutation: noMutation })`,
 					""
 				],
 				"\n"

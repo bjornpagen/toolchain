@@ -219,7 +219,7 @@ const written = (consumer: string, write: Write) =>
  * The consumer's cluster of its own, under the case cluster's unit name `unit` (pg/settle.fixtures.ts caseUnit): one
  * member, in memory (the workbench's memory list names `tcs-*`), reached over its socket alone, so it claims no port.
  */
-const clusterConfigOf = (unit: string): string =>
+export const clusterConfigOf = (unit: string): string =>
 	`import { localCluster } from "@bjornpagen/testing/pg"\n\nexport default localCluster({ unit: "${unit}", network: { kind: "socket" }, owner: "toolchain_reuse", template: "toolchain_reuse_template", extensions: [], preload: [], ownerParameters: [], durability: "throwaway", sizing: { kind: "workers", family: { kind: "one" }, connections: { kind: "capacity", backendBytes: 37_301_248 }, replication: { kind: "default" }, sharedBuffers: { kind: "default" }, locks: { kind: "default" }, predicateLocks: { kind: "perBackend" } } })\n`
 
 /**
@@ -230,11 +230,52 @@ const clusterConfigOf = (unit: string): string =>
  */
 const DATABASE_PROPERTY = `import { readFileSync } from "node:fs"\nimport { Effect } from "effect"\nimport { int } from "@bjornpagen/testing/gen"\nimport { pgOwnerSession } from "@bjornpagen/testing/pg-session"\nimport { property } from "@bjornpagen/testing/property"\nimport { Database, Template } from "@bjornpagen/testing/resources"\n\nconst schema = Template.database({ declaredIn: import.meta, name: "schema", content: {}, from: Template.cluster, budget: ${String(plantedBudget)}, build: () => Effect.sync(() => readFileSync(new URL("./schema.sql", import.meta.url), "utf8")) })\n\nexport const reused = property.explore(int(0, 9), {\n\tneeds: { db: Database.fresh(schema) },\n\tsituations: [],\n\tcheck: ({ db }) => (a) => Effect.scoped(Effect.gen(function* () {\n\t\tconst clone = yield* db\n\t\tconst session = yield* pgOwnerSession("reused")(clone.member, clone.name)\n\t\tconst rows = yield* session.query("SELECT $1::int4 + 0", [String(a)])\n\t\treturn rows.length === 1 ? undefined : yield* Effect.die("not one row")\n\t})),\n\toracle: { kind: "specification", name: "a clone answers a query of its own" },\n\tkept: [],\n\tkills: []\n})\n`
 
+/**
+ * The CPU a run of the plain consumer (PLAIN_CONFIG) may spend (runner/config.ts RunBudget).
+ * @limitKind measured
+ * @owner the testing library's fixtures
+ * @unit milliseconds of CPU, a run's processes' and its sessions' backends' (runner/usage.ts UsageReport metered)
+ * @scope each `toolchain-test run` of the reuse property's plain consumer
+ * @evidence ~/.cache/metis/METIS-DBOPT/runs/budget/measure4.jsonl in lane METIS-DBOPT's tree: one line per
+ *   runPackage of any runner config during a whole run of the testing package (instrument.patch over runner/run.ts,
+ *   measure.sh, budget-measure.py, beside it), each with its config's placeholder budget and its report's metered CPU
+ * @observed 2026-11-27 02:40 to 04:04 UTC
+ * @environment cassowary, Ubuntu 26.04 (Linux 7.0.0-1018-aws) on AWS Graviton3, 64 arm64 CPUs, 247 GiB, load 260 to
+ *   420 from other sessions; Node 26.13.1; the toolchain at e14ae5de with the change that states these budgets
+ * @workload every property of the testing package, 275, at 4 workers (CPUQuota 800%), none answered from a
+ *   verdict cache (a fresh XDG_CACHE_HOME); each run of this config one the properties make in a consumer of their own
+ * @result 25 runs of it, median 2,842 ms, most 5,770 ms
+ * @decision twice the most, 11,540 ms, rounded up to the millisecond
+ * @revalidate a change to the consumer's property, to the runner's own work in a run, or another machine
+ */
+const REUSE_PLAIN_BUDGET = 11_540
+
+/**
+ * The CPU a run of the database consumer (DATABASE_CONFIG) may spend (runner/config.ts RunBudget), its cluster's
+ * backends' among it.
+ * @limitKind measured
+ * @owner the testing library's fixtures
+ * @unit milliseconds of CPU, a run's processes' and its sessions' backends' (runner/usage.ts UsageReport metered)
+ * @scope each `toolchain-test run` of the reuse property's database consumer
+ * @evidence ~/.cache/metis/METIS-DBOPT/runs/budget/measure4.jsonl in lane METIS-DBOPT's tree: one line per
+ *   runPackage of any runner config during a whole run of the testing package (instrument.patch over runner/run.ts,
+ *   measure.sh, budget-measure.py, beside it), each with its config's placeholder budget and its report's metered CPU
+ * @observed 2026-11-27 02:40 to 04:04 UTC
+ * @environment cassowary, Ubuntu 26.04 (Linux 7.0.0-1018-aws) on AWS Graviton3, 64 arm64 CPUs, 247 GiB, load 260 to
+ *   420 from other sessions; Node 26.13.1; the toolchain at e14ae5de with the change that states these budgets
+ * @workload every property of the testing package, 275, at 4 workers (CPUQuota 800%), none answered from a
+ *   verdict cache (a fresh XDG_CACHE_HOME); each run of this config one the properties make in a consumer of their own
+ * @result 3 runs of it, median 16,323 ms, most 17,879 ms
+ * @decision twice the most, 35,758 ms, rounded up to the millisecond
+ * @revalidate a change to the consumer's property or template, to the runner's own work in a run, or another machine
+ */
+const REUSE_DATABASE_BUDGET = 35_758
+
 /** The runner config of a consumer whose property needs nothing: its include, and GIVEN given its workers. */
-const PLAIN_CONFIG = `import { defineRunner, noMutation } from "@bjornpagen/testing/runner"\nimport { Layer } from "effect"\n\nexport default defineRunner({ include: ["test/*.test.ts"], smallStack: [], conditions: [], environment: ["${GIVEN}"], layer: Layer.empty, mutation: noMutation })\n`
+const PLAIN_CONFIG = `import { defineRunner, noMutation } from "@bjornpagen/testing/runner"\nimport { Layer } from "effect"\n\nexport default defineRunner({ budget: { kind: "cpu", millis: ${String(REUSE_PLAIN_BUDGET)} }, include: ["test/*.test.ts"], smallStack: [], conditions: [], environment: ["${GIVEN}"], layer: Layer.empty, mutation: noMutation })\n`
 
 /** The runner config of a consumer with a cluster of its own (pg.config.ts): its databases under `r_`. */
-const DATABASE_CONFIG = `import { defineRunner, noMutation } from "@bjornpagen/testing/runner"\nimport { pgOwnerSession, pgSuperuserSession } from "@bjornpagen/testing/pg-session"\nimport { DatabasePrefix, PgCluster } from "@bjornpagen/testing/resources"\nimport cluster from "./pg.config.ts"\n\nexport default defineRunner({ include: ["test/*.test.ts"], smallStack: [], conditions: [], environment: ["${GIVEN}"], layer: PgCluster.layer({ prefix: DatabasePrefix("r_"), cluster, connect: pgOwnerSession("reuse"), superuser: pgSuperuserSession("reuse superuser") }), mutation: noMutation })\n`
+const DATABASE_CONFIG = `import { defineRunner, noMutation } from "@bjornpagen/testing/runner"\nimport { pgOwnerSession, pgSuperuserSession } from "@bjornpagen/testing/pg-session"\nimport { DatabasePrefix, PgCluster } from "@bjornpagen/testing/resources"\nimport cluster from "./pg.config.ts"\n\nexport default defineRunner({ budget: { kind: "cpu", millis: ${String(REUSE_DATABASE_BUDGET)} }, include: ["test/*.test.ts"], smallStack: [], conditions: [], environment: ["${GIVEN}"], layer: PgCluster.layer({ prefix: DatabasePrefix("r_"), cluster, connect: pgOwnerSession("reuse"), superuser: pgSuperuserSession("reuse superuser") }), mutation: noMutation })\n`
 
 /**
  * What the consumer's property needs before its first run, in the consumer at `consumer` with the case's variables
@@ -345,7 +386,7 @@ const SUMMARY = regex("([0-9]+) properties: ([0-9]+) cached, ([0-9]+) run")
  * runs this case (runner/observe.ts) traces none of it, and the consumer's own workers trace their children as a lane's
  * do: a process has one tracer.
  */
-const unitIn = (
+export const unitIn = (
 	directory: string,
 	env: Readonly<Record<string, string>>,
 	entry: string,
