@@ -30,6 +30,7 @@ import {
 	seedSites,
 	serializedSites,
 	sleepSites,
+	triggerSwitchSites,
 	staleKillCases,
 	staleKillJudged,
 	tableSites,
@@ -157,6 +158,39 @@ export const noSleepWait = ruleProperty("no-sleep-wait", inTests(programOf(sleep
 		why: "no-sleep-wait reads a sleep called by a bare name (`setTimeout`, an import alias) as no sleep."
 	}
 ])
+
+/** no-trigger-switch reports exactly the SQL text that switches triggers off. */
+export const noTriggerSwitch = ruleProperty(
+	"no-trigger-switch",
+	inTests(programOf(triggerSwitchSites)),
+	[
+		{
+			file: "packages/testing/src/oxlint/rules/no-trigger-switch.ts",
+			original: '\t"disable trigger",\n',
+			replacement: '\t"disable trigger user",\n',
+			why: "no-trigger-switch admits a trigger disabled by its name or with ALL, so a plant that names the one guard it wants gone passes."
+		},
+		{
+			file: "packages/testing/src/oxlint/rules/no-trigger-switch.ts",
+			original: "\t\t\tif (Arr.some(node.quasis, (quasi) => switches(quasi.value.raw))) {\n",
+			replacement:
+				"\t\t\tif (node.expressions.length === 0 && Arr.some(node.quasis, (quasi) => switches(quasi.value.raw))) {\n",
+			why: "no-trigger-switch reads no template of an expression, so a switch spelled around its table's name passes."
+		},
+		{
+			file: "packages/testing/src/oxlint/rules/no-trigger-switch.ts",
+			original: '\t"session_replication_role"\n',
+			replacement: "",
+			why: "no-trigger-switch admits the replica role, under which no ordinary trigger fires."
+		},
+		{
+			file: "packages/testing/src/oxlint/rules/no-trigger-switch.ts",
+			original: "\t\t\tblank = true\n",
+			replacement: "",
+			why: "no-trigger-switch reads words only as one space apart, so a switch broken over a line passes."
+		}
+	]
+)
 
 /** no-clamped-count reports exactly the clamping calls no count they never normalize states. */
 export const noClampedCount = ruleProperty("no-clamped-count", inTests(programOf(clampedSites)), [
