@@ -14,6 +14,32 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: a program is checked by one checker (2026-11-27)
+
+`toolchain-typecheck` handed tsrs a type checker for each thread of its task's share (`--checkers <share>`): 64 for a
+package checked alone on cassowary. A checker is no thread. It is a universe of types, and each one builds again every
+type its files read across a module boundary that no declaration states. For a level of a schema built by a function and
+read as `ReturnType<typeof levelOf>`, that is the whole chain of levels below it. Now tsrs checks a program with one
+checker (`--checkers 1`, shared/threads.ts ONE_CHECKER), so each type a program needs is built once. Its Rayon pool is
+still the task's share (RAYON_NUM_THREADS), and turbo still runs a repository's projects side by side.
+
+Measured on cassowary at load 300 to 500, each run from scratch, peak memory as systemd reads it (TYPECOST):
+
+| Program                                                    | Before: wall, peak, instantiations | One checker          |
+| ---------------------------------------------------------- | ---------------------------------- | -------------------- |
+| qti-pie's packages/ledger at 3cbb2396, alone (64 checkers) | 52 s, 15.3 GB, 477 million         | 39 s, 1.5 GB, 45.6 M |
+| the same at the PIN 3 draft bc96e57f, grizzle 2dc71d9e     | 29 s, 10.4 GB, 276 million         | 23 s, 1.1 GB, 25.5 M |
+| grizzle's `pnpm types` at b77d3e04 (9 tasks, 7 checkers)   | 54 to 63 s, 3.1 GB                 | 97 s, 2.5 GB         |
+
+Each of the ledger's other 63 checkers derived pantry's and the ledger's levels again, about 8 million instantiations
+each. A program that is one large project loses wall time with one checker: grizzle's root project, its test tier,
+took 75 s where it took 38 s at 7 checkers, with the same CPU (88 s against 91 s for the whole `pnpm types`). Its
+parallelism comes from more programs, never from more checkers of one. Before you move `vendor/toolchain` past this
+section:
+
+1. **Delete any `--checkers` a script passes to `toolchain-typecheck`**: the wrapper refuses one, since tsrs takes the
+   last `--checkers` it is given. Nothing else changes in your code.
+
 ## Consumer migration: a run's budget holds two parts no width changes (2026-11-27)
 
 A run's budget was one number over all its CPU. Every worker readies each property it runs, importing its module and

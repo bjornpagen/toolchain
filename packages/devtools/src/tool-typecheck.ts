@@ -5,11 +5,23 @@ import { DevtoolFailure } from "#shared/devtool.ts"
 import { runDevtool } from "#shared/run.ts"
 import { TOOLS, toolRun } from "#shared/threads.ts"
 
+/** Build mode's refusal: a build reads each project's build info to skip the projects it judges up to date. */
+const buildMode =
+	"toolchain-typecheck checks a project from scratch and reads no build info, so it refuses build mode (-b): check each project with -p, a composite one too"
+
 /**
- * Build mode's arguments (`-b`, `--build`), which toolchain-typecheck refuses: a build reads each project's build info
- * to skip the projects it judges up to date, and takes no build info file of a run's own (TS5094).
+ * The arguments toolchain-typecheck refuses, each with why: build mode (`-b`, `--build`), which reads build info and
+ * takes no build info file of a run's own (TS5094); and `--checkers`, since a program is checked by one checker
+ * (shared/threads.ts ONE_CHECKER), each type it needs built once, and tsrs takes the last `--checkers` it is given.
  */
-const BUILD_MODE: ReadonlySet<string> = new Set(["-b", "--build"])
+const REFUSED: ReadonlyMap<string, string> = new Map([
+	["-b", buildMode],
+	["--build", buildMode],
+	[
+		"--checkers",
+		"toolchain-typecheck checks a program with one checker, so each type it needs is built once, and refuses --checkers: a checker is no thread, and every other checker builds again each type its files read across a module boundary"
+	]
+])
 
 /**
  * toolchain-typecheck: a package's typecheck, tsrs, Effect-patched by @effect/tsgo, over the tsconfig.json of the
@@ -22,18 +34,16 @@ const BUILD_MODE: ReadonlySet<string> = new Set(["-b", "--build"])
  * metis's commit and push gates). So whatever a project's tsconfig says, a composite project's included (TypeScript
  * keeps one incremental whatever it is told, TS6379), its build info is a file in a directory of this run's own
  * (`--tsBuildInfoFile` after every argument it is given, the last of which tsrs takes), removed when the run ends: no
- * run reads another's. Build mode is refused (BUILD_MODE); a composite project is checked with `-p`, as any other.
- * Every other argument passes through. It answers tsrs's exit status.
+ * run reads another's. Build mode is refused, a composite project checked with `-p` as any other, and so is a count of
+ * checkers (REFUSED). Every other argument passes through. It answers tsrs's exit status.
  */
 const main = Effect.scoped(
 	Effect.gen(function* () {
 		const stdio = yield* Stdio.Stdio
 		const args = yield* stdio.args
-		if (Arr.some(args, (arg) => BUILD_MODE.has(arg))) {
-			return yield* DevtoolFailure.make({
-				detail:
-					"toolchain-typecheck checks a project from scratch and reads no build info, so it refuses build mode (-b): check each project with -p, a composite one too"
-			})
+		const refused = Arr.findFirst(args, (arg) => Option.fromUndefinedOr(REFUSED.get(arg)))
+		if (Option.isSome(refused)) {
+			return yield* DevtoolFailure.make({ detail: refused.value })
 		}
 		const fs = yield* FileSystem.FileSystem
 		const directory = yield* fs.makeTempDirectoryScoped({ prefix: "toolchain-typecheck-" })

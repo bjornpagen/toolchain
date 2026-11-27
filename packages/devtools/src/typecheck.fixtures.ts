@@ -1,5 +1,16 @@
+import { assert, defined } from "@bjornpagen/testing/assert"
 import { element, finite } from "@bjornpagen/testing/gen"
-import { Effect, FileSystem, Path, Schema, Stream, String as Str } from "effect"
+import { allowanceVariable } from "@bjornpagen/testing/workers"
+import {
+	Array as Arr,
+	Effect,
+	FileSystem,
+	Option,
+	Path,
+	Schema,
+	Stream,
+	String as Str
+} from "effect"
 import { ChildProcess } from "effect/process"
 
 /**
@@ -79,10 +90,15 @@ export type Checked = Readonly<{ status: number; printed: string }>
 
 /**
  * Runs toolchain-typecheck from the checkout `packageRoot` (Checkout.dir, so a mutant of the dev tools in a worker
- * tree is what the case runs) in `directory` with `args`, its tool, effect-tsgo, from the checkout's root, and the node
- * that runs this process on the PATH for the tool's own `env node`.
+ * tree is what the case runs) in `directory` with `args` and the variables `env` beside this process's, its tool,
+ * effect-tsgo, from the checkout's root, and the node that runs this process on the PATH for the tool's own `env node`.
  */
-const typechecked = (packageRoot: string, directory: string, args: ReadonlyArray<string>) =>
+const typechecked = (
+	packageRoot: string,
+	directory: string,
+	args: ReadonlyArray<string>,
+	env: Readonly<Record<string, string>>
+) =>
 	Effect.scoped(
 		Effect.gen(function* () {
 			const path = yield* Path.Path
@@ -92,6 +108,7 @@ const typechecked = (packageRoot: string, directory: string, args: ReadonlyArray
 				{
 					cwd: directory,
 					env: {
+						...env,
 						PATH: `${packageRoot}/../../node_modules/.bin:${path.dirname(process.execPath)}:/usr/bin:/bin`
 					},
 					extendEnv: true,
@@ -132,13 +149,146 @@ export const checkedTwice = (packageRoot: string, directory: string, project: Pr
 			([name, text]) => fs.writeFileString(`${directory}/${name}`, text),
 			{ discard: true }
 		)
-		const first = yield* typechecked(packageRoot, directory, args)
+		const first = yield* typechecked(packageRoot, directory, args, {})
 		yield* fs.writeFileString(`${directory}/read.ts`, UNUSED)
-		const second = yield* typechecked(packageRoot, directory, args)
-		const built = yield* typechecked(packageRoot, directory, ["-b"])
+		const second = yield* typechecked(packageRoot, directory, args, {})
+		const built = yield* typechecked(packageRoot, directory, ["-b"], {})
 		return { first, second, built }
 	})
 
 /** Whether a run refused, naming `needle` in what it printed. */
 export const refusedWith = (checked: Checked, needle: string): boolean =>
 	checked.status !== 0 && Str.includes(needle)(checked.printed)
+
+/**
+ * What the one-checker property (typecheck.test.ts aSharedTypeIsBuiltOnce) draws and runs: a program whose cost is one
+ * shared inferred type, the type of a function's return in shared.ts that no declaration states, built by a chain of
+ * generic calls each adding a member (SHARED_STEPS of them), as a level of a schema is built over the one below it, and
+ * modules that each read one member of it, the way a reader reads it: through an alias of the function's return type,
+ * as qti-pie's ledger reads its Delivery level (`ReturnType<typeof deliveryOf>`), or through the inferred type of the
+ * value it is, as a module reads a level built at its top (pantry's QtiLom).
+ */
+export type SharedRead =
+	| "through an alias of its function's return type"
+	| "through the value it types"
+
+/** Both reads, one case each. */
+export const sharedReads = finite((source): SharedRead =>
+	source.draw(
+		element([
+			"through an alias of its function's return type",
+			"through the value it types"
+		] as const)
+	)
+)
+
+/**
+ * The generic calls that build the shared type, each adding one member: enough that deriving it again outweighs a
+ * reader's own expression many times over (about 1,200 types a checker at 100, a reader's own expression one or none).
+ */
+const SHARED_STEPS = 100
+
+/**
+ * The share the case's typecheck runs at, as a gate's unit gives its run (allowanceVariable): four, so a typecheck that
+ * took a checker for each thread of its share would check the program with four.
+ */
+const CASE_SHARE = 4
+
+/**
+ * The readers of the case's smaller program, twice its share, and its larger program's twice that: every checker of a
+ * typecheck at its share, however it deals out the files, holds a reader of the first half.
+ */
+const READERS = 2 * CASE_SHARE
+
+/** shared.ts: the chain that builds the shared type, and what its readers import of it. */
+const sharedModule = (read: SharedRead): string =>
+	Arr.join(
+		[
+			"const extend = <S, const K extends string>(s: S, k: K): S & { readonly [P in K]: P } =>",
+			"	({ ...s, [k]: k }) as S & { readonly [P in K]: P }",
+			"export const sharedOf = () => {",
+			"	const s0 = {}",
+			...Arr.makeBy(SHARED_STEPS, (i) => `\tconst s${i + 1} = extend(s${i}, "k${i}")`),
+			`\treturn s${SHARED_STEPS}`,
+			"}",
+			read === "through an alias of its function's return type"
+				? "export type Shared = ReturnType<typeof sharedOf>"
+				: "export const shared = sharedOf()",
+			""
+		],
+		"\n"
+	)
+
+/** Reader i: a module reading member i of the shared type (round the members). */
+const readerModule = (read: SharedRead, i: number): string =>
+	read === "through an alias of its function's return type"
+		? `import type { Shared } from "./shared.ts"\nexport const read${i} = (s: Shared) => s.k${i % SHARED_STEPS}\n`
+		: `import { shared } from "./shared.ts"\nexport const read${i} = shared.k${i % SHARED_STEPS}\n`
+
+/** The label of the line --extendedDiagnostics prints the types a check made on: "Types:  1912". */
+const TYPES_LABEL = "Types:"
+
+/** The count a line of the extended diagnostics states, where it is the types' line. */
+const typesOn = (line: string): Option.Option<number> => {
+	const trimmed = Str.trim(line)
+	return Str.startsWith(TYPES_LABEL)(trimmed)
+		? Option.some(Number(Str.trim(Str.slice(TYPES_LABEL.length)(trimmed))))
+		: Option.none()
+}
+
+/**
+ * The types toolchain-typecheck's check of shared.ts and `readers` readers made, its memory in types, as
+ * --extendedDiagnostics counts them over every checker: the program written into `directory`, emptied first, and
+ * checked at the case's share. A check that fails, or that prints no count, fails the case.
+ */
+const typesMade = (packageRoot: string, directory: string, read: SharedRead, readers: number) =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		yield* fs.remove(directory, { recursive: true, force: true })
+		yield* fs.makeDirectory(directory, { recursive: true })
+		const tsconfig = yield* tsconfigOf(packageRoot, "a project")
+		yield* Effect.forEach(
+			[
+				["pnpm-workspace.yaml", "packages: []\n"],
+				["tsconfig.json", `${tsconfig}\n`],
+				["shared.ts", sharedModule(read)],
+				...Array.from({ length: readers }, (_, i) => [`r${i}.ts`, readerModule(read, i)] as const)
+			] as const,
+			([name, text]) => fs.writeFileString(`${directory}/${name}`, text),
+			{ discard: true }
+		)
+		const checked = yield* typechecked(
+			packageRoot,
+			directory,
+			["--extendedDiagnostics", "--pretty", "false"],
+			{
+				[allowanceVariable]: `${CASE_SHARE}`
+			}
+		)
+		assert.equal(
+			checked.status,
+			0,
+			`the program of ${readers} readers checks clean: ${checked.printed}`
+		)
+		const counted = Arr.findFirst(Str.split("\n")(checked.printed), typesOn)
+		return defined(Option.getOrUndefined(counted), `a count of types in: ${checked.printed}`)
+	})
+
+/**
+ * The types the check of shared.ts makes alone, with READERS readers and with twice as many, `read` each way, each
+ * program in a directory of its own under `directory`; and what the wrapper answered a caller that asked for four
+ * checkers over the program alone.
+ */
+export const sharedChecked = (packageRoot: string, directory: string, read: SharedRead) =>
+	Effect.gen(function* () {
+		const alone = yield* typesMade(packageRoot, `${directory}/alone`, read, 0)
+		const first = yield* typesMade(packageRoot, `${directory}/first`, read, READERS)
+		const second = yield* typesMade(packageRoot, `${directory}/second`, read, 2 * READERS)
+		const counted = yield* typechecked(
+			packageRoot,
+			`${directory}/alone`,
+			["--checkers", `${CASE_SHARE}`],
+			{}
+		)
+		return { alone, first, second, counted }
+	})

@@ -83,9 +83,10 @@ export const runWidth = (args: ReadonlyArray<string>) =>
 
 /**
  * A tool of the gate as its wrapper runs it: the program and the arguments that name the tool, and the arguments that
- * hand it a count of threads, which go before the caller's; every tool is handed the count as RAYON_NUM_THREADS too,
- * the variable each one's thread pool reads when no flag sizes it (tsrs's checker, which reads no flag; oxlint's
- * `tsrs-lint`, the child its type-aware rules run in; the pools of fallow's that its flag leaves to Rayon).
+ * hand it a count of threads, which go before the caller's, none for a tool whose pool reads no flag; every tool is
+ * handed the count as RAYON_NUM_THREADS too, the variable each one's thread pool reads when no flag sizes it (tsrs's,
+ * which reads no flag; oxlint's `tsrs-lint`, the child its type-aware rules run in; the pools of fallow's that its flag
+ * leaves to Rayon).
  */
 export type Tool = Readonly<{
 	program: string
@@ -94,12 +95,25 @@ export type Tool = Readonly<{
 }>
 
 /**
+ * The one type checker tsrs checks a program with (`--checkers 1`, TypeScript's own option): a checker is no thread
+ * but a universe of types, each built by the checker that needs it, so a program checked by several builds again, in
+ * each, every type their files read across a module boundary that no declaration states, an inferred level of a schema
+ * the whole of it, and with one each type the program needs is built once. qti-pie's ledger, one package, at 64
+ * checkers, a checker for each thread of its share run alone, made 477 million instantiations and 15.3 GB where one
+ * checker makes 45.6 million in 1.3 GB, each of the other 63 deriving pantry's and the ledger's levels again (8 million
+ * instantiations a checker), and checked it no sooner (TYPECOST, 2026-11-27: 16 s of check at 4 checkers, 17 s at 64).
+ * Four, TypeScript's default, would build each such type four times. The checker runs on no thread of its own beside
+ * the pool (KILLFIX's census of one typecheck of the testing package at RAYON_NUM_THREADS=1, 2026-11-25: at its
+ * default of four, 2.42 CPU-s on four `checker` threads and 0.66 on the rest, 1.14 cores; at one, none and 2.70 on the
+ * rest, 0.94 cores), so the typecheck holds its share.
+ */
+const ONE_CHECKER = ["--checkers", "1"] as const
+
+/**
  * The gate's tools, each as its wrapper runs it: toolchain-oxlint's oxlint (`--threads`), toolchain-oxfmt's oxfmt
  * (`--threads`), toolchain-fallow's fallow (`--threads`, its parser's), and toolchain-typecheck's tsrs, Effect-patched
- * by @effect/tsgo (`effect-tsgo tsrs`): RAYON_NUM_THREADS sizes its Rayon pool, and `--checkers`, TypeScript's own
- * option, its type checkers, which run beside the pool on threads of their own, four by default whatever the pool's
- * size (a census of one typecheck of the testing package at RAYON_NUM_THREADS=1, KILLFIX 2026-11-25: 2.42 CPU-s on four
- * `checker` threads and 0.66 on the rest, 1.14 cores; at `--checkers 1` none and 2.70 on the rest, 0.94 cores).
+ * by @effect/tsgo (`effect-tsgo tsrs`), whose Rayon pool RAYON_NUM_THREADS sizes and which checks its program with one
+ * type checker (ONE_CHECKER).
  */
 export const TOOLS = {
 	oxlint: {
@@ -115,8 +129,8 @@ export const TOOLS = {
 	},
 	tsrs: {
 		program: "effect-tsgo",
-		leading: ["tsrs"],
-		threadArguments: (threads) => ["--checkers", `${threads}`]
+		leading: ["tsrs", ...ONE_CHECKER],
+		threadArguments: () => []
 	}
 } as const satisfies Readonly<Record<string, Tool>>
 

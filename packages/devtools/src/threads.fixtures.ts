@@ -11,9 +11,11 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process"
  */
 
 /**
- * A task of the run: a wrapper of the gate's tools, its entry in the dev tools' source, the program it runs and how its
- * tool takes a count of threads (`--threads=N`, `--threads N`, tsrs's `--checkers N`), or a test task, a process that
- * sizes its test pool and its V8 pool from the testing library's workers.ts, as toolchain-test and Vitest do.
+ * A task of the run: a wrapper of the gate's tools, its entry in the dev tools' source, the program it runs, the flag
+ * it reads its count by (`--threads=N`, `--threads N`, tsrs's `--checkers N`) and the count that flag states for a
+ * task's share: the share itself for a pool's threads, and one for tsrs's checkers, a program checked by one checker
+ * (shared/threads.ts ONE_CHECKER); or a test task, a process that sizes its test pool and its V8 pool from the testing
+ * library's workers.ts, as toolchain-test and Vitest do.
  */
 export type Wrapped =
 	| Readonly<{
@@ -21,15 +23,28 @@ export type Wrapped =
 			entry: string
 			program: string
 			flag: "equals" | "apart" | "checkers"
+			flagged: (share: number) => number
 	  }>
 	| Readonly<{ kind: "test" }>
 
-/** Each wrapper, by how its tool takes a count of threads, and a test task. */
+/** A pool's threads: the task's share. */
+const theShare = (share: number): number => share
+
+/** A program's checkers: one, whatever the share. */
+const oneChecker = (): number => 1
+
+/** Each wrapper, by how its tool takes its count and what the count is, and a test task. */
 const WRAPPED: Arr.NonEmptyReadonlyArray<Wrapped> = [
-	{ kind: "tool", entry: "tool-oxlint.ts", program: "oxlint", flag: "equals" },
-	{ kind: "tool", entry: "tool-oxfmt.ts", program: "oxfmt", flag: "equals" },
-	{ kind: "tool", entry: "tool-fallow.ts", program: "fallow", flag: "apart" },
-	{ kind: "tool", entry: "tool-typecheck.ts", program: "effect-tsgo", flag: "checkers" },
+	{ kind: "tool", entry: "tool-oxlint.ts", program: "oxlint", flag: "equals", flagged: theShare },
+	{ kind: "tool", entry: "tool-oxfmt.ts", program: "oxfmt", flag: "equals", flagged: theShare },
+	{ kind: "tool", entry: "tool-fallow.ts", program: "fallow", flag: "apart", flagged: theShare },
+	{
+		kind: "tool",
+		entry: "tool-typecheck.ts",
+		program: "effect-tsgo",
+		flag: "checkers",
+		flagged: oneChecker
+	},
 	{ kind: "test" }
 ]
 
@@ -144,19 +159,19 @@ type Handed =
 	| Readonly<{ kind: "tool"; variable: number; flag: Option.Option<number> }>
 	| Readonly<{ kind: "test"; share: number; workers: number; pool: number; load: number }>
 
-/** The threads a tool's arguments hand it by its flag. */
+/** The count a tool's arguments hand it by its flag: its last, which the tool takes. */
 const flagOf = (
 	args: ReadonlyArray<string>,
 	flag: "equals" | "apart" | "checkers"
 ): Option.Option<number> => {
 	const apart = (name: string) =>
 		Option.flatMap(
-			Arr.findFirstIndex(args, (arg) => arg === name),
+			Arr.findLastIndex(args, (arg) => arg === name),
 			(at) => Option.map(Arr.get(args, at + 1), Number)
 		)
 	switch (flag) {
 		case "equals":
-			return Option.map(Arr.findFirst(args, Str.startsWith("--threads=")), (arg) =>
+			return Option.map(Arr.findLast(args, Str.startsWith("--threads=")), (arg) =>
 				Number(Str.slice("--threads=".length)(arg))
 			)
 		case "apart":

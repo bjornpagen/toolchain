@@ -4,7 +4,8 @@
  * toolchain-typecheck), run as a task of a turbo run toolchain-turbo starts, hands its tool the machine's CPU allowance
  * over the tasks the run executes at once (the fewer of turbo's concurrency and the tasks its dry run plans that run a
  * script), rounded down and one at least, by the tool's own flag (oxlint's and oxfmt's `--threads=N`, fallow's
- * `--threads N`, tsrs's `--checkers N`) and by RAYON_NUM_THREADS always, and passes the caller's arguments on; and a
+ * `--threads N`) and by RAYON_NUM_THREADS always, tsrs by RAYON_NUM_THREADS alone with one checker (`--checkers 1`, a
+ * checker no thread but a universe of types, shared/threads.ts ONE_CHECKER), and passes the caller's arguments on; and a
  * test task takes the same share, its test pool half of it (testWorkers) and the V8 pool of each Node process it starts
  * all of it (nodePoolFlag), so the tasks' pools sum to the run's allowance at most: so a narrow run's tools use the
  * machine (six tasks at every processor, a sixth each, where the concurrency alone would hand each one thread) and a
@@ -56,7 +57,11 @@ export const threadsShared = property.exhaust(threadings, {
 						status: 0,
 						handed:
 							threaded.wrapped.kind === "tool"
-								? { kind: "tool", variable: share, flag: Option.some(share) }
+								? {
+										kind: "tool",
+										variable: share,
+										flag: Option.some(threaded.wrapped.flagged(share))
+									}
 								: {
 										kind: "test",
 										share,
@@ -72,7 +77,7 @@ export const threadsShared = property.exhaust(threadings, {
 			}),
 	oracle: {
 		kind: "specification",
-		name: "a tool of the gate is handed the machine's logical CPUs over the tasks its run executes at once, the fewer of its concurrency and its tasks, one at least, so a narrow run's tools use the machine and a wide run's hold it at most; a load takes half the run's allowance, so a run holds one and a half times its allowance at most"
+		name: "a tool of the gate is handed the machine's logical CPUs over the tasks its run executes at once, the fewer of its concurrency and its tasks, one at least, so a narrow run's tools use the machine and a wide run's hold it at most, and the typecheck one checker; a load takes half the run's allowance, so a run holds one and a half times its allowance at most"
 	},
 	kept: [],
 	kills: [
@@ -115,9 +120,15 @@ export const threadsShared = property.exhaust(threadings, {
 		},
 		{
 			file: "packages/devtools/src/shared/threads.ts",
-			original: `\t\tthreadArguments: (threads) => ["--checkers", \`\${threads}\`]\n`,
-			replacement: "\t\tthreadArguments: () => []\n",
-			why: "tsrs's checkers are left at its default of four beside its Rayon pool, so one typecheck handed one thread keeps about 1.45 cores busy (TOOLTRUST's probe at allowance 4); the property fails for the typecheck."
+			original: '\t\tleading: ["tsrs", ...ONE_CHECKER],\n',
+			replacement: '\t\tleading: ["tsrs"],\n',
+			why: "tsrs's checkers are left at its default of four beside its Rayon pool, so one typecheck handed one thread keeps about 1.45 cores busy (TOOLTRUST's probe at allowance 4) and builds each type its files read across a module boundary four times; the property fails for the typecheck."
+		},
+		{
+			file: "packages/devtools/src/shared/threads.ts",
+			original: "\t\tthreadArguments: () => []\n\t}\n} as const",
+			replacement: `\t\tthreadArguments: (threads) => ["--checkers", \`\${threads}\`]\n\t}\n} as const`,
+			why: "tsrs is handed a checker for each thread of its share, as it was: qti-pie's ledger run alone at 64 checkers made 477 million instantiations in 15.3 GB where one makes 45.6 million in 1.3 GB (TYPECOST); the property fails for the typecheck at every share but one."
 		},
 		{
 			file: "packages/testing/src/workers.ts",
