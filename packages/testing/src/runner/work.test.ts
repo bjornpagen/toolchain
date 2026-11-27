@@ -6,6 +6,8 @@
  *   past its deadline, its CPU stays a tenth of it and moves in every deadline's window, and it passes.
  * - A case's work counts its live children's CPU: while a working child is alive and unreaped, the tree's CPU since the
  *   work began holds what the child says it spent, to Linux's clock tick.
+ * - A child started before a work began is no part of it, however late its process's Node began after the kernel
+ *   started the process: the work's beginning and a process's start are read on one clock, the boot clock.
  * - A CPU runaway is hung at its deadline: it yields as it spends many deadlines of CPU, so only the CPU budget stops
  *   it, and it is hung, never passed.
  * - A deadlocked case is hung after one deadline of wall time: it waits on the live clock for many deadlines, spending
@@ -33,6 +35,7 @@ import { assert } from "#assert.ts"
 import type { Reached } from "#features.ts"
 import { finite } from "#gen.ts"
 import { boundOver, spentOn, withinBound } from "#live.ts"
+import { Checkout } from "#mutate/checkout.ts"
 import { property } from "#property.ts"
 import { searchedAt, verdictKind } from "#runner/search.fixtures.ts"
 import {
@@ -45,6 +48,8 @@ import {
 	INNER_SEED,
 	innerRun,
 	lastSeenAt,
+	lateSeen,
+	lateStarts,
 	liveAt,
 	livesGen,
 	OUTSIDE_STEP,
@@ -121,6 +126,39 @@ export const childWorkCounts = property.exhaust(finite(childBurns), {
 				"\t\t\treturn { cpu: cpu + descendants.cpu + served.cpu, stir, carried: served.carried }\n",
 			replacement: "\t\t\treturn { cpu: cpu + served.cpu, stir, carried: served.carried }\n",
 			why: "A live child's CPU is left out until the child is reaped, so a case that waits on a working child spends nothing of its own and is stalled after a window; the child-work property fails."
+		}
+	]
+})
+
+export const anEarlierChildIsNoneOfTheWork = property.exhaust(finite(lateStarts), {
+	box: "a child started a twentieth of a second before a work began, in a process whose Node began two or four seconds after the kernel started it",
+	needs: { checkout: Checkout.dir },
+	situations: [],
+	check: () => (delaySeconds) =>
+		Effect.gen(function* () {
+			const seen = yield* lateSeen(delaySeconds)
+			assert.deepEqual(
+				{
+					excess:
+						seen.excess <= 0
+							? "none of the child's CPU"
+							: `${String(seen.excess)} ms of the child's ${String(seen.childCpu)} ms`
+				},
+				{ excess: "none of the child's CPU" }
+			)
+		}),
+	oracle: {
+		kind: "specification",
+		name: "a work counts the descendants started since it began, on the boot clock a process's start is stated in: a child that slept and said so before the work began is no part of it, so the work's CPU passes the process's own by none, however late the process's Node began"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/runner/work.ts",
+			original: '\tconst self = statOf("self")\n\tconst since = bootMillisNow()\n',
+			replacement:
+				'\tconst self = statOf("self")\n\tconst since = Option.map(self, (field) => field(PROC.started) + (wall - performance.timeOrigin))\n',
+			why: "The work's beginning placed on the boot clock through the process's time origin lands as early as its Node began late, so a child started before the work counts all of its CPU as the work's; the property fails."
 		}
 	]
 })

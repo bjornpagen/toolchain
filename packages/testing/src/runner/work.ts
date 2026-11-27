@@ -255,11 +255,9 @@ type Served = Readonly<{ pid: string; started: number }>
 
 /**
  * The effort of the processes a work counts beside its tree, as it reads them again and again: each from the reading or
- * the refresh it was first seen at (TreeWork refresh counts the work's backends as it names their carriers, so a carrier
- * counts from the ask that names it and a carried wait moves its case in the window it is first named in), or all of its
- * effort where it started since the work began (`since`, ms since the machine booted),
- * and frozen at its last reading once it leaves the set, so a pooled connection's backend counts only what it did for
- * this work, and the total only grows.
+ * the refresh it was first seen at, or all of its effort where it started since the work began (`since`, ms since the
+ * machine booted; none, for a set that counts each from its first sight alone), and frozen at its last reading once it
+ * leaves the set, so a pooled connection's backend counts only what it did for this work, and the total only grows.
  */
 const keptServed = (since: Option.Option<number>): ((members: ReadonlyArray<Served>) => Effort) => {
 	const counted = new Map<string, Readonly<{ base: Effort; last: Effort }>>()
@@ -283,13 +281,17 @@ const keptServed = (since: Option.Option<number>): ((members: ReadonlyArray<Serv
 }
 
 /**
- * What a tree's backends add to its effort (runner/backends.ts): each backend's CPU and stir as the tree's own, and the
- * CPU of the processes carrying a backend's wait (a lock's holders that work, the checkpointer) as `carried`, which moves
- * the work and spends none of its budget.
+ * What a tree's backends add to its effort (runner/backends.ts): each backend's CPU and stir as the tree's own, a backend
+ * started since the work began with all of its effort, and the CPU of the processes carrying a backend's wait (a lock's
+ * holders that work, the checkpointer) as `carried`, which moves the work and spends none of its budget. A carrier counts
+ * from the refresh or the reading that first names it, however recently it started (TreeWork refresh counts the work's
+ * backends as it names their carriers, so a carrier counts from the ask that names it and a carried wait moves its case
+ * in the window it is first named in): what it did before it carried the wait moved nothing of this work, and its count
+ * rests on no comparison of its start with the work's beginning, so none turns on how near that beginning it started.
  */
 const keptBackends = (since: Option.Option<number>): ((tree: ReadonlyArray<string>) => Effort) => {
 	const served = keptServed(since)
-	const carriers = keptServed(since)
+	const carriers = keptServed(Option.none())
 	return (tree) => {
 		const backends = backendsOf(tree)
 		const own = served(
@@ -335,14 +337,18 @@ const reapedOf = (field: (field: number) => number): number =>
 	field(PROC.childrenUser) + field(PROC.childrenSystem)
 
 /**
- * A moment on the live clock as milliseconds since the machine booted, the clock a process's start is stated in: the two
- * meet at this process's start (performance.timeOrigin), to a tick. None without /proc.
+ * Now, in milliseconds since the machine booted, off /proc/uptime: the boot clock a process's start is stated in
+ * (/proc/<pid>/stat's start), to its hundredth of a second; none without /proc. A work reads it as it begins, so a
+ * process's start and the work's beginning are compared on one clock. The live clock placed on the boot clock through
+ * this process's start (performance.timeOrigin) is rejected: Node sets its time origin after the kernel starts the
+ * process, so it lands as much early as the process took to start (2 to 50 ms measured on cassowary under load), and a
+ * process started that long before the work read as started since it.
  */
-const sinceBootAt = (
-	self: Option.Option<(field: number) => number>,
-	wall: number
-): Option.Option<number> =>
-	Option.map(self, (field) => field(PROC.started) + (wall - performance.timeOrigin))
+const bootMillisNow = (): Option.Option<number> =>
+	Option.map(
+		textOf("/proc/uptime"),
+		(uptime) => Number(Arr.getUnsafe(Str.split(" ")(uptime), 0)) * millisPerSecond
+	)
 
 /**
  * A process's declared waits on work other processes do (live.ts waitingOn): how many are open, since when (ms on the
@@ -542,14 +548,14 @@ export const readingOf = (work: TreeWork, wall: number): Reading => {
  * and its live descendants'; and the stir of the process itself beside its descendants', so a main thread the machine
  * keeps from running, held or between cases, takes that time out of its windows (standingOf) and is never stalled for
  * it, while one that waits by its own choice is. Read when a guard first needs it, once the work has yielded, so work
- * that runs to its end synchronously reads no file; it reads /proc/self/stat once to begin, and no descendant, since
+ * that runs to its end synchronously reads no file; it reads /proc/self/stat and /proc/uptime once to begin, and no descendant, since
  * none the work started is counted until its first reading, all of whose CPU is the work's. Without /proc its own CPU
  * counts alone.
  */
 export const ownWork = (wall: number, own: number): TreeWork => {
 	const stirOwn = () => effortOfProcess("self").stir
 	const self = statOf("self")
-	const since = sinceBootAt(self, wall)
+	const since = bootMillisNow()
 	const reaped = (stat: Option.Option<(field: number) => number>) =>
 		Option.match(stat, { onNone: () => 0, onSome: reapedOf })
 	const kept = keptEffort()
@@ -601,7 +607,7 @@ export const processWork = (
 	wall: number,
 	waited: (wall: number) => number
 ): TreeWork => {
-	const since = sinceBootAt(statOf("self"), wall)
+	const since = bootMillisNow()
 	const own = () =>
 		Option.match(
 			Option.flatMap(pid, (id) => statOf(String(id))),

@@ -124,6 +124,85 @@ export const childSeen = (burnMillis: number): Effect.Effect<ChildSeen> =>
 		})
 	)
 
+/** How late, in seconds, a process's Node begins after the kernel starts it: two delays. */
+export const lateStarts: Gen<number> = map(int(0, 1), (step) => 2 + 2 * step)
+
+/** A string as a JavaScript string literal that decodes to it: its URI encoding holds no quote and no backslash. */
+const literal = (text: string) => `decodeURIComponent("${encodeURIComponent(text)}")`
+
+/**
+ * The program of a process whose Node began late: it starts a shell child that sleeps a twentieth of a second, says so,
+ * works a loop of its own CPU and says so, and works on; it begins a work (runner/work.ts ownWork) once the child slept,
+ * so the child started before it, reads the work's tree once the child worked, and writes on a line how far the work's
+ * CPU since it began passed this process's own (ms) and the child's CPU so far, then ends the child.
+ */
+const lateProgram = (work: string): string =>
+	`const { ownCpu, ownWork } = await import(${literal(work)})
+const { readFileSync } = await import("node:fs")
+const { spawn } = await import("node:child_process")
+const child = spawn("/bin/sh", ["-c", "sleep 0.05; echo slept; i=0; while [ $i -lt 300000 ]; do i=$((i+1)); done; echo worked; while :; do :; done"], { stdio: ["ignore", "pipe", "ignore"] })
+let said = ""
+let work
+let ownAtBegin = 0
+child.stdout.on("data", (chunk) => {
+	said += chunk.toString("utf8")
+	if (work === undefined && said.includes("slept\\n")) {
+		ownAtBegin = ownCpu()
+		work = ownWork(Date.now(), ownAtBegin)
+	}
+	if (work !== undefined && said.includes("worked\\n")) {
+		const reading = work.effort()
+		const own = ownCpu()
+		const stat = readFileSync("/proc/" + String(child.pid) + "/stat", "utf8")
+		const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ")
+		const childCpu = (Number(fields[11]) + Number(fields[12])) * 10
+		process.stdout.write(String(reading.cpu - work.began.cpu - (own - ownAtBegin)) + " " + String(childCpu) + "\\n")
+		child.kill("SIGKILL")
+	}
+})`
+
+/**
+ * What a work begun in a process whose Node began late saw of a child started before the work: how far the work's CPU
+ * passed the process's own (ms; at most none where the child is no part of the work) and the child's CPU then (ms).
+ */
+export type LateSeen = Readonly<{ excess: number; childCpu: number }>
+
+/**
+ * Starts a process whose Node begins `delaySeconds` after the kernel starts it (a shell that sleeps, then becomes Node,
+ * keeping its start), so its time origin lags its start by more than that, runs lateProgram in it, and reads its line.
+ */
+export const lateSeen = (delaySeconds: number): Effect.Effect<LateSeen> =>
+	Effect.callback<LateSeen>((resume) => {
+		const late = process
+			.getBuiltinModule("node:child_process")
+			.spawn(
+				"/bin/sh",
+				[
+					"-c",
+					'sleep "$1"; shift; exec "$@"',
+					"sh",
+					String(delaySeconds),
+					process.execPath,
+					"--input-type=module",
+					"-e",
+					lateProgram(import.meta.resolve("#runner/work.ts"))
+				],
+				{ stdio: ["ignore", "pipe", "ignore"] }
+			)
+		let said = ""
+		late.stdout.on("data", (chunk: Buffer) => {
+			said += chunk.toString("utf8")
+			if (!Str.includes("\n")(said)) {
+				return
+			}
+			const [excess, childCpu] = Str.split(" ")(Str.trim(said))
+			resume(Effect.succeed({ excess: Number(excess), childCpu: Number(childCpu) }))
+		})
+		return Effect.sync(() => {
+			late.kill("SIGKILL")
+		})
+	})
+
 /**
  * How far below a child's own reading of its CPU the tree's can read, in milliseconds: Linux states a process's user and
  * system CPU (/proc/<pid>/stat utime and stime) as two counts of clock ticks of USER_HZ (runner/work.ts), each rounded

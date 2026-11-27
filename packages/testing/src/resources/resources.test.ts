@@ -1846,6 +1846,101 @@ export const carriedFromItsNaming = property.exhaust(finite(int(1, 2)), {
 	]
 })
 
+/**
+ * A carrier counts from the refresh that names it, never from its start, however recently it started: a holder whose
+ * session opened after the work began works half a second or a second of its own CPU holding the lock before the case's
+ * statement asks behind it, and the work's carried CPU, read just after the refresh, is no more than the holder spent
+ * from just before that refresh to just after the reading.
+ */
+export const aFreshCarrierCountsFromItsNaming = property.exhaust(finite(int(1, 2)), {
+	box: "a statement of a case's session behind a lock held by another process's session opened after the case's work began, which worked a half or a whole second of CPU before the statement asked, the work read once just after its refresh",
+	needs: { services },
+	situations: [],
+	check:
+		({ services: context }) =>
+		(halves) =>
+			Effect.flatMap(context, (ctx) =>
+				Effect.provideContext(
+					Effect.scoped(
+						Effect.gen(function* () {
+							const cluster = yield* PgCluster
+							const opened = yield* marksTemplate.open
+							const clone = yield* opened.clone
+							const waiter = yield* cluster.connect(clone.member, clone.name)
+							const watcher = yield* cluster.connect(clone.member, clone.name)
+							yield* runIn(waiter, "CREATE TABLE named (x int)", [])
+							const work = yield* ownWorkNow
+							const holder = yield* outsideSession(clone.member, clone.name)
+							yield* holder("BEGIN")
+							yield* holder("LOCK TABLE named IN ACCESS EXCLUSIVE MODE")
+							yield* holder(busyFor(HOLDER_BUSY_MILLIS))
+							yield* holder("COMMIT")
+							const holderPid = yield* awaitFact(
+								Effect.map(
+									single(
+										watcher,
+										"SELECT pg_catalog.min(pid)::text FROM pg_catalog.pg_locks WHERE relation = 'named'::regclass AND granted",
+										[]
+									),
+									Option.fromNullishOr
+								)
+							)
+							yield* awaitFact(
+								Effect.map(backendCpuOf(holderPid), (spent) =>
+									spent >= 500 * halves ? Option.some(true) : Option.none()
+								)
+							)
+							const read = yield* Effect.forkScoped(
+								waiter.query("SELECT count(*)::text FROM named", [])
+							)
+							yield* awaitFact(
+								Effect.map(
+									single(
+										watcher,
+										"SELECT count(*)::text FROM pg_catalog.pg_locks WHERE relation = 'named'::regclass AND NOT granted",
+										[]
+									),
+									(waiting) => (waiting === "0" ? Option.none() : Option.some(true))
+								)
+							)
+							const named = yield* backendCpuOf(holderPid)
+							yield* work.refresh
+							const carried = readingOf(work, work.began.wall).carried
+							const after = yield* backendCpuOf(holderPid)
+							const superuser = yield* cluster.superuser(clone.member, clone.name)
+							yield* single(superuser, "SELECT pg_catalog.pg_cancel_backend($1::int4)::text", [
+								holderPid
+							])
+							yield* Fiber.join(read)
+							assert.deepEqual(
+								{
+									carried:
+										carried <= after - named
+											? "no more than the holder's CPU since its naming"
+											: `${String(carried)} ms, the holder's CPU since its naming ${String(after - named)} ms`
+								},
+								{ carried: "no more than the holder's CPU since its naming" }
+							)
+						})
+					),
+					ctx
+				)
+			),
+	oracle: {
+		kind: "specification",
+		name: "the holder's own CPU off /proc, read just before the refresh that names it and just after the work's reading: the work's carried CPU is at most their difference"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/runner/work.ts",
+			original: "\tconst carriers = keptServed(Option.none())\n",
+			replacement: "\tconst carriers = keptServed(since)\n",
+			why: "A carrier started since the work began counts all of its CPU, what it spent before it carried the wait among it, so a wait reads as moved by work that moved nothing of it; the property fails."
+		}
+	]
+})
+
 export const lockedByAnIdleHolderIsHung = property.exhaust(finite(backendShapes), {
 	box: "a statement of a case's session behind a lock a session holds idle in its transaction, while another process's session works on the same server, under a deadline of 1 or 2 s",
 	needs: { services },

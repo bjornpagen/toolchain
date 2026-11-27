@@ -208,9 +208,9 @@ const oneOf = <K extends string, A>(
 
 /**
  * A database a case reaches: the member it lives on, its name there, and the template it was cloned from, by that
- * template's name on the member (names.ts templateName: the prefix, `tpl_`, the template's identity digest and its build's key), so what a
- * template's build made outside the database, such as cluster-wide roles named from its digest, is reachable from
- * every clone of it.
+ * template's name on the member (names.ts templateName: the prefix, `tpl_`, the template's identity digest and its
+ * build's key), so what a template's build made outside the database, such as cluster-wide roles named from its build's
+ * key (resources.ts templateKeyOf), is reachable from every clone of it.
  */
 export type Database = Readonly<{ member: PgMember; name: DatabaseName; template: DatabaseName }>
 
