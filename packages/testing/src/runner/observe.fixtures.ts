@@ -95,7 +95,7 @@ const programOf = (checkout: CheckoutDir, act: Act): string => {
 			"const otherSocket = here + '/other.sock'",
 			"const listening = (path) => new Promise((resolve) => { const server = net.createServer((socket) => socket.end()); server.listen(path, () => resolve(server)) })",
 			"const servers = [await listening(ownSocket), await listening(otherSocket)]",
-			"guardServers([ownSocket])",
+			"guardServers({ addresses: [ownSocket], holds: [] })",
 			"const connected = (path) => new Promise((resolve) => { const socket = net.connect(path, () => { socket.destroy(); resolve() }) })",
 			"guardWindow({ kind: 'open', unit: 1 })",
 			actText(act),

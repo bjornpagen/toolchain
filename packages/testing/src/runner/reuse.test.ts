@@ -9,7 +9,8 @@
  * status, which no key holds, runs every time (runner/observe.ts); and one that clones a database template on a
  * cluster of the consumer's own, whose build reads a file, is answered cached while the file stands and runs again once
  * it changed, its connections to its own member keyed by the PostgreSQL serving it, and its family's state kept in the
- * case's own states home, none of it in the account's. Each case
+ * case's own states home, none of it in the account's; and one that does so and starts a Node child that reads its
+ * member's socket directory, which the member holds (the substrate's state, no key's), is answered cached. Each case
  * writes the consumer from the checkout's own library (Checkout.dir, so a kill's mutant is in it) and runs the runner's
  * own entry in a child process, on one worker. Oracle: the specification, stated per case (reuse.fixtures.ts
  * expectedOf).
@@ -22,7 +23,7 @@ import { Scratch } from "#resources/scratch.ts"
 import { changes, expectedOf, reusedOf } from "#runner/reuse.fixtures.ts"
 
 export const aRunAnswersFromItsKeyAlone = property.exhaust(changes, {
-	box: "a consumer's property run twice, nothing changed between, or a module it imports, a toolchain file no module imports, a variable its workers are given, one they are not, or TEST_SEED; a property that reads a fixture, or whose child reads it, the fixture changed or not; one that resolves a link or reads it, the link changed or not; another checkout's run of one that resolves its root; one that reads a file's status; and one that clones a template of its own cluster whose build reads a file, the file changed or not",
+	box: "a consumer's property run twice, nothing changed between, or a module it imports, a toolchain file no module imports, a variable its workers are given, one they are not, or TEST_SEED; a property that reads a fixture, or whose child reads it, the fixture changed or not; one that resolves a link or reads it, the link changed or not; another checkout's run of one that resolves its root; one that reads a file's status; one that clones a template of its own cluster whose build reads a file, the file changed or not; and one that does so and whose child reads its member's socket directory",
 	needs: { directory: Scratch.dir, checkout: Checkout.dir },
 	situations: [],
 	check:
@@ -92,9 +93,15 @@ export const aRunAnswersFromItsKeyAlone = property.exhaust(changes, {
 		},
 		{
 			file: "packages/testing/src/resources/cluster.ts",
-			original: "\t\t\t\t\t\t\t\t\t\t\t\t\t\tguardServers(serverAddressesOf(member))\n",
-			replacement: "\t\t\t\t\t\t\t\t\t\t\t\t\t\tguardServers([])\n",
+			original: "\t\t\t\t\t\t\t\t\t\t\t\t\t\t\taddresses: serverAddressesOf(member),\n",
+			replacement: "\t\t\t\t\t\t\t\t\t\t\t\t\t\t\taddresses: [],\n",
 			why: "The guard is told none of the run's own members, so a property's connection to its own cluster is an observation past every key, and a database property runs every time; the property whose template's build file stands is not answered, and the property fails."
+		},
+		{
+			file: "packages/testing/src/resources/cluster.ts",
+			original: "\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tholds: heldPathsOf(member)\n",
+			replacement: "\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tholds: []\n",
+			why: "The guard is told no path the run's own members hold, so a child's read of its member's socket directory is keyed, a directory that changes whenever the member starts, as each run starts it: the property whose child reads it is never answered (grizzle's exitsOnceItsScopesClose, 2026-11-26), and the property fails."
 		},
 		{
 			file: "packages/testing/src/resources/template.ts",

@@ -45,6 +45,17 @@ Before you move `vendor/toolchain` past this section:
 3. **A run past its budget is a regression to find**, never a number to raise. A budget moves only with a new
    measurement and its cause named.
 
+## Consumer migration: what a member holds is no key's (2026-11-26)
+
+A child that connects to its member over the socket stats the member's socket directory, its unit's runtime directory
+`$XDG_RUNTIME_DIR/postgresql-<member>`, which its server makes again at every start, as every run starts it: the read
+was keyed, so the property's pass was never kept (grizzle's exitsOnceItsScopesClose: "not kept, since
+/run/user/1000/postgresql-... changed while it ran"). Now every path a member holds, as its cluster's spec declares
+them (its socket directory, its owner's password file and, over TLS, its CA: resources/cluster.ts heldPathsOf), is the
+substrate's state, which the database the verdict already accounts for covers: a read under one, by the property's
+process or any child, is neither a keyable read nor an observation (runner/observe.ts guardServers, which takes each
+member's addresses and the paths it holds). Nothing to migrate.
+
 ## Consumer migration: a worker's cluster registers each member it brings up (2026-11-26)
 
 A backend's lock wait behind an outside holder that works, and its wait on the server's I/O workers, is carried (moves

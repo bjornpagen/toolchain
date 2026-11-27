@@ -169,7 +169,9 @@ states is an observation past every key, and its property is never cached: a pat
 inode), /proc, /sys or /dev read as a file, a child the guard cannot watch (a shell, exec, fork, one that outlives its
 unit, one not Node where strace is missing), what a Node child's recorder cannot see into (a native addon, a glob, a
 recursive listing, a directory copied whole, a module loaded before it), a connection to anything but the run's own
-members, a thread. The runner's own acts (its watchdog
+members, a thread. A path one of the run's own members holds (its socket directory, its password file, its CA, as its
+cluster's spec declares them) is the substrate's state, neither a keyable read nor an observation, by the process or a
+child: the database it is the verdict already accounts for. The runner's own acts (its watchdog
 thread, its reads of /proc, the judge's of a child's tree among them (live.ts processWorkNow), a scratch directory's remover, a pool's workers, a worker's
 services built and everything its cluster does: holds, leases, settles, sessions) are no property's; an act outside
 any window (a worker's start, its runner config's modules evaluated, work that outlives its window) is the worker's,

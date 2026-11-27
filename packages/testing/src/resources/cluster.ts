@@ -312,6 +312,17 @@ const serverAddressesOf = (member: PgMember): ReadonlyArray<string> => [
 	`::1:${member.port}`
 ]
 
+/**
+ * Every path `member` holds, as its facts declare them: its socket directory (its unit's runtime directory, which its
+ * server makes again at each start), its owner's password file and, over TLS, its CA's: the substrate's state, which a
+ * read under is no key's and no observation (runner/observe.ts guardServers).
+ */
+const heldPathsOf = (member: PgMember): ReadonlyArray<string> => [
+	member.socket,
+	member.passwordFile,
+	...(member.tls.kind === "tls" ? [member.tls.caFile] : [])
+]
+
 /** The runner service of a repository's PostgreSQL cluster, from which every Template.database and Database comes. */
 export class PgCluster extends Context.Service<PgCluster, PgClusterShape>()(
 	"@bjornpagen/testing/resources/cluster/PgCluster"
@@ -374,7 +385,10 @@ export class PgCluster extends Context.Service<PgCluster, PgClusterShape>()(
 												),
 												(member) =>
 													Effect.sync(() => {
-														guardServers(serverAddressesOf(member))
+														guardServers({
+															addresses: serverAddressesOf(member),
+															holds: heldPathsOf(member)
+														})
 														memberRegistered(member)
 													})
 											),

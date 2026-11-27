@@ -35,8 +35,10 @@ import {
  * a fixture file at run time, of one whose child process reads it, of one that resolves a path (realpath, whose own
  * walk of the path is no act of the property's) and of one that reads a symbolic link's text; another checkout of the
  * repository running it second, its property resolving the checkout's own root; nothing, of a property that reads a
- * file's status, which no key holds; and nothing, or the file, of a property that clones a database template whose
- * build reads a file, the property reading nothing itself.
+ * file's status, which no key holds; nothing, or the file, of a property that clones a database template whose
+ * build reads a file, the property reading nothing itself; and nothing, of one that does so and starts a Node child
+ * that reads its member's socket directory, a path the member holds (its substrate's state), which no key holds and
+ * which changes whenever the member starts.
  */
 const CHANGES = [
 	"nothing",
@@ -56,7 +58,8 @@ const CHANGES = [
 	"another checkout of it, its root resolved at run time",
 	"nothing, a file's status read at run time",
 	"nothing, a file its template's build reads",
-	"a file its template's build reads"
+	"a file its template's build reads",
+	"nothing, its child reads its member's socket directory"
 ] as const
 
 export type Change = (typeof CHANGES)[number]
@@ -110,9 +113,12 @@ type Write =
 
 /**
  * The consumer's property: one whose check is a check's text (what it observes at run time), needing nothing; or one
- * that clones a database template of the consumer's own cluster (DATABASE_PROPERTY).
+ * that clones a database template of the consumer's own cluster (databaseProperty), its Node child reading its
+ * member's socket directory or none.
  */
-type ConsumerProperty = Readonly<{ kind: "check"; check: string }> | Readonly<{ kind: "database" }>
+type ConsumerProperty =
+	| Readonly<{ kind: "check"; check: string }>
+	| Readonly<{ kind: "database"; child: "none" | "the member's socket directory" }>
 
 /**
  * What a change is: the consumer's property, what is written before the first run and between the runs, the second
@@ -134,9 +140,15 @@ const making = (
 	second: Readonly<Record<string, string>>
 ): Making => ({ property: { kind: "check", check }, first: [], between, second, checkout: "same" })
 
-/** A change of the property that clones a template whose build reads a file, `between` written between its runs. */
-const databaseMaking = (between: ReadonlyArray<Write>): Making => ({
-	property: { kind: "database" },
+/**
+ * A change of the property that clones a template whose build reads a file, its Node child `child`, `between` written
+ * between its runs.
+ */
+const databaseMaking = (
+	between: ReadonlyArray<Write>,
+	child: "none" | "the member's socket directory"
+): Making => ({
+	property: { kind: "database", child },
 	first: [],
 	between,
 	second: FIRST,
@@ -195,10 +207,15 @@ const MAKINGS: Readonly<Record<Change, Making>> = {
 		checkout: "another"
 	},
 	"nothing, a file's status read at run time": making(STATUS, [], FIRST),
-	"nothing, a file its template's build reads": databaseMaking([]),
-	"a file its template's build reads": databaseMaking([
-		{ kind: "file", path: "test/schema.sql", text: "CREATE TABLE other ()\n" }
-	])
+	"nothing, a file its template's build reads": databaseMaking([], "none"),
+	"a file its template's build reads": databaseMaking(
+		[{ kind: "file", path: "test/schema.sql", text: "CREATE TABLE other ()\n" }],
+		"none"
+	),
+	"nothing, its child reads its member's socket directory": databaseMaking(
+		[],
+		"the member's socket directory"
+	)
 }
 
 /** Writes `write` in the consumer at `consumer`, a link replacing whatever its path held. */
@@ -226,9 +243,12 @@ export const clusterConfigOf = (unit: string): string =>
  * The property that clones a template of the consumer's cluster whose build reads test/schema.sql, a file no module
  * loads, and queries its clone over a session of its own (the owner's, as the consumer's own code reaches its cluster),
  * no session of the runner's: a connection to one of the run's own members, which the guard keys by the PostgreSQL
- * serving it. The property reads nothing itself, so what its verdict rests on of the file is its template's build's.
+ * serving it. The property reads nothing itself, so what its verdict rests on of the file is its template's build's. With
+ * a child, it starts a Node child that lists its clone's member's socket directory, which the member holds (its
+ * substrate's state, runner/observe.ts guardServers).
  */
-const DATABASE_PROPERTY = `import { readFileSync } from "node:fs"\nimport { Effect } from "effect"\nimport { int } from "@bjornpagen/testing/gen"\nimport { pgOwnerSession } from "@bjornpagen/testing/pg-session"\nimport { property } from "@bjornpagen/testing/property"\nimport { Database, Template } from "@bjornpagen/testing/resources"\n\nconst schema = Template.database({ declaredIn: import.meta, name: "schema", content: {}, from: Template.cluster, budget: ${String(plantedBudget)}, build: () => Effect.sync(() => readFileSync(new URL("./schema.sql", import.meta.url), "utf8")) })\n\nexport const reused = property.explore(int(0, 9), {\n\tneeds: { db: Database.fresh(schema) },\n\tsituations: [],\n\tcheck: ({ db }) => (a) => Effect.scoped(Effect.gen(function* () {\n\t\tconst clone = yield* db\n\t\tconst session = yield* pgOwnerSession("reused")(clone.member, clone.name)\n\t\tconst rows = yield* session.query("SELECT $1::int4 + 0", [String(a)])\n\t\treturn rows.length === 1 ? undefined : yield* Effect.die("not one row")\n\t})),\n\toracle: { kind: "specification", name: "a clone answers a query of its own" },\n\tkept: [],\n\tkills: []\n})\n`
+const databaseProperty = (child: "none" | "the member's socket directory"): string =>
+	`import { readFileSync } from "node:fs"\nimport { spawnSync } from "node:child_process"\nimport { Effect } from "effect"\nimport { int } from "@bjornpagen/testing/gen"\nimport { pgOwnerSession } from "@bjornpagen/testing/pg-session"\nimport { property } from "@bjornpagen/testing/property"\nimport { Database, Template } from "@bjornpagen/testing/resources"\n\nconst schema = Template.database({ declaredIn: import.meta, name: "schema", content: {}, from: Template.cluster, budget: ${String(plantedBudget)}, build: () => Effect.sync(() => readFileSync(new URL("./schema.sql", import.meta.url), "utf8")) })\n\nexport const reused = property.explore(int(0, 9), {\n\tneeds: { db: Database.fresh(schema) },\n\tsituations: [],\n\tcheck: ({ db }) => (a) => Effect.scoped(Effect.gen(function* () {\n\t\tconst clone = yield* db\n\t\tconst session = yield* pgOwnerSession("reused")(clone.member, clone.name)\n\t\tconst rows = yield* session.query("SELECT $1::int4 + 0", [String(a)])\n${child === "none" ? "" : '\t\tconst listed = spawnSync(process.execPath, ["-e", "process.getBuiltinModule(\\"node:fs\\").readdirSync(process.argv[1])", clone.member.socket])\n\t\tif (listed.status !== 0) { return yield* Effect.die("the child failed") }\n'}\t\treturn rows.length === 1 ? undefined : yield* Effect.die("not one row")\n\t})),\n\toracle: { kind: "specification", name: "a clone answers a query of its own" },\n\tkept: [],\n\tkills: []\n})\n`
 
 /**
  * The CPU a run of the plain consumer (PLAIN_CONFIG) may spend (runner/config.ts RunBudget).
@@ -289,7 +309,7 @@ type Before = (
 
 /**
  * The files of the consumer's property and what it runs under, and what it needs before its first run (Before): a
- * check's property and the plain runner config, needing nothing; or the database property (DATABASE_PROPERTY), the
+ * check's property and the plain runner config, needing nothing; or the database property (databaseProperty), the
  * runner config over a cluster of the consumer's own and its pg.config.ts, under a case cluster's unit name held for the
  * case (pg/settle.fixtures.ts caseUnit) and removed at its end, since the consumer's runs make it in processes of their
  * own, its family settled first.
@@ -330,7 +350,7 @@ const propertyFilesOf = (
 				yield* unitRemovedAtEnd(unit)
 				const files: ConsumerFiles = [
 					["test.config.ts", DATABASE_CONFIG],
-					["test/reused.test.ts", DATABASE_PROPERTY],
+					["test/reused.test.ts", databaseProperty(property.child)],
 					["pg.config.ts", clusterConfigOf(unit)]
 				]
 				const before: Before = (consumer, env) =>
@@ -461,8 +481,8 @@ export const reusedOf = (directory: string, library: string, change: Change) =>
 /**
  * Whether the second run answers its one property from the cache, by the specification: exactly when nothing its key
  * or its trace holds changed (nothing, or a variable no worker is given, a file it, its child or its template's build
- * reads, a path it resolves or a link it reads unchanged, another checkout of the repository) and the property observes
- * nothing past both (a file's status).
+ * reads, a path it resolves or a link it reads unchanged, another checkout of the repository, a child's read of what its
+ * member holds, which no key holds) and the property observes nothing past both (a file's status).
  */
 const ANSWERED: Readonly<Record<Change, boolean>> = {
 	nothing: true,
@@ -482,7 +502,8 @@ const ANSWERED: Readonly<Record<Change, boolean>> = {
 	"another checkout of it, its root resolved at run time": true,
 	"nothing, a file's status read at run time": false,
 	"nothing, a file its template's build reads": true,
-	"a file its template's build reads": false
+	"a file its template's build reads": false,
+	"nothing, its child reads its member's socket directory": true
 }
 
 /** How the second run must go: it passes, and answers its property from the cache or runs it (ANSWERED). */

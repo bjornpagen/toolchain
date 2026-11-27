@@ -49,7 +49,9 @@ import type { KeyedRead } from "#runner/strace.ts"
  *
  * An act counts when the process is outside Node's module loader, whose reads are the closure's, which the closure hash
  * keys; and none when it reads the process's own data: a path under a directory the process (or a child it traced)
- * made or a file it wrote, whatever made it. In a property's window (a unit of it, from its readying to its last case:
+ * made or a file it wrote, whatever made it; nor when it reads the substrate's state, a path one of the run's own
+ * servers holds (guardServers: a member's socket directory, its password file, its CA), which the database it is
+ * accounts for. In a property's window (a unit of it, from its readying to its last case:
  * guardWindow) an act is that unit's; outside any window (the worker's start, its runner config's modules evaluated, a
  * property's work that outlives its window) a keyable read joins the process's reads all the same, which every later
  * trace of the worker takes, and an observation is the next window's first, so its property and every later one of the
@@ -208,6 +210,7 @@ const guard: {
 	reader: ChildReader | undefined
 	observed: (observation: Observation, unit: number) => void
 	servers: Set<string>
+	held: Set<string>
 	runnersOwn: () => boolean
 	collecting: () => CollectedActs | undefined
 	recorded: (reads: ReadonlyArray<KeyedRead>, observation: Observation | undefined) => void
@@ -223,6 +226,7 @@ const guard: {
 	reader: undefined,
 	observed: () => undefined,
 	servers: new Set(),
+	held: new Set(),
 	runnersOwn: () => false,
 	collecting: () => undefined,
 	recorded: () => undefined
@@ -254,14 +258,23 @@ export const guardRunnerOwn = (probe: () => boolean): void => {
 }
 
 /**
- * Tells the guard the run's own servers, each by every address a client reaches it at (a socket's path, `host:port`):
- * a member of the run's cluster (resources/cluster.ts), whose state is the run's own (clones of templates its closures
- * declare) and whose software the PostgreSQL digest states, so a connection to one, the runner's or a property's, is a
- * keyable read of the PostgreSQL that serves it (a KeyedRead of kind `postgres`), never an observation.
+ * Tells the guard one of the run's own servers, a member of the run's cluster (resources/cluster.ts), whose state is
+ * the run's own (clones of templates its closures declare) and whose software the PostgreSQL digest states: every
+ * address a client reaches it at (a socket's path, `host:port`), so a connection to it, the runner's or a property's,
+ * is a keyable read of the PostgreSQL that serves it (a KeyedRead of kind `postgres`), never an observation; and every
+ * path it holds, as its cluster's spec declares them (its socket directory, its owner's password file, its CA), the
+ * substrate's state, which the verdict accounts for as the database it is, so a read under one, the process's or a
+ * child's, is neither a keyable read nor an observation (a child connecting over the socket stats its directory, which
+ * changes whenever the member starts: grizzle's exitsOnceItsScopesClose was never kept, lane TRACE, 2026-11-26).
  */
-export const guardServers = (addresses: ReadonlyArray<string>): void => {
-	for (const address of addresses) {
+export const guardServers = (
+	server: Readonly<{ addresses: ReadonlyArray<string>; holds: ReadonlyArray<string> }>
+): void => {
+	for (const address of server.addresses) {
 		guard.servers.add(address)
+	}
+	for (const held of server.holds) {
+		guard.held.add(held)
 	}
 }
 
@@ -396,10 +409,11 @@ export const guardInstalled = (
 	const strace = executable(STRACE) ? STRACE : undefined
 	/** This process's own Node, by its real path: a child running it is a Node child, which records its own reads. */
 	const node = failing(() => original.realpathNative(process.execPath))
+	/** Whether a path is the process's own data (under what it made) or the substrate's (under what a server holds). */
 	const isOwn = (file: string): boolean => {
 		let at = file
 		for (;;) {
-			if (ownFiles.has(at) || ownDirectories.has(at)) {
+			if (ownFiles.has(at) || ownDirectories.has(at) || guard.held.has(at)) {
 				return true
 			}
 			const up = path.dirname(at)
@@ -455,8 +469,9 @@ export const guardInstalled = (
 		}
 	}
 	/**
-	 * An act on `file`: nothing where the file is the process's own; an observation where no key holds what it reads (a
-	 * status, a watch) or the file is the machine's live state; else a keyable read, kept once over the process's life.
+	 * An act on `file`: nothing where the file is the process's own or a run's server holds it (isOwn); an observation
+	 * where no key holds what it reads (a status, a watch) or the file is the machine's live state; else a keyable read,
+	 * kept once over the process's life.
 	 */
 	const traced = (
 		kind: KeyedRead["kind"] | "unkeyable",
