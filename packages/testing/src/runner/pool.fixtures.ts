@@ -518,7 +518,7 @@ export const unreadyRoot = (directory: string) =>
 					`import { Layer } from "${import.meta.resolve("effect")}"`,
 					`import { defineRunner, noMutation } from "${import.meta.resolve("#runner/config.ts")}"`,
 					`import { withNeeds } from "${import.meta.resolve("#runner/loops.fixtures.ts")}"`,
-					`export default defineRunner({ budget: { kind: "cpu", millis: ${String(UNRUN_BUDGET)} }, include: [], smallStack: [], conditions: [], environment: [], layer: Layer.empty, mutation: noMutation })`,
+					`export default defineRunner({ budget: { kind: "cpu", run: ${String(UNRUN_BUDGET)}, import: ${String(UNRUN_BUDGET)} }, include: [], smallStack: [], conditions: [], environment: [], layer: Layer.empty, mutation: noMutation })`,
 					"export const looping = withNeeds",
 					""
 				],
@@ -548,7 +548,7 @@ export const slowStartRoot = (directory: string) =>
 					`import { Layer } from "${import.meta.resolve("effect")}"`,
 					`import { defineRunner, noMutation } from "${import.meta.resolve("#runner/config.ts")}"`,
 					`await new Promise((done) => { ${slowSteps("done(undefined)")} })`,
-					`export default defineRunner({ budget: { kind: "cpu", millis: ${String(UNRUN_BUDGET)} }, include: ["starts.test.ts"], smallStack: [], conditions: [], environment: [], layer: Layer.empty, mutation: noMutation })`,
+					`export default defineRunner({ budget: { kind: "cpu", run: ${String(UNRUN_BUDGET)}, import: ${String(UNRUN_BUDGET)} }, include: ["starts.test.ts"], smallStack: [], conditions: [], environment: [], layer: Layer.empty, mutation: noMutation })`,
 					""
 				],
 				"\n"
@@ -668,7 +668,7 @@ export const releasingRoot = (directory: string) =>
 					`import { defineRunner, noMutation } from "${import.meta.resolve("#runner/config.ts")}"`,
 					'const { writeFileSync } = process.getBuiltinModule("node:fs")',
 					"export default defineRunner({",
-					`\tbudget: { kind: "cpu", millis: ${String(UNRUN_BUDGET)} },`,
+					`\tbudget: { kind: "cpu", run: ${String(UNRUN_BUDGET)}, import: ${String(UNRUN_BUDGET)} },`,
 					'\tinclude: ["held.test.ts"],',
 					"\tsmallStack: [],",
 					"\tconditions: [],",

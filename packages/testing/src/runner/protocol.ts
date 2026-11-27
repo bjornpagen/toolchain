@@ -710,7 +710,8 @@ export const ObservationWire = Schema.Union([
  * a unit's property, the first unit of it the worker took (importing its module, then opening its needs); it imported
  * the module and opens the needs not yet open on it, at once, within `budget`, their budgets summed (ms of CPU); it
  * readied it, in how many milliseconds, of which how many importing its module (none when it had before),
- * what scheduling measures readying by, and how many of CPU, its children's beside and its session backends' since its
+ * what scheduling measures readying by, and how many of CPU, of which how many of its own importing the module
+ * (`importedCpu`, what a run's import budget bounds), its children's beside and its session backends' since its
  * last count (runner/work.ts sessionsSpent); it started a unit's cases; it finished one, with each order's result, the
  * worker's CPU so far, its children's CPU while it ran and its session backends' since its last count; it gave back
  * these units, of those the parent revoked, none of which it had started; a case (a unit's `at`-th order) was used
@@ -729,6 +730,7 @@ export const FromWorker = Schema.Union([
 		unit: Schema.Finite,
 		millis: Schema.Finite,
 		imported: Schema.Finite,
+		importedCpu: Schema.Finite,
 		cpu: Schema.Finite,
 		children: ChildrenCpu,
 		backends: Schema.Finite,

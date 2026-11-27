@@ -115,13 +115,18 @@ export type MutationLoad = () => Promise<Mutation>
 export const noMutation: MutationLoad = () => Promise.resolve({ families: [], equivalent: [] })
 
 /**
- * What a run of the package may spend: CPU, in ms, its processes' and the PostgreSQL backends' its workers served
- * (usage.ts UsageReport metered: the parent's, its workers', their reaped children's, and the backends' as the budget
- * meter reads them, a database suite's larger half), over which `toolchain-test run` fails, naming what it spent. A package states it as a measured
- * limit (the indefensible-numbers skill): twice a whole run's report, every property run and none answered from the
- * verdict cache, so a change that makes its suite spend more fails the run that pays for it.
+ * What a run of the package may spend, in ms of CPU, in two parts no width of the run changes, past either of which
+ * `toolchain-test run` fails, naming it: `run`, the CPU of the run's parent outside its run needs' opens and of its
+ * cases, their children's and the PostgreSQL backends' their sessions served among it (usage.ts UsageReport run); and
+ * `import`, the most one worker may spend importing one property's module (usage.ts PropertyUsage imports). Each worker
+ * readies every property it runs, importing its module and opening its needs, so a run on more workers readies more:
+ * each open is held by its need's budget and each import by `import`, and neither part grows with the run's width, as
+ * one number over the whole run's CPU did. A worker's start is the toolchain's own work, which its own suite holds. A
+ * package states both as measured limits (the indefensible-numbers skill): twice what a whole run's report states,
+ * every property run and none answered from the verdict cache, so a change that makes its suite spend more fails the
+ * run that pays for it.
  */
-export type RunBudget = Readonly<{ kind: "cpu"; millis: number }>
+export type RunBudget = Readonly<{ kind: "cpu"; run: number; import: number }>
 
 /**
  * What a package states in its test.config.ts: its run's CPU budget, its test modules, those that run on a small stack instead, its export
@@ -143,7 +148,7 @@ const servicesFailed = <E>(cause: Cause.Cause<E>) =>
 	RunnerServicesFailed.make({ message: failureText(cause) })
 
 /**
- * A package's runner config: `export default defineRunner({ budget: { kind: "cpu", millis }, include:
+ * A package's runner config: `export default defineRunner({ budget: { kind: "cpu", run, import }, include:
  * ["src/**\/*.test.ts"], smallStack: [], conditions: [], environment: [], layer, mutation: noMutation })`, where `layer` provides the RunnerServices the repository declares
  * (Layer.empty when it declares none). There is no worker, width or timeout option: a run is testWorkers wide, a worker for every two CPUs of its allowance, a
  * case's budgets are the runner's Limits, and the run's is its CPU budget.

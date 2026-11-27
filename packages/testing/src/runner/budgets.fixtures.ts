@@ -1,12 +1,13 @@
 /**
- * The CPU budget (runner/config.ts RunBudget) of every fixture runner config no `toolchain-test run` reaches: none. Each
+ * Both parts of the CPU budget (runner/config.ts RunBudget run and import) of every fixture runner config no
+ * `toolchain-test run` reaches: none. Each
  * is loaded alone (by a property that reads its include, its conditions or its mutation, as `load`, `kills` and
  * `mutate` do), run by runPackage in a worker's own process, whose run no budget judges, or refused before any run (its
  * include holds no property), so no run of it spends what a budget reads. A `toolchain-test run` that came to reach one
  * would fail at once, naming what it spent, and be measured then.
  * @limitKind measured
  * @owner the testing library's fixtures
- * @unit milliseconds of CPU, a run's processes' and its sessions' backends' (runner/usage.ts UsageReport metered)
+ * @unit milliseconds of CPU, each of a run budget's parts (runner/config.ts RunBudget run and import)
  * @scope a `toolchain-test run` of each fixture runner config that states it
  * @evidence ~/.cache/metis/METIS-DBOPT/runs/budget/measure4.jsonl in lane METIS-DBOPT's tree: one line per runPackage
  *   of any runner config during a whole run of the testing package, written by instrument.patch over runner/run.ts, the

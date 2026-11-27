@@ -86,7 +86,7 @@ export const writtenPackage = (directory: string, written: Written) =>
 				[
 					`import { Layer } from "${import.meta.resolve("effect")}"`,
 					`import { defineRunner } from "${import.meta.resolve("#runner/config.ts")}"`,
-					`export default defineRunner({ budget: { kind: "cpu", millis: ${String(UNRUN_BUDGET)} }, include: [], smallStack: [], conditions: [], environment: [], layer: Layer.empty, mutation: () => import("./mutation.ts") })`,
+					`export default defineRunner({ budget: { kind: "cpu", run: ${String(UNRUN_BUDGET)}, import: ${String(UNRUN_BUDGET)} }, include: [], smallStack: [], conditions: [], environment: [], layer: Layer.empty, mutation: () => import("./mutation.ts") })`,
 					""
 				],
 				"\n"

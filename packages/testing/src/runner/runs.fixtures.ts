@@ -27,7 +27,7 @@ export const countedRunRoot = (directory: string, modules: number) =>
 					`import { Layer } from "${effect}"`,
 					`import { defineRunner, noMutation } from "${import.meta.resolve("#runner/config.ts")}"`,
 					"export default defineRunner({",
-					`\tbudget: { kind: "cpu", millis: ${String(UNRUN_BUDGET)} },`,
+					`\tbudget: { kind: "cpu", run: ${String(UNRUN_BUDGET)}, import: ${String(UNRUN_BUDGET)} },`,
 					`\tinclude: [${Arr.join(
 						Array.from({ length: modules }, (_, at) => `"reads-${at}.test.ts"`),
 						", "

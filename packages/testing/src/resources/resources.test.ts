@@ -399,7 +399,7 @@ export const refusedDropCollected = property.exhaust(finite(int(1, 3)), {
 				const template = tokenTemplate(prefix, () => Effect.void)
 				const runnerClosures = Context.get(ctx, ModuleClosure)
 				const config = defineRunner({
-					budget: { kind: "cpu", millis: UNRUN_BUDGET },
+					budget: { kind: "cpu", run: UNRUN_BUDGET, import: UNRUN_BUDGET },
 					include: [],
 					smallStack: [],
 					conditions: [],

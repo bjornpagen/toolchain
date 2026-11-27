@@ -10,6 +10,7 @@ import {
 } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { boolean, element, type FiniteSpace, finite } from "#gen.ts"
+import type { RunBudget } from "#runner/config.ts"
 
 /**
  * Consumer packages for consumer.test.ts: a tiny package with two passing properties, one of them with a kill that
@@ -180,29 +181,60 @@ export const manifestOf = (layout: Layout): string =>
 	`{ "name": "consumer", "version": "0.0.0", "private": true, "type": "module", "dependencies": { "@bjornpagen/testing": "${layout.library === "link" ? "link:vendor/testing" : "file:testing.tgz"}", "effect": "4.1.4" } }\n`
 
 /**
- * The CPU a run of the consumer (runnerConfigOf) may spend (runner/config.ts RunBudget).
+ * The CPU a run of the consumer (runnerConfigOf) may spend beyond its workers' starts and readyings (runner/config.ts
+ * RunBudget run).
  * @limitKind measured
  * @owner the testing library's fixtures
- * @unit milliseconds of CPU, a run's processes' and its sessions' backends' (runner/usage.ts UsageReport metered)
+ * @unit milliseconds of CPU, the run's parent's outside its run needs' opens and its cases', their children's and
+ *   backends' among it (runner/usage.ts UsageReport run)
  * @scope each `toolchain-test run` of the consumer's two properties
- * @evidence ~/.cache/metis/METIS-DBOPT/runs/budget/measure4.jsonl in lane METIS-DBOPT's tree: one line per
- *   runPackage of any runner config during a whole run of the testing package (instrument.patch over runner/run.ts,
- *   measure.sh, budget-measure.py, beside it), each with its config's placeholder budget and its report's metered CPU
- * @observed 2026-11-27 02:40 to 04:04 UTC
- * @environment cassowary, Ubuntu 26.04 (Linux 7.0.0-1018-aws) on AWS Graviton3, 64 arm64 CPUs, 247 GiB, load 260 to
- *   420 from other sessions; Node 26.13.1; the toolchain at e14ae5de with the change that states these budgets
- * @workload every property of the testing package, 275, at 4 workers (CPUQuota 800%), none answered from a
- *   verdict cache (a fresh XDG_CACHE_HOME); each run of this config one the properties make in a consumer of their own
- * @result 1 run of it, 4,393 ms (beside two earlier runs of the same consumer on this change's first form, 4,424 and 4,474 ms,
- *   lane METIS-DBOPT's /tmp/dbopt-budget-measure.jsonl of 2026-11-27 01:30 UTC)
- * @decision twice the most, 8,787 ms, rounded up to the millisecond
+ * @evidence ~/.cache/metis/METIS-DBOPT/runs/budget/3b/dbopt-3b-measure.jsonl in lane METIS-DBOPT's tree: one line per
+ *   runPackage of any runner config during a whole run of the testing package (instrument3b.patch.py over runner/run.ts,
+ *   read by budget-measure3b.py, beside it), each with its config's placeholder budget and its report's parts
+ * @observed 2026-11-27 13:30 to 14:42 UTC
+ * @environment cassowary, Ubuntu 26.04 (Linux 7.0.0-1018-aws) on AWS Graviton3, 64 arm64 CPUs, 247 GiB, load 340 to
+ *   480 from other sessions; Node 26.13.1; the toolchain at 24300eac with the change that states this budget
+ * @workload every property of the testing package, 284, at 4 workers (CPUQuota 800%), none answered from a verdict
+ *   cache (a fresh XDG_CACHE_HOME); each run of this config one the properties make in a consumer of their own
+ * @result 4 runs of it (under its measured budget and under each part of none), the most 2,614 ms
+ * @decision twice it, 5,228 ms
  * @revalidate a change to the consumer's properties, to the runner's own work in a run, or another machine
  */
-export const CONSUMER_BUDGET = 8_787
+const CONSUMER_RUN_BUDGET = 5_228
 
-/** The consumer's runner config: its test modules, nothing beyond the runner's own, and `millis` of CPU a run. */
-export const runnerConfigOf = (millis: number): string =>
-	`import { defineRunner, noMutation } from "@bjornpagen/testing/runner"\nimport { Layer } from "effect"\n\nexport default defineRunner({ budget: { kind: "cpu", millis: ${millis} }, include: ["test/*.test.ts"], smallStack: [], conditions: [], environment: [], layer: Layer.empty, mutation: noMutation })\n`
+/**
+ * The CPU one worker of a run of the consumer may spend importing one property's module (runner/config.ts RunBudget
+ * import).
+ * @limitKind measured
+ * @owner the testing library's fixtures
+ * @unit milliseconds of CPU, a worker's own (runner/usage.ts PropertyUsage imports)
+ * @scope each import of the consumer's test modules on a worker of its `toolchain-test run`
+ * @evidence ~/.cache/metis/METIS-DBOPT/runs/budget/3b/dbopt-3b-measure.jsonl in lane METIS-DBOPT's tree: one line per
+ *   runPackage of any runner config during a whole run of the testing package (instrument3b.patch.py over runner/run.ts,
+ *   read by budget-measure3b.py, beside it), each with its config's placeholder budget and its report's parts
+ * @observed 2026-11-27 13:30 to 14:42 UTC
+ * @environment cassowary, Ubuntu 26.04 (Linux 7.0.0-1018-aws) on AWS Graviton3, 64 arm64 CPUs, 247 GiB, load 340 to
+ *   480 from other sessions; Node 26.13.1; the toolchain at 24300eac with the change that states this budget
+ * @workload every property of the testing package, 284, at 4 workers (CPUQuota 800%), none answered from a verdict
+ *   cache (a fresh XDG_CACHE_HOME); each run of this config one the properties make in a consumer of their own
+ * @result 11 imports, the most 4 ms
+ * @decision the consumer's own most, 4 ms, is a small module's import beside a worker that holds the library already, and
+ *   the reuse property's plain consumer, a module of the same size, took up to 52 ms in this run; twice that, 104 ms,
+ *   so a small module's import that a collection or a compile lands in is no regression
+ * @revalidate a change to the consumer's properties, to the runner's own work in a run, or another machine
+ */
+const CONSUMER_IMPORT_BUDGET = 104
+
+/** The consumer's budget: both parts, measured. */
+export const CONSUMER_BUDGET: RunBudget = {
+	kind: "cpu",
+	run: CONSUMER_RUN_BUDGET,
+	import: CONSUMER_IMPORT_BUDGET
+}
+
+/** The consumer's runner config: its test modules, nothing beyond the runner's own, and `budget`. */
+export const runnerConfigOf = (budget: RunBudget): string =>
+	`import { defineRunner, noMutation } from "@bjornpagen/testing/runner"\nimport { Layer } from "effect"\n\nexport default defineRunner({ budget: { kind: "cpu", run: ${String(budget.run)}, import: ${String(budget.import)} }, include: ["test/*.test.ts"], smallStack: [], conditions: [], environment: [], layer: Layer.empty, mutation: noMutation })\n`
 
 /**
  * The consumer's files: its manifest, runner config, a passing property, a passing property whose kill survives (its

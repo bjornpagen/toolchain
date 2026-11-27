@@ -12,7 +12,7 @@ const layout: Layout = { library: "link", git: true, lockfile: true, typescript:
  * The consumer's runner config: a cluster of its own (pg.config.ts), its databases under `s_`, and a budget of none,
  * 0 ms, so its run ends past it, naming what it spent with its backends'.
  */
-const CONFIG = `import { defineRunner, noMutation } from "@bjornpagen/testing/runner"\nimport { pgOwnerSession, pgSuperuserSession } from "@bjornpagen/testing/pg-session"\nimport { DatabasePrefix, PgCluster } from "@bjornpagen/testing/resources"\nimport cluster from "./pg.config.ts"\n\nexport default defineRunner({ budget: { kind: "cpu", millis: 0 }, include: ["test/*.test.ts"], smallStack: [], conditions: [], environment: [], layer: PgCluster.layer({ prefix: DatabasePrefix("s_"), cluster, connect: pgOwnerSession("short"), superuser: pgSuperuserSession("short superuser") }), mutation: noMutation })\n`
+const CONFIG = `import { defineRunner, noMutation } from "@bjornpagen/testing/runner"\nimport { pgOwnerSession, pgSuperuserSession } from "@bjornpagen/testing/pg-session"\nimport { DatabasePrefix, PgCluster } from "@bjornpagen/testing/resources"\nimport cluster from "./pg.config.ts"\n\nexport default defineRunner({ budget: { kind: "cpu", run: 0, import: 0 }, include: ["test/*.test.ts"], smallStack: [], conditions: [], environment: [], layer: PgCluster.layer({ prefix: DatabasePrefix("s_"), cluster, connect: pgOwnerSession("short"), superuser: pgSuperuserSession("short superuser") }), mutation: noMutation })\n`
 
 /**
  * The consumer's property, `cases` cases: each opens a session of its own on a clone of an empty template (a backend
@@ -23,9 +23,22 @@ const CONFIG = `import { defineRunner, noMutation } from "@bjornpagen/testing/ru
 const propertyOf = (cases: number) =>
 	`import { appendFileSync, readFileSync } from "node:fs"\nimport { Effect } from "effect"\nimport { finite, int } from "@bjornpagen/testing/gen"\nimport { pgOwnerSession } from "@bjornpagen/testing/pg-session"\nimport { property } from "@bjornpagen/testing/property"\nimport { Database, Template } from "@bjornpagen/testing/resources"\n\nconst empty = Template.database({ declaredIn: import.meta, name: "empty", content: {}, from: Template.cluster, budget: ${String(plantedBudget)}, build: () => Effect.void })\n\nexport const short = property.exhaust(finite((source) => source.draw(int(1, ${String(cases)}))), {\n\tneeds: { db: Database.fresh(empty) },\n\tsituations: [],\n\tcheck: ({ db }) => () => Effect.scoped(Effect.gen(function* () {\n\t\tconst clone = yield* db\n\t\tconst session = yield* pgOwnerSession("short")(clone.member, clone.name)\n\t\tconst [[pid]] = yield* session.query("SELECT pg_catalog.pg_backend_pid()::text", [])\n\t\tyield* session.query("SELECT count(*)::text FROM pg_catalog.generate_series(1, 20000000)", [])\n\t\tconst stat = readFileSync(\`/proc/\${pid}/stat\`, "utf8")\n\t\tconst fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ")\n\t\tappendFileSync(new URL("../spent.txt", import.meta.url), \`\${(Number(fields[11]) + Number(fields[12])) * 10}\\n\`)\n\t})),\n\toracle: { kind: "specification", name: "a backend of its own counts twenty million rows" },\n\tkept: [],\n\tkills: []\n})\n`
 
-/** The run's backends' CPU and its CPU with theirs, as its JSON record holds them (runner/usage.ts UsageRecord), in ms. */
+/**
+ * The run's backends' CPU, its run part and of it the parent's and its run needs' opens, and each property's imports, as
+ * its JSON record holds them (runner/usage.ts UsageRecord), in ms.
+ */
 const Recorded = Schema.fromJsonString(
-	Schema.Struct({ report: Schema.Struct({ backends: Schema.Finite, metered: Schema.Finite }) })
+	Schema.Struct({
+		report: Schema.Struct({
+			backends: Schema.Finite,
+			run: Schema.Finite,
+			parent: Schema.Finite,
+			runNeeds: Schema.Finite,
+			rows: Schema.Array(
+				Schema.Struct({ label: Schema.String, imports: Schema.Array(Schema.Finite) })
+			)
+		})
+	})
 )
 
 /** One line of spent.txt: a backend's CPU in ms. */
@@ -35,8 +48,9 @@ const SpentLine = Schema.FiniteFromString
  * Writes the consumer of `cases` cases into `directory` from the library at `library` (Checkout.dir, so a kill's
  * mutant is in it), its cluster under a case cluster's unit name removed at the scope's end, settles its family and
  * runs `toolchain-test run` in it (reuse.fixtures.ts unitIn); answers the backends' CPU its run's JSON record counts,
- * the CPU with theirs it records, the lines the run printed that name its budget, and each case's backend's own CPU, as
- * the cases read them.
+ * what of its run part (usage.ts UsageReport run) its cases spent, the parent's outside its run needs' opens taken out,
+ * what the record says it spent of each part of its budget (budget.fixtures.ts Spent), the lines the run printed that
+ * say it went past a part, and each case's backend's own CPU, as the cases read them.
  */
 export const shortBackendsRun = (directory: string, library: string, cases: number) =>
 	Effect.scoped(
@@ -75,7 +89,8 @@ export const shortBackendsRun = (directory: string, library: string, cases: numb
 			)
 			return {
 				backends: recorded.report.backends,
-				metered: recorded.report.metered,
+				casesPart: recorded.report.run - (recorded.report.parent - recorded.report.runNeeds),
+				recorded: { run: recorded.report.run, rows: recorded.report.rows },
 				budgetLines: budgetLinesOf(`${stdout}${stderr}`),
 				spent
 			}

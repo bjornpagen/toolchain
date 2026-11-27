@@ -78,8 +78,11 @@ export const childrenSince = (before: Option.Option<number>): ChildrenCpu =>
  * the children its cases and readyings ran, the wall time its units and its readyings held the pool's workers (ms), and
  * what the budget meter read of its readyings and of its cases (live.ts processWorkNow: the worker's CPU, its
  * descendants' and the PostgreSQL backends it serves, which the worker's own CPU and its reaped children's hold none
- * of), of each of its openings on its own, what a need's budget bounds, and the CPU of the backends its worker's
- * sessions opened, as the worker counted them (runner/work.ts sessionsSpent) (ms).
+ * of), of each of its openings on its own, what a need's budget bounds, of each of its imports (a worker's own CPU in
+ * importing its module as it readied it, what the run's import budget bounds), and the CPU of the backends its worker's
+ * sessions opened, as the worker counted them (runner/work.ts sessionsSpent); and of its cases alone, their children's
+ * and their backends' as the worker counted them as each unit ended, what the run part holds beside its cases' CPU
+ * (ms).
  */
 export type PropertyUsage = Readonly<{
 	label: string
@@ -92,7 +95,10 @@ export type PropertyUsage = Readonly<{
 	readyingWork: number
 	casesWork: number
 	openings: ReadonlyArray<number>
+	imports: ReadonlyArray<number>
 	backends: number
+	casesChildrenCpu: number
+	casesBackends: number
 }>
 
 /** A property's usage of no case, no readying and no time, which every cost it spent adds to. */
@@ -107,7 +113,10 @@ export const unused = (label: string): PropertyUsage => ({
 	readyingWork: 0,
 	casesWork: 0,
 	openings: [],
-	backends: 0
+	imports: [],
+	backends: 0,
+	casesChildrenCpu: 0,
+	casesBackends: 0
 })
 
 /** Two usages of one property, summed. */
@@ -122,7 +131,10 @@ export const summed = (before: PropertyUsage, cost: PropertyUsage): PropertyUsag
 	readyingWork: before.readyingWork + cost.readyingWork,
 	casesWork: before.casesWork + cost.casesWork,
 	openings: [...before.openings, ...cost.openings],
-	backends: before.backends + cost.backends
+	imports: [...before.imports, ...cost.imports],
+	backends: before.backends + cost.backends,
+	casesChildrenCpu: before.casesChildrenCpu + cost.casesChildrenCpu,
+	casesBackends: before.casesBackends + cost.casesBackends
 })
 
 /**
@@ -150,8 +162,11 @@ export type PoolUsage = Readonly<{
 	children: ChildrenStated
 }>
 
-/** What a run measured: the parent's CPU (ms), and every pool's. */
-export type RunUsage = Readonly<{ parent: number } & PoolUsage>
+/**
+ * What a run measured: the parent's CPU, and of it what it spent opening the run's run needs (runner/runs.ts
+ * openedRuns), which their own budgets bound (ms); and every pool's.
+ */
+export type RunUsage = Readonly<{ parent: number; runNeeds: number } & PoolUsage>
 
 /**
  * One line of the report, every time in ms: a property's label and cases; its CPU (its cases', its readyings' and
@@ -171,7 +186,10 @@ const UsageRow = Schema.Struct({
 	readyingWork: Schema.Finite,
 	casesWork: Schema.Finite,
 	openings: Schema.Array(Schema.Finite),
+	imports: Schema.Array(Schema.Finite),
 	backends: Schema.Finite,
+	casesChildrenCpu: Schema.Finite,
+	casesBackends: Schema.Finite,
 	wall: Schema.Finite,
 	casesWall: Schema.Finite,
 	readyingWall: Schema.Finite,
@@ -182,19 +200,25 @@ const UsageRow = Schema.Struct({
 })
 
 /**
- * The report a run's usage gives: its CPU in all (ms), by where it was spent (the parent; the workers', in starting,
- * readying, cases and the rest; the children the workers waited for, and whether every reading of them was stated);
- * the CPU of the PostgreSQL backends its workers' sessions opened (`backends`), each read off its process by the worker
- * that holds it, which no process of the run holds; its CPU with theirs (`metered`), what its budget bounds;
- * every property's wall time on the workers, summed (ms); and each property's row, the longest on the workers first.
+ * The report a run's usage gives: its CPU in all (ms), by where it was spent (the parent, and of it its run needs'
+ * opens; the workers', in starting (and each worker's start, what the toolchain's own suite holds to its budget),
+ * readying, cases and the rest; the children the workers waited for, and whether
+ * every reading of them was stated); the CPU of the PostgreSQL backends its workers' sessions opened (`backends`), each
+ * read off its process by the worker that holds it, which no process of the run holds; its CPU with theirs
+ * (`metered`); the part of it no width of the run changes (`run`, what its run budget bounds): the parent's outside its
+ * run needs' opens, and the cases', their children's and their backends' as the workers counted them; every
+ * property's wall time on the workers, summed (ms); and each property's row, the longest on the workers first.
  */
 const UsageReport = Schema.Struct({
 	total: Schema.Finite,
 	metered: Schema.Finite,
+	run: Schema.Finite,
 	backends: Schema.Finite,
 	parent: Schema.Finite,
+	runNeeds: Schema.Finite,
 	workers: Schema.Finite,
 	workersStarted: Schema.Finite,
+	workerStarts: Schema.Array(Schema.Finite),
 	readying: Schema.Finite,
 	cases: Schema.Finite,
 	workersOther: Schema.Finite,
@@ -276,7 +300,10 @@ export const reportOf = (usage: RunUsage, landed: ReadonlyArray<Landed>): UsageR
 				readyingWork: one.readyingWork,
 				casesWork: one.casesWork,
 				openings: one.openings,
+				imports: one.imports,
 				backends: one.backends,
+				casesChildrenCpu: one.casesChildrenCpu,
+				casesBackends: one.casesBackends,
 				wall: one.wall,
 				casesWall: one.casesWall,
 				readyingWall: one.readyingWall,
@@ -287,12 +314,20 @@ export const reportOf = (usage: RunUsage, landed: ReadonlyArray<Landed>): UsageR
 			}
 		] as const
 	})
+	const casesSpent = Arr.reduce(
+		properties,
+		0,
+		(sum, one) => sum + one.casesCpu + one.casesChildrenCpu + one.casesBackends
+	)
 	return {
 		total: usage.parent + workers + children,
 		metered: usage.parent + workers + children + backends,
+		run: usage.parent - usage.runNeeds + casesSpent,
 		backends,
 		parent: usage.parent,
+		runNeeds: usage.runNeeds,
 		workersStarted,
+		workerStarts: Arr.map(usage.workers, (worker) => worker.started),
 		readying,
 		cases,
 		workersOther: workers - workersStarted - readying - cases,
@@ -332,7 +367,7 @@ const PRINTED_LONGEST = 20
  * above it too, its cases and its units' wall time per case, its CPU and its time to its verdict.
  */
 export const usageLines = (report: UsageReport): ReadonlyArray<string> => [
-	`CPU ${seconds(report.total)}: parent ${seconds(report.parent)}, workers ${seconds(report.workers)} (starting ${seconds(report.workersStarted)}, readying ${seconds(report.readying)}, cases ${seconds(report.cases)}, the rest ${seconds(report.workersOther)}), ${childrenText(report)}; its backends ${seconds(report.backends)}, ${seconds(report.metered)} with them`,
+	`CPU ${seconds(report.total)}: parent ${seconds(report.parent)}, workers ${seconds(report.workers)} (starting ${seconds(report.workersStarted)}, readying ${seconds(report.readying)}, cases ${seconds(report.cases)}, the rest ${seconds(report.workersOther)}), ${childrenText(report)}; its backends ${seconds(report.backends)}, ${seconds(report.metered)} with them, ${seconds(report.run)} of it beyond the workers' starts and readyings and the run needs' opens, what its run budget bounds`,
 	`wall time on the workers ${seconds(report.wall)}, the ${Math.min(PRINTED_LONGEST, report.rows.length)} longest of ${report.rows.length} properties:`,
 	...Arr.map(
 		Arr.take(report.rows, PRINTED_LONGEST),
@@ -341,17 +376,37 @@ export const usageLines = (report: UsageReport): ReadonlyArray<string> => [
 	)
 ]
 
-/** A run's CPU against its budget: within it, or over it, with the line that says by how much. */
-export type Spent = Readonly<{ kind: "within" }> | Readonly<{ kind: "over"; line: string }>
+/**
+ * A run's CPU against its budget: within both parts, or over one or both, with a line for each part it went past
+ * saying by how much.
+ */
+export type Spent =
+	| Readonly<{ kind: "within" }>
+	| Readonly<{ kind: "over"; lines: Arr.NonEmptyReadonlyArray<string> }>
 
-/** Whether the run's CPU with its backends' (`metered`) stays within `budget`, its test.config.ts's. */
-export const spentOf = (report: UsageReport, budget: RunBudget): Spent =>
-	report.metered > budget.millis
-		? {
-				kind: "over",
-				line: `over its CPU budget: the run spent ${seconds(report.metered)} of CPU, its backends' among it, its test.config.ts's budget ${seconds(budget.millis)}`
-			}
-		: { kind: "within" }
+/**
+ * Whether the run stays within both parts of `budget`, its test.config.ts's: its CPU beyond its workers' starts and
+ * readyings and its run needs' opens (`run`) within the run part, and every import of every property's module within
+ * the import part, a line for the run part past it and one for each property whose most costly import went past.
+ */
+export const spentOf = (report: UsageReport, budget: RunBudget): Spent => {
+	const lines = [
+		...(report.run > budget.run
+			? [
+					`over its run budget: the run spent ${seconds(report.run)} of CPU beyond its workers' starts and readyings and its run needs' opens (its parent's and its cases', their children's and backends' among it), its test.config.ts's run budget ${seconds(budget.run)}`
+				]
+			: []),
+		...Arr.flatMap(report.rows, (row) => {
+			const most = Arr.reduce(row.imports, 0, (larger, one) => Math.max(larger, one))
+			return most > budget.import
+				? [
+						`over its import budget: ${row.label}'s module took ${seconds(most)} of CPU to import on a worker, its test.config.ts's import budget ${seconds(budget.import)}`
+					]
+				: []
+		})
+	]
+	return Arr.isReadonlyArrayNonEmpty(lines) ? { kind: "over", lines } : { kind: "within" }
+}
 
 /**
  * What a property's verdict line adds as it lands: its search's wall time to its verdict, and its wall time on the

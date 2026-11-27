@@ -51,7 +51,7 @@ import { runValuesOf } from "#runner/runs.ts"
 import { ModuleClosure, RunValues, WorkerIndex } from "#runner/services.ts"
 import { runOfLabel } from "#runner/stack.ts"
 import { childrenCpuNow, childrenSince } from "#runner/usage.ts"
-import { reportWaitsTo, sessionsSpent } from "#runner/work.ts"
+import { ownCpu, reportWaitsTo, sessionsSpent } from "#runner/work.ts"
 import { startProcessCoverage } from "#sense.ts"
 
 /**
@@ -203,24 +203,27 @@ const main = Effect.gen(function* () {
 	const readied = new Map<string, Readied>()
 
 	/**
-	 * A property readied here for `unit`, its module imported, then the parent told the budget of the needs it opens
-	 * now and those needs opened at once, before any case of it; its needs' keys are held for it until it retires.
+	 * A property readied here for `unit`, its module imported (this process's own CPU in it, `importedCpu`, the
+	 * observer's left out), then the parent told the budget of the needs it opens now and those needs opened at once,
+	 * before any case of it; its needs' keys are held for it until it retires.
 	 */
 	const ready = (
 		label: string,
 		unit: number
-	): Effect.Effect<Readonly<{ readied: Readied; imported: number }>> =>
+	): Effect.Effect<Readonly<{ readied: Readied; imported: number; importedCpu: number }>> =>
 		Effect.gen(function* () {
+			const before = ownCpu()
 			const [importing, loaded] = yield* Effect.timed(
 				Effect.result(propertyAt(root, runOfLabel(label).id))
 			)
 			const imported = Duration.toMillis(importing)
+			const importedCpu = ownCpu() - before
 			if (Result.isFailure(loaded)) {
 				const refused: Readied = {
 					kind: "refused",
 					result: lostResult(loaded.failure.message, lostOtherwise)
 				}
-				return { readied: refused, imported }
+				return { readied: refused, imported, importedCpu }
 			}
 			holdings.readied(label, needKeysOf(loaded.success.needs))
 			yield* send({
@@ -231,7 +234,7 @@ const main = Effect.gen(function* () {
 			const opened = yield* readiedOf(loaded.success.ready).pipe(
 				Effect.provideService(NeedCache, cache)
 			)
-			return { readied: opened, imported }
+			return { readied: opened, imported, importedCpu }
 		}).pipe(Effect.provideContext(platform))
 
 	/** Retires a property: no unit of it comes again, so the needs only it held here are released. */
@@ -261,6 +264,7 @@ const main = Effect.gen(function* () {
 						unit: unit.unit,
 						millis: Duration.toMillis(took),
 						imported: made.imported,
+						importedCpu: made.importedCpu,
 						cpu: millisOf(process.cpuUsage(cpu)),
 						children: childrenSince(children),
 						backends: sessionsSpent(),

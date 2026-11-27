@@ -4,15 +4,15 @@ import { finite, int } from "#gen.ts"
 import { Checkout } from "#mutate/checkout.ts"
 import { property } from "#property.ts"
 import { Scratch } from "#resources/scratch.ts"
-import { overLineOf } from "#runner/budget.fixtures.ts"
+import { overLinesOf } from "#runner/budget.fixtures.ts"
 import { runsAtOnce, shortBackendsRun } from "#runner/session-backends.fixtures.ts"
 
 /**
  * A run counts every backend its sessions opened, however briefly it lived (runner/work.ts sessionsSpent): a consumer whose
  * one to three cases each open a backend of their own, spend a second or two of its CPU and close it, all inside one
- * window of the budget meter's, so no reading of the meter's sees it, runs `toolchain-test run` under a budget of 0 ms,
- * and its JSON record's backends hold at least what each backend read of itself just before it closed, and the line it
- * fails on names the CPU it recorded with its backends'. Each case writes the consumer from
+ * window of the budget meter's, so no reading of the meter's sees it, runs `toolchain-test run` under budget parts of
+ * 0 ms, and its JSON record's backends, and the part of its run part its cases spent, each hold at least what each
+ * backend read of itself just before it closed, and the lines it fails on name what it recorded. Each case writes the consumer from
  * the checkout's own library (Checkout.dir, so a kill's mutant is in it), with a cluster of its own, and runs it in a
  * unit of systemd's. Oracle: each backend's own CPU, read off /proc/<pid>/stat by the case that opened it.
  */
@@ -28,7 +28,7 @@ export const shortBackendsAreCounted = property.exhaust(
 				Effect.gen(function* () {
 					const scratch = yield* directory
 					const library = yield* checkout
-					const { backends, metered, budgetLines, spent } = yield* shortBackendsRun(
+					const { backends, casesPart, recorded, budgetLines, spent } = yield* shortBackendsRun(
 						scratch,
 						library,
 						cases
@@ -38,9 +38,15 @@ export const shortBackendsAreCounted = property.exhaust(
 						{
 							cases: spent.length,
 							counted: backends >= own ? "every backend's CPU" : `${String(backends)} ms`,
+							casesPart: casesPart >= own ? "every backend's CPU" : `${String(casesPart)} ms`,
 							budgetLines
 						},
-						{ cases, counted: "every backend's CPU", budgetLines: [overLineOf(metered, 0)] },
+						{
+							cases,
+							counted: "every backend's CPU",
+							casesPart: "every backend's CPU",
+							budgetLines: overLinesOf(recorded, { kind: "cpu", run: 0, import: 0 })
+						},
 						`the run counted ${String(backends)} ms of its backends' CPU, its cases' backends ${String(own)} ms`
 					)
 				}),
@@ -58,9 +64,10 @@ export const shortBackendsAreCounted = property.exhaust(
 			},
 			{
 				file: "packages/testing/src/runner/usage.ts",
-				original: "(report.metered)} of CPU, its backends'",
-				replacement: "(report.total)} of CPU, its backends'",
-				why: "The line a run past its budget fails on names its CPU without its backends', so it understates what a database suite spent; the property fails."
+				original:
+					"\t\t(sum, one) => sum + one.casesCpu + one.casesChildrenCpu + one.casesBackends\n",
+				replacement: "\t\t(sum, one) => sum + one.casesCpu + one.casesChildrenCpu\n",
+				why: "The run part leaves out the backends its cases' sessions were served, so it understates what a database suite spent; the property fails."
 			}
 		]
 	}

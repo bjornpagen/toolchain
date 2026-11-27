@@ -1080,6 +1080,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 											readyingCpu: received.cpu,
 											childrenCpu: childrenMillis(received.children),
 											readyingWall: received.millis,
+											imports: [received.importedCpu],
 											backends: received.backends
 										})
 										afterFinished(scheduler, view, apply, worker.index, unit.module)
@@ -1105,8 +1106,10 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 									answeredOn(worker, unit.value.property, received.drained)
 									spent(unit.value.property, {
 										childrenCpu: childrenMillis(received.children),
+										casesChildrenCpu: childrenMillis(received.children),
 										casesWall: held,
-										backends: received.backends
+										backends: received.backends,
+										casesBackends: received.backends
 									})
 									finish(worker, unit.value, received.done)
 									afterFinished(scheduler, view, apply, worker.index, unit.value.module)

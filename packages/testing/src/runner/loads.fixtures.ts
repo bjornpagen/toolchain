@@ -139,7 +139,7 @@ const filesOf = (drawn: Package): ConsumerFiles => [
 	["package.json", manifestOf(layout)],
 	[
 		"test.config.ts",
-		`import { defineRunner, noMutation } from "@bjornpagen/testing/runner"\nimport { Layer } from "effect"\n\nexport default defineRunner({ budget: { kind: "cpu", millis: ${String(UNRUN_BUDGET)} }, include: ["test/*.test.ts"], smallStack: [], conditions: [], environment: [], layer: Layer.empty, mutation: noMutation })\n`
+		`import { defineRunner, noMutation } from "@bjornpagen/testing/runner"\nimport { Layer } from "effect"\n\nexport default defineRunner({ budget: { kind: "cpu", run: ${String(UNRUN_BUDGET)}, import: ${String(UNRUN_BUDGET)} }, include: ["test/*.test.ts"], smallStack: [], conditions: [], environment: [], layer: Layer.empty, mutation: noMutation })\n`
 	],
 	["test/plain.test.ts", `${PROLOGUE}export const plain = property.explore(int(0, 9), spec)\n`],
 	["test/shared.ts", FIXTURE],
@@ -506,7 +506,7 @@ export const loadedApartOnce = (directory: string, library: string, drawn: Apart
 			["package.json", manifestOf(layout)],
 			[
 				"test.config.ts",
-				`import { defineRunner, noMutation } from "@bjornpagen/testing/runner"\nimport { Layer } from "effect"\n\nexport default defineRunner({ budget: { kind: "cpu", millis: ${String(UNRUN_BUDGET)} }, include: ["test/*.test.ts"], smallStack: [], conditions: [], environment: [], layer: Layer.empty, mutation: noMutation })\n`
+				`import { defineRunner, noMutation } from "@bjornpagen/testing/runner"\nimport { Layer } from "effect"\n\nexport default defineRunner({ budget: { kind: "cpu", run: ${String(UNRUN_BUDGET)}, import: ${String(UNRUN_BUDGET)} }, include: ["test/*.test.ts"], smallStack: [], conditions: [], environment: [], layer: Layer.empty, mutation: noMutation })\n`
 			],
 			...Arr.map(modules, (module) => [module.path, textOf(module)] as const)
 		])

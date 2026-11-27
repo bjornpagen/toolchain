@@ -107,8 +107,8 @@ const keyingOf = (selected: ReadonlyArray<string>, seeding: Seeding) =>
  * template, and its seeds, each its key's unless TEST_SEED names one for all), every other's search run (runPackage) and
  * its verdict kept under its key, a pass only where no worker that ran it had observed past its key
  * (runner/observe.ts); then the run's JSON record, every failure and the run's usage, and each property said cached or
- * run; 1 when any search failed, or when the run spent more CPU than its test.config.ts's budget (RunBudget), saying
- * by how much. A package with no verdict key runs every property, saying why. It judges no kill: that is the kill
+ * run; 1 when any search failed, or when the run went past either part of its test.config.ts's budget (RunBudget),
+ * a line for each part it went past saying by how much. A package with no verdict key runs every property, saying why. It judges no kill: that is the kill
  * census (`kills`).
  */
 const run = (selected: ReadonlyArray<string>) =>
@@ -185,7 +185,7 @@ const run = (selected: ReadonlyArray<string>) =>
 						`its CPU and wall time, every property's, as JSON: ${written}`,
 						"",
 						`${discovered.length} properties: ${cached.length} cached, ${ranCount} run (${observed} observed past their keys, never cached), ${failing} failed, in ${Math.round(outcome.millis)} ms on ${outcome.workers.length} workers`,
-						...(spent.kind === "over" ? [spent.line] : [])
+						...(spent.kind === "over" ? spent.lines : [])
 					],
 					"\n"
 				)

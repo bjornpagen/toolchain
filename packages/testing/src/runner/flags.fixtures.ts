@@ -28,7 +28,7 @@ const configText = (stated: Exclude<Stated, "none">): string => {
 				[
 					`import { Layer } from "${import.meta.resolve("effect")}"`,
 					`import { defineRunner, noMutation } from "${import.meta.resolve("#runner/config.ts")}"`,
-					`export default defineRunner({ budget: { kind: "cpu", millis: ${String(UNRUN_BUDGET)} }, include: ["test/*.test.ts"], smallStack: [], conditions: [${Arr.join(
+					`export default defineRunner({ budget: { kind: "cpu", run: ${String(UNRUN_BUDGET)}, import: ${String(UNRUN_BUDGET)} }, include: ["test/*.test.ts"], smallStack: [], conditions: [${Arr.join(
 						Arr.map(CONDITIONS, (condition) => `"${condition}"`),
 						", "
 					)}], layer: Layer.empty, mutation: noMutation })`,

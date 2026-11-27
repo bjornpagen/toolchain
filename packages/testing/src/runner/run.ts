@@ -96,7 +96,7 @@ export const emptyOutcome: RunOutcome = {
 	millis: 0,
 	workers: [],
 	held: [],
-	usage: { parent: 0, properties: [], workers: [], children: "stated" }
+	usage: { parent: 0, runNeeds: 0, properties: [], workers: [], children: "stated" }
 }
 
 /** Whether every run of a property (on every stack it ran on) passed its search, and it ran at all. */
@@ -403,11 +403,13 @@ export const runPackage = (
 		)(
 			Effect.scoped(
 				Effect.gen(function* () {
+					const opening = yield* Effect.sync(() => process.cpuUsage())
 					const values = yield* openedRuns(
 						runNeedsOf(Arr.map(discovered, (found) => found.property.needs)),
 						request.root,
 						needStallMillis
 					)
+					const opened = yield* Effect.sync(() => process.cpuUsage(opening))
 					const runs = Arr.map(discovered, (found) => ({ found, stack: stackOf(found) }))
 					const kinds = new Map(
 						Arr.map(runs, ({ found, stack }) => {
@@ -536,6 +538,7 @@ export const runPackage = (
 						held: Arr.flatten(held),
 						usage: {
 							parent: (parent.user + parent.system) / 1000,
+							runNeeds: (opened.user + opened.system) / 1000,
 							properties: Arr.flatMap(usages, (usage) => usage.properties),
 							workers: Arr.flatMap(usages, (usage) => usage.workers),
 							children: Arr.every(usages, (usage) => usage.children === "stated")

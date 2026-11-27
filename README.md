@@ -14,6 +14,28 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: a run's budget holds two parts no width changes (2026-11-27)
+
+A run's budget was one number over all its CPU. Every worker readies each property it runs, importing its module and
+opening its needs, so a run on more workers spent more: a budget measured on one worker was refused on two or three
+(metis's syzkaller-world: 90.7 s of its 239 s readying on one worker). Now a run's budget has two parts, and neither
+changes with the run's width:
+
+- **`budget: { kind: "cpu", run, import }`** in `defineRunner` (runner/config.ts RunBudget), both required.
+  - `run` holds the run's CPU beyond its workers' starts and readyings and its run needs' opens (the report's `run`):
+    the parent's, and the cases' with their children's and their backends'.
+  - `import` holds the most one worker may spend importing one property's module (each row's `imports`).
+  - Each open stays held by its need's budget, at every width, as before. A worker's start is the toolchain's own
+    work, held by its own suite.
+- `toolchain-test run` fails a run past either part, in a line for each part it went past. An import past its part is
+  named by its property.
+- **Every report carries the parts**: `run`, `runNeeds` (the parent's CPU in its run needs' opens), `workerStarts`,
+  and on each row `imports`, `casesChildrenCpu` and `casesBackends`. `metered` stays the whole run's CPU with its
+  backends'.
+
+Before you move `vendor/toolchain` past this section, measure a whole run of each package with a `test.config.ts`, as
+below, at any width. State twice the report's `run` as `run`, and twice the largest of its rows' `imports` as `import`.
+
 ## Consumer migration: a template and the database it was built in share a per-build key (2026-11-27)
 
 A template was named by its identity and its build's reads, and its build database by its identity alone. So a build
