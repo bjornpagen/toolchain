@@ -262,11 +262,7 @@ export const eachPreloadedLibraryLoadsItsWay = property.exhaust(finite(preloads)
 						at,
 						database,
 						Arr.prepend(
-							Arr.map(
-								probes,
-								([, probe]) =>
-									`SELECT coalesce(pg_catalog.current_setting('${probe.setting}', true), '(absent)')`
-							),
+							Arr.map(probes, ([, probe]) => `SELECT coalesce(${probe.read}, '(absent)')`),
 							"SELECT pg_catalog.current_database()"
 						),
 						{ cluster: family.name, doing: `reading what a session in ${database} loaded` }

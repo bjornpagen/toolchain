@@ -399,16 +399,26 @@ export const clusterOf = (shape: Shape) =>
 	)
 
 /**
- * What tells that a session loaded each library a cluster may preload: a setting the library defines, which
- * current_setting reads as NULL where the library is not loaded, and as its inert value where it is (settings.ts
- * preloadSettings). Total over the roster, so a library added to it states how a session shows it.
+ * What tells that a session loaded each library a cluster may preload: an expression its session reads as NULL where
+ * the library is not loaded, and as `value` where it is. A library that defines a setting is read by it, at its inert
+ * value (settings.ts preloadSettings); one that defines none, by its module's name among those the session loaded
+ * (pg_get_loaded_modules, the module's PG_MODULE_MAGIC_EXT name). Total over the roster, so a library added to it
+ * states how a session shows it.
  */
 export const loadedProbes = {
-	pg_stat_statements: { setting: "pg_stat_statements.track", value: "none" },
-	pg_plan_advice: { setting: "pg_plan_advice.feedback_warnings", value: "off" }
-} as const satisfies Readonly<
-	Record<PreloadedLibrary, Readonly<{ setting: string; value: string }>>
->
+	pg_stat_statements: {
+		read: "pg_catalog.current_setting('pg_stat_statements.track', true)",
+		value: "none"
+	},
+	pg_plan_advice: {
+		read: "pg_catalog.current_setting('pg_plan_advice.feedback_warnings', true)",
+		value: "off"
+	},
+	pg_overexplain: {
+		read: "(SELECT m.module_name FROM pg_catalog.pg_get_loaded_modules() AS m WHERE m.module_name = 'pg_overexplain')",
+		value: "pg_overexplain"
+	}
+} as const satisfies Readonly<Record<PreloadedLibrary, Readonly<{ read: string; value: string }>>>
 
 /** Every subset of the libraries a cluster may preload, in the roster's order, one case each. */
 export const preloads: Gen<ReadonlyArray<PreloadedLibrary>> = (source) =>

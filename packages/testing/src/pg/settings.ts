@@ -291,8 +291,19 @@ const serializableXactBytes = 168
  */
 const maxAllocBytes = 0x3fffffff
 
-/** A setting as postgresql.conf, ALTER SYSTEM and pg_settings spell it: its name and its value's text. */
-export type Setting = readonly [name: string, value: string]
+/**
+ * A setting's value: its text, or a list's items, a list setting's (a GUC_LIST_QUOTE one's, such as the preload
+ * libraries'), whose value one literal holding a comma would make one item named by the whole text, so ALTER SYSTEM
+ * takes each item as a literal of its own.
+ */
+export type SettingValue = string | { readonly list: Arr.NonEmptyReadonlyArray<string> }
+
+/** A setting as postgresql.conf and ALTER SYSTEM write it and pg_settings spells it: its name and its value. */
+export type Setting = readonly [name: string, value: SettingValue]
+
+/** A setting's value as pg_settings spells it: its text, or a list's items, each after the one before and a comma. */
+export const settingText = (value: SettingValue): string =>
+	typeof value === "string" ? value : Arr.join(value.list, ", ")
 
 /**
  * The settings every member of every cluster holds exactly, whatever the machine and the repository, each as
@@ -382,7 +393,7 @@ const preloadSettings = (cluster: LocalCluster): ReadonlyArray<Setting> => [
 			Arr.filter(cluster.preload, (library) => factsOf(library).loading === loading),
 			{
 				onEmpty: (): ReadonlyArray<Setting> => [],
-				onNonEmpty: (libraries): ReadonlyArray<Setting> => [[setting, Arr.join(libraries, ",")]]
+				onNonEmpty: (libraries): ReadonlyArray<Setting> => [[setting, { list: libraries }]]
 			}
 		)
 	),
@@ -585,6 +596,15 @@ export const sizedSettings = (
 	]
 }
 
-/** A setting as postgresql.conf and ALTER SYSTEM write it: its value quoted, which PostgreSQL reads for every type. */
+/**
+ * A setting as postgresql.conf and ALTER SYSTEM write it: its value quoted, which PostgreSQL reads for every type, a
+ * list's each item quoted apart.
+ */
 export const settingLine = ([name, value]: Setting): string =>
-	`${name} = '${Str.replaceAll("'", "''")(value)}'`
+	`${name} = ${Arr.join(
+		Arr.map(
+			typeof value === "string" ? [value] : value.list,
+			(text) => `'${Str.replaceAll("'", "''")(text)}'`
+		),
+		", "
+	)}`

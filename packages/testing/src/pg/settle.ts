@@ -50,6 +50,7 @@ import {
 	membersOf,
 	type Setting,
 	settingLine,
+	settingText,
 	shareOf,
 	sizedSettings
 } from "#pg/settings.ts"
@@ -305,7 +306,8 @@ const differing = (
 			return [
 				...Arr.flatMap(expected, ([name, value]): ReadonlyArray<Drift> => {
 					const actual = held.get(name) ?? "(absent)"
-					return actual === value ? [] : [{ kind: "held", name, expected: value, actual }]
+					const text = settingText(value)
+					return actual === text ? [] : [{ kind: "held", name, expected: text, actual }]
 				}),
 				...Arr.map(
 					Arr.filter(rows, (row) => row.source === "written"),

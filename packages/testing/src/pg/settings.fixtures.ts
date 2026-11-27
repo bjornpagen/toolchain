@@ -1,5 +1,5 @@
 import { Array as Arr, Option } from "effect"
-import type { Setting } from "#pg/settings.ts"
+import { type Setting, settingText } from "#pg/settings.ts"
 
 /**
  * What the predicate settings property (settings.test.ts) reads a member's settings by: a setting's value by its name,
@@ -10,7 +10,7 @@ import type { Setting } from "#pg/settings.ts"
 export const valueOf = (settings: ReadonlyArray<Setting>, name: string): Option.Option<number> =>
 	Option.map(
 		Arr.findFirst(settings, ([named]) => named === name),
-		([, value]) => Number(value)
+		([, value]) => Number(settingText(value))
 	)
 
 /**

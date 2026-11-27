@@ -92,6 +92,11 @@ export type PreloadedLibraryFacts = Readonly<{
  *   where none is (pgpa_planner.c pgpa_planner_setup): grizzle carries every statement's plan as advice and refuses a
  *   session without the library. Loaded by each session, so a test of that refusal opens its sessions in a database
  *   of its own that sets it off; inert with no setting; no SQL interface.
+ * - `pg_overexplain`, PostgreSQL 19's EXPLAIN options module, whose EXPLAIN (RANGE_TABLE) prints each scan's range
+ *   table index and each range table entry's alias and the subplan it was planned in: the target an advice item names
+ *   a scan by (pg_plan_advice's pgpa_identifier.c), where EXPLAIN's display names are made unique past it. It hooks
+ *   EXPLAIN alone, so it changes no plan; loaded by each session, as LOAD of it is a superuser's; inert with no
+ *   setting; no SQL interface. Tests read plans with it; no production session loads it.
  */
 const preloadedLibraries = {
 	pg_stat_statements: {
@@ -103,7 +108,8 @@ const preloadedLibraries = {
 		],
 		extension: true
 	},
-	pg_plan_advice: { loading: "session", inert: [], extension: false }
+	pg_plan_advice: { loading: "session", inert: [], extension: false },
+	pg_overexplain: { loading: "session", inert: [], extension: false }
 } as const satisfies Readonly<Record<string, PreloadedLibraryFacts>>
 
 /** A library of `preloadedLibraries`. */
