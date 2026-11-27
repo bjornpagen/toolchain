@@ -389,13 +389,14 @@ export type WaitChange = Readonly<{ kind: "waiting" }> | Readonly<{ kind: "waite
 type OpenWait = Readonly<{ id: number; on: string }>
 
 /**
- * A process's declared waits, each open one (its name: a template's build), the next wait's id, and where it reports
- * each change of them: to its pool, in a worker (runner/worker.ts), since the pool watches the worker from outside it;
- * nowhere in a process no pool watches.
+ * A process's declared waits, each open one (its name: a template's build), the name of the last that closed, the next
+ * wait's id, and where it reports each change of them: to its pool, in a worker (runner/worker.ts), since the pool
+ * watches the worker from outside it; nowhere in a process no pool watches.
  */
 type ProcessWaits = {
 	waits: Waits
 	open: ReadonlyArray<OpenWait>
+	last: Option.Option<string>
 	next: number
 	report: Option.Option<(change: WaitChange) => void>
 }
@@ -409,6 +410,7 @@ const processWaits = (): ProcessWaits => {
 	globalThis.bjornpagenTestingWaits ??= {
 		waits: noWaits,
 		open: [],
+		last: Option.none(),
 		next: 0,
 		report: Option.none()
 	}
@@ -493,6 +495,7 @@ export const leaveWait = (wall: number, id: number): void => {
 	Option.map(
 		Arr.findFirstIndex(ledger.open, (open) => open.id === id),
 		(at) => {
+			ledger.last = Option.map(Arr.get(ledger.open, at), (closed) => closed.on)
 			ledger.open = Arr.remove(ledger.open, at)
 			ledger.waits = waitLeft(ledger.waits, wall)
 			if (ledger.waits.open === 0) {
@@ -506,6 +509,17 @@ export const leaveWait = (wall: number, id: number): void => {
 export const waitedOnNow = (): ReadonlyArray<string> =>
 	Arr.map(processWaits().open, (open) => open.on)
 
+/**
+ * The declared waits that hold this process's work now: those open (waitedOnNow), or where none is, the last that
+ * closed, since waits that follow one another hold the work between two of them as well (a poll of waits is between two
+ * at most readings), so a work its waits held is never read as held by none.
+ */
+const waitsHolding = (): ReadonlyArray<string> =>
+	Arr.match(waitedOnNow(), {
+		onEmpty: () => Option.toArray(processWaits().last),
+		onNonEmpty: (open) => open
+	})
+
 /** What a hung case's report adds of the declared waits open at its verdict: what each waits on, or nothing. */
 export const waitedOnText = (on: ReadonlyArray<string>): string =>
 	Arr.match(on, {
@@ -517,14 +531,16 @@ export const waitedOnText = (on: ReadonlyArray<string>): string =>
 const ownWaited = (wall: number): number => waitedBy(processWaits().waits, wall)
 
 /**
- * A process tree's work as a guard reads it: where it began, the CPU (ms) it has spent by now, on the same scale, and
- * the wall milliseconds it has spent in declared waits on work by a moment on the live clock (Waits). Its live
- * descendants count only when started since it began; a descendant started earlier (a helper a need left running) is
- * no part of this work.
+ * A process tree's work as a guard reads it: where it began, the CPU (ms) it has spent by now, on the same scale, the
+ * wall milliseconds it has spent in declared waits on work by a moment on the live clock (Waits), and what the declared
+ * waits holding it now wait on (`holding`: a process's own, waitsHolding; another's reach its pool unnamed, so none).
+ * Its live descendants count only when started since it began; a descendant started earlier (a helper a need left
+ * running) is no part of this work.
  */
 export type TreeWork = Readonly<{
 	began: Reading
 	waited: (wall: number) => number
+	holding: () => ReadonlyArray<string>
 	effort: () => Effort
 	refresh: Effect.Effect<void>
 }>
@@ -536,6 +552,7 @@ export const readingOf = (work: TreeWork, wall: number): Reading => {
 		wall,
 		cpu: effort.cpu,
 		waited: work.waited(wall),
+		holding: work.holding(),
 		stir: effort.stir,
 		carried: effort.carried
 	}
@@ -569,10 +586,12 @@ export const ownWork = (wall: number, own: number): TreeWork => {
 			wall,
 			cpu: own + reaped(self),
 			waited: ownWaited(wall),
+			holding: waitsHolding(),
 			stir: stirOwn(),
 			carried: 0
 		},
 		waited: ownWaited,
+		holding: waitsHolding,
 		effort: () => {
 			const reading = process.threadCpuUsage()
 			const cpu = ownCpu() + reaped(statOf("self"))
@@ -642,8 +661,16 @@ export const processWork = (
 	}
 	const began = effort()
 	return {
-		began: { wall, cpu: began.cpu, waited: waited(wall), stir: began.stir, carried: began.carried },
+		began: {
+			wall,
+			cpu: began.cpu,
+			waited: waited(wall),
+			holding: [],
+			stir: began.stir,
+			carried: began.carried
+		},
 		waited,
+		holding: () => [],
 		effort,
 		refresh: Effect.andThen(
 			refreshBackends(tree),
@@ -710,6 +737,7 @@ export type Reading = Readonly<{
 	wall: number
 	cpu: number
 	waited: number
+	holding: ReadonlyArray<string>
 	stir: Stir
 	carried: number
 }>
@@ -734,7 +762,12 @@ export type Standing = Readonly<{ kind: "working"; window: Reading; readAgainAt:
  */
 export const Overrun = Schema.Union([
 	Schema.Struct({ kind: Schema.Literal("spent"), spent: Schema.Finite, budget: Schema.Finite }),
-	Schema.Struct({ kind: Schema.Literal("waited"), waited: Schema.Finite, bound: Schema.Finite }),
+	Schema.Struct({
+		kind: Schema.Literal("waited"),
+		waited: Schema.Finite,
+		bound: Schema.Finite,
+		on: Schema.Array(Schema.String)
+	}),
 	Schema.Struct({
 		kind: Schema.Literal("stalled"),
 		moved: Schema.Finite,
@@ -767,7 +800,7 @@ export const overrunText = (overrun: Overrun): string => {
 		case "spent":
 			return `its process tree spent ${seconds(overrun.spent)} of CPU, its budget ${seconds(overrun.budget)}`
 		case "waited":
-			return `its declared waits on work held it ${seconds(overrun.waited)} of wall time in all, its bound ${seconds(overrun.bound)}, each wait answered and the next begun`
+			return `its declared waits on work held it ${seconds(overrun.waited)} of wall time in all, its bound ${seconds(overrun.bound)}, each wait answered and the next begun${Arr.match(overrun.on, { onEmpty: () => "", onNonEmpty: (on) => `, waiting on ${Arr.join(on, "; ")}` })}`
 		case "stalled":
 			return `its process tree's CPU moved ${overrun.moved.toFixed(0)} ms over ${seconds(overrun.over)} it could have run (its wall time outside declared waits on work, ${seconds(overrun.waited)} in them besides, less ${overrun.queued.toFixed(1)} ms its processes waited to run), under the ${overrun.progress.toFixed(0)} ms that shows progress over its stall window of ${seconds(overrun.window)}, and no process of its tree did storage work`
 	}
@@ -827,7 +860,7 @@ export const standingOf = (
 	}
 	const waitedAll = now.waited - began.waited
 	if (waitedAll >= bound.waited) {
-		return judged({ kind: "waited", waited: waitedAll, bound: bound.waited })
+		return judged({ kind: "waited", waited: waitedAll, bound: bound.waited, on: now.holding })
 	}
 	const waited = now.waited - window.waited
 	const queued = queuedBetween(window, now)

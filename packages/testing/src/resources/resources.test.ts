@@ -80,7 +80,7 @@ import { collectedAround } from "#runner/run.ts"
 import { runValuesOf } from "#runner/runs.ts"
 import { ModuleClosure, RunValues, WorkerIndex } from "#runner/services.ts"
 import { deadlocks } from "#runner/work.fixtures.ts"
-import { deadlineBound, overrunText, readingOf, waitedOnNow } from "#runner/work.ts"
+import { deadlineBound, overrunText, readingOf } from "#runner/work.ts"
 
 export const freshIsolation = property.explore(array(int(-5, 5), { min: 0, max: 6 }), {
 	needs: { db: Database.fresh(marksTemplate), services },
@@ -1571,7 +1571,10 @@ export const pollLoopIsHung = property.exhaust(finite(deadlocks), {
 				),
 				Effect.map(
 					overrun(work, { ...deadlineBound(shape.deadline), cpu: Number.POSITIVE_INFINITY }),
-					(judged) => ({ kind: judged.kind, named: Arr.contains(waitedOnNow(), "the poll's wait") })
+					(judged) => ({
+						kind: judged.kind,
+						named: judged.kind === "waited" && Arr.contains(judged.on, "the poll's wait")
+					})
 				),
 				Effect.as(liveSleep(Duration.millis(shape.deadline * 60)), {
 					kind: "never judged",

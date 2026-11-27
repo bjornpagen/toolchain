@@ -6,6 +6,8 @@
  *   past its deadline, its CPU stays a tenth of it and moves in every deadline's window, and it passes.
  * - A case's work counts its live children's CPU: while a working child is alive and unreaped, the tree's CPU since the
  *   work began holds what the child says it spent, to Linux's clock tick.
+ * - A reading names the declared waits holding its work: those open, or where none is, the last that closed, so a
+ *   poll of waits is never read as held by none between two of them.
  * - A child started before a work began is no part of it, however late its process's Node began after the kernel
  *   started the process: the work's beginning and a process's start are read on one clock, the boot clock.
  * - A CPU runaway is hung at its deadline: it yields as it spends many deadlines of CPU, so only the CPU budget stops
@@ -34,13 +36,14 @@ import { Array as Arr, Effect, Option, Result } from "effect"
 import { assert } from "#assert.ts"
 import type { Reached } from "#features.ts"
 import { finite } from "#gen.ts"
-import { boundOver, spentOn, withinBound } from "#live.ts"
+import { boundOver, ownWorkNow, spentOn, withinBound } from "#live.ts"
 import { Checkout } from "#mutate/checkout.ts"
 import { property } from "#property.ts"
 import { searchedAt, verdictKind } from "#runner/search.fixtures.ts"
 import {
 	childBurns,
 	childStir,
+	holdingOf,
 	storedSizes,
 	childSeen,
 	deadlockedCase,
@@ -66,12 +69,16 @@ import {
 	waitingCase,
 	waitingThreads,
 	waitingWindowOf,
+	waitSteps,
 	wakingCase,
 	windowOf
 } from "#runner/work.fixtures.ts"
 import {
 	noStirLedger,
+	enterWait,
+	leaveWait,
 	progressOver,
+	readingOf,
 	type StirLedger,
 	standingOf,
 	stirLedgerAfter,
@@ -159,6 +166,50 @@ export const anEarlierChildIsNoneOfTheWork = property.exhaust(finite(lateStarts)
 			replacement:
 				'\tconst self = statOf("self")\n\tconst since = Option.map(self, (field) => field(PROC.started) + (wall - performance.timeOrigin))\n',
 			why: "The work's beginning placed on the boot clock through the process's time origin lands as early as its Node began late, so a child started before the work counts all of its CPU as the work's; the property fails."
+		}
+	]
+})
+
+export const aWorkIsHeldByItsLastWaitBetweenTwo = property.exhaust(waitSteps, {
+	box: "one to three steps of the process's declared waits, each opening one on a or b or closing the earliest open, after a wait on start opened and closed",
+	needs: {},
+	situations: [],
+	check: () => (steps) =>
+		Effect.gen(function* () {
+			const work = yield* ownWorkNow
+			leaveWait(0, enterWait(0, "start"))
+			const none: ReadonlyArray<number> = []
+			const opened = Arr.reduce(steps, none, (open, step) => {
+				switch (step.kind) {
+					case "open":
+						return Arr.append(open, enterWait(0, step.on))
+					case "close":
+						return Option.match(Arr.head(open), {
+							onNone: () => open,
+							onSome: (earliest) => {
+								leaveWait(0, earliest)
+								return Arr.drop(open, 1)
+							}
+						})
+				}
+			})
+			const holding = readingOf(work, 0).holding
+			Arr.forEach(opened, (id) => {
+				leaveWait(0, id)
+			})
+			assert.deepEqual(holding, holdingOf("start", steps))
+		}),
+	oracle: {
+		kind: "specification",
+		name: "a reading names the declared waits holding its work: those open, in the order they opened, or where none is, the last that closed (work.fixtures.ts holdingOf)"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/runner/work.ts",
+			original: "\t\t\tledger.last = Option.map(Arr.get(ledger.open, at), (closed) => closed.on)\n",
+			replacement: "",
+			why: "A work between two of its waits reads as held by none, so a case its polls of waits held past their bound is reported waiting on nothing; the property fails."
 		}
 	]
 })

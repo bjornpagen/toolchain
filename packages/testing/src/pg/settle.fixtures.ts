@@ -25,6 +25,7 @@ import {
 } from "#pg/family.ts"
 import { familyHeld, leaseOf } from "#pg/hold.ts"
 import { failed, succeeded } from "#pg/server.ts"
+import { membersOf } from "#pg/settings.ts"
 import {
 	familySettled,
 	memberSettled,
@@ -303,12 +304,13 @@ type Sized = Readonly<{
 
 /**
  * A case's cluster `sized` so: a unit name of its own (caseUnit, `tcs-`), its workers' capacity sized by a busy
- * backend of the package's own (pg.config.ts's), and over TLS its families' ports claimed from one that `members`
- * consecutive ports are free from (freePorts).
+ * backend of the package's own (pg.config.ts's), and over TLS its families' ports claimed from one that as many
+ * consecutive ports are free from (freePorts) as its family has members at `width`, the widest run its case settles
+ * it for (settings.ts membersOf, from the family's shape).
  */
 const clusterSized = (
 	sized: Sized,
-	members: number
+	width: number
 ): Effect.Effect<
 	LocalCluster<WorkerSizing>,
 	never,
@@ -316,7 +318,16 @@ const clusterSized = (
 > =>
 	Effect.gen(function* () {
 		const unit = yield* caseUnit("tcs")
-		const port = sized.tls ? yield* freePorts(members) : 0
+		const sizing: WorkerSizing = {
+			kind: "workers",
+			family: sized.family,
+			connections: { kind: "capacity", backendBytes: 37_301_248 },
+			replication: { kind: "default" },
+			sharedBuffers: { kind: "default" },
+			locks: { kind: "perTransaction", locks: 256 },
+			predicateLocks: sized.room
+		}
+		const port = sized.tls ? yield* freePorts(membersOf(sizing, width)) : 0
 		return localCluster({
 			unit,
 			network: sized.tls ? { kind: "tls", from: port } : { kind: "socket" },
@@ -326,15 +337,7 @@ const clusterSized = (
 			preload: sized.preload,
 			ownerParameters: [],
 			durability: "throwaway",
-			sizing: {
-				kind: "workers",
-				family: sized.family,
-				connections: { kind: "capacity", backendBytes: 37_301_248 },
-				replication: { kind: "default" },
-				sharedBuffers: { kind: "default" },
-				locks: { kind: "perTransaction", locks: 256 },
-				predicateLocks: sized.room
-			}
+			sizing
 		})
 	})
 
@@ -382,8 +385,9 @@ export const keptCases: Gen<KeptCase> = (source) => ({
 })
 
 /**
- * A case's cluster of `shape` (clusterSized): two members when `spread` (a family whose members serve half the run's
- * workers each), its predicate lock room a room of its workers' when `room` and production's a backend otherwise.
+ * A case's cluster of `shape` (clusterSized): when `spread`, a family whose members serve half the run's workers each,
+ * two members on a run of two workers or more; its predicate lock room a room of its workers' when `room` and
+ * production's a backend otherwise.
  */
 export const clusterOf = (shape: Shape) =>
 	clusterSized(
@@ -395,7 +399,7 @@ export const clusterOf = (shape: Shape) =>
 			room: shape.room ? { kind: "perWorker", targets: caseRoomTargets } : { kind: "perBackend" },
 			preload: []
 		},
-		shape.spread ? 2 : 1
+		testWorkers
 	)
 
 /**
@@ -433,7 +437,7 @@ export const preloadCluster = (preload: ReadonlyArray<PreloadedLibrary>) =>
 			room: { kind: "perWorker", targets: caseRoomTargets },
 			preload
 		},
-		1
+		testWorkers
 	)
 
 /**

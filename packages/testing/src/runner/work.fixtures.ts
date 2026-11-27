@@ -1,5 +1,5 @@
-import { Array as Arr, Config, Duration, Effect, FileSystem, String as Str } from "effect"
-import { array, element, type Gen, int, map } from "#gen.ts"
+import { Array as Arr, Config, Duration, Effect, FileSystem, Option, String as Str } from "effect"
+import { array, element, finite, type Gen, int, map } from "#gen.ts"
 import { liveSleep, ownWorkNow, waitingOn } from "#live.ts"
 import { type Property, property } from "#property.ts"
 import { type Limits, runnerLimits } from "#runner/limits.ts"
@@ -414,7 +414,7 @@ export const windowOf = (
 	move: OtherMove
 ): Readonly<{ window: Reading; now: Reading; bound: Bound }> => {
 	const quiet: Stir = { queued: 10, stored: 10 }
-	const window: Reading = { wall: 0, cpu: 5, waited: 0, stir: quiet, carried: 3 }
+	const window: Reading = { wall: 0, cpu: 5, waited: 0, holding: [], stir: quiet, carried: 3 }
 	const later: Reading = { ...window, wall: WINDOW_WALL }
 	const stirred = (stir: Stir): Readonly<{ window: Reading; now: Reading; bound: Bound }> => ({
 		window,
@@ -477,13 +477,21 @@ export const waitingThreads: Gen<WaitingThread> = (source) => {
 export const waitingWindowOf = (
 	thread: WaitingThread
 ): Readonly<{ window: Reading; now: Reading; bound: Bound }> => {
-	const window: Reading = { wall: 0, cpu: 7, waited: 0, stir: { queued: 3, stored: 4 }, carried: 0 }
+	const window: Reading = {
+		wall: 0,
+		cpu: 7,
+		waited: 0,
+		holding: [],
+		stir: { queued: 3, stored: 4 },
+		carried: 0
+	}
 	return {
 		window,
 		now: {
 			wall: thread.wall,
 			cpu: window.cpu + thread.moved,
 			waited: thread.waited,
+			holding: [],
 			stir: { queued: window.stir.queued + thread.queued, stored: window.stir.stored },
 			carried: window.carried
 		},
@@ -661,3 +669,40 @@ export const outsideWork = (
 
 /** The step an outside shape's work runs in, which a guard that ends it names (live.ts withinBound). */
 export const OUTSIDE_STEP = "outside step"
+
+/** One step of a process's declared waits: a wait opened on its name, or the earliest open one closed. */
+export type WaitStep = Readonly<{ kind: "open"; on: string }> | Readonly<{ kind: "close" }>
+
+/** The steps the holding property takes: one to three, each opening a wait on `a` or `b`, or closing the earliest open. */
+export const waitSteps = finite((source): ReadonlyArray<WaitStep> =>
+	source.draw(
+		array(
+			element([{ kind: "open", on: "a" }, { kind: "open", on: "b" }, { kind: "close" }] as const),
+			{ min: 1, max: 3 }
+		)
+	)
+)
+
+/**
+ * What a work's reading names as the waits holding it once `steps` were taken, by the specification: the waits open
+ * then, in the order they opened, or where none is open, the last that closed, `first` when no step closed one.
+ */
+export const holdingOf = (first: string, steps: ReadonlyArray<WaitStep>): ReadonlyArray<string> => {
+	const start: readonly [ReadonlyArray<string>, string] = [[], first]
+	const [open, last] = Arr.reduce(
+		steps,
+		start,
+		([opened, closed], step): readonly [ReadonlyArray<string>, string] => {
+			switch (step.kind) {
+				case "open":
+					return [Arr.append(opened, step.on), closed]
+				case "close":
+					return Option.match(Arr.head(opened), {
+						onNone: () => [opened, closed],
+						onSome: (earliest) => [Arr.drop(opened, 1), earliest]
+					})
+			}
+		}
+	)
+	return Arr.isReadonlyArrayNonEmpty(open) ? open : [last]
+}
