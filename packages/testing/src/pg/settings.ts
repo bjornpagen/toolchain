@@ -34,15 +34,18 @@ import { widthOf } from "#workers.ts"
  *   ~/.cache/grizzle-release/ORPHAN/out/cost.txt on cassowary; and on superstarter's PostgreSQL 18.6 test cluster, a
  *   psql client SIGKILLed in `SELECT pg_sleep(600)` inside a transaction holding a transaction id, at the interval and
  *   at 0, at ~/.cache/grizzle-release/SS-CLUSTERS/out/kill-proof-5446.txt
- * @observed 2026-11-15 14:14:02 to 14:15:40 UTC (PostgreSQL 19rc2), one run; 2026-11-17 (PostgreSQL 18.6), two kills
- * @environment cassowary, Ubuntu 26.04 on arm64 in AWS, 64 cores, load average 16 to 22 from other sessions; the
- *   pinned PostgreSQL 19rc2 build at initdb's defaults with no other session on it (grizzle 17b28413); Ubuntu's
- *   PostgreSQL 18.6 on port 5446
+ * @observed 2026-11-15 14:14:02 to 14:15:40 UTC (PostgreSQL 19), one run; 2026-11-17 (PostgreSQL 18.6), two kills
+ * @environment cassowary, Ubuntu 26.04 on arm64 in AWS, 64 cores, load average 16 to 22 from other sessions;
+ *   PostgreSQL 19.0's connection check, measured on the pinned 19rc2 build of then, with grizzle's three patches, at
+ *   initdb's defaults with no other session on it (grizzle 17b28413), whose check and recursive scan 19.0 keeps (git
+ *   diff REL_19_RC2 REL_19_0 -- src/backend/tcop src/backend/libpq src/backend/executor/nodeRecursiveunion.c
+ *   src/backend/executor/nodeWorktablescan.c is empty) and none of whose patches touched them; Ubuntu's PostgreSQL
+ *   18.6 on port 5446
  * @workload one backend running a CPU-bound statement of 20,000,000 recursive steps, about 5.7 s, which polls five
  *   times a run at 1,000 ms and never at 0, the two in alternation; one backend in pg_sleep whose client is SIGKILLed
  * @result at 0: median 5,762.8 ms, 5,751.8 to 6,018.1; at 1,000: median 5,754.7 ms, 5,727.0 to 5,811.3, the polls'
  *   cost below the runs' own spread. Backends of SIGKILLed clients, each holding a transaction id, left
- *   pg_stat_activity 1,000 to 1,017 ms after the kill on 19rc2 and 995 and 1,009 ms on 18.6; at 0 an orphan ran on (the
+ *   pg_stat_activity 1,000 to 1,017 ms after the kill on 19 and 995 and 1,009 ms on 18.6; at 0 an orphan ran on (the
  *   incident's for 44 minutes to 5.7 hours, 18.6's still 10 s after the kill, ended by hand)
  * @decision 1,000 ms: its polls cost nothing measurable on a statement of seconds, and an orphan then holds its
  *   transaction id at most about a second past its client's death, against hours without. No shorter value is

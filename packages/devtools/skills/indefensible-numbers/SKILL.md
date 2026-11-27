@@ -100,7 +100,7 @@ The JSDoc above the constant says what it bounds, where it is refused and why th
 tags. Every kind starts with four:
 
 - `@limitKind published`, `measured`, `derived` or `provisional`;
-- `@owner` who sets it: another system by its pinned version ("PostgreSQL 19rc2", "Node 26.13.1's timers"), or the
+- `@owner` who sets it: another system by its pinned version ("PostgreSQL 19.0", "Node 26.13.1's timers"), or the
   code's own unit by file and function ("the testing library (live.ts's watchdog)");
 - `@unit` what it counts, plural: "milliseconds", "bound parents", "steps of a decision's range";
 - `@scope` exactly what one instance of the bound covers: "each case a search runs on a process's main thread", not
@@ -118,13 +118,13 @@ A number another system states.
  * The longest counted repetition PostgreSQL's regex compiler accepts: str.regex refuses a pattern past it.
  *
  * @limitKind published
- * @owner PostgreSQL 19rc2's regex compiler
+ * @owner PostgreSQL 19.0's regex compiler
  * @unit repetitions
  * @scope each bound of a counted repetition in one str.regex pattern
  * @constraint compile-time constant
- * @source https://github.com/postgres/postgres/blob/REL_19_RC2/src/include/regex/regguts.h#L95
+ * @source https://github.com/postgres/postgres/blob/REL_19_0/src/include/regex/regguts.h#L95
  * @quote #define _POSIX2_RE_DUP_MAX 255
- * @verified 2026-11-14
+ * @verified 2026-11-27
  */
 export const regexMaxRepeat = 255
 ```
@@ -172,7 +172,7 @@ Arithmetic over other limits.
  * The largest message the frontend/backend protocol carries.
  *
  * @limitKind derived
- * @owner PostgreSQL 19rc2's frontend/backend protocol
+ * @owner PostgreSQL 19.0's frontend/backend protocol
  * @unit bytes
  * @scope one message from client to server, as its Int32 length counts it
  * @derivation PQ_LARGE_MESSAGE_LIMIT, which libpq.h defines as MaxAllocSize - 1 (<pinned URL>, verified 2026-11-14)

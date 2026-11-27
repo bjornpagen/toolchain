@@ -66,7 +66,7 @@ export type DatabasePrefix = string & Brand.Brand<"DatabasePrefix">
  * identifiers.
  *
  * @formatConstant PostgreSQL's NAMEDATALEN of 64: an identifier is at most 63 bytes
- * (https://github.com/postgres/postgres/blob/REL_19_RC2/src/include/pg_config_manual.h#L29), less the 36 of the
+ * (https://github.com/postgres/postgres/blob/REL_19_0/src/include/pg_config_manual.h#L39), less the 36 of the
  * longest suffix
  */
 const prefixPattern = regex("^[a-z][a-z0-9_]{0,26}$")
