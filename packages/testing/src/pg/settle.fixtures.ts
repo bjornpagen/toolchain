@@ -18,6 +18,8 @@ import {
 	checkoutAt,
 	familyOf,
 	homesHere,
+	imagesHomeOf,
+	imagesOf,
 	memberNames,
 	unitOf
 } from "#pg/family.ts"
@@ -161,11 +163,11 @@ const freePorts = (count: number): Effect.Effect<number, never, FileSystem.FileS
 	})
 
 /**
- * A case's cluster's unit name (`tcs-` and 8 random hex digits, clusterOf; `tck-` for a kept one, keptCluster), a
- * family's of it (`-` and its key's 8 hex digits after it) or a member's or its data directory's (the family's name and
- * `-<i>`): `cluster` is the cluster's.
+ * A case's cluster's unit name (`tcs-` and 8 random hex digits, clusterOf; `tck-` for a kept one, keptCluster; `tcd-`
+ * for a throwaway one on disk), a family's of it (`-` and its key's 8 hex digits after it, its images' folder's too) or
+ * a member's or its data directory's (the family's name and `-<i>`): `cluster` is the cluster's.
  */
-const CASE_NAME = regex("^(?<cluster>tc[sk]-[0-9a-f]{8})(?:-[0-9a-f]{8})?(?:-[0-9]+)?$")
+const CASE_NAME = regex("^(?<cluster>tc[skd]-[0-9a-f]{8})(?:-[0-9a-f]{8})?(?:-[0-9]+)?$")
 
 /**
  * The name a case's cluster is held by: an abstract Unix socket's (Linux's unix(7): a name in no directory, its first
@@ -210,8 +212,9 @@ const namesIn = (directory: string) =>
  * Case cluster `unit` gone, whatever is left of it: every unit named after it stopped (`<unit>-*`: its families' holds,
  * leases and settles, a hold property's runs, which a kill trial's mutant may leave running), each lease's stop stopping
  * its member (pg/hold.ts), and their failures forgotten, then every member's data directory (`<data>/<unit>-*`, the
- * workbench's) removed: a member in memory (the workbench's memory list names `tcs-*`) takes its data with its unit's
- * stop, and a kept one's (`tck-*`, on disk) is removed here. Its families' state and
+ * workbench's) removed, and its families' images (family.ts imagesOf): a member in memory (the workbench's memory list
+ * names `tcs-*`) takes its data with its unit's stop, a throwaway one on disk (`tcd-*`) leaves a link naming nothing and
+ * its images, and a kept one's (`tck-*`, on disk) is removed here. Its families' state and
  * claims are in the case's scratch directory, gone with it.
  */
 const clusterRemoved = (unit: string) =>
@@ -233,6 +236,12 @@ const clusterRemoved = (unit: string) =>
 			(member) => Effect.ignore(fs.remove(`${homes.data}/${member}`, { recursive: true })),
 			{ discard: true }
 		)
+		const families = yield* namesIn(imagesHomeOf(homes.data))
+		yield* Effect.forEach(
+			Arr.filter(families, Str.startsWith(`${unit}-`)),
+			(family) => Effect.ignore(fs.remove(imagesOf(homes.data, family), { recursive: true })),
+			{ discard: true }
+		)
 	})
 
 /**
@@ -244,7 +253,7 @@ const clusterRemoved = (unit: string) =>
  */
 const swept = Effect.gen(function* () {
 	const homes = yield* machineHomes
-	const names = yield* Effect.forEach([homes.data, homes.states], namesIn)
+	const names = yield* Effect.forEach([homes.data, homes.states, imagesHomeOf(homes.data)], namesIn)
 	const clusters = new Set(
 		Arr.filterMap(Arr.flatten(names), (name) =>
 			Result.fromNullishOr(CASE_NAME.exec(name)?.groups.cluster, () => name)
@@ -263,12 +272,13 @@ const swept = Effect.gen(function* () {
 })
 
 /**
- * A case cluster's unit name of its own, `prefix` and 8 random hex digits (`tcs`, a throwaway case's; `tck`, a kept
- * case's), held by this process for the enclosing scope (holdTaken). Drawing it first removes every case cluster no
+ * A case cluster's unit name of its own, `prefix` and 8 random hex digits (`tcs`, a throwaway case's, in memory;
+ * `tck`, a kept case's; `tcd`, a throwaway case's on disk, whose members' folders the workbench's postgres@ unit takes
+ * as they stop), held by this process for the enclosing scope (holdTaken). Drawing it first removes every case cluster no
  * process holds (swept): the cluster of a case here (clusterSized, keptCluster), or of a consumer whose runs make it in
  * processes of their own (runner/reuse.fixtures.ts), which the case removes at its end (unitRemovedAtEnd).
  */
-export const caseUnit = (prefix: "tcs" | "tck") =>
+export const caseUnit = (prefix: "tcs" | "tck" | "tcd") =>
 	Effect.gen(function* () {
 		const unit = `${prefix}-${process.getBuiltinModule("node:crypto").randomBytes(4).toString("hex")}`
 		const hold = yield* holdTaken(unit)

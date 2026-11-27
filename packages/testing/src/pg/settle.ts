@@ -21,6 +21,7 @@ import {
 	familyOf,
 	type Homes,
 	holderText,
+	imagesOf,
 	memberNames,
 	portHolders,
 	portsClaimed,
@@ -519,6 +520,114 @@ const freedForgotten = (data: string, name: string, step: Step) =>
 	})
 
 /**
+ * The file a throwaway member's folder holds once its settle started it, which the workbench's postgres@ unit reads as
+ * the member stops: its files go with its unit, and where its folder holds its list of templates (cluster.ts
+ * templatesListed) they are kept as an image of its family's (family.ts imagesOf)
+ * (~/Documents/beefy-workspace/workbench/parts/postgres/files/postgres-cluster).
+ */
+const throwawayFile = "throwaway"
+
+/**
+ * Member `name` of a throwaway family made from the family's newest image where its folder is not there, answering
+ * whether it was: a member's folder the workbench's postgres@ unit kept as the member stopped, the cluster with every
+ * template the family's members built, so the member starts with them and builds none again. The copy is made beside
+ * the folder and renamed into place, so a member is made whole or not at all; it holds no postgresql.auto.conf, so the
+ * member starts on the part's settings alone as a fresh one does, and its settle writes its spec by ALTER SYSTEM and
+ * restarts it, as on a member's first start; and no postmaster.pid, a stopped server's. The images are tried newest
+ * first, so an image a newer one put out while it was copied gives way to the next. A member whose folder is there, a
+ * family with no image, and a kept family's member are left as they are.
+ */
+const seededFromImage = (family: CheckoutFamily, name: string, step: Step) =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		const path = `${family.homes.data}/${name}`
+		const images = imagesOf(family.homes.data, family.name)
+		const absent = !(yield* Effect.orElseSucceed(fs.exists(path), () => false))
+		const imaged = yield* Effect.orElseSucceed(fs.exists(images), () => false)
+		if (family.cluster.durability !== "throwaway" || !absent || !imaged) {
+			return false
+		}
+		const listed = yield* succeeded(
+			{ ...step, doing: `${step.doing}: finding its family's images` },
+			ChildProcess.make("ls", ["-1t", images])
+		)
+		const seeding = `${path}.seeding`
+		const copied = (image: string) =>
+			Effect.gen(function* () {
+				yield* Effect.mapError(fs.remove(seeding, { recursive: true, force: true }), (error) =>
+					failed(step, `${seeding}, a seed left part made: ${error.message}`)
+				)
+				yield* succeeded(
+					{ ...step, doing: `${step.doing}: making it from its family's image ${image}` },
+					ChildProcess.make("cp", ["-a", `${images}/${image}`, seeding])
+				)
+				yield* Effect.mapError(
+					Effect.andThen(
+						Effect.forEach(["postgresql.auto.conf", "postmaster.pid"], (file) =>
+							fs.remove(`${seeding}/${file}`, { force: true })
+						),
+						fs.rename(seeding, path)
+					),
+					(error) => failed(step, `${path}, made from ${images}/${image}: ${error.message}`)
+				)
+				return true
+			})
+		return yield* Arr.match(Arr.filter(Str.split("\n")(listed), Str.isNonEmpty), {
+			onEmpty: () => Effect.succeed(false),
+			onNonEmpty: (newestFirst) => Effect.firstSuccessOf(Arr.map(newestFirst, copied))
+		})
+	})
+
+/**
+ * What a member made from an image (seededFromImage) holds that no run may use again, dropped as it starts and before
+ * any worker reaches it: every database but `postgres`, its owner's and those marked templates (the cluster's own and
+ * each one a run built), so a clone a case left (its run ended before its collection, or its drop was refused) or a
+ * build its builder left outlives the run it was made in by no run, and no member grows across runs by what they
+ * left (one of metis's held 592 databases, 823 clones in its catalog, past 140 GB, its collections having run only on
+ * members up at a run's start or end). Each database's replication slots go first, under which DROP DATABASE refuses it
+ * (dbcommands.c dropdb, 55006), none of them active on a member that has only just started.
+ */
+const leftoversDropped = (family: CheckoutFamily, bin: string, socket: SocketAt, step: Step) =>
+	Effect.gen(function* () {
+		const names = yield* adminSql(
+			bin,
+			socket,
+			"postgres",
+			[
+				`SELECT datname FROM pg_catalog.pg_database WHERE NOT datistemplate AND datname NOT IN ('postgres', ${literal(family.cluster.owner)}) ORDER BY datname`
+			],
+			{ ...step, doing: `${step.doing}: reading what its image held of runs before` }
+		)
+		yield* Arr.match(names, {
+			onEmpty: () => Effect.void,
+			onNonEmpty: (left) =>
+				Effect.asVoid(
+					adminSql(
+						bin,
+						socket,
+						"postgres",
+						Arr.flatMap(left, (database) => [
+							`SELECT pg_catalog.pg_drop_replication_slot(slot_name) FROM pg_catalog.pg_replication_slots WHERE database = ${literal(database)}`,
+							`DROP DATABASE ${ident(database)} WITH (FORCE)`
+						]),
+						{ ...step, doing: `${step.doing}: dropping what its image held of runs before` }
+					)
+				)
+		})
+	})
+
+/** Member `name` of a throwaway family marked so (throwawayFile), once its unit made its folder; a kept family's is not. */
+const markedThrowaway = (family: CheckoutFamily, name: string, step: Step) =>
+	family.cluster.durability === "throwaway"
+		? Effect.flatMap(FileSystem.FileSystem, (fs) =>
+				Effect.mapError(
+					fs.writeFileString(`${family.homes.data}/${name}/${throwawayFile}`, ""),
+					(error) => failed(step, `marking ${name} throwaway: ${error.message}`)
+				)
+			)
+		: Effect.void
+
+/**
  * What every read and every member's settle of `family` takes from its state, writing nothing: its owner's password,
  * its state's files (stateFiles), how a client verifies its members (over TLS the CA the workbench's part names,
  * caVariable, and the family's unrelated CA), each member's name and port (its family's claim, over TLS) in member
@@ -754,8 +863,11 @@ export const familySettled = (
 /**
  * Member `index` of `family` settled in this process from its family's state (familyState, which a family never settled
  * lacks), the family held by this process while it settles (hold.ts familyHeld): over TLS its port refused where
- * another listener holds it (portFree), a freed member's link to nothing removed (freedForgotten), its unit started by
- * its lease (hold.ts leaseStarted: systemd makes it on its first start, and again after it was freed), every setting its
+ * another listener holds it (portFree), a freed member's link to nothing removed (freedForgotten), a throwaway
+ * member whose folder is not there made from its family's newest image (seededFromImage), its unit started by its lease
+ * (hold.ts leaseStarted: systemd makes it on its first start, and again after it was freed), a throwaway member marked
+ * so (markedThrowaway), what a member made from an image held of runs before dropped (leftoversDropped), every setting
+ * its
  * spec states written by ALTER SYSTEM and read again (pg_reload_conf), what the bootstrap superuser makes in it (owned),
  * and its unit restarted when a setting it changed waits for a restart (pg_settings' pending_restart), which only a
  * fresh member, a change of the spec or of the machine's memory makes, while its lease holds it (hold.ts
@@ -780,9 +892,14 @@ export const memberSettled = (
 			}
 			yield* familyHeld(family)
 			yield* freedForgotten(family.homes.data, name, at)
+			const seeded = yield* seededFromImage(family, name, at)
 			const ranBefore = yield* Effect.isSuccess(socketNow(name, at))
 			yield* leaseStarted(family, name, at)
+			yield* markedThrowaway(family, name, at)
 			const socket = yield* socketNow(name, at)
+			if (seeded) {
+				yield* leftoversDropped(family, bin, socket, at)
+			}
 			const blockSize = yield* blockSizeOf(bin, socket, at)
 			const expected = expectedSettings(family, port, files.hba, blockSize)
 			const changed = yield* differing(bin, socket, expected, at)

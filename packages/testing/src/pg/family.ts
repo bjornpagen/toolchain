@@ -613,9 +613,18 @@ const membersRemoved = (home: string, name: string) =>
 		)
 	})
 
+/** Where every family's images are, beside the members' data directories in `data`: `<data>/.templates`. */
+export const imagesHomeOf = (data: string): string => `${data}/.templates`
+
 /**
- * Everything of the family `name` in `homes` gone: each member's data directory (`<data>/<name>-<i>`), its port claims
- * (only the files holding its name) and its state directory removed. No member of it runs: a member runs only while a
+ * Where a family's images are (`<data>/.templates/<family>`, imagesHomeOf): what the workbench's postgres@ unit keeps of
+ * a throwaway member's folder as it stops, which a member of the family is made from again (settle.ts seededFromImage).
+ */
+export const imagesOf = (data: string, family: string): string => `${imagesHomeOf(data)}/${family}`
+
+/**
+ * Everything of the family `name` in `homes` gone: each member's data directory (`<data>/<name>-<i>`), its images
+ * (imagesOf), its port claims (only the files holding its name) and its state directory removed. No member of it runs: a member runs only while a
  * process holds its family (pg/hold.ts), and the workbench's postgres@ unit starts no member unheld (beefy da1e9fc), so
  * nothing is stopped here. What is already gone is no error.
  */
@@ -623,6 +632,7 @@ export const familyRemoved = (homes: Homes, name: string) =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem
 		yield* membersRemoved(homes.data, name)
+		yield* Effect.ignore(fs.remove(imagesOf(homes.data, name), { recursive: true }))
 		const ports = yield* claimsOf(homes, name)
 		yield* Effect.forEach(
 			ports,

@@ -31,6 +31,7 @@ import {
 	required,
 	run,
 	single,
+	templatesListed,
 	useKey
 } from "#resources/cluster.ts"
 import type { Database, TemplateDatabase } from "#resources/database.ts"
@@ -869,6 +870,7 @@ const ensureBuilt = (
 				yield* databaseDroppedOn(gate, building, "ended")
 				yield* run(gate, `ALTER DATABASE ${quoteIdent(name)} ALLOW_CONNECTIONS false`, [])
 				yield* run(gate, `ALTER DATABASE ${quoteIdent(name)} IS_TEMPLATE true`, [])
+				yield* templatesListed(cluster, member)
 				return name
 			})
 		)

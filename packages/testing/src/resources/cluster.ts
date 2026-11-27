@@ -236,6 +236,30 @@ export const databaseDroppedOn = (
 ): Effect.Effect<void, NeedFailed> =>
 	Effect.forEach(databaseDropped(name, sessions), (sql) => run(session, sql, []), { discard: true })
 
+/**
+ * The statement that writes a member's list of its templates into its data directory as `templates`: every database
+ * marked a template, by name, one a line, in order. A server file, so the bootstrap superuser's session sends it.
+ */
+const templatesListing = `DO $$ BEGIN EXECUTE pg_catalog.format('COPY (SELECT datname FROM pg_catalog.pg_database WHERE datistemplate ORDER BY datname) TO %L', pg_catalog.current_setting('data_directory') || '/templates'); END $$`
+
+/**
+ * `member`'s list of its templates written into its data directory (templatesListing): what the workbench's postgres@
+ * unit keys the image it keeps of a throwaway member's folder by, as the member stops (pg/family.ts imagesOf), so a
+ * member made from that image again (pg/settle.ts seededFromImage) holds every template the list names. Written after
+ * every build of a template on it (template.ts), so a run that ends before its collection leaves its image current; a
+ * member made from an image holds the image's list, and a template a collection dropped since stays on it, which only
+ * keys the image apart from one of what the member now holds.
+ */
+export const templatesListed = (
+	cluster: PgClusterShape,
+	member: PgMember
+): Effect.Effect<void, NeedFailed> =>
+	Effect.scoped(
+		Effect.flatMap(cluster.superuser(member, cluster.maintenance), (superuser) =>
+			Effect.asVoid(run(superuser, templatesListing, []))
+		)
+	)
+
 /** The first column of the first row of `sql`'s answer, or NeedFailed when it has none. */
 export const single = (
 	session: Statements,
