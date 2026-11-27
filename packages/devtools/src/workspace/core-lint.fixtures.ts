@@ -8,12 +8,15 @@ import { CORE_RULES } from "#preset.ts"
 import type { CoreFaults } from "#workspace/core-lint.ts"
 
 /** A configuration of the box: one on another preset, one that loads the plugin and holds two core rules, one that
- * names the plugin and the core rules by hand as they stood before the newest, and one the preset's standard builds. */
-export type CoreConfiguration = "bare" | "partial" | "hand-wired" | "preset"
+ * loads it under a name of its own beside a plugin named by its package (each form of oxlint's plugin entry) and holds
+ * the same two, one that names the plugin and the core rules by hand as they stood before the newest, and one the
+ * preset's standard builds. */
+export type CoreConfiguration = "bare" | "partial" | "aliased" | "hand-wired" | "preset"
 
 const CONFIGURATIONS = [
 	"bare",
 	"partial",
+	"aliased",
 	"hand-wired",
 	"preset"
 ] as const satisfies ReadonlyArray<CoreConfiguration>
@@ -24,12 +27,13 @@ export const coreConfigurations = finite((source) => source.draw(element(CONFIGU
 export const fileOf = (configuration: CoreConfiguration): string =>
 	`src/workspace/fixtures/core-lint/${configuration}.config.ts`
 
-/** The core rules a configuration holds at error, by its text: none, two, every one but no-variadic-callback, all. */
+/** The core rules a configuration holds at error, by its text: none, two, two, every one but no-variadic-callback, all. */
 const heldOf = (configuration: CoreConfiguration): ReadonlyArray<string> => {
 	switch (configuration) {
 		case "bare":
 			return []
 		case "partial":
+		case "aliased":
 			return ["devtools/no-comment", "devtools/no-raw-regexp"]
 		case "hand-wired":
 			return Arr.filter(CORE_RULES, (rule) => rule !== "devtools/no-variadic-callback")

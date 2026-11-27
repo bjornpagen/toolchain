@@ -44,10 +44,26 @@ const isLintConfiguration = (file: string): boolean => {
 	)
 }
 
-/** A configuration as oxlint resolves it, as far as the gate reads it: the JavaScript plugins it loads and its rules. */
+/**
+ * A JavaScript plugin a configuration loads, as oxlint states one (its ExternalPluginEntry): the plugin's path or
+ * package name, or that under a name of its own (`{ name, specifier }`, as ultracite writes its plugins).
+ */
+const PluginEntry = Schema.Union([
+	Schema.String,
+	Schema.Struct({ name: Schema.String, specifier: Schema.String })
+])
+
+/** The path or package name a plugin entry loads its plugin from (PluginEntry): the text itself, or its specifier. */
+const specifierOf = (entry: typeof PluginEntry.Type): string =>
+	typeof entry === "string" ? entry : entry.specifier
+
+/**
+ * A configuration as oxlint resolves it, as far as the gate reads it: the JavaScript plugins it loads (none, or none
+ * stated: oxlint's `null | ExternalPluginEntry[]`) and its rules.
+ */
 const Resolved = Schema.fromJsonString(
 	Schema.Struct({
-		jsPlugins: Schema.optionalKey(Schema.Array(Schema.String)),
+		jsPlugins: Schema.optionalKey(Schema.NullOr(Schema.Array(PluginEntry))),
 		rules: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown))
 	})
 )
@@ -152,10 +168,12 @@ export const judgedConfiguration = (
 		const realOf = (target: string) =>
 			fs.realPath(target).pipe(Effect.option, Effect.map(Option.getOrUndefined))
 		const plugin = yield* realOf(PLUGIN_MODULE)
-		const loaded = yield* Effect.forEach(resolved.jsPlugins ?? [], (specifier) =>
-			path.isAbsolute(specifier) || Str.startsWith(".")(specifier)
-				? realOf(path.resolve(path.dirname(absolute), specifier))
-				: Effect.undefined
+		const loaded = yield* Effect.forEach(
+			Arr.map(resolved.jsPlugins ?? [], specifierOf),
+			(specifier) =>
+				path.isAbsolute(specifier) || Str.startsWith(".")(specifier)
+					? realOf(path.resolve(path.dirname(absolute), specifier))
+					: Effect.undefined
 		)
 		return {
 			file: absolute,

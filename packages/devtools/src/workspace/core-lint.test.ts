@@ -2,8 +2,10 @@
  * The workspace gate's core-lint rule (src/workspace/core-lint.ts), exhausted over the configurations its contract
  * tells apart (core-lint.fixtures.ts, src/workspace/fixtures/core-lint): one on another preset, which loads no dev tools
  * plugin; one that loads the plugin by a relative path and holds two core rules, one other off and one a warning; one
- * that names the plugin and the core rules by hand as they stood before the toolchain added no-variadic-callback; and
- * one the preset's standard builds. Each is resolved by oxlint itself (`--print-config`), and the rule must find
+ * that loads it under a name of its own, oxlint's `{ name, specifier }` entry as ultracite writes it, beside a plugin
+ * named by its package, an entry of text, and holds the same two (qti-pie's configuration failed edullm's gate at every
+ * toolchain while the reader took plugin entries for texts alone, 2026-11-26); one that names the plugin and the core
+ * rules by hand as they stood before the toolchain added no-variadic-callback; and one the preset's standard builds. Each is resolved by oxlint itself (`--print-config`), and the rule must find
  * exactly what it lacks of the core set: the plugin where it loads none, and every core rule it holds at less than
  * error; the preset's nothing.
  *
@@ -18,7 +20,7 @@ import { coreFaults, coreLintFindings, judgedConfiguration } from "#workspace/co
 
 /** The core lint set holds a configuration exactly where oxlint resolves it to load the plugin and every core rule. */
 export const coreLintSetHeld = property.exhaust(coreConfigurations, {
-	box: "a configuration on another preset, a partial one, a hand-wired one missing the newest core rule, and the preset's",
+	box: "a configuration on another preset, a partial one, one loading the plugin under a name of its own beside a plugin named by its package, a hand-wired one missing the newest core rule, and the preset's",
 	needs: {},
 	situations: [],
 	check: () => (configuration) =>
@@ -51,6 +53,13 @@ export const coreLintSetHeld = property.exhaust(coreConfigurations, {
 			original: "\t\t\tloadsPlugin: plugin !== undefined && Arr.contains(loaded, plugin),\n",
 			replacement: "\t\t\tloadsPlugin: true,\n",
 			why: "A configuration that loads no dev tools plugin passes the plugin's check: the bare one, on another preset, is refused only for its rules."
+		},
+		{
+			file: "packages/devtools/src/workspace/core-lint.ts",
+			original:
+				"\tSchema.String,\n\tSchema.Struct({ name: Schema.String, specifier: Schema.String })\n",
+			replacement: "\tSchema.String\n",
+			why: "A plugin entry of oxlint's `{ name, specifier }` form is no entry the reader decodes: the aliased configuration's resolution is refused as no configuration the gate reads, as qti-pie's was."
 		},
 		{
 			file: "packages/devtools/src/workspace/core-lint.ts",
