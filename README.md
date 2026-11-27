@@ -14,6 +14,32 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: a template and the database it was built in share a per-build key (2026-11-27)
+
+A template was named by its identity and its build's reads, and its build database by its identity alone. So a build
+could not know what its template would be named, and a name a consumer derived per template (a role prefix its build
+creates roles under) could only come from the identity. Two builds of one identity with changed reads then shared
+those names; a library or Node update changes what a child's strace reads. A build dropping the roles a former build
+left met a template that still owned them (2BP01), and failed until the identity changed. Now:
+
+- **Every build is given a key**: its gate session's transaction id as 16 hex digits (`pg_current_xact_id`, which
+  the cluster never assigns twice). Its build database is `tpb_<16 identity hex><key>` and its template
+  `tpl_<16 identity hex><key>`. What the build read stays in the template's comment, which is what its standing
+  compares, and a build database a builder left under an earlier key is dropped under the gate.
+- **`templateKeyOf(name)`** (`@bjornpagen/testing/resources`) reads the key from a build database's name (a build's
+  TemplateDatabase `name`) or a template's (a clone's `template`). It is the same at the build and at every clone, and
+  different for every other build of the identity.
+
+To migrate: derive every per-template name from the key, not the identity: `templateKeyOf(target.name)` in a build,
+`templateKeyOf(database.template)` at a clone. The key is a counter, so the digits that differ are its last: take a
+shorter name from its end (`Str.slice(-12)(key)`). Every template is built once more.
+
+- metis: `templatePrefixOf` in packages/database/integration/template.ts and integration/level-installation.ts.
+- grizzle: test/support/substrate/templates.ts `templateDigest`, which names a template's allocations, its owner login
+  and their passwords (names.ts `templateNames`), and substrate.ts `formerBuildDropped`, which drops a former build's
+  roles under them. Derive them from the key: read it at the build from its build database's name, and at a clone from
+  its template's.
+
 ## Consumer migration: a run spends at most its CPU budget, as the budget meter reads it (2026-11-27)
 
 A run had no bound. A suite that grew, or a toolchain change that made every clone dearer (WAL_LOG at metis's 248 MB

@@ -34,7 +34,14 @@ import {
 	useKey
 } from "#resources/cluster.ts"
 import type { Database, TemplateDatabase } from "#resources/database.ts"
-import { buildName, cloneName, namedOf, templateName, identityPrefixOf } from "#resources/names.ts"
+import {
+	buildName,
+	buildPrefixOf,
+	cloneName,
+	namedOf,
+	templateName,
+	identityPrefixOf
+} from "#resources/names.ts"
 import { collectedOf } from "#runner/collected.ts"
 import { asInfrastructure } from "#runner/infrastructure.ts"
 import { guardRecorded, type Observation } from "#runner/observe.ts"
@@ -340,6 +347,15 @@ const replayedOn = (
  */
 const templatesQuery = `SELECT d.datname::text, (d.datistemplate AND NOT d.datallowconn AND d.datconnlimit <> -2)::text, pg_catalog.shobj_description(d.oid, 'pg_database')
 	FROM pg_catalog.pg_database AS d WHERE pg_catalog.starts_with(d.datname, $1) ORDER BY d.datname`
+
+/**
+ * A build's key, minted on its gate session (template.ts ensureBuilt): the transaction id the server assigns that
+ * session's statement (pg_current_xact_id, 64 bits the cluster never assigns twice), as 16 hex digits, so every build of
+ * every template on the member has a key of its own however its builders' processes are seeded, with no state of this
+ * library's.
+ */
+const buildKeyQuery =
+	"SELECT pg_catalog.lpad(pg_catalog.to_hex(pg_catalog.pg_current_xact_id()::text::int8), 16, '0')"
 
 /** The SHA-256 of `text`, as hex, which the member computes on `session`. */
 const digestOn = (session: Statements, text: string): Effect.Effect<string, NeedFailed> =>
@@ -736,17 +752,18 @@ const builtIn = (
 
 /**
  * The name of a built template of `identified` on `member` whose build's reads stand (standingOn), built there when none
- * does. Its name is its identity's digest and its build's reads' (names.ts templateName), and its comment keeps those
- * reads (Kept), so a template stands exactly while everything its build read reads alike: a build that reads a file no
+ * does. Its name is its identity's digest and its build's key (names.ts templateName), the gate session's transaction
+ * id (buildKeyQuery), which the database it is built in shares (buildName), and its comment keeps its build's reads
+ * (Kept), so a template stands exactly while everything its build read reads alike: a build that reads a file no
  * module loads (a schema's SQL, a fixture) is made again once the file changed, and each opener that did not build it
  * is given its build's reads (standingOn), so a verdict cached over it is answered only while they stand. A built
  * template is taken as it is. Otherwise the builder waits in the server for the session-level advisory lock of the
  * identity's digest, in the owner's database, on a session of its own: the one gate, so concurrent builders of one
  * identity on one member, in any worker of any run, build it once and the rest find it standing once the lock is
  * theirs (a declared wait, live.ts waitingOn: the lock's holder sits between statements while its other connections
- * build, so no backend carrying the wait moves). Holding the lock, a database named after the identity
- * that is not a built template is a builder's that ended mid-copy, and is dropped, as is the build database (names.ts
- * buildName).
+ * build, so no backend carrying the wait moves). Holding the lock, a database named after the identity that is not a
+ * built template is a builder's that ended mid-copy, and is dropped, as is every build database of the identity
+ * (names.ts buildPrefixOf), a builder's that ended mid-build under a key of its own.
  *
  * The build runs in the build database (builtIn); the template is then a copy of it under the template's name, given the
  * build database's settings and privileges in turn, and the build database is dropped; the copy is marked a template
@@ -800,14 +817,33 @@ const ensureBuilt = (
 						}),
 					{ discard: true }
 				)
-				const building = buildName(cluster.prefix, digest)
+				const stale = yield* run(gate, templatesQuery, [buildPrefixOf(cluster.prefix, digest)])
+				yield* Effect.forEach(
+					Arr.filterMap(stale, ([name]) =>
+						Option.match(
+							Option.flatMap(Option.fromNullishOr(name), (text) => namedOf(cluster.prefix, text)),
+							{ onNone: () => Result.failVoid, onSome: (build) => Result.succeed(build.name) }
+						)
+					),
+					(name) =>
+						Effect.andThen(
+							emptied(cluster, member, name, template),
+							databaseDroppedOn(gate, name, "ended")
+						),
+					{ discard: true }
+				)
+				const key = yield* Effect.flatMap(single(gate, buildKeyQuery, []), (minted) =>
+					Effect.mapError(Effect.fromOption(Option.fromNullishOr(minted)), () =>
+						NeedFailed.make({
+							need: template.name,
+							message: `the build of template ${template.name} on member ${member.name} was given no key`
+						})
+					)
+				)
+				const building = buildName(cluster.prefix, digest, key)
 				const checkout = yield* cluster.checkout
 				const reads = yield* builtIn(cluster, owner, gate, identified, member, building, checkout)
-				const readsDigest = yield* digestOn(
-					gate,
-					canonicalText(Arr.map(reads.reads, (read) => ({ ...read })))
-				)
-				const name = templateName(cluster.prefix, digest, readsDigest)
+				const name = templateName(cluster.prefix, digest, key)
 				yield* emptied(cluster, member, building, template)
 				yield* run(
 					gate,

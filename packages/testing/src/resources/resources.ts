@@ -21,6 +21,7 @@ export {
 	rowsEmptied,
 	type TemplateDatabase
 } from "#resources/database.ts"
+export { templateKeyOf } from "#resources/names.ts"
 export { cachedScratch, Scratch, type ScratchDir } from "#resources/scratch.ts"
 export {
 	type Content,

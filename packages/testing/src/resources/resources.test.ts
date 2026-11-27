@@ -38,6 +38,7 @@ import {
 	collectionPhases
 } from "#resources/collect.ts"
 import { Database } from "#resources/database.ts"
+import { templateKeyOf } from "#resources/names.ts"
 import {
 	BUILD_READ_CASES,
 	BUILD_READ_CHANGES,
@@ -919,6 +920,112 @@ export const aTemplateStandsWhileWhatItsBuildReadStands = property.exhaust(
 		]
 	}
 )
+
+/**
+ * A template and the database it was built in share their build's key (names.ts templateKeyOf), and every build of one
+ * identity has a key of its own: a template whose build reads a file another process wrote, and notes the name of the
+ * database it builds in, is opened by a runner, then the file is rewritten otherwise and the template opened again, once
+ * or twice; each open builds it anew, the key of each build is the key its clone names its template by, and no two
+ * builds share one, so a name a consumer derives from a template's (a role prefix its build creates roles under) is one
+ * at the build and at every clone, and never another build's of the same identity, whose roles the first template still
+ * owns (metis's installed template, 2026-11-27: dropLeftRoles refused, 2BP01, once its build's reads changed).
+ */
+export const aBuildAndItsTemplateShareAKey = property.exhaust(finite(int(1, 2)), {
+	box: "a template whose build reads a file another process wrote, opened by a runner, then rebuilt once or twice by the file rewritten otherwise and the template opened again",
+	needs: { services },
+	situations: [],
+	check:
+		({ services: context }) =>
+		(rebuilds) =>
+			Effect.gen(function* () {
+				const ctx = yield* context
+				const worker = Context.get(ctx, WorkerIndex)
+				const runnerClosures = Context.get(ctx, ModuleClosure)
+				const outcome = yield* Effect.scoped(
+					Effect.gen(function* () {
+						const prefixToken = yield* Effect.provideContext(
+							Effect.gen(function* () {
+								const cluster = yield* PgCluster
+								const member = yield* cluster.memberAt(0)
+								return yield* Effect.scoped(
+									Effect.flatMap(cluster.connect(member, cluster.maintenance), (session) =>
+										single(session, freshHex, [])
+									)
+								)
+							}),
+							ctx
+						)
+						const prefix = `tbk${prefixToken ?? ""}_`
+						const directory = `${process.getBuiltinModule("node:os").tmpdir()}/toolchain-build-keys-${prefix}`
+						const file = `${directory}/read.txt`
+						yield* Effect.acquireRelease(writtenElsewhere(file, "0"), () =>
+							Effect.ignore(removedElsewhere(directory))
+						)
+						const builtIn: Array<string> = []
+						const template = tokenTemplate(prefix, (target) =>
+							Effect.sync(() => {
+								process.getBuiltinModule("node:fs").readFileSync(file, "utf8")
+								builtIn.push(target.name)
+							})
+						)
+						const asRunner = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+							Effect.scoped(
+								Effect.flatMap(Layer.build(ownCluster(prefix)), (cluster) =>
+									Effect.provide(
+										effect,
+										Context.merge(
+											cluster,
+											Context.make(ModuleClosure, {
+												root: runnerClosures.root,
+												hashOf: () => runnerClosures.hashOf(fixturesModule)
+											}).pipe(
+												Context.add(WorkerIndex, worker),
+												Context.add(RunValues, runValuesOf([]))
+											)
+										)
+									)
+								)
+							)
+						const opened = Effect.flatMap(template.open, (open) => Effect.scoped(open.clone))
+						const clones = yield* Effect.forEach(
+							Array.from({ length: rebuilds + 1 }, (_, round) => round),
+							(round) =>
+								Effect.andThen(
+									round === 0 ? Effect.void : writtenElsewhere(file, String(round)),
+									asRunner(opened)
+								)
+						)
+						yield* asRunner(
+							Effect.andThen(claimsGone(Arr.getUnsafe(clones, 0).member, prefix), collect)
+						)
+						return { built: builtIn, cloned: Arr.map(clones, (clone) => clone.template) }
+					})
+				)
+				const keys = Arr.map(outcome.built, templateKeyOf)
+				assert.deepEqual(
+					{
+						builds: outcome.built.length,
+						shared: Arr.map(outcome.cloned, templateKeyOf),
+						distinct: new Set(keys).size
+					},
+					{ builds: rebuilds + 1, shared: keys, distinct: rebuilds + 1 }
+				)
+			}),
+	oracle: {
+		kind: "specification",
+		name: "every build of an identity is a template of its own, whose key its build database and every clone of it name alike"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/resources/template.ts",
+			original: "\t\t\t\tconst name = templateName(cluster.prefix, digest, key)\n",
+			replacement:
+				"\t\t\t\tconst name = templateName(cluster.prefix, digest, Str.slice(16, 32)(digest))\n",
+			why: "A template named by its identity alone shares its name with every other build of the identity, so the key its clones name differs from the one its build was given, and a consumer's per-template role prefix is one for every build, whose roles a former template still owns; the property fails."
+		}
+	]
+})
 
 export const claimedTemplatesKept = property.exhaust(finite(boolean), {
 	box: "a template no live worker holds, claimed by another checkout that exists or was removed",
