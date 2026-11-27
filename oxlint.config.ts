@@ -189,6 +189,17 @@ export default defineConfig(
 				})
 			},
 			{
+				files: ["packages/testing/src/runner/recorder.ts"],
+				rules: active({
+					/** A Node child's recorder, which runs before any module of the child's loads: it reaches the module loader's
+					 * file-system methods through Node's own require of internal/modules/helpers, their one door, and marks the
+					 * thread it records on that thread's global object, the thread's own by Node's design, before any runtime
+					 * exists to hold a Ref (lane TRACE, 2026-11-26). */
+					"devtools/no-dynamic-imports": "off",
+					"devtools/no-module-state": "off"
+				})
+			},
+			{
 				files: ["packages/testing/src/runner/resolutions.ts"],
 				rules: active({
 					/** A process's resolutions, which Node's resolve hook reads for every module the process loads: the

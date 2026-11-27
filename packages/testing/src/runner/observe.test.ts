@@ -47,13 +47,13 @@ export const theGuardSortsEachAct = property.exhaust(acts, {
 			why: "A connection to the run's own server keeps no read of the PostgreSQL that serves it, so a pass is kept across a rebuild of the server; the property fails."
 		},
 		{
-			file: "packages/testing/src/runner/observe.ts",
+			file: "packages/testing/src/runner/intercept.ts",
 			original: '\t["stat", "inspects"],\n',
 			replacement: '\t["stat", "probes"],\n',
 			why: "A file's status is taken for its presence, so a property that reads a file's times is answered from the cache; the property fails."
 		},
 		{
-			file: "packages/testing/src/runner/observe.ts",
+			file: "packages/testing/src/runner/intercept.ts",
 			original: '\t["realpath", "resolves"],\n',
 			replacement: '\t["realpath", "inspects"],\n',
 			why: "A path's resolution is taken for an act no key holds, so a property that resolves a path (a checkout's root, a module's real path) is never answered from the cache; the property fails."
@@ -65,7 +65,7 @@ export const theGuardSortsEachAct = property.exhaust(acts, {
 			why: "realpath's own walk of its path (lstat on each component) counts as the property's, a status no key holds, so a property that resolves a path is never answered from the cache; the property fails."
 		},
 		{
-			file: "packages/testing/src/runner/observe.ts",
+			file: "packages/testing/src/runner/intercept.ts",
 			original: '\t["readlink", "readsLink"],\n',
 			replacement: '\t["readlink", "inspects"],\n',
 			why: "A link's text is taken for an act no key holds, so a property that reads a link is never answered from the cache; the property fails."

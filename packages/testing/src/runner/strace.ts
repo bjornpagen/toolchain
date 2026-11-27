@@ -1,5 +1,6 @@
 import { regex } from "arkregex"
-import { Array as Arr, String as Str } from "effect"
+import { String as Str } from "effect"
+import { isLive } from "#runner/intercept.ts"
 import { READ_KINDS } from "#traces.ts"
 
 /**
@@ -7,8 +8,9 @@ import { READ_KINDS } from "#traces.ts"
  * -f -y`): which paths it read, listed or probed (KeyedRead), which it made, and so are the starting process's own data,
  * and which it read that are the machine's live state (/proc, /sys, /dev: a runtime's look at itself, its CPUs and
  * cgroup, its terminal), which no key holds and which the runner assumes change no verdict. The guard (runner/observe.ts)
- * starts a property's child processes under strace, its trace written to a file of its own, and reads it here once the
- * child has exited, through the parser a worker gives it once its own modules have loaded (worker.ts).
+ * starts a property's child processes that are not Node under strace, its trace written to a file of its child's record
+ * directory, and reads it here once the child has exited (runner/child-record.ts), through the reader a worker gives it once
+ * its own modules have loaded (worker.ts); a Node child records its own (runner/recorder.ts), as this reads a trace.
  */
 
 /**
@@ -29,13 +31,6 @@ export type Made = Readonly<{ path: string; directory: boolean }>
 
 /** What a child's trace says it did: its keyable reads, and what it made. */
 export type ChildActs = Readonly<{ reads: ReadonlyArray<KeyedRead>; made: ReadonlyArray<Made> }>
-
-/** The directories whose files are the machine's live state, never a child's input: proc(5), sysfs, devices. */
-const LIVE = ["/proc", "/sys", "/dev"] as const
-
-/** Whether a path lies in the machine's live state (LIVE). */
-const isLive = (path: string): boolean =>
-	Arr.some(LIVE, (root) => path === root || Str.startsWith(`${root}/`)(path))
 
 /** A finished call of a trace's line: its process, its name, its arguments' text and its result's text. */
 type Call = Readonly<{ name: string; args: string; result: string }>
@@ -196,13 +191,12 @@ const MAKE_SECOND: ReadonlySet<string> = new Set([
 const WRITES = regex("O_WRONLY|O_RDWR|O_CREAT|O_TRUNC")
 
 /**
- * What a child's trace says it did (ChildActs): each file it opened to read (its bytes), each directory it opened or
- * listed (its entries), each path it probed or failed to open (its presence), each link it read (its text), each
- * program it executed (its bytes), and
- * each path it created, wrote, made, renamed or linked to; its reads of the machine's live state, and of what it made
- * itself, are none of them.
+ * What a child's trace says it did (ChildActs), its own data among its reads (ownedOut takes it out): each file it opened
+ * to read (its bytes), each directory it opened or listed (its entries), each path it probed or failed to open (its
+ * presence), each link it read (its text), each program it executed (its bytes), and each path it created, wrote, made,
+ * renamed or linked to; its reads of the machine's live state are none of them.
  */
-export const childActsOf = (text: string): ChildActs => {
+export const straceActsOf = (text: string): ChildActs => {
 	const reads = new Map<string, KeyedRead>()
 	const made: Array<Made> = []
 	const read = (
@@ -259,9 +253,18 @@ export const childActsOf = (text: string): ChildActs => {
 			}
 		}
 	}
+	return { reads: [...reads.values()], made }
+}
+
+/**
+ * A child's acts with its own data taken out: each read, once, of a path it did not make itself (a file it made, or any
+ * path under a directory it made), whatever process of its tree made it and whenever, its reads and its making read off
+ * its trace or its record alike.
+ */
+export const ownedOut = (acts: ChildActs): ChildActs => {
 	const madeFiles = new Set<string>()
 	const madeDirectories = new Set<string>()
-	for (const one of made) {
+	for (const one of acts.made) {
 		;(one.directory ? madeDirectories : madeFiles).add(one.path)
 	}
 	const dirname = process.getBuiltinModule("node:path").dirname
@@ -281,11 +284,11 @@ export const childActsOf = (text: string): ChildActs => {
 			at = up
 		}
 	}
-	const kept: Array<KeyedRead> = []
-	for (const one of reads.values()) {
+	const kept = new Map<string, KeyedRead>()
+	for (const one of acts.reads) {
 		if (!isMade(one.path)) {
-			kept.push(one)
+			kept.set(`${one.kind}\u0000${one.path}`, one)
 		}
 	}
-	return { reads: kept, made }
+	return { reads: [...kept.values()], made: acts.made }
 }

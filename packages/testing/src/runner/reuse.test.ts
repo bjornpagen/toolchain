@@ -48,8 +48,8 @@ export const aRunAnswersFromItsKeyAlone = property.exhaust(changes, {
 		},
 		{
 			file: "packages/testing/src/runner/observe.ts",
-			original: "\t\t\t\tfor (const one of acts.reads) {\n",
-			replacement: "\t\t\t\tfor (const one of acts.reads.slice(0, 0)) {\n",
+			original: "\t\t\t\tfor (const one of outcome.acts.reads) {\n",
+			replacement: "\t\t\t\tfor (const one of outcome.acts.reads.slice(0, 0)) {\n",
 			why: "A child's reads are kept from its property's trace, so a property whose child reads a fixture is answered from the cache after the fixture changed; the property fails."
 		},
 		{
@@ -78,10 +78,10 @@ export const aRunAnswersFromItsKeyAlone = property.exhaust(changes, {
 			why: "A property that observed past its key is kept as a pass, so a run answers from the cache a property that reads a file's status, which no key holds; the property fails."
 		},
 		{
-			file: "packages/testing/src/runner/observe.ts",
+			file: "packages/testing/src/runner/intercept.ts",
 			original:
-				'const FS_ACTS: ReadonlyArray<readonly [name: string, act: Act]> = [\n\t["readFile", "reads"],\n',
-			replacement: "const FS_ACTS: ReadonlyArray<readonly [name: string, act: Act]> = [\n",
+				'export const FS_ACTS: ReadonlyArray<readonly [name: string, act: Act]> = [\n\t["readFile", "reads"],\n',
+			replacement: "export const FS_ACTS: ReadonlyArray<readonly [name: string, act: Act]> = [\n",
 			why: "The guard neither traces nor sees node:fs's readFile, so a property that reads a fixture at run time is answered from the cache after the fixture changed; the property fails."
 		},
 		{

@@ -1,7 +1,33 @@
 import { registerHooks, syncBuiltinESMExports } from "node:module"
 import type { WorkerOptions } from "node:worker_threads"
 import { regex } from "arkregex"
-import type { ChildActs, KeyedRead } from "#runner/strace.ts"
+import type { ChildOutcome, ChildRecord } from "#runner/child-record.ts"
+import {
+	type Act,
+	type After,
+	asIs,
+	cwdOf,
+	FS_ACTS,
+	isCallable,
+	isList,
+	isLive,
+	lookedFor,
+	pathOf,
+	RECORD_FILE,
+	recorded,
+	restarted,
+	type Runs,
+	searchPathOf,
+	STRACE,
+	STRACE_PREFIX,
+	startOf,
+	throughShell,
+	traceFileOf,
+	wrapped,
+	writes
+} from "#runner/intercept.ts"
+import { recorderArguments } from "#runner/recorder.ts"
+import type { KeyedRead } from "#runner/strace.ts"
 
 /**
  * What a property does past its verdict's key, watched in the process that runs it (runner/worker.ts). A verdict is
@@ -13,12 +39,13 @@ import type { ChildActs, KeyedRead } from "#runner/strace.ts"
  *
  * - a keyable read (runner/strace.ts KeyedRead): a file's bytes read, a directory listed, a path's presence probed, a
  *   path resolved (realpath, whose own walk of the path with lstat, stat and readlink is its one act), a symbolic
- *   link's text read, by the process or by a child it starts, which runs under strace (runner/strace.ts) once the worker
- *   gives the guard its parser (guardChildren). Each is drained with the unit it answers (guardDrain), and a pass keeps
- *   their digests beside its key (runner/traces.ts): it answers while they read alike;
+ *   link's text read, by the process or by a child it starts, once the worker gives the guard its reader
+ *   (guardChildren): a Node child records its own (runner/recorder.ts), any other runs under strace (runner/strace.ts).
+ *   Each is drained with the unit it answers (guardDrain), and a pass keeps their digests beside its key
+ *   (runner/traces.ts): it answers while they read alike;
  * - an observation past every key: a path's status or watch (a time, an inode), the machine's live state read as a
- *   file (/proc, /sys, /dev), a child the guard cannot trace (no strace, a shell, exec, fork) or that outlives its unit,
- *   a connection, a thread. A property that made one is never answered from the cache (runner/cli.ts `run`).
+ *   file (/proc, /sys, /dev), a child the guard cannot watch (a shell, exec, fork, one not Node where strace is missing)
+ *   or that outlives its unit, what a Node child's recorder cannot see into, a connection, a thread. A property that made one is never answered from the cache (runner/cli.ts `run`).
  *
  * An act counts when the process is outside Node's module loader, whose reads are the closure's, which the closure hash
  * keys; and none when it reads the process's own data: a path under a directory the process (or a child it traced)
@@ -93,106 +120,13 @@ export const unwatched = Object.freeze({
 	readFileSync: process.getBuiltinModule("node:fs").readFileSync,
 	readdirSync: process.getBuiltinModule("node:fs").readdirSync,
 	readlinkSync: process.getBuiltinModule("node:fs").readlinkSync,
+	existsSync: process.getBuiltinModule("node:fs").existsSync,
 	spawn: process.getBuiltinModule("node:child_process").spawn,
 	Worker: process.getBuiltinModule("node:worker_threads").Worker
 })
 
 /** The window a process is in: a unit's of a property, by its id, or none. */
 type Window = Readonly<{ kind: "open"; unit: number }> | Readonly<{ kind: "closed" }>
-
-/** A file's path as node:fs takes one: a string, a Buffer or a file: URL, made absolute; none for a file descriptor. */
-const pathOf = (given: unknown): string | undefined => {
-	const path = process.getBuiltinModule("node:path")
-	if (typeof given === "string") {
-		return path.resolve(given)
-	}
-	if (given instanceof URL) {
-		return given.protocol === "file:"
-			? process.getBuiltinModule("node:url").fileURLToPath(given)
-			: undefined
-	}
-	if (given instanceof Uint8Array) {
-		return path.resolve(new TextDecoder().decode(given))
-	}
-	return undefined
-}
-
-/** A text of open's flags that writes: one holding w, a or +. */
-const WRITING = regex("[wa+]")
-
-/** Whether open's flags write: a numeric flag with any of O_WRONLY, O_RDWR, O_CREAT, or a text with w, a or +. */
-const writes = (flags: unknown): boolean => {
-	const { constants } = process.getBuiltinModule("node:fs")
-	if (typeof flags === "number") {
-		return (flags & (constants.O_WRONLY | constants.O_RDWR | constants.O_CREAT)) !== 0
-	}
-	return typeof flags === "string" && WRITING.test(flags)
-}
-
-/**
- * What a call of node:fs does with its arguments: reads its path's bytes; lists its directory; probes its presence;
- * resolves it, every symbolic link followed (realpath); reads its symbolic link's text; inspects its status or its
- * watch, which no key holds (a time, an inode); opens it, reading or writing as its flags say; makes a temporary
- * directory, its returned path the process's own; makes a directory or a file at its path, the process's own; moves its
- * first path to its second, the second its own; or reads its first path and makes its second its own.
- */
-type Act =
-	| "reads"
-	| "lists"
-	| "probes"
-	| "resolves"
-	| "readsLink"
-	| "inspects"
-	| "opens"
-	| "temporary"
-	| "makesDirectory"
-	| "makes"
-	| "moves"
-	| "copies"
-
-/**
- * node:fs's functions the guard wraps, by what each does with its arguments: each under its name, its Sync name and its
- * name in node:fs/promises, wherever the module has one.
- */
-const FS_ACTS: ReadonlyArray<readonly [name: string, act: Act]> = [
-	["readFile", "reads"],
-	["readdir", "lists"],
-	["opendir", "lists"],
-	["stat", "inspects"],
-	["lstat", "inspects"],
-	["statfs", "inspects"],
-	["exists", "probes"],
-	["access", "probes"],
-	["realpath", "resolves"],
-	["readlink", "readsLink"],
-	["watch", "inspects"],
-	["watchFile", "inspects"],
-	["glob", "inspects"],
-	["createReadStream", "reads"],
-	["open", "opens"],
-	["mkdtemp", "temporary"],
-	["mkdir", "makesDirectory"],
-	["writeFile", "makes"],
-	["appendFile", "makes"],
-	["createWriteStream", "makes"],
-	["symlink", "makes"],
-	["link", "makes"],
-	["copyFile", "copies"],
-	["cp", "copies"],
-	["rename", "moves"]
-]
-
-/** strace's arguments before a child's trace file: every process it starts, its file and listing calls, each fd's path, and its tracees killed with it. */
-const STRACE_PREFIX = [
-	"-f",
-	"--seccomp-bpf",
-	"--kill-on-exit",
-	"-qq",
-	"-y",
-	"-e",
-	"trace=%file,getdents64",
-	"-o"
-] as const
 
 /**
  * The tracer of this process, as /proc/self/status states it: 0 for none. A process already traced (a child of a traced
@@ -201,9 +135,6 @@ const STRACE_PREFIX = [
  */
 const TRACER = regex("^TracerPid:\\s*([0-9]+)$", "m")
 
-/** The directories whose files are the machine's live state, which no key holds: proc(5), sysfs, devices. */
-const LIVE_STATE = regex("^/(proc|sys|dev)(/|$)")
-
 /**
  * Where a socket's connection goes, as Socket.prototype.connect's arguments name it: a socket's path (`path`, or a text
  * alone), or `host:port` (an options object's, or a port and a host, `localhost` where none is named); net.connect hands
@@ -211,7 +142,7 @@ const LIVE_STATE = regex("^/(proc|sys|dev)(/|$)")
  */
 const connectionTargetOf = (args: ReadonlyArray<unknown>): string => {
 	const [given, also] = args
-	if (isIterable(given)) {
+	if (isList(given)) {
 		const normalized: Array<unknown> = []
 		for (const one of given) {
 			normalized.push(one)
@@ -252,62 +183,18 @@ const targetOf = (given: unknown): string => {
 	return String(given)
 }
 
-/** Whether a value is an iterable object: a list of arguments, never an options object. */
-const isIterable = (value: unknown): value is Iterable<unknown> =>
-	typeof value === "object" && value !== null && Symbol.iterator in value
-
-/** A callable, as the guard wraps one. */
-type Callable = (...args: Array<unknown>) => unknown
-
-/** Whether a value is callable. */
-const isCallable = (value: unknown): value is Callable => typeof value === "function"
-
-/** What a wrapped call does after the original returns, given what it returned, if anything. */
-type After = ((returned: unknown) => void) | undefined
-
-/** How a wrapped call runs its original, given the call of it: as it is, or inside a context of the guard's. */
-type Runs = (apply: () => unknown) => unknown
-
-/** A wrapped call's original run as it is. */
-const asIs: Runs = (apply) => apply()
-
 /**
- * Replaces `host[name]` by a function that calls `before` with the call's arguments, then the original as `runs` runs it,
- * then what `before` gave with what the original returned, keeping the original's own properties (util.promisify's
- * custom form among them); nothing where the host has no such function.
+ * What reads a child's record directory once it has exited: the reader a worker gives the guard once its own modules
+ * have loaded (runner/child-record.ts childOutcomeOf).
  */
-const wrapped = (
-	host: object,
-	name: string,
-	before: (args: Array<unknown>) => After,
-	runs: Runs
-): void => {
-	const original: unknown = Reflect.get(host, name)
-	if (!isCallable(original)) {
-		return
-	}
-	const wrapper = function (this: unknown, ...args: Array<unknown>): unknown {
-		const after = before(args)
-		return runs(() => {
-			const returned = Reflect.apply(original, this, args)
-			if (after !== undefined) {
-				after(returned)
-			}
-			return returned
-		})
-	}
-	Object.defineProperties(wrapper, Object.getOwnPropertyDescriptors(original))
-	Reflect.set(host, name, wrapper)
-}
-
-/** What reads a child's trace: the parser a worker gives the guard once its own modules have loaded (runner/strace.ts). */
-type ChildParser = (text: string) => ChildActs
+type ChildReader = (record: ChildRecord) => ChildOutcome
 
 /**
  * The process's guard: its window; whether the window has observed past every key; the observation made outside any
  * window, which the next window is told; how deep in Node's module loader it is; the keyable reads the process made,
  * each once, those not yet drained apart, and who made the windows' keyable reads since the last drain; the children
- * the window started under strace that have not ended; and the parser of their traces, none until a worker gives it.
+ * the window started watched (recorded or traced) that have not ended; and the reader of their record directories,
+ * none until a worker gives it.
  */
 const guard: {
 	window: Window
@@ -318,7 +205,7 @@ const guard: {
 	undrained: Array<KeyedRead>
 	by: ReadBy
 	running: Set<number>
-	parser: ChildParser | undefined
+	reader: ChildReader | undefined
 	observed: (observation: Observation, unit: number) => void
 	servers: Set<string>
 	runnersOwn: () => boolean
@@ -333,7 +220,7 @@ const guard: {
 	undrained: [],
 	by: "none",
 	running: new Set(),
-	parser: undefined,
+	reader: undefined,
 	observed: () => undefined,
 	servers: new Set(),
 	runnersOwn: () => false,
@@ -378,9 +265,12 @@ export const guardServers = (addresses: ReadonlyArray<string>): void => {
 	}
 }
 
-/** Gives the guard the parser of its children's traces (runner/strace.ts childActsOf): until then a child is no keyable act. */
-export const guardChildren = (parser: ChildParser): void => {
-	guard.parser = parser
+/**
+ * Gives the guard the reader of its children's record directories (runner/child-record.ts childOutcomeOf): until then a
+ * child is no keyable act.
+ */
+export const guardChildren = (reader: ChildReader): void => {
+	guard.reader = reader
 }
 
 /**
@@ -457,9 +347,9 @@ export const guardDrain = (): Drained => {
  * node:child_process's, node:net's and node:tls's connections, fetch and worker_threads' Worker, and brackets Node's
  * module loader so its reads are no observation; `observed` is told each window's first observation past every key and
  * the unit whose window it is. A file's bytes read, a directory listed or a path probed in a window is a keyable read
- * (KeyedRead), drained by guardDrain; a child a window starts runs under strace (runner/strace.ts) when the guard has its
- * parser, its reads keyable as the process's own, and is an observation otherwise. Called once, as a worker's first
- * act (runner/worker-entry.ts).
+ * (KeyedRead), drained by guardDrain; a child a window starts is watched when the guard has its reader (a Node child
+ * under its own recorder, runner/recorder.ts, any other under strace, runner/strace.ts), its reads keyable as the
+ * process's own, and is an observation otherwise. Called once, as a worker's first act (runner/worker-entry.ts).
  */
 export const guardInstalled = (
 	observed: (observation: Observation, unit: number) => void
@@ -471,15 +361,41 @@ export const guardInstalled = (
 	const fs = process.getBuiltinModule("node:fs")
 	const original = {
 		readFileSync: fs.readFileSync,
+		readdirSync: fs.readdirSync,
 		mkdtempSync: fs.mkdtempSync,
 		rmSync: fs.rmSync,
-		existsSync: fs.existsSync
+		existsSync: fs.existsSync,
+		statSync: fs.statSync,
+		accessSync: fs.accessSync,
+		realpathNative: fs.realpathSync.native
 	}
-	const traced0 = TRACER.exec(original.readFileSync("/proc/self/status", "utf8"))
-	const strace =
-		original.existsSync("/usr/bin/strace") && (traced0 === null || traced0[1] === "0")
-			? "/usr/bin/strace"
-			: undefined
+	/** A call of the guard's own that may fail, its failure `failed`. */
+	const failing = <A>(call: () => A): A | "failed" => {
+		try {
+			return call()
+		} catch {
+			return "failed"
+		}
+	}
+	/**
+	 * Whether this process can watch its children: no tracer traces it and no recorder records it (a process has one
+	 * tracer, and a recorded process's recorder watches every child it starts itself, runner/recorder.ts).
+	 */
+	const tracer = TRACER.exec(original.readFileSync("/proc/self/status", "utf8"))
+	const watches = (tracer === null || tracer[1] === "0") && !recorded()
+	/** Whether a path is an executable regular file, as execvp(3) would run it. */
+	const executable = (file: string): boolean => {
+		const status = failing(() => original.statSync(file, { throwIfNoEntry: false }))
+		return (
+			status !== undefined &&
+			status !== "failed" &&
+			status.isFile() &&
+			failing(() => original.accessSync(file, fs.constants.X_OK)) !== "failed"
+		)
+	}
+	const strace = executable(STRACE) ? STRACE : undefined
+	/** This process's own Node, by its real path: a child running it is a Node child, which records its own reads. */
+	const node = failing(() => original.realpathNative(process.execPath))
 	const isOwn = (file: string): boolean => {
 		let at = file
 		for (;;) {
@@ -514,7 +430,13 @@ export const guardInstalled = (
 		if (!acting()) {
 			return
 		}
-		const into = guard.collecting()
+		told(observation, guard.collecting())
+	}
+	/**
+	 * An act past every key the property made, told to the collection `into` it goes to (if any) and to its window, as
+	 * saw tells it: what a watched child's outcome observed, told once the child has ended.
+	 */
+	const told = (observation: Observation, into: CollectedActs | undefined): void => {
 		if (into !== undefined && into.observed === undefined) {
 			into.observed = observation
 		}
@@ -545,7 +467,7 @@ export const guardInstalled = (
 		if (kind !== "postgres" && isOwn(file)) {
 			return
 		}
-		if (kind === "unkeyable" || (kind !== "postgres" && LIVE_STATE.test(file))) {
+		if (kind === "unkeyable" || (kind !== "postgres" && isLive(file))) {
 			saw({ kind: "read", call, path: file })
 			return
 		}
@@ -602,6 +524,8 @@ export const guardInstalled = (
 				case "readsLink":
 					return readOf("link")(call, args[0])
 				case "inspects":
+				case "watches":
+				case "globs":
 					return readOf("unkeyable")(call, args[0])
 				case "opens":
 					if (writes(args[1])) {
@@ -626,6 +550,7 @@ export const guardInstalled = (
 				case "makes":
 					made(pathOf(args[0]), false)
 					return undefined
+				case "links":
 				case "moves":
 					made(pathOf(args[1]), false)
 					return undefined
@@ -649,100 +574,110 @@ export const guardInstalled = (
 		wrapped(promisesHost, name, actOf(`promises.${name}`, act), runs)
 	}
 	/**
-	 * A child started under strace, its trace written to a file of its own, for the open window: what it is to read the
-	 * trace once the child has ended, or none where the guard cannot trace it (no strace, no parser, no window, or a
-	 * child run through a shell option), whose start is then an observation of the window.
+	 * What a watched child is to its unit once it has ended: its record directory read and gone, its acts the process's
+	 * own (its makings the process's own data, its reads keyable reads), or an observation of the unit's window where
+	 * its outcome holds one.
 	 */
-	const tracing = (
-		call: string,
-		command: string
-	): Readonly<{ output: string; ended: () => void }> | undefined => {
+	type Watch = Readonly<{ command: string; ended: () => void; dropped: () => void }>
+	/**
+	 * A child about to start for the open window, its call's arguments made over in place to watch it: a Node child
+	 * (its command, found as execvp(3) finds it, is this process's own Node) under its own recorder, any other under
+	 * strace, each writing to a record directory of its own; none where the guard does not watch it (no reader, no
+	 * window, a process that cannot watch its children, a child run through a shell, or no strace for a child not Node),
+	 * whose start is then an observation of the window.
+	 */
+	const watched = (call: string, args: Array<unknown>): Watch | undefined => {
+		const start = startOf(args)
 		if (!watching()) {
-			saw({ kind: "child", call, command })
+			saw({ kind: "child", call, command: start.command })
 			return undefined
 		}
-		if (strace === undefined || guard.parser === undefined) {
-			saw({ kind: "child", call, command })
+		const reader = guard.reader
+		if (!watches || reader === undefined || throughShell(start.options)) {
+			saw({ kind: "child", call, command: start.command })
 			return undefined
 		}
-		const parse = guard.parser
+		let runs: string | undefined
+		for (const one of lookedFor(
+			start.command,
+			searchPathOf(start.options, process.env),
+			cwdOf(start.options),
+			executable
+		)) {
+			runs = one.found ? one.path : runs
+		}
+		const isNode =
+			runs !== undefined &&
+			node !== "failed" &&
+			failing(() => original.realpathNative(runs)) === node
+		if (!isNode && strace === undefined) {
+			saw({ kind: "child", call, command: start.command })
+			return undefined
+		}
 		const into = guard.collecting()
 		const directory = original.mkdtempSync(
-			path.join(process.getBuiltinModule("node:os").tmpdir(), "toolchain-strace-")
+			path.join(process.getBuiltinModule("node:os").tmpdir(), "toolchain-child-")
 		)
-		const output = path.join(directory, "trace")
+		restarted(
+			args,
+			isNode
+				? { ...start, args: [...recorderArguments(directory), ...start.args] }
+				: {
+						command: STRACE,
+						args: [
+							...STRACE_PREFIX,
+							path.join(directory, traceFileOf(process.pid, 0, 0)),
+							"--",
+							start.command,
+							...start.args
+						],
+						options: start.options
+					}
+		)
 		return {
-			output,
+			command: start.command,
 			ended: () => {
-				const acts = parse(original.readFileSync(output, "utf8"))
+				let record: string | undefined
+				const traces: Array<string> = []
+				for (const name of original.readdirSync(directory)) {
+					const text = original.readFileSync(path.join(directory, name), "utf8")
+					if (name === RECORD_FILE) {
+						record = text
+					} else {
+						traces.push(text)
+					}
+				}
+				const outcome = reader({ node: isNode, record, traces })
 				original.rmSync(directory, { recursive: true, force: true })
-				for (const one of acts.made) {
+				for (const one of outcome.acts.made) {
 					made(one.path, one.directory)
 				}
-				for (const one of acts.reads) {
-					traced(one.kind, one.path, `${call} ${command}`, into)
+				if (isNode && runs !== undefined) {
+					traced("file", runs, `${call} ${start.command}`, into)
+				}
+				for (const one of outcome.acts.reads) {
+					traced(one.kind, one.path, `${call} ${start.command}`, into)
 				}
 				guard.by = "children"
+				if (outcome.observation !== undefined) {
+					told(outcome.observation, into)
+				}
+			},
+			dropped: () => {
+				original.rmSync(directory, { recursive: true, force: true })
 			}
 		}
 	}
 	const childHost: Record<string, unknown> = process.getBuiltinModule("node:child_process")
-	/** Whether a value is a list of a child's arguments, not its options: an iterable object. */
-	const isList = (value: unknown): value is Iterable<unknown> =>
-		typeof value === "object" && value !== null && Symbol.iterator in value
-	/** Whether a child's options run it through a shell, which the guard does not trace. */
-	const throughShell = (options: unknown): boolean =>
-		typeof options === "object" && options !== null && "shell" in options && Boolean(options.shell)
-	/**
-	 * A child's call made over again in place to run it under strace: `args[0]` the command, then its arguments (a list,
-	 * or none), then its options, become strace, its arguments and the command's, then the options; the trace to read
-	 * once it ends, or none where the guard does not trace it (a shell option: an observation; no window: no act).
-	 */
-	const underStrace = (
-		call: string,
-		args: Array<unknown>
-	): Readonly<{ output: string; ended: () => void; command: string }> | undefined => {
-		const command = String(args[0])
-		const second = args[1]
-		const listed = isList(second)
-		if (throughShell(listed ? args[2] : second)) {
-			saw({ kind: "child", call, command })
-			return undefined
-		}
-		const trace = tracing(call, command)
-		if (trace === undefined || strace === undefined) {
-			return undefined
-		}
-		const argv: Array<string> = []
-		for (const one of STRACE_PREFIX) {
-			argv.push(one)
-		}
-		argv.push(trace.output, "--", command)
-		if (isList(second)) {
-			for (const one of second) {
-				argv.push(String(one))
-			}
-		} else {
-			for (let at = args.length; at > 1; at -= 1) {
-				args[at] = args[at - 1]
-			}
-		}
-		args[0] = strace
-		args[1] = argv
-		return { ...trace, command }
-	}
-	/** Ends a traced child's trace once it exits, or makes it an observation of its window when the window closes first. */
-	const followed = (
-		child: unknown,
-		trace: Readonly<{ output: string; ended: () => void; command: string }>,
-		unit: number
-	): void => {
+	/** Ends a watched child's watch once it exits, or makes it an observation of its window when the window closes first. */
+	const followed = (child: unknown, watch: Watch, unit: number): void => {
 		if (
 			typeof child !== "object" ||
 			child === null ||
 			!("once" in child) ||
 			!isCallable(child.once)
 		) {
+			watch.dropped()
 			return
 		}
 		const pid = "pid" in child && typeof child.pid === "number" ? child.pid : -1
@@ -752,11 +687,12 @@ export const guardInstalled = (
 				guard.window.kind === "open" && guard.window.unit === unit && guard.running.has(pid)
 			guard.running.delete(pid)
 			if (stillOpen) {
-				trace.ended()
+				watch.ended()
 				return
 			}
+			watch.dropped()
 			observed(
-				{ kind: "child", call: "a child that outlived its unit's window", command: trace.command },
+				{ kind: "child", call: "a child that outlived its unit's window", command: watch.command },
 				unit
 			)
 		})
@@ -766,9 +702,9 @@ export const guardInstalled = (
 			childHost,
 			call,
 			(args) => {
-				const trace = underStrace(call, args)
+				const watch = watched(call, args)
 				const unit = guard.window.kind === "open" ? guard.window.unit : -1
-				return trace === undefined ? undefined : (child) => followed(child, trace, unit)
+				return watch === undefined ? undefined : (child) => followed(child, watch, unit)
 			},
 			asIs
 		)
@@ -778,8 +714,8 @@ export const guardInstalled = (
 			childHost,
 			call,
 			(args) => {
-				const trace = underStrace(call, args)
-				return trace === undefined ? undefined : () => trace.ended()
+				const watch = watched(call, args)
+				return watch === undefined ? undefined : () => watch.ended()
 			},
 			asIs
 		)

@@ -157,16 +157,19 @@ A property's key (`runner/cache.ts` VerdictKey) holds everything its verdict can
 
 What a property reads at run time is its pass's trace (`runner/traces.ts`): a worker watches every act of a property's
 code (`runner/observe.ts`), and each keyable read (a file's bytes, a directory's entries, a path's presence, where a
-path resolves to, a link's text, by the property or by a child it starts, which runs under strace; a connection to one
-of the run's own cluster members, which reads the PostgreSQL serving it) is kept with the pass, each with the digest of
+path resolves to, a link's text, by the property or by a child it starts: a Node child records its own reads in its
+own process (`runner/recorder.ts`: the module loader's, node:fs's and its children's), any other child runs under
+strace; a connection to one of the run's own cluster members, which reads the PostgreSQL serving it) is kept with the pass, each with the digest of
 what it read, checked whenever the key is read: the pass answers while some trace of it reads alike. A read that
 changed after the run began keeps no pass. A run keeps its reads once: one reads file holds each distinct read with
 its digest and each worker's reads in order, and a pass's trace names it and how far into each of its workers' reads it
 goes, so a run's traces cost its distinct reads, and a lookup weighs each read once however many traces hold it. Paths
 under the repository are kept from its root, so every checkout of it answers from another's verdicts. What no digest
 states is an observation past every key, and its property is never cached: a path's status or watch (a time, an
-inode), /proc, /sys or /dev read as a file, a child the guard cannot trace (a shell, exec, fork, one that outlives its
-unit, no strace), a connection to anything but the run's own members, a thread. The runner's own acts (its watchdog
+inode), /proc, /sys or /dev read as a file, a child the guard cannot watch (a shell, exec, fork, one that outlives its
+unit, one not Node where strace is missing), what a Node child's recorder cannot see into (a native addon, a glob, a
+recursive listing, a directory copied whole, a module loaded before it), a connection to anything but the run's own
+members, a thread. The runner's own acts (its watchdog
 thread, its reads of /proc, the judge's of a child's tree among them (live.ts processWorkNow), a scratch directory's remover, a pool's workers, a worker's
 services built and everything its cluster does: holds, leases, settles, sessions) are no property's; an act outside
 any window (a worker's start, its runner config's modules evaluated, work that outlives its window) is the worker's,

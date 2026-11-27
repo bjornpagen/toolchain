@@ -25,6 +25,7 @@ import {
 	Stopped,
 	stoppedOf
 } from "#runner/case.ts"
+import { childOutcomeOf } from "#runner/child-record.ts"
 import { askedClosuresOf } from "#runner/closure-requests.ts"
 import { collectingNow } from "#runner/collected.ts"
 import { asInfrastructure, inInfrastructure } from "#runner/infrastructure.ts"
@@ -49,7 +50,6 @@ import {
 import { runValuesOf } from "#runner/runs.ts"
 import { ModuleClosure, RunValues, WorkerIndex } from "#runner/services.ts"
 import { runOfLabel } from "#runner/stack.ts"
-import { childActsOf } from "#runner/strace.ts"
 import { childrenCpuNow, childrenSince } from "#runner/usage.ts"
 import { reportWaitsTo } from "#runner/work.ts"
 import { startProcessCoverage } from "#sense.ts"
@@ -109,7 +109,7 @@ const main = Effect.gen(function* () {
 	if (guide === "blocks") {
 		yield* startProcessCoverage
 	}
-	guardChildren(childActsOf)
+	guardChildren(childOutcomeOf)
 	guardRunnerOwn(inInfrastructure)
 	guardCollecting(collectingNow)
 	const config = yield* configOf(root)

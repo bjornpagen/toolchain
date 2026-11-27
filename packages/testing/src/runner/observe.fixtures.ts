@@ -12,7 +12,7 @@ import { ran } from "#runner/consumer.fixtures.ts"
  * One act: connecting to a socket the run's own server listens at (one the guard was told of) or to another's; reading
  * a file's bytes; probing a path that is not there; resolving a path through realpath's callback form, which walks it
  * with lstat, stat and readlink; reading a symbolic link's text; reading a file's status; reading what the process made
- * itself; or starting a child process that reads a file (the guard traces it under strace once given the parser).
+ * itself; or starting a child process that reads a file (cat, which the guard traces under strace once given its reader).
  */
 const ACTS = [
 	"a connection to the run's own server",
@@ -67,7 +67,7 @@ const actText = (act: Act): string => {
 }
 
 /**
- * The program a case runs: the guard installed first (its own module, from the checkout), its children's parser given
+ * The program a case runs: the guard installed first (its own module, from the checkout), its children's reader given
  * it, two socket servers listening outside any window, the run's own one told the guard; then one unit's window, `act`
  * made in it, the reads drained, and what it saw printed as JSON.
  */
@@ -75,16 +75,16 @@ const programOf = (checkout: CheckoutDir, act: Act): string => {
 	const observe = process
 		.getBuiltinModule("node:url")
 		.pathToFileURL(`${checkout}/src/runner/observe.ts`).href
-	const strace = process
+	const recorded = process
 		.getBuiltinModule("node:url")
-		.pathToFileURL(`${checkout}/src/runner/strace.ts`).href
+		.pathToFileURL(`${checkout}/src/runner/child-record.ts`).href
 	return Arr.join(
 		[
 			`import { guardInstalled, guardWindow, guardDrain, guardServers, guardChildren } from "${observe}"`,
 			"let observed = false",
 			"guardInstalled(() => { observed = true })",
-			`const { childActsOf } = await import("${strace}")`,
-			"guardChildren(childActsOf)",
+			`const { childOutcomeOf } = await import("${recorded}")`,
+			"guardChildren(childOutcomeOf)",
 			'const fs = await import("node:fs")',
 			'const net = await import("node:net")',
 			'const child = await import("node:child_process")',

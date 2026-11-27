@@ -14,6 +14,37 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: a Node child records its own reads (2026-11-26)
+
+The guard keyed a property's verdict by what its child processes read, each read off strace(1)'s trace of the child
+(TOOLTRUST2), and strace stops a child at every file call it makes. At load 450 to 550 each stop waits its turn on a
+CPU: grizzle's substrate exit child ran 286 to 325 s traced against 65 to 80 s plain (34,872 stops), its property went
+from 17.1 s a case to 227.8 s, and its cli property from 230-730 s to over an hour. Now:
+
+- **A Node child records its own reads, at no stop.** A child whose command is the worker's own Node (found on its
+  search path as execvp finds it, by its real path) starts as `node --expose-internals --import <the testing library's
+  runner/recorder.ts>?to=<a record directory> <its own arguments>`. The recorder runs before any module of the child's
+  loads, in every thread and every Node child the child starts, and appends each read once a thread to the record as it
+  makes it: the module loader's own (its status probes, package.json reads and walks, legacy main candidates, at the
+  loader's one door to the file system, internal/modules/helpers' loaderMethods), node:fs's, its own files made, and
+  its children's (a Node child recorded again, any other traced). The guard reads the record once the child exits. A
+  property over the library's own programs holds the record to strace's trace of the same child read for read, and a
+  budget holds a recorded child to one line a distinct read and at most twice its plain CPU and context switches.
+- **Any other child still runs under strace**: git, cat, sh, a compiler's native binary, systemd-run, psql, and a
+  Node program started through a shell or a wrapper (`env`, a pnpm `.bin` shim), which strace follows into the Node it
+  runs. A Node child's own shell, exec and other programs run under strace inside it.
+- **What a recorder cannot see into is an observation**, so its property runs every time: a native addon (its own
+  reads), a glob's walk, a recursive listing, a directory copied whole, and a module that loaded before the recorder (a
+  child's own `--require` preload). The runtime's own reads (Node's libraries, ICU and OpenSSL configuration, time zone,
+  compile cache) are no key's, as they never were of the worker's own: Node's version is in every key.
+- A Node child sees `--expose-internals` and the recorder's `--import` in its `process.execArgv` (a fork or worker
+  thread inherits them, so it is recorded too), and `module.builtinModules` lists Node's internal modules.
+
+To migrate: nothing, beyond the bump. A child started as `env -u NAME node ...`, through a shell or a `.bin` shim still
+runs under strace and stops at every call; start Node itself (`process.execPath`, with `env` in the spawn's options)
+to have it recorded. grizzle's test/unit/ir/shape.fixtures.ts starts its child through `env -u NODE_OPTIONS`, which this
+machine's Node never reads.
+
 ## Consumer migration: a statement's backend is its case's own work (2026-11-26)
 
 A statement was a declared wait whose claim a guard checked: at each reading it asked the member whether the session's
