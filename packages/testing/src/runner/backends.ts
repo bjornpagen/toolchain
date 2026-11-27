@@ -31,8 +31,8 @@ import { unwatched } from "#runner/observe.ts"
  *   is the leader's, so the tree's, from their start. A worker that starts and ends between two readings goes unseen; its
  *   leader, which runs its share of the plan beside them, moves the tree's work all the same.
  *
- * What a backend waits on is asked of its server, when the process holds a monitor of it (registerServerAt, the toolchain's
- * PostgreSQL sessions register theirs): a backend behind a heavyweight lock is carried by the holders that work (active
+ * What a backend waits on is asked of its server, when the process holds a monitor of it (registerServerAt: a worker's
+ * cluster registers each member it brings up, pg/session.ts memberRegistered, whatever client reaches it): a backend behind a heavyweight lock is carried by the holders that work (active
  * and behind no lock) or sit between statements, at any remove (pg_blocking_pids), and by none where every holder is
  * idle in a transaction or the holders wait on each other; a backend waiting on a checkpoint (CREATE DATABASE's
  * FILE_COPY) is carried by the checkpointer, and one waiting on I/O by the server's I/O workers (io_method=worker),

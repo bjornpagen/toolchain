@@ -92,9 +92,8 @@ export const aRunAnswersFromItsKeyAlone = property.exhaust(changes, {
 		},
 		{
 			file: "packages/testing/src/resources/cluster.ts",
-			original:
-				"\t\t\t\t\t\t\t\t\t\t\t\t(member) => Effect.sync(() => guardServers(serverAddressesOf(member)))\n",
-			replacement: "\t\t\t\t\t\t\t\t\t\t\t\t(member) => Effect.sync(() => guardServers([]))\n",
+			original: "\t\t\t\t\t\t\t\t\t\t\t\t\t\tguardServers(serverAddressesOf(member))\n",
+			replacement: "\t\t\t\t\t\t\t\t\t\t\t\t\t\tguardServers([])\n",
 			why: "The guard is told none of the run's own members, so a property's connection to its own cluster is an observation past every key, and a database property runs every time; the property whose template's build file stands is not answered, and the property fails."
 		},
 		{

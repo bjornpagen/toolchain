@@ -14,6 +14,16 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: a worker's cluster registers each member it brings up (2026-11-26)
+
+A backend's lock wait behind an outside holder that works, and its wait on the server's I/O workers, is carried (moves
+its case, spends none of its budget) only where its server is registered with the process (runner/backends.ts
+registerServerAt). Only the toolchain's own sessions (`pgOwnerSession`, `pgSuperuserSession`) registered their member,
+so a repository that passes its own `connect` and `superuser` to `PgCluster.layer` (grizzle) never registered one, and
+such waits counted as nothing until a 60 s stall window passed. Now the cluster registers each member when it brings it
+up in a worker (pg/session.ts memberRegistered), whatever client reaches it, and the sessions register nothing:
+nothing to export, nothing a consumer can forget. Nothing to migrate.
+
 ## Consumer migration: a Node child records its own reads (2026-11-26)
 
 The guard keyed a property's verdict by what its child processes read, each read off strace(1)'s trace of the child

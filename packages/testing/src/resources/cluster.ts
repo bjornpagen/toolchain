@@ -14,6 +14,7 @@ import {
 } from "effect"
 import { checkoutHere, familyOf, homesHere, memberNames } from "#pg/family.ts"
 import { familyHeld } from "#pg/hold.ts"
+import { memberRegistered } from "#pg/session.ts"
 import {
 	membersRunningAt,
 	memberBroughtUp,
@@ -371,7 +372,11 @@ export class PgCluster extends Context.Service<PgCluster, PgClusterShape>()(
 													),
 													clusterFailed
 												),
-												(member) => Effect.sync(() => guardServers(serverAddressesOf(member)))
+												(member) =>
+													Effect.sync(() => {
+														guardServers(serverAddressesOf(member))
+														memberRegistered(member)
+													})
 											),
 											bringing
 										),

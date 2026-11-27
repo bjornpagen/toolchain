@@ -1543,6 +1543,12 @@ export const lockedBehindAWorkingHolderIsWork = property.exhaust(finite(backendS
 				"\t\tWHERE blockers.waiter = asked.pid AND h.state = 'active' AND h.wait_event_type IS DISTINCT FROM 'Lock'\n",
 			replacement: "\t\tWHERE false\n",
 			why: "A backend behind a lock is carried by no holder, as a statement was its client's silence: a case whose statement waits behind another session's work is stalled, as RECORDS-ATTACH's live cases were judged hung behind SSI waits (2026-11-21); the property fails, the locked read judged."
+		},
+		{
+			file: "packages/testing/src/resources/cluster.ts",
+			original: "\t\t\t\t\t\t\t\t\t\t\t\t\t\tmemberRegistered(member)\n",
+			replacement: "",
+			why: "The cluster registers no member it brings up, so only a client that registers its own server is asked what its backends wait on, and a repository's own sessions never are (grizzle's, 2026-11-26): a case behind an outside holder that works is judged stalled; the property fails, the locked read judged."
 		}
 	]
 })

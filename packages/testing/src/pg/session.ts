@@ -64,6 +64,17 @@ const carriersOn =
 		Effect.runPromise(carriersWithin(member, backends, monitorBoundMillis))
 
 /**
+ * Registers `member` with this process (runner/backends.ts registerServerAt), so a guard asks it what carries its
+ * backends' waits (carriersOn): what the cluster does for each member it brings up in a worker (resources/cluster.ts
+ * PgCluster.layer), so every client of every repository reaches a registered member, the repository's own as the
+ * toolchain's sessions, and none can forget it (grizzle passed its own sessions, which never registered: a lock wait
+ * behind an outside holder that worked, and an I/O worker's, counted as nothing until a stall window passed).
+ */
+export const memberRegistered = (member: PgMember): void => {
+	registerServerAt(member.socket, member.port, carriersOn(member))
+}
+
+/**
  * carriersOn with the monitor bounded by `bound` milliseconds (monitorBoundMillis in production; a test's own): what
  * `member` says carries each of `backends`' waits, or nothing where it cannot be asked (its connection fails or
  * overruns the bound, and is made again at the next ask).
@@ -184,8 +195,9 @@ const monitorOf = (member: PgMember, bound: number): Monitor => {
  * the process tree's (runner/backends.ts, the peer of the session's socket), so a guard counts the backend's CPU and
  * storage work as the case's and a wait the member's server says a working holder or the checkpointer carries as moving
  * it, as it would any client's, where a statement held up server-side spent no CPU of this process and was judged hung
- * (RECORDS-ATTACH, 2026-11-21: SSI waits of about 2 s a statement, 25 ms of CPU over 60 s). The session registers its
- * member with the process (registerServerAt), so a guard can ask it what its backends wait on.
+ * (RECORDS-ATTACH, 2026-11-21: SSI waits of about 2 s a statement, 25 ms of CPU over 60 s). The member it reaches was
+ * registered with the process by the cluster that brought it up (memberRegistered), so a guard can ask it what its
+ * backends wait on, whatever client a repository reaches it with.
  */
 const pgSession = (
 	applicationName: string,
@@ -207,13 +219,10 @@ const pgSession = (
 						})
 				),
 				(client) =>
-					Effect.andThen(
-						Effect.sync(() => registerServerAt(member.socket, member.port, carriersOn(member))),
-						Effect.tryPromise({
-							try: () => client.connect(),
-							catch: sessionFailed(member, `a session in ${database}`)
-						})
-					)
+					Effect.tryPromise({
+						try: () => client.connect(),
+						catch: sessionFailed(member, `a session in ${database}`)
+					})
 			),
 			(client) =>
 				Effect.ignore(
