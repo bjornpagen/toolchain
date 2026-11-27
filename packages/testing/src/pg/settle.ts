@@ -52,7 +52,7 @@ import {
 	shareOf,
 	sizedSettings
 } from "#pg/settings.ts"
-import type { LocalCluster } from "#pg/spec.ts"
+import { factsOf, type LocalCluster } from "#pg/spec.ts"
 import { testWorkers } from "#workers.ts"
 
 /**
@@ -366,10 +366,10 @@ const readIfThere = (file: string) =>
 	)
 
 /**
- * The owner role with `password`, its grants, the template and its extensions, and the owner's own database with each
- * preloaded library's extension, in the member at `at`, as the bootstrap superuser makes them: each made where absent
- * and given what every member's holds where present (the role its attributes, password and grants, the template its
- * owner and IS_TEMPLATE).
+ * The owner role with `password`, its grants, the template and its extensions, and the owner's own database with the
+ * extension of each preloaded library that has one (PreloadedLibraryFacts), in the member at `at`, as the bootstrap
+ * superuser makes them: each made where absent and given what every member's holds where present (the role its
+ * attributes, password and grants, the template its owner and IS_TEMPLATE).
  */
 /**
  * The table in the owner's database that records which runner of which checkout claims which template
@@ -453,7 +453,10 @@ const owned = (cluster: LocalCluster, bin: string, at: SocketAt, password: strin
 				`DROP TABLE IF EXISTS public.${claimsByCheckout}`,
 				`CREATE TABLE IF NOT EXISTS public.${templateClaimsTable} (template text NOT NULL, checkout text NOT NULL, runner text NOT NULL, logical text NOT NULL, claimed timestamptz NOT NULL DEFAULT pg_catalog.clock_timestamp(), PRIMARY KEY (template, checkout, runner))`,
 				`ALTER TABLE public.${templateClaimsTable} OWNER TO ${owner}`,
-				...Arr.map(cluster.preload, (library) => `CREATE EXTENSION IF NOT EXISTS ${ident(library)}`)
+				...Arr.map(
+					Arr.filter(cluster.preload, (library) => factsOf(library).extension),
+					(library) => `CREATE EXTENSION IF NOT EXISTS ${ident(library)}`
+				)
 			],
 			doing("its template claims and its preloaded libraries' extensions")
 		)

@@ -1,5 +1,13 @@
-import { Array as Arr, String as Str } from "effect"
-import type { Durability, LocalCluster, PredicateRoom, SessionLocks, Sizing } from "#pg/spec.ts"
+import { Array as Arr, Record as Rec, String as Str } from "effect"
+import {
+	type Durability,
+	factsOf,
+	type LocalCluster,
+	type Loading,
+	type PredicateRoom,
+	type SessionLocks,
+	type Sizing
+} from "#pg/spec.ts"
 import { widthOf } from "#workers.ts"
 
 /**
@@ -343,13 +351,20 @@ const ofDurability = (durability: Durability): ReadonlyArray<Setting> =>
 			]
 		: []
 
+/** The setting that names the libraries a member loads each way (Loading), as pg_settings spells it. */
+const loadingSetting = {
+	shared: "shared_preload_libraries",
+	session: "session_preload_libraries"
+} as const satisfies Readonly<Record<Loading, string>>
+
 /**
  * The settings a cluster's preloaded libraries add (LocalCluster `preload`), each library inert in every database until
- * one turns it on: shared_preload_libraries names them, in their roster's order; for pg_stat_statements,
- * compute_query_id off, so no statement is jumbled into a query id, and its track `none` and track_planning off, so
- * each of its hooks returns at its first test and it counts nothing. A database that turns it on sets compute_query_id
- * `on`, track `all` and track_planning `on` for itself (ALTER DATABASE ... SET, which the owner may where the cluster's
- * `ownerParameters` name the three), so only the backends of that database count their statements' plans and calls.
+ * one turns it on: shared_preload_libraries and session_preload_libraries each name the libraries loaded that way
+ * (PreloadedLibraryFacts `loading`), in the cluster's order, and each library adds the settings that keep it inert
+ * (its `inert`). pg_stat_statements' are compute_query_id off, its track `none` and track_planning off; a database
+ * that turns it on sets compute_query_id `on`, track `all` and track_planning `on` for itself (ALTER DATABASE ... SET,
+ * which the owner may where the cluster's `ownerParameters` name the three), so only the backends of that database
+ * count their statements' plans and calls.
  *
  * What a member with it inert costs a test that never turns it on, measured as two same-moment pairs of one ordinary
  * grizzle test file, test/pg/laws/plain-native.test.ts under TEST_SEED=2219874524, run at once from two checkouts of one
@@ -358,16 +373,18 @@ const ofDurability = (durability: Durability): ReadonlyArray<Setting> =>
  * then 30.9 s and 27.7 s beside 30.2 s and 27.2 s. The pairs differ by 0.1 s and 0.7 s (2.5%), while one checkout's two
  * runs differ by 70% with the machine's load: nothing a run can tell.
  */
-const preloadSettings = (cluster: LocalCluster): ReadonlyArray<Setting> =>
-	Arr.match(cluster.preload, {
-		onEmpty: () => [],
-		onNonEmpty: (libraries) => [
-			["shared_preload_libraries", Arr.join(libraries, ",")],
-			["compute_query_id", "off"],
-			["pg_stat_statements.track", "none"],
-			["pg_stat_statements.track_planning", "off"]
-		]
-	})
+const preloadSettings = (cluster: LocalCluster): ReadonlyArray<Setting> => [
+	...Arr.flatMap(Rec.toEntries(loadingSetting), ([loading, setting]) =>
+		Arr.match(
+			Arr.filter(cluster.preload, (library) => factsOf(library).loading === loading),
+			{
+				onEmpty: (): ReadonlyArray<Setting> => [],
+				onNonEmpty: (libraries): ReadonlyArray<Setting> => [[setting, Arr.join(libraries, ",")]]
+			}
+		)
+	),
+	...Arr.flatMap(cluster.preload, (library) => factsOf(library).inert)
+]
 
 /** The settings every member of `cluster` holds exactly (everyMember, its durability's and its preloads'). */
 export const fixedSettings = (cluster: LocalCluster): Arr.NonEmptyReadonlyArray<Setting> =>

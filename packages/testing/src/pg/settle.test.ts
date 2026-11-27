@@ -12,12 +12,24 @@
  * its own, where one a live case holds is kept; a family settled for one run's width and reached by a run of another is
  * refused by every read until that run's first need settles it at its own width, its state and each member it reaches,
  * where it would have been refused for good or read as the other width's, and a family's settle unit settles at the
- * width it is given, never at the width of its own place. Each case holds its family while it reads it (hold.ts
+ * width it is given, never at the width of its own place; and every session of a settled member loads each library its
+ * cluster preloads, inert, a database that sets session_preload_libraries off opening its sessions without the libraries
+ * loaded by session, and the owner's database holds the extension of each that has one. Each case holds its family while it reads it (hold.ts
  * familyHeld), as a run's worker does, so the members its settles start stay up for its reads. Each case's cluster is a
  * unit name of its own, its family at a checkout of the case's own, its units stopped and its data, claims and state
  * removed when the case ends. Oracle: the specification, stated in the checks.
  */
-import { Array as Arr, Effect, Exit, FileSystem, Option, Scope, String as Str } from "effect"
+import {
+	Array as Arr,
+	Effect,
+	Exit,
+	FileSystem,
+	Option,
+	Order,
+	Record as Rec,
+	Scope,
+	String as Str
+} from "effect"
 import { assert } from "#assert.ts"
 import { boolean, finite, int } from "#gen.ts"
 import { Checkout } from "#mutate/checkout.ts"
@@ -40,6 +52,9 @@ import {
 	keptCases,
 	keptCluster,
 	keptLocks,
+	loadedProbes,
+	preloadCluster,
+	preloads,
 	removedAtEnd,
 	settledAsItsUnit,
 	settledWhole,
@@ -59,6 +74,7 @@ import {
 	processSettler,
 	settled
 } from "#pg/settle.ts"
+import { factsOf, type PreloadedLibrary } from "#pg/spec.ts"
 import { property } from "#property.ts"
 import { testWorkers } from "#workers.ts"
 
@@ -221,6 +237,112 @@ export const settledAsItsSpec = property.exhaust(finite(shapes), {
 			original: "\t\tlockStatusConnections(locksPerBackendOf(room), sendersPerConnection),\n",
 			replacement: "\t\tNumber.POSITIVE_INFINITY,\n",
 			why: "A member admits as many connections as the machine's memory holds, as it did: the test cluster's member, at thousands of connections, holds a predicate lock table a read of pg_locks cannot copy in one allocation (the shared server at 10,000 refused pg_locks, 2026-11-21: 168 bytes times 9,097,351 predicate locks); the property fails."
+		}
+	]
+})
+
+export const eachPreloadedLibraryLoadsItsWay = property.exhaust(finite(preloads), {
+	box: "a cluster of one member over its socket preloading each subset of the libraries a cluster may preload",
+	needs: {},
+	situations: [],
+	check: () => (preload) =>
+		Effect.scoped(
+			Effect.gen(function* () {
+				const cluster = yield* preloadCluster(preload)
+				yield* removedAtEnd(cluster)
+				const family = yield* familyIn(cluster, testWorkers)
+				const members = yield* settledWhole(family)
+				const first = Arr.headNonEmpty(members)
+				const bin = yield* serverBin({ cluster: family.name, doing: "the property" })
+				const at = { socket: first.socket, port: first.port }
+				const probes = Rec.toEntries(loadedProbes)
+				const probed = (database: string) =>
+					adminSql(
+						bin,
+						at,
+						database,
+						Arr.prepend(
+							Arr.map(
+								probes,
+								([, probe]) =>
+									`SELECT coalesce(pg_catalog.current_setting('${probe.setting}', true), '(absent)')`
+							),
+							"SELECT pg_catalog.current_database()"
+						),
+						{ cluster: family.name, doing: `reading what a session in ${database} loaded` }
+					)
+				const everywhere = yield* probed("postgres")
+				yield* adminSql(
+					bin,
+					at,
+					"postgres",
+					[
+						"CREATE DATABASE toolchain_preload_off",
+						"ALTER DATABASE toolchain_preload_off SET session_preload_libraries = NULL"
+					],
+					{ cluster: family.name, doing: "making a database that sets its sessions' libraries off" }
+				)
+				const sessionsOff = yield* probed("toolchain_preload_off")
+				const extensions = yield* adminSql(
+					bin,
+					at,
+					cluster.owner,
+					[
+						"SELECT coalesce(pg_catalog.string_agg(extname, ',' ORDER BY extname), '(none)') FROM pg_catalog.pg_extension WHERE extname <> 'plpgsql'"
+					],
+					{ cluster: family.name, doing: "reading the owner's database's extensions" }
+				)
+				const chosen = (library: PreloadedLibrary) => Arr.contains(preload, library)
+				assert.deepEqual(
+					{ everywhere, sessionsOff, extensions },
+					{
+						everywhere: Arr.prepend(
+							Arr.map(probes, ([library, probe]) => (chosen(library) ? probe.value : "(absent)")),
+							"postgres"
+						),
+						sessionsOff: Arr.prepend(
+							Arr.map(probes, ([library, probe]) =>
+								chosen(library) && factsOf(library).loading === "shared" ? probe.value : "(absent)"
+							),
+							"toolchain_preload_off"
+						),
+						extensions: [
+							Arr.match(
+								Arr.sort(
+									Arr.filter(preload, (library) => factsOf(library).extension),
+									Order.String
+								),
+								{ onEmpty: () => "(none)", onNonEmpty: Arr.join(",") }
+							)
+						]
+					}
+				)
+			})
+		),
+	oracle: {
+		kind: "specification",
+		name: "a settled member's every session loads each library its cluster preloads, at the value that keeps it inert, and no other; a database that sets session_preload_libraries off for its sessions opens them without each library loaded by session, and with each loaded at the postmaster's start; and the owner's database holds the extension of each preloaded library that has one, and no other"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/pg/settings.ts",
+			original:
+				"\t\t\tArr.filter(cluster.preload, (library) => factsOf(library).loading === loading),\n",
+			replacement: '\t\t\tArr.filter(cluster.preload, () => loading === "shared"),\n',
+			why: "Every preloaded library is loaded at the postmaster's start, so no database can open a session without pg_plan_advice, and no test can reach the refusal of a session without it; the property fails, the library loaded in the database that set its sessions' libraries off."
+		},
+		{
+			file: "packages/testing/src/pg/settings.ts",
+			original: "\t...Arr.flatMap(cluster.preload, (library) => factsOf(library).inert)\n",
+			replacement: "",
+			why: "A preloaded library runs at its defaults: pg_stat_statements tracks every top-level statement of every database, the cost a member that preloads it inert never pays; the property fails, its track read as `top`."
+		},
+		{
+			file: "packages/testing/src/pg/settle.ts",
+			original: "\t\t\t\t\tArr.filter(cluster.preload, (library) => factsOf(library).extension),\n",
+			replacement: "\t\t\t\t\tcluster.preload,\n",
+			why: "Settle makes an extension of every preloaded library, and pg_plan_advice, which has no SQL interface, fails its CREATE EXTENSION, so no member preloading it settles; the property fails."
 		}
 	]
 })

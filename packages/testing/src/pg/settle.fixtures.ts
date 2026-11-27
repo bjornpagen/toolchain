@@ -5,6 +5,7 @@ import {
 	Exit,
 	FileSystem,
 	Option,
+	Record as Rec,
 	Result,
 	Schema,
 	Scope,
@@ -36,6 +37,7 @@ import {
 	type LocalCluster,
 	localCluster,
 	type PredicateRoom,
+	type PreloadedLibrary,
 	type SessionsSizing,
 	type WorkerSizing
 } from "#pg/spec.ts"
@@ -279,10 +281,15 @@ export const caseUnit = (prefix: "tcs" | "tck") =>
 
 /**
  * What a case cluster states of its members beside its unit name and ports: whether its clients reach them over TLS,
- * its family (one member, or a spread of members each serving `workersPerMember` of a run's workers) and its predicate
- * lock room.
+ * its family (one member, or a spread of members each serving `workersPerMember` of a run's workers), its predicate
+ * lock room and the libraries every member preloads.
  */
-type Sized = Readonly<{ tls: boolean; family: Family; room: PredicateRoom }>
+type Sized = Readonly<{
+	tls: boolean
+	family: Family
+	room: PredicateRoom
+	preload: ReadonlyArray<PreloadedLibrary>
+}>
 
 /**
  * A case's cluster `sized` so: a unit name of its own (caseUnit, `tcs-`), its workers' capacity sized by a busy
@@ -306,7 +313,7 @@ const clusterSized = (
 			owner: "toolchain_settle",
 			template: "toolchain_settle_template",
 			extensions: [],
-			preload: [],
+			preload: sized.preload,
 			ownerParameters: [],
 			durability: "throwaway",
 			sizing: {
@@ -375,9 +382,38 @@ export const clusterOf = (shape: Shape) =>
 			family: shape.spread
 				? { kind: "spread", workersPerMember: Math.max(1, Math.ceil(testWorkers / 2)) }
 				: { kind: "one" },
-			room: shape.room ? { kind: "perWorker", targets: caseRoomTargets } : { kind: "perBackend" }
+			room: shape.room ? { kind: "perWorker", targets: caseRoomTargets } : { kind: "perBackend" },
+			preload: []
 		},
 		shape.spread ? 2 : 1
+	)
+
+/**
+ * What tells that a session loaded each library a cluster may preload: a setting the library defines, which
+ * current_setting reads as NULL where the library is not loaded, and as its inert value where it is (settings.ts
+ * preloadSettings). Total over the roster, so a library added to it states how a session shows it.
+ */
+export const loadedProbes = {
+	pg_stat_statements: { setting: "pg_stat_statements.track", value: "none" },
+	pg_plan_advice: { setting: "pg_plan_advice.feedback_warnings", value: "off" }
+} as const satisfies Readonly<
+	Record<PreloadedLibrary, Readonly<{ setting: string; value: string }>>
+>
+
+/** Every subset of the libraries a cluster may preload, in the roster's order, one case each. */
+export const preloads: Gen<ReadonlyArray<PreloadedLibrary>> = (source) =>
+	Arr.filter(Rec.keys(loadedProbes), () => source.draw(boolean))
+
+/** A case's cluster of one member over its socket that preloads `preload`, a room for its workers. */
+export const preloadCluster = (preload: ReadonlyArray<PreloadedLibrary>) =>
+	clusterSized(
+		{
+			tls: false,
+			family: { kind: "one" },
+			room: { kind: "perWorker", targets: caseRoomTargets },
+			preload
+		},
+		1
 	)
 
 /**
@@ -410,9 +446,10 @@ export const widthCluster = (kind: WidthCase["family"]) =>
 			? {
 					tls: true,
 					family: { kind: "spread", workersPerMember: 1 },
-					room: { kind: "perWorker", targets: caseRoomTargets }
+					room: { kind: "perWorker", targets: caseRoomTargets },
+					preload: []
 				}
-			: { tls: false, family: { kind: "one" }, room: { kind: "perBackend" } },
+			: { tls: false, family: { kind: "one" }, room: { kind: "perBackend" }, preload: [] },
 		widths.wide
 	)
 

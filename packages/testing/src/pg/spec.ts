@@ -60,15 +60,58 @@ export type Network = Readonly<{ kind: "socket" }> | Readonly<{ kind: "tls"; fro
 export type TemplateExtension = Readonly<{ name: string; schema: string }>
 
 /**
- * A library every member of a cluster preloads (shared_preload_libraries), inert in every database until a database
- * turns it on (settings.ts preloadSettings): `pg_stat_statements`, whose counts of each statement's plans and calls a
- * test of what a backend plans reads. Its SQL interface is in the owner's own database (settle.ts), so no clone a test
- * works in carries an object of it, and its counts are the cluster's, read from there.
+ * How a member loads a library it preloads: `shared`, once as the postmaster starts (shared_preload_libraries), for a
+ * library that sizes shared memory then; or `session`, as each backend starts (session_preload_libraries), which a
+ * database or a role sets otherwise for its own sessions (`ALTER DATABASE ... SET session_preload_libraries = NULL`,
+ * PostgreSQL's empty list, by an owner the cluster's `ownerParameters` grant it), so a test makes sessions without the
+ * library in a database of its own while every other database's load it.
  */
-const preloadedLibraries = ["pg_stat_statements"] as const
+export type Loading = "shared" | "session"
+
+/**
+ * What a member needs of a library it preloads: how it loads it (Loading), the settings that keep it inert in every
+ * database until a database turns it on (settings.ts preloadSettings), each as pg_settings spells it, and whether its
+ * SQL interface is an extension, which settle makes in the owner's own database (settle.ts owned), so no clone a test
+ * works in carries an object of it.
+ */
+export type PreloadedLibraryFacts = Readonly<{
+	loading: Loading
+	inert: ReadonlyArray<readonly [name: string, value: string]>
+	extension: boolean
+}>
+
+/**
+ * The libraries a cluster's members may preload, each with its facts (PreloadedLibraryFacts):
+ *
+ * - `pg_stat_statements`, whose counts of each statement's plans and calls a test of what a backend plans reads:
+ *   shared, as it sizes its table in shared memory; inert at compute_query_id off, so no statement is jumbled into a
+ *   query id, and at track `none` and track_planning off, so each of its hooks returns at its first test and it counts
+ *   nothing; its extension in the owner's database, so its counts are the cluster's, read from there.
+ * - `pg_plan_advice`, PostgreSQL 19's planner module, which plans each statement by the advice in force where it is
+ *   planned (pg_plan_advice.advice, set by a routine's own SET clause or by a transaction) and makes no state of its own
+ *   where none is (pgpa_planner.c pgpa_planner_setup): grizzle carries every statement's plan as advice and refuses a
+ *   session without the library. Loaded by each session, so a test of that refusal opens its sessions in a database
+ *   of its own that sets it off; inert with no setting; no SQL interface.
+ */
+const preloadedLibraries = {
+	pg_stat_statements: {
+		loading: "shared",
+		inert: [
+			["compute_query_id", "off"],
+			["pg_stat_statements.track", "none"],
+			["pg_stat_statements.track_planning", "off"]
+		],
+		extension: true
+	},
+	pg_plan_advice: { loading: "session", inert: [], extension: false }
+} as const satisfies Readonly<Record<string, PreloadedLibraryFacts>>
 
 /** A library of `preloadedLibraries`. */
-export type PreloadedLibrary = (typeof preloadedLibraries)[number]
+export type PreloadedLibrary = keyof typeof preloadedLibraries
+
+/** A preloaded library's facts (PreloadedLibraryFacts). */
+export const factsOf = (library: PreloadedLibrary): PreloadedLibraryFacts =>
+	preloadedLibraries[library]
 
 /**
  * What a cluster's data is worth past a run: `throwaway`, a test cluster's, whose clones a run makes again (fsync off);
@@ -171,16 +214,18 @@ export type SessionsSizing = Readonly<{ kind: "sessions"; sessions: number; lock
 export type Sizing = WorkerSizing | SessionsSizing
 
 /**
- * A repository's local PostgreSQL cluster, as it states it once: its unit name (the members' units, UnitName), how its
- * clients reach it (Network), the owner role (which owns every database it makes, signs in with a password the
+ * A repository's local PostgreSQL cluster, as it states it once: its unit name (the members' units, UnitName), how
+ * its clients reach it (Network), the owner role (which owns every database it makes, signs in with a password the
  * cluster's state holds, and whose own database holds the runner's sessions), the template database every database is
- * made from and the extensions it carries, the libraries every member preloads, inert until a database turns them on
- * (`preload`), the server parameters the owner may set though only a superuser may by default (`ownerParameters`, each
- * granted as `GRANT SET ON PARAMETER`: grizzle's installation sets deadlock_timeout and session_replication_role, and a
- * test of planning turns pg_stat_statements on in its own database), its durability and its sizing (`S`: for a run's workers or for its sessions, so only a
- * cluster sized for workers is handed to a runner's layer). The server runs as the workbench's units; `toolchain-pg
- * settle` (settle.ts) gives each member what the spec states, and a run only reads it. `toolchain-pg` reads the spec as
- * the default export of the package's pg.config.ts; its class is how the command tells it from any other export.
+ * made from and the extensions it carries, the libraries every member preloads, each loaded its way and inert until a
+ * database turns it on (`preload`, PreloadedLibraryFacts), the server parameters the owner may set though only a
+ * superuser may by default (`ownerParameters`, each granted as `GRANT SET ON PARAMETER`: grizzle's installation sets
+ * deadlock_timeout and session_replication_role, a test of planning turns pg_stat_statements on in its own database,
+ * and a test of a session without pg_plan_advice sets session_preload_libraries off in its own), its durability and
+ * its sizing (`S`: for a run's workers or for its sessions, so only a cluster sized for workers is handed to a
+ * runner's layer). The server runs as the workbench's units; `toolchain-pg settle` (settle.ts) gives each member what
+ * the spec states, and a run only reads it. `toolchain-pg` reads the spec as the default export of the package's
+ * pg.config.ts; its class is how the command tells it from any other export.
  */
 export class LocalCluster<S extends Sizing = Sizing> {
 	readonly unit: UnitName
