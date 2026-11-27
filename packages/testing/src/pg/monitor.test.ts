@@ -4,10 +4,9 @@
  * asked does, carrying nothing, and the monitor is dropped, so a dead member wedges neither the ask nor the ones after
  * it. Oracle: stated in the property.
  */
-import { Duration, Effect } from "effect"
+import { Effect } from "effect"
 import { assert } from "#assert.ts"
 import { boolean, finite } from "#gen.ts"
-import { liveSleep } from "#live.ts"
 import { monitored, silentMember } from "#pg/monitor.fixtures.ts"
 import { carriersWithin } from "#pg/session.ts"
 import { property } from "#property.ts"
@@ -25,10 +24,7 @@ export const deadMemberWedgesNoCheck = property.exhaust(finite(boolean), {
 					monitored: monitored(member)
 				}))
 				const asked = again ? Effect.andThen(ask, ask) : ask
-				const answered = yield* Effect.raceFirst(
-					asked,
-					Effect.as(liveSleep(Duration.seconds(30)), { carried: -1, monitored: true })
-				)
+				const answered = yield* asked
 				assert.deepEqual(answered, { carried: 0, monitored: false })
 			})
 		),

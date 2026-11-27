@@ -64,6 +64,7 @@ import {
 	DATE_READS,
 	LIVE_MODULES,
 	LIVE_READS,
+	LIVE_TIMERS,
 	VITEST_TIMEOUTS
 } from "#oxlint/rules/no-wall-clock-verdict.ts"
 import { VITEST_MODULES } from "#oxlint/rules/test-module-shape.ts"
@@ -308,14 +309,6 @@ const clockSites: Gen<Site> = weighted([
 			site(
 				`import { ${s.draw(oneOf(LIVE_READS))} as read${OWN} } from "${s.draw(oneOf(LIVE_MODULES))}"`,
 				1
-			)
-	],
-	[
-		1,
-		(s) =>
-			site(
-				`import { liveSleep as sleep${OWN}, stopwatch as watch${OWN} } from "${s.draw(oneOf(LIVE_MODULES))}"`,
-				0
 			)
 	],
 	[1, (s) => site(`import { ${s.draw(oneOf(LIVE_READS))} as near${OWN} } from "#clock.ts"`, 0)],
@@ -1830,10 +1823,42 @@ export const inModule =
 	(programs: Gen<Program>): Space<RuleCase> =>
 	(source) => ({ header: MODULE_HEADER, program: source.draw(programs), filename: Option.none() })
 
-/** The clock rule's programs: a test's body, and a Vitest configuration file's test blocks. */
+/**
+ * A module's name and whether it is test scope (scope.ts isTestScope): a test module, a fixtures module, and modules
+ * under a test and a support directory, which are; and two product modules, which are not.
+ */
+const TIMER_FILES = element([
+	["src/a.test.ts", true],
+	["src/runner/b.fixtures.ts", true],
+	["test/c.ts", true],
+	["packages/d/support/e.ts", true],
+	["src/runner/f.ts", false],
+	["packages/g/src/h.ts", false]
+] as const)
+
+/**
+ * A module that imports one of the live clock's timers (LIVE_TIMERS) from the live clock's module, of one drawn name
+ * (TIMER_FILES): reported in test scope, where a timer decides a verdict, and left alone in product code, whose
+ * stopwatch states a report's times and whose sleeps are its own work (the runner's).
+ */
+const inTimerFiles: Space<RuleCase> = (source) => {
+	const [file, scoped] = source.draw(TIMER_FILES)
+	const timerSite: Gen<Site> = (s) =>
+		site(
+			`import { ${s.draw(oneOf(LIVE_TIMERS))} as timer${OWN} } from "${s.draw(oneOf(LIVE_MODULES))}"`,
+			scoped ? 1 : 0
+		)
+	return { header: "", program: source.draw(programOf(timerSite)), filename: Option.some(file) }
+}
+
+/**
+ * The clock rule's programs: a test's body, a Vitest configuration file's test blocks, and a live timer's import in a
+ * module of test scope or of product code.
+ */
 export const clockCases: Space<RuleCase> = weighted([
 	[3, inTests(programOf(clockSites))],
-	[1, inVitestConfigs(programOf(vitestConfigSites))]
+	[1, inVitestConfigs(programOf(vitestConfigSites))],
+	[1, inTimerFiles]
 ])
 
 /**

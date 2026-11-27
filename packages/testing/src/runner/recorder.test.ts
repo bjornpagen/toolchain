@@ -7,15 +7,23 @@
  * property starts it, through the checkout's guard (Checkout.dir, so a kill's mutant is what it loads): the keyed reads
  * of each past the runtime's own start are the same, as are how each ended and what it said, and the guard observes
  * nothing past its key. The second runs it plain and through the guard, beside the empty program: each recorder writes
- * one line a distinct read of its own, and stops the child at no call, so the child's CPU and context switches stay
- * within twice their plain values past the recorder's own load (recorder.fixtures.ts exceededOf).
+ * one line a distinct read of its own, the guard traces none of the child's Node processes, another program alone and
+ * each once (a traced child stops at every file call it makes, its cause stated, where a count of its context switches
+ * moved with the machine's load), and the
+ * child's CPU stays within twice its plain value past the recorder's own load (recorder.fixtures.ts exceededOf).
  */
 import { Effect } from "effect"
 import { assert } from "#assert.ts"
 import { Checkout } from "#mutate/checkout.ts"
 import { property } from "#property.ts"
 import { Scratch } from "#resources/scratch.ts"
-import { comparedOf, exceededOf, programs, spentOf } from "#runner/recorder.fixtures.ts"
+import {
+	comparedOf,
+	exceededOf,
+	otherProgramsOf,
+	programs,
+	spentOf
+} from "#runner/recorder.fixtures.ts"
 
 export const aNodeChildRecordsWhatStraceReads = property.exhaust(programs, {
 	box: "one Node child program in a tree of its own: a relative import, its package's imports, a package's exports, a package's legacy main, a package behind a link, a CommonJS require, a JSON module, a dynamic import, the testing library's own modules, a file's bytes, an absent file, a directory's entries, a path's status, a link's text, a real path, its own files, a Node child, another program, a worker thread",
@@ -113,12 +121,14 @@ export const aRecordedChildRunsUnstopped = property.exhaust(programs, {
 				const scratch = yield* directory
 				const library = yield* checkout
 				const spent = yield* spentOf(scratch, library, program)
-				assert.equal(spent.observed, false)
-				assert.deepEqual(exceededOf(spent), [])
+				assert.deepEqual(
+					{ observed: spent.observed, traced: spent.traced, exceeded: exceededOf(spent) },
+					{ observed: false, traced: otherProgramsOf(program), exceeded: [] }
+				)
 			}),
 	oracle: {
 		kind: "specification",
-		name: "one line a distinct read a recorder, and the CPU and context switches of a recorded run within twice a plain run's past the recorder's own load"
+		name: "one line a distinct read a recorder, no Node child of a recorded run traced (another program alone, each once), and its CPU within twice a plain run's past the recorder's own load"
 	},
 	kept: [],
 	kills: [

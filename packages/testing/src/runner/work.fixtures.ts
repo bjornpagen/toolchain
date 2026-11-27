@@ -706,3 +706,13 @@ export const holdingOf = (first: string, steps: ReadonlyArray<WaitStep>): Readon
 	)
 	return Arr.isReadonlyArrayNonEmpty(open) ? open : [last]
 }
+
+/**
+ * A poll of declared waits named `on`, each a twentieth of a second on the live clock, one after another for good: the
+ * subject a live guard of a case judges as held by its waits (resources.test.ts pollLoopIsHung).
+ */
+export const pollOfWaits = (on: string) =>
+	Duration.millis(50).pipe(liveSleep, waitingOn(on), Effect.forever)
+
+/** A case's hold of what it took, `millis` on the live clock: a sibling's concurrency, the subject a guard reads. */
+export const heldFor = (millis: number) => liveSleep(Duration.millis(millis))

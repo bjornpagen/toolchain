@@ -137,6 +137,47 @@ export default defineConfig(
 				})
 			},
 			{
+				files: ["packages/testing/src/runner/work.fixtures.ts"],
+				rules: active({
+					/** The planted cases a case's live guard judges (runner/work.ts overrun): a slow case's stalls between its bursts, a
+					 * deadlocked one's wait, a waking child's, a poll of declared waits and a sibling's hold, each the subject's own time on
+					 * the live clock, which the guard reads; no verdict reads it. */
+					"testing/no-wall-clock-verdict": "off"
+				})
+			},
+			{
+				files: ["packages/testing/src/runner/pool.fixtures.ts"],
+				rules: active({
+					/** The planted properties the pool's watch of its workers judges: a declared wait's sleep and a slow worker's stalls,
+					 * each the subject's own time on the live clock; no verdict reads it. */
+					"testing/no-wall-clock-verdict": "off"
+				})
+			},
+			{
+				files: ["packages/testing/src/runner/case.fixtures.ts"],
+				rules: active({
+					/** The planted needs and cases a case's guard and its release judge: a release that takes a while and an open that
+					 * does, each the subject's own time on the live clock; no verdict reads it. */
+					"testing/no-wall-clock-verdict": "off"
+				})
+			},
+			{
+				files: ["packages/testing/src/runner/opening.fixtures.ts"],
+				rules: active({
+					/** The planted need whose open waits stall windows of wall time, declared or plain, the subject a need's open guard
+					 * judges; no verdict reads it. */
+					"testing/no-wall-clock-verdict": "off"
+				})
+			},
+			{
+				files: ["packages/testing/src/runner/orphans.fixtures.ts"],
+				rules: active({
+					/** The held program's polls of the files it and its case write, a twentieth of a second apart: the interval between
+					 * reads of a file another process writes, which a subject's own run waits on; no verdict reads it. */
+					"testing/no-wall-clock-verdict": "off"
+				})
+			},
+			{
 				files: ["packages/testing/src/blocking.fixtures.ts"],
 				rules: active({
 					/** A planted property that sleeps past its hang limit: the hang guard's case is the wait itself. */

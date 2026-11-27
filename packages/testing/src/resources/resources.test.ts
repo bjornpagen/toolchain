@@ -10,7 +10,6 @@ import {
 	Array as Arr,
 	Context,
 	Deferred,
-	Duration,
 	Effect,
 	Exit,
 	Fiber,
@@ -27,7 +26,7 @@ import { assert } from "#assert.ts"
 import { awaitFact } from "#fact.ts"
 import type { Reached } from "#features.ts"
 import { array, boolean, element, finite, int } from "#gen.ts"
-import { liveSleep, overrun, ownWorkNow, waitingOn } from "#live.ts"
+import { overrun, ownWorkNow } from "#live.ts"
 import { Checkout } from "#mutate/checkout.ts"
 import { type Case, property } from "#property.ts"
 import { PgCluster, quoteIdent, run as runIn, single } from "#resources/cluster.ts"
@@ -79,7 +78,7 @@ import { defineRunner, noMutation } from "#runner/config.ts"
 import { collectedAround } from "#runner/run.ts"
 import { runValuesOf } from "#runner/runs.ts"
 import { ModuleClosure, RunValues, WorkerIndex } from "#runner/services.ts"
-import { deadlocks } from "#runner/work.fixtures.ts"
+import { deadlocks, heldFor, pollOfWaits } from "#runner/work.fixtures.ts"
 import { deadlineBound, overrunText, readingOf } from "#runner/work.ts"
 
 export const freshIsolation = property.explore(array(int(-5, 5), { min: 0, max: 6 }), {
@@ -575,7 +574,7 @@ export const clonedAsAsked = property.explore(int(0, 50), {
 							return yield* Effect.scoped(
 								Effect.gen(function* () {
 									yield* take
-									yield* liveSleep(`${holdMillis} millis`)
+									yield* heldFor(holdMillis)
 									return yield* Ref.get(started)
 								})
 							)
@@ -1527,11 +1526,10 @@ export const siblingWorkIsNoCases = property.exhaust(finite(backendShapes), {
 							const session = yield* cluster.connect(clone.member, clone.name)
 							yield* runIn(session, "SELECT '1'", [])
 							const work = yield* ownWorkNow
-							const verdict = yield* Effect.raceAll([
-								Effect.as(Effect.never, "answered"),
-								Effect.map(overrun(work, deadlineBound(shape.deadline)), (judged) => judged.kind),
-								Effect.as(liveSleep(Duration.millis(shape.deadline * 20)), "never judged")
-							])
+							const verdict = yield* Effect.map(
+								overrun(work, deadlineBound(shape.deadline)),
+								(judged) => judged.kind
+							)
 							assert.equal(verdict, "stalled")
 						})
 					),
@@ -1559,30 +1557,20 @@ export const pollLoopIsHung = property.exhaust(finite(deadlocks), {
 	needs: {},
 	situations: [],
 	check: () => (shape) =>
-		Effect.gen(function* () {
-			const work = yield* ownWorkNow
-			const verdict = yield* Effect.raceAll([
-				Effect.as(
-					Duration.millis(50).pipe(liveSleep, waitingOn("the poll's wait"), Effect.forever),
-					{
-						kind: "ended",
-						named: false
-					}
-				),
-				Effect.map(
+		Effect.scoped(
+			Effect.gen(function* () {
+				const work = yield* ownWorkNow
+				yield* Effect.forkScoped(pollOfWaits("the poll's wait"))
+				const verdict = yield* Effect.map(
 					overrun(work, { ...deadlineBound(shape.deadline), cpu: Number.POSITIVE_INFINITY }),
 					(judged) => ({
 						kind: judged.kind,
 						named: judged.kind === "waited" && Arr.contains(judged.on, "the poll's wait")
 					})
-				),
-				Effect.as(liveSleep(Duration.millis(shape.deadline * 60)), {
-					kind: "never judged",
-					named: false
-				})
-			])
-			assert.deepEqual(verdict, { kind: "waited", named: true })
-		}),
+				)
+				assert.deepEqual(verdict, { kind: "waited", named: true })
+			})
+		),
 	oracle: {
 		kind: "specification",
 		name: "a case whose declared waits follow one another for good, each ending, is judged once they have held it its bound's waited wall time in all, its leg the waits, and the waits open then are named"
@@ -1966,11 +1954,10 @@ export const lockedByAnIdleHolderIsHung = property.exhaust(finite(backendShapes)
 							yield* holder("BEGIN")
 							yield* holder("LOCK TABLE held IN ACCESS EXCLUSIVE MODE")
 							const work = yield* ownWorkNow
-							const verdict = yield* Effect.raceAll([
+							const verdict = yield* Effect.raceFirst(
 								Effect.as(waiter.query("SELECT count(*)::text FROM held", []), "answered"),
-								Effect.map(overrun(work, deadlineBound(shape.deadline)), (judged) => judged.kind),
-								Effect.as(liveSleep(Duration.millis(shape.deadline * 20)), "never judged")
-							]).pipe(Effect.ensuring(Effect.orDie(holder("ROLLBACK"))))
+								Effect.map(overrun(work, deadlineBound(shape.deadline)), (judged) => judged.kind)
+							).pipe(Effect.ensuring(Effect.orDie(holder("ROLLBACK"))))
 							assert.equal(verdict, "stalled")
 						})
 					),

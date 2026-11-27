@@ -39,13 +39,13 @@ import {
 } from "#oxlint/rules.fixtures.ts"
 import { property } from "#property.ts"
 
-/** no-wall-clock-verdict reports exactly the reads of the clock, the live clock's readers imported among them, and every
- * finite timer a test API is given. */
+/** no-wall-clock-verdict reports exactly the reads of the clock, the live clock's readers and timers imported among
+ * them, and every finite timer a test API is given. */
 export const noWallClockVerdict = ruleProperty("no-wall-clock-verdict", clockCases, [
 	{
 		file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
 		original:
-			'\t\tNewExpression: (node) => {\n\t\t\tif (isNamed(context, node.callee, DATE_READS) && Arr.isReadonlyArrayEmpty(node.arguments)) {\n\t\t\t\tcontext.report({ node, messageId: "wallClock" })\n\t\t\t}\n\t\t},\n',
+			'\t\t\tNewExpression: (node) => {\n\t\t\t\tif (isNamed(context, node.callee, DATE_READS) && Arr.isReadonlyArrayEmpty(node.arguments)) {\n\t\t\t\t\tcontext.report({ node, messageId: "wallClock" })\n\t\t\t\t}\n\t\t\t},\n',
 		replacement: "",
 		why: "no-wall-clock-verdict reads `new Date()` as no read of the clock."
 	},
@@ -54,6 +54,13 @@ export const noWallClockVerdict = ruleProperty("no-wall-clock-verdict", clockCas
 		original: "\t\t\tif (Arr.contains(LIVE_MODULES, node.source.value)) {\n",
 		replacement: "\t\t\tif (false) {\n",
 		why: "An import of the live clock's readers is no read of the clock, so a module outside live.ts holds one and judges by it unseen, as explore.ts's case guard raced its case against liveSleepUntil and judged the machine (QP-GATE, 2026-11-25); the property fails."
+	},
+	{
+		file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",
+		original:
+			"\t\t\t\t\t\t\t(Arr.contains(LIVE_READS, importedOf(specifier)) ||\n\t\t\t\t\t\t\t\t(timersRefused && Arr.contains(LIVE_TIMERS, importedOf(specifier))))\n",
+		replacement: "\t\t\t\t\t\t\tArr.contains(LIVE_READS, importedOf(specifier))\n",
+		why: "A test's import of the live clock's sleep or stopwatch passes, so it races its subject against a live sleep and judges the machine, as resources.test.ts's \"never judged\" races and monitor.test.ts's 30 s did; the property fails."
 	},
 	{
 		file: "packages/testing/src/oxlint/rules/no-wall-clock-verdict.ts",

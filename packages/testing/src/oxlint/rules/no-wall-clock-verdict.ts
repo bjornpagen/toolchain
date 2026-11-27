@@ -1,7 +1,7 @@
 import { Array as Arr, Option, String as Str } from "effect"
 import type { AnyNode, Context, CreateRule, NodeOf } from "#oxlint/rule.ts"
 import { isNamed, keyOf, testPathOf, valueOf } from "#oxlint/syntax.ts"
-import { VITEST_CONFIGS } from "#scope.ts"
+import { isTestScope, VITEST_CONFIGS } from "#scope.ts"
 
 /** The reads of the current time. */
 export const CLOCK_READS: ReadonlyArray<string> = [
@@ -38,6 +38,16 @@ export const LIVE_READS: ReadonlyArray<string> = [
 	"liveSleepUntil",
 	"watchdogWakes"
 ]
+
+/**
+ * The live clock's timers, each a verdict's time wherever a test or a fixture imports it: a sleep of a while of it, and
+ * a stopwatch on it. A test that races its subject against a live sleep, or reads how long it took, judges the machine:
+ * resources.test.ts raced its guard's verdict against a sleep of 20 and 60 deadlines for "never judged", and
+ * monitor.test.ts an ask against one of 30 s, where the runner's own hang guard ends a case that never ends and states
+ * why. A planted case's own wait, the subject a live guard under test judges, is its fixture's, which its configuration
+ * names with its reason (oxlint.config.ts).
+ */
+export const LIVE_TIMERS: ReadonlyArray<string> = ["liveSleep", "stopwatch"]
 
 /** The constructor whose call with no argument, or call as a function, reads the current time. */
 export const DATE_READS: ReadonlyArray<string> = ["Date"]
@@ -225,8 +235,8 @@ const WALL_CLOCK =
 
 /**
  * No timer decides a verdict. A read of the current time in a test: `Date.now()`, `new Date()`, `performance.now()`,
- * Effect's `Clock` and `DateTime` reads, and a named import of one of the live clock's readers (LIVE_READS from
- * LIVE_MODULES), so a verdict depends on how long something took or when it ran. And every
+ * Effect's `Clock` and `DateTime` reads, and a named import of one of the live clock's readers or timers (LIVE_READS,
+ * LIVE_TIMERS from LIVE_MODULES), so a verdict depends on how long something took or when it ran. And every
  * finite timeout a test API is given, which fails a test the moment the wall clock passes it: a `testTimeout` or
  * `hookTimeout` in a Vitest configuration (the preset holds every Vite and Vitest config file to this rule,
  * @bjornpagen/testing/scope VITEST_CONFIGS) or `vi.setConfig`, each of which is the literal `0` and nothing else, and
@@ -245,89 +255,97 @@ const WALL_CLOCK =
  */
 export const noWallClockVerdict: CreateRule = {
 	meta: { type: "problem", fixable: "code", messages: { wallClock: WALL_CLOCK } },
-	create: (context) => ({
-		ImportDeclaration: (node) => {
-			if (Arr.contains(LIVE_MODULES, node.source.value)) {
-				for (const specifier of node.specifiers) {
-					if (
-						specifier.type === "ImportSpecifier" &&
-						Arr.contains(LIVE_READS, importedOf(specifier))
-					) {
-						context.report({ node: specifier, messageId: "wallClock" })
+	create: (context) => {
+		const timersRefused = isTestScope(
+			Str.startsWith(`${context.cwd}/`)(context.filename)
+				? Str.slice(context.cwd.length + 1)(context.filename)
+				: context.filename
+		)
+		return {
+			ImportDeclaration: (node) => {
+				if (Arr.contains(LIVE_MODULES, node.source.value)) {
+					for (const specifier of node.specifiers) {
+						if (
+							specifier.type === "ImportSpecifier" &&
+							(Arr.contains(LIVE_READS, importedOf(specifier)) ||
+								(timersRefused && Arr.contains(LIVE_TIMERS, importedOf(specifier))))
+						) {
+							context.report({ node: specifier, messageId: "wallClock" })
+						}
 					}
 				}
-			}
-		},
-		MemberExpression: (node) => {
-			if (isNamed(context, node, CLOCK_READS)) {
-				context.report({ node, messageId: "wallClock" })
-			}
-		},
-		NewExpression: (node) => {
-			if (isNamed(context, node.callee, DATE_READS) && Arr.isReadonlyArrayEmpty(node.arguments)) {
-				context.report({ node, messageId: "wallClock" })
-			}
-		},
-		CallExpression: (node) => {
-			if (isNamed(context, node.callee, DATE_READS)) {
-				context.report({ node, messageId: "wallClock" })
-			}
-			for (const { value, edit } of timersOf(context, node)) {
-				if (!isUnbounded(value)) {
-					context.report({
-						node: value,
-						messageId: "wallClock",
-						fix: fixOf(edit)
-					})
+			},
+			MemberExpression: (node) => {
+				if (isNamed(context, node, CLOCK_READS)) {
+					context.report({ node, messageId: "wallClock" })
 				}
-			}
-		},
-		Property: (node) => {
-			if (
-				node.computed ||
-				!Option.exists(keyOf(node), (key) => Arr.contains(VITEST_TIMEOUTS, key)) ||
-				isLiteralZero(node.value)
-			) {
-				return
-			}
-			context.report({
-				node,
-				messageId: "wallClock",
-				fix: fixOf({ range: node.value.range, text: "0" })
-			})
-		},
-		ObjectExpression: (node) => {
-			const parent = node.parent
-			if (
-				!isVitestConfig(context.physicalFilename) ||
-				parent.type !== "Property" ||
-				parent.computed ||
-				parent.value !== node ||
-				!Option.exists(keyOf(parent), (key) => key === "test")
-			) {
-				return
-			}
-			const stated = Arr.flatMap(node.properties, (property) =>
-				property.type === "Property" && !property.computed ? Option.toArray(keyOf(property)) : []
-			)
-			const missing = Arr.filter(VITEST_TIMEOUTS, (key) => !Arr.contains(stated, key))
-			if (Arr.isReadonlyArrayEmpty(missing)) {
-				return
-			}
-			const written = Arr.join(
-				Arr.map(missing, (key) => `${key}: 0`),
-				", "
-			)
-			context.report({
-				node,
-				messageId: "wallClock",
-				fix: fixOf(
-					Option.match(Arr.head(node.properties), {
-						onNone: () => ({ range: node.range, text: `{ ${written} }` }),
-						onSome: (first) => ({ range: [first.range[0], first.range[0]], text: `${written}, ` })
-					})
+			},
+			NewExpression: (node) => {
+				if (isNamed(context, node.callee, DATE_READS) && Arr.isReadonlyArrayEmpty(node.arguments)) {
+					context.report({ node, messageId: "wallClock" })
+				}
+			},
+			CallExpression: (node) => {
+				if (isNamed(context, node.callee, DATE_READS)) {
+					context.report({ node, messageId: "wallClock" })
+				}
+				for (const { value, edit } of timersOf(context, node)) {
+					if (!isUnbounded(value)) {
+						context.report({
+							node: value,
+							messageId: "wallClock",
+							fix: fixOf(edit)
+						})
+					}
+				}
+			},
+			Property: (node) => {
+				if (
+					node.computed ||
+					!Option.exists(keyOf(node), (key) => Arr.contains(VITEST_TIMEOUTS, key)) ||
+					isLiteralZero(node.value)
+				) {
+					return
+				}
+				context.report({
+					node,
+					messageId: "wallClock",
+					fix: fixOf({ range: node.value.range, text: "0" })
+				})
+			},
+			ObjectExpression: (node) => {
+				const parent = node.parent
+				if (
+					!isVitestConfig(context.physicalFilename) ||
+					parent.type !== "Property" ||
+					parent.computed ||
+					parent.value !== node ||
+					!Option.exists(keyOf(parent), (key) => key === "test")
+				) {
+					return
+				}
+				const stated = Arr.flatMap(node.properties, (property) =>
+					property.type === "Property" && !property.computed ? Option.toArray(keyOf(property)) : []
 				)
-			})
+				const missing = Arr.filter(VITEST_TIMEOUTS, (key) => !Arr.contains(stated, key))
+				if (Arr.isReadonlyArrayEmpty(missing)) {
+					return
+				}
+				const written = Arr.join(
+					Arr.map(missing, (key) => `${key}: 0`),
+					", "
+				)
+				context.report({
+					node,
+					messageId: "wallClock",
+					fix: fixOf(
+						Option.match(Arr.head(node.properties), {
+							onNone: () => ({ range: node.range, text: `{ ${written} }` }),
+							onSome: (first) => ({ range: [first.range[0], first.range[0]], text: `${written}, ` })
+						})
+					)
+				})
+			}
 		}
-	})
+	}
 }

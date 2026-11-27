@@ -48,6 +48,13 @@ const PROGRAMS = [
 
 export type Program = (typeof PROGRAMS)[number]
 
+/**
+ * How many programs other than Node a program's body starts, each of which the guard traces with strace(1), since no
+ * recorder of its own runs in it (runner/observe.ts): the four `cat`s of "another program", none of any other's. A
+ * Node child, a worker thread and the run itself are recorded, never traced.
+ */
+export const otherProgramsOf = (program: Program): number => (program === "another program" ? 4 : 0)
+
 /** Every case: each program. */
 export const programs = finite((source): Program => source.draw(element(PROGRAMS)))
 
@@ -193,8 +200,7 @@ const bodyOf = (program: Program, library: CheckoutDir): ReadonlyArray<string> =
 
 /**
  * A program's module: what it does (bodyOf, none for the empty program) between its prelude and its report, one line of
- * JSON: what it said, and what its process spent, as it states it at its end: its CPU (user and system) and its voluntary
- * context switches (a tracer's every stop is one).
+ * JSON: what it said, and what its process spent, as it states it at its end: its CPU (user and system).
  */
 const moduleOf = (body: ReadonlyArray<string>): string =>
 	Arr.join(
@@ -206,7 +212,7 @@ const moduleOf = (body: ReadonlyArray<string>): string =>
 			"const say = (value) => { said.push(String(value)) }",
 			...body,
 			"const cpu = process.cpuUsage()",
-			"console.log(JSON.stringify({ said, spent: { cpu: (cpu.user + cpu.system) / 1000, switches: process.resourceUsage().voluntaryContextSwitches } }))",
+			"console.log(JSON.stringify({ said, spent: { cpu: (cpu.user + cpu.system) / 1000 } }))",
 			""
 		],
 		"\n"
@@ -295,6 +301,7 @@ const Guarded = Schema.fromJsonString(
 		stdout: Schema.String,
 		reads: Schema.Array(Schema.Tuple([Schema.Literals(RUNNER_READ_KINDS), Schema.String])),
 		records: Schema.Array(Schema.String),
+		traced: Schema.Finite,
 		observed: Schema.Boolean
 	})
 )
@@ -313,13 +320,14 @@ const guardProgramOf = (library: CheckoutDir, main: string, tree: string): strin
 			"guardInstalled(() => { observed = true })",
 			`const { childOutcomeOf } = await import("${url.pathToFileURL(`${library}/src/runner/child-record.ts`).href}")`,
 			"const records = []",
-			"guardChildren((record) => { records.push(record.record ?? ''); return childOutcomeOf(record) })",
+			"let traced = 0",
+			"guardChildren((record) => { records.push(record.record ?? ''); traced += record.traces.length; return childOutcomeOf(record) })",
 			'const child = await import("node:child_process")',
 			"guardWindow({ kind: 'open', unit: 1 })",
 			`const ran = child.spawnSync(process.execPath, ["${main}"], { cwd: "${tree}", encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] })`,
 			"const reads = guardDrain().reads.map((read) => [read.kind, read.path])",
 			"guardWindow({ kind: 'closed' })",
-			"console.log(JSON.stringify({ code: String(ran.status ?? ran.signal), stdout: ran.stdout, reads, records, observed }))",
+			"console.log(JSON.stringify({ code: String(ran.status ?? ran.signal), stdout: ran.stdout, reads, records, traced, observed }))",
 			""
 		],
 		"\n"
@@ -354,11 +362,11 @@ const keyedOf = (
 const Report = Schema.fromJsonString(
 	Schema.Struct({
 		said: Schema.Array(Schema.String),
-		spent: Schema.Struct({ cpu: Schema.Finite, switches: Schema.Finite })
+		spent: Schema.Struct({ cpu: Schema.Finite })
 	})
 )
 
-/** What a program's process spent (Report): its CPU in milliseconds and its voluntary context switches. */
+/** What a program's process spent (Report): its CPU in milliseconds. */
 export type Spent = (typeof Report.Type)["spent"]
 
 /** What a run said: its exit and its report (Report), the report none where it printed none. */
@@ -394,6 +402,7 @@ const guardedOf = (out: string, tree: string, body: ReadonlyArray<string>, libra
 			lines: lines.length,
 			distinct: new Set(Arr.map(lines, (line) => Arr.join(line, "\u0000"))).size,
 			installs: Arr.filter(lines, (line) => line[0] === "installed").length,
+			traced: printed.traced,
 			observed: printed.observed
 		}
 	})
@@ -440,8 +449,9 @@ export const comparedOf = (directory: string, library: CheckoutDir, program: Pro
 /**
  * A program run plain, alone, and as a property starts it, through the checkout's guard under its recorder, beside the
  * empty one (no body) run so too, each in a fresh tree under `directory`: what each run spent (Spent), how many lines the
- * program's record held (each a distinct read or making of its process tree's, and each recorder's start), and whether
- * the guard observed past every key.
+ * program's record held (each a distinct read or making of its process tree's, and each recorder's start), how many
+ * strace(1) traces the guard took of the recorded run's children (a child it traced stops at every file call it
+ * makes), and whether the guard observed past every key.
  */
 export const spentOf = (directory: string, library: CheckoutDir, program: Program) =>
 	Effect.gen(function* () {
@@ -459,6 +469,7 @@ export const spentOf = (directory: string, library: CheckoutDir, program: Progra
 			lines: recorded.lines,
 			distinct: recorded.distinct,
 			installs: recorded.installs,
+			traced: recorded.traced,
 			observed: recorded.observed
 		}
 	})
@@ -467,25 +478,24 @@ export const spentOf = (directory: string, library: CheckoutDir, program: Progra
  * The factor of a plain run's own work a recorded run's may reach: the recorder's work for a read is a set's lookup and,
  * for a read it records, one line and one write(2), at most the work the call it records does (a system call and Node's
  * own code around it), so a program's work recorded is at most twice its work plain, past the recorder's own load on
- * Node's start (what the empty program spends recorded); and it stops at no call, so its voluntary context switches are
- * its own work's (a traced child stops at every file call it makes, and switches at each).
+ * Node's start (what the empty program spends recorded). That it stops at no call is judged by its cause, the guard's
+ * traces of its children (spentOf `traced`), never by its context switches, which vary with the machine's load between
+ * two runs of the same work (130 past a bound of 128 at load 480, 2026-11-27).
  *
  * @limitKind derived
  * @owner the testing library's recorder (runner/recorder.ts)
- * @unit times a plain run's CPU and voluntary context switches
+ * @unit times a plain run's CPU
  * @scope each program of the recorder properties' roster (recorder.fixtures.ts PROGRAMS), plain and recorded, each alone
  * @derivation O(1) in-process work a read and one write a distinct read, no tracer: the program's own file work at most
- *   once again, 2. Context switches vary with the machine's load between two runs of the same work, never with the
- *   reads; measured at load 270 for the testing library's own module graph (lane TRACE, 2026-11-26): 415 to 835 plain,
- *   441 to 755 recorded, 8,720 to 9,051 traced
+ *   once again, 2
  */
 const recordedAtMost = 2
 
 /**
  * What a program's recorded run spent past its bound (spentOf), none where it kept within it: a line its record holds
- * twice from one recorder (each line is one write(2), so a recorder writes once a distinct read of its own); its CPU and
- * its voluntary context switches past twice its plain run's (recordedAtMost) and what the empty program spends recorded
- * (the recorder's own load on Node's start).
+ * twice from one recorder (each line is one write(2), so a recorder writes once a distinct read of its own); and its CPU
+ * past twice its plain run's (recordedAtMost) and what the empty program spends recorded (the recorder's own load on
+ * Node's start).
  */
 export const exceededOf = (
 	spent: Readonly<{
@@ -497,18 +507,14 @@ export const exceededOf = (
 		installs: number
 	}>
 ): ReadonlyArray<string> => {
-	const bound = (name: "cpu" | "switches"): number =>
-		recordedAtMost * spent.plain[name] + spent.recordedEmpty[name]
+	const bound = recordedAtMost * spent.plain.cpu + spent.recordedEmpty.cpu
 	return Arr.filter(
 		[
 			spent.lines > spent.distinct * spent.installs
 				? `${spent.lines} lines recorded, ${spent.distinct} distinct, by ${spent.installs} recorders`
 				: "",
-			spent.recorded.cpu > bound("cpu")
-				? `${spent.recorded.cpu} ms of CPU recorded past ${bound("cpu")}: ${spent.plain.cpu} plain, ${spent.recordedEmpty.cpu} empty`
-				: "",
-			spent.recorded.switches > bound("switches")
-				? `${spent.recorded.switches} voluntary context switches recorded past ${bound("switches")}: ${spent.plain.switches} plain, ${spent.recordedEmpty.switches} empty`
+			spent.recorded.cpu > bound
+				? `${spent.recorded.cpu} ms of CPU recorded past ${bound}: ${spent.plain.cpu} plain, ${spent.recordedEmpty.cpu} empty`
 				: ""
 		],
 		(exceeded) => exceeded !== ""
