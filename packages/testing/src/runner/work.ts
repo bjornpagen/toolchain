@@ -254,8 +254,10 @@ const keptEffort = (): ((pids: ReadonlyArray<string>) => Effort) => {
 type Served = Readonly<{ pid: string; started: number }>
 
 /**
- * The effort of the processes a work counts beside its tree, as it reads them again and again: each from the reading it
- * was first seen at, or all of its effort where it started since the work began (`since`, ms since the machine booted),
+ * The effort of the processes a work counts beside its tree, as it reads them again and again: each from the reading or
+ * the refresh it was first seen at (TreeWork refresh counts the work's backends as it names their carriers, so a carrier
+ * counts from the ask that names it and a carried wait moves its case in the window it is first named in), or all of its
+ * effort where it started since the work began (`since`, ms since the machine booted),
  * and frozen at its last reading once it leaves the set, so a pooled connection's backend counts only what it did for
  * this work, and the total only grows.
  */
@@ -578,7 +580,12 @@ export const ownWork = (wall: number, own: number): TreeWork => {
 			)
 			return { cpu: cpu + descendants.cpu + served.cpu, stir, carried: served.carried }
 		},
-		refresh: refreshBackends(tree)
+		refresh: Effect.andThen(
+			refreshBackends(tree),
+			Effect.sync(() => {
+				backends(tree())
+			})
+		)
 	}
 }
 
@@ -632,7 +639,12 @@ export const processWork = (
 		began: { wall, cpu: began.cpu, waited: waited(wall), stir: began.stir, carried: began.carried },
 		waited,
 		effort,
-		refresh: refreshBackends(tree)
+		refresh: Effect.andThen(
+			refreshBackends(tree),
+			Effect.sync(() => {
+				backends(tree())
+			})
+		)
 	}
 }
 

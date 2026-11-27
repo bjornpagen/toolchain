@@ -13,6 +13,7 @@ import {
 	Duration,
 	Effect,
 	Exit,
+	Fiber,
 	FileSystem,
 	Layer,
 	Number as Num,
@@ -54,7 +55,9 @@ import {
 	ownCluster,
 	runsOf,
 	services,
+	backendCpuOf,
 	backendShapes,
+	HOLDER_BUSY_MILLIS,
 	busyFor,
 	outsideSession,
 	superuserSessionIn,
@@ -76,7 +79,7 @@ import { collectedAround } from "#runner/run.ts"
 import { runValuesOf } from "#runner/runs.ts"
 import { ModuleClosure, RunValues, WorkerIndex } from "#runner/services.ts"
 import { deadlocks } from "#runner/work.fixtures.ts"
-import { deadlineBound, overrunText, waitedOnNow } from "#runner/work.ts"
+import { deadlineBound, overrunText, readingOf, waitedOnNow } from "#runner/work.ts"
 
 export const freshIsolation = property.explore(array(int(-5, 5), { min: 0, max: 6 }), {
 	needs: { db: Database.fresh(marksTemplate), services },
@@ -1551,6 +1554,187 @@ export const lockedBehindAWorkingHolderIsWork = property.exhaust(finite(backendS
 			original: "\t\t\t\t\t\t\t\t\t\t\t\t\t\tmemberRegistered(member)\n",
 			replacement: "",
 			why: "The cluster registers no member it brings up, so only a client that registers its own server is asked what its backends wait on, and a repository's own sessions never are (grizzle's, 2026-11-26): a case behind an outside holder that works is judged stalled; the property fails, the locked read judged."
+		}
+	]
+})
+
+/**
+ * A deferrable read of a case's session waits out another process's working serializable writer as the member's work:
+ * a SERIALIZABLE READ ONLY DEFERRABLE read waits for a safe snapshot (wait event SafeSnapshot) until every serializable
+ * transaction concurrent with it that is not read only has ended, and while the one it waits out works, its backend's
+ * CPU carries the read (pg/session.ts CARRIERS: every working writer whose transaction began before the read), so the
+ * case's guard judges none of the
+ * wait a stall, however long the writer works past the case's deadline.
+ */
+export const deferredBehindAWorkingWriterIsWork = property.exhaust(finite(backendShapes), {
+	box: "a deferrable read of a case's session behind another process's serializable writer that works four deadlines, under a deadline of 1 or 2 s",
+	needs: { services },
+	situations: [],
+	check:
+		({ services: context }) =>
+		(shape) =>
+			Effect.flatMap(context, (ctx) =>
+				Effect.provideContext(
+					Effect.scoped(
+						Effect.gen(function* () {
+							const cluster = yield* PgCluster
+							const opened = yield* marksTemplate.open
+							const clone = yield* opened.clone
+							const reader = yield* cluster.connect(clone.member, clone.name)
+							yield* runIn(reader, "CREATE TABLE written (x int)", [])
+							const writer = yield* outsideSession(clone.member, clone.name)
+							yield* writer("BEGIN ISOLATION LEVEL SERIALIZABLE")
+							yield* writer("SELECT count(*) FROM written")
+							yield* writer("INSERT INTO written VALUES (1)")
+							yield* writer(busyFor(shape.deadline * shape.deadlines))
+							yield* writer("COMMIT")
+							yield* awaitFact(
+								Effect.map(
+									single(
+										reader,
+										"SELECT count(*)::text FROM pg_catalog.pg_locks WHERE relation = 'written'::regclass AND mode = 'SIReadLock'",
+										[]
+									),
+									(held) => (held === "0" ? Option.none() : Option.some(true))
+								)
+							)
+							const readerPid = yield* single(
+								reader,
+								"SELECT pg_catalog.pg_backend_pid()::text",
+								[]
+							)
+							const watcher = yield* cluster.connect(clone.member, clone.name)
+							yield* runIn(reader, "BEGIN ISOLATION LEVEL SERIALIZABLE READ ONLY DEFERRABLE", [])
+							const read = yield* Effect.forkScoped(
+								reader.query("SELECT count(*)::text FROM written", [])
+							)
+							yield* awaitFact(
+								Effect.map(
+									single(
+										watcher,
+										"SELECT wait_event FROM pg_catalog.pg_stat_activity WHERE pid = $1::int4",
+										[readerPid ?? ""]
+									),
+									(event) => (event === "SafeSnapshot" ? Option.some(true) : Option.none())
+								)
+							)
+							const work = yield* ownWorkNow
+							const verdict = yield* Effect.raceFirst(
+								Effect.as(Fiber.join(read), "passed"),
+								Effect.map(overrun(work, deadlineBound(shape.deadline)), overrunText)
+							)
+							yield* runIn(reader, "COMMIT", [])
+							assert.equal(verdict, "passed")
+						})
+					),
+					ctx
+				)
+			),
+	oracle: {
+		kind: "specification",
+		name: "a deferrable read waiting out another process's working serializable writer is carried by the writer's CPU (runner/backends.ts Carriers): the case's guard judges none of it, and the read passes once the writer commits"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/pg/session.ts",
+			original: "\tWHERE asked.wait_event = 'SafeSnapshot'\n",
+			replacement: "\tWHERE false\n",
+			why: "A deferrable read waiting for a safe snapshot is carried by no writer, as a den step's read on a shared member was its client's silence (trunk@metis b35b5a76): a case whose read waits out another session's working writer is stalled; the property fails."
+		}
+	]
+})
+
+/**
+ * A carrier counts from the ask that names it: a case's statement waits behind a lock another process's session holds
+ * while it works; the case's work, begun once the wait is in place, asks its server (its refresh, a guard's opening ask)
+ * and so names the holder; read once, after the holder's own CPU (off its /proc stat) has moved a quarter or half second
+ * past that ask, the work's carried CPU holds it but for two ticks of slack, so a guard judges such a wait moving in the very
+ * window its carrier is first named in, however little its processes waited to run (runner/work.ts keptServed).
+ */
+export const carriedFromItsNaming = property.exhaust(finite(int(1, 2)), {
+	box: "a statement of a case's session behind a lock another process's working session holds, the case's work read once a quarter or half second of the holder's CPU after its first ask",
+	needs: { services },
+	situations: [],
+	check:
+		({ services: context }) =>
+		(quarters) =>
+			Effect.flatMap(context, (ctx) =>
+				Effect.provideContext(
+					Effect.scoped(
+						Effect.gen(function* () {
+							const cluster = yield* PgCluster
+							const opened = yield* marksTemplate.open
+							const clone = yield* opened.clone
+							const waiter = yield* cluster.connect(clone.member, clone.name)
+							const watcher = yield* cluster.connect(clone.member, clone.name)
+							yield* runIn(waiter, "CREATE TABLE named (x int)", [])
+							const holder = yield* outsideSession(clone.member, clone.name)
+							yield* holder("BEGIN")
+							yield* holder("LOCK TABLE named IN ACCESS EXCLUSIVE MODE")
+							yield* holder(busyFor(HOLDER_BUSY_MILLIS))
+							yield* holder("COMMIT")
+							const holderPid = yield* awaitFact(
+								Effect.map(
+									single(
+										watcher,
+										"SELECT pg_catalog.min(pid)::text FROM pg_catalog.pg_locks WHERE relation = 'named'::regclass AND granted",
+										[]
+									),
+									Option.fromNullishOr
+								)
+							)
+							const read = yield* Effect.forkScoped(
+								waiter.query("SELECT count(*)::text FROM named", [])
+							)
+							yield* awaitFact(
+								Effect.map(
+									single(
+										watcher,
+										"SELECT count(*)::text FROM pg_catalog.pg_locks WHERE relation = 'named'::regclass AND NOT granted",
+										[]
+									),
+									(waiting) => (waiting === "0" ? Option.none() : Option.some(true))
+								)
+							)
+							const work = yield* ownWorkNow
+							yield* work.refresh
+							const named = yield* backendCpuOf(holderPid)
+							yield* awaitFact(
+								Effect.map(backendCpuOf(holderPid), (now) =>
+									now >= named + 250 * quarters ? Option.some(true) : Option.none()
+								)
+							)
+							const carried = readingOf(work, work.began.wall).carried
+							const superuser = yield* cluster.superuser(clone.member, clone.name)
+							yield* single(superuser, "SELECT pg_catalog.pg_cancel_backend($1::int4)::text", [
+								holderPid
+							])
+							yield* Fiber.join(read)
+							assert.deepEqual(
+								{
+									carried:
+										carried >= 200 ? "the holder's CPU since its naming" : `${String(carried)} ms`
+								},
+								{ carried: "the holder's CPU since its naming" }
+							)
+						})
+					),
+					ctx
+				)
+			),
+	oracle: {
+		kind: "specification",
+		name: "the holder's own CPU off /proc, read at the work's first ask and again a quarter second of it later: the work's carried CPU holds it"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/runner/work.ts",
+			original:
+				"\t\t},\n\t\trefresh: Effect.andThen(\n\t\t\trefreshBackends(tree),\n\t\t\tEffect.sync(() => {\n\t\t\t\tbackends(tree())\n\t\t\t})\n\t\t)\n",
+			replacement: "\t\t},\n\t\trefresh: refreshBackends(tree)\n",
+			why: "A carrier counts only from the first reading that sees it, so a carried wait shows no progress in the window its carrier is first named in, and a case whose statement waits behind a working holder just after a reading is judged stalled; the property fails."
 		}
 	]
 })

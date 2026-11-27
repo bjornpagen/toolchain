@@ -4,11 +4,13 @@ import {
 	Brand,
 	Context,
 	Effect,
+	FileSystem,
 	Layer,
 	Option,
 	Queue,
 	type Scope,
-	Stream
+	Stream,
+	String as Str
 } from "effect"
 import { ChildProcess } from "effect/process"
 import pg from "pg"
@@ -163,6 +165,26 @@ export const backendShapes: Gen<Readonly<{ deadline: number; deadlines: number }
  */
 export const busyFor = (millis: number): string =>
 	`DO $$ DECLARE stop timestamptz := pg_catalog.clock_timestamp() + ${String(millis)} * interval '1 millisecond'; BEGIN WHILE pg_catalog.clock_timestamp() < stop LOOP END LOOP; END $$`
+
+/**
+ * How long resources.test.ts carriedFromItsNaming's holder works, in ms, before the property cancels it once it has read the work: long
+ * past any setup the case's load can delay, so the holder still works when the work is read. A test's own time, no
+ * limit.
+ */
+export const HOLDER_BUSY_MILLIS = 600_000
+
+/**
+ * A backend's own CPU so far, its user and system time off /proc/<pid>/stat (at 100 ticks a second), in ms: what a
+ * property reads of a carrier beside the work that counts it.
+ */
+export const backendCpuOf = (pid: string) =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem
+		const stat = yield* Effect.orDie(fs.readFileString(`/proc/${pid}/stat`))
+		const closing = Option.getOrElse(Str.lastIndexOf(")")(stat), () => 0)
+		const fields = Str.split(" ")(Str.slice(closing + 2)(stat))
+		return (Number(Arr.getUnsafe(fields, 11)) + Number(Arr.getUnsafe(fields, 12))) * 10
+	})
 
 /**
  * A session of the member's bootstrap superuser in `database` over its socket, in a psql the scope starts now and ends

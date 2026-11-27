@@ -31,15 +31,29 @@ const sessionFailed = (member: PgMember, doing: string) => (cause: unknown) =>
  * and its case is judged a stall: nothing moves until that holder's client acts, and when the client is the waiter's
  * own process, which awaits the statement, nothing ever will (grizzle's test/pg/substrate/budget.test.ts under its first
  * kill, UNITREDS, 2026-11-22: its holder idle in transaction on ACCESS EXCLUSIVE and two pool reads of its own behind
- * it, 14 to 73 minutes with no verdict). A backend waiting on a checkpoint (CREATE DATABASE's FILE_COPY) is carried by
- * the checkpointer, no one's backend; one waiting on I/O (wait_event_type IO) by the server's I/O workers (io_method
- * worker), which every backend of the server shares, so none is a case's own work.
+ * it, 14 to 73 minutes with no verdict). A backend waiting for a safe snapshot (a SERIALIZABLE READ ONLY DEFERRABLE
+ * transaction's first, wait event SafeSnapshot) waits out the serializable read-write transactions active when it took
+ * its snapshot, as a den step's read waits out every serializable writer on the whole cluster (PostgreSQL 19's
+ * Transaction Isolation; trunk@metis b35b5a76, 2026-11-22), and is carried by every backend of its server holding an
+ * assigned xid (backend_xid) whose transaction began before its statement, that works: more than it waits out, since an
+ * unrelated writer counts too, so such a wait is judged hung later while some writer works, never stalled while one it
+ * waits out does; a serializable transaction that has written nothing yet holds no xid and carries nothing.
+ * pg_safe_snapshot_blocking_pids would name them exactly, but PostgreSQL 19 answers it from the first serializable
+ * transaction of the pid it finds (predicate.c GetSafeSnapshotBlockingPids), which for a session that ran serializable
+ * transactions before (grizzle's and den's, every one of theirs) is one already committed, and so answers none. A
+ * backend waiting on a checkpoint (CREATE DATABASE's FILE_COPY) is carried by the checkpointer, no one's backend; one
+ * waiting on I/O (wait_event_type IO) by the server's I/O workers (io_method worker), which every backend of the server
+ * shares, so none is a case's own work.
  */
 const CARRIERS = `WITH RECURSIVE asked AS (
-	SELECT a.pid, a.wait_event_type, a.wait_event FROM pg_catalog.pg_stat_activity AS a WHERE a.pid = ANY($1::int4[])
+	SELECT a.pid, a.wait_event_type, a.wait_event, a.query_start FROM pg_catalog.pg_stat_activity AS a WHERE a.pid = ANY($1::int4[])
 ), blockers (waiter, pid) AS (
 	SELECT asked.pid, pg_catalog.unnest(pg_catalog.pg_blocking_pids(asked.pid)) FROM asked
 	WHERE asked.wait_event_type = 'Lock'
+	UNION
+	SELECT asked.pid, w.pid FROM asked JOIN pg_catalog.pg_stat_activity AS w
+		ON w.backend_xid IS NOT NULL AND w.xact_start < asked.query_start AND w.pid <> asked.pid
+	WHERE asked.wait_event = 'SafeSnapshot'
 	UNION
 	SELECT blockers.waiter, pg_catalog.unnest(pg_catalog.pg_blocking_pids(blockers.pid)) FROM blockers
 )
