@@ -2,8 +2,10 @@
  * The grizzle-star-imports rule (src/oxlint/rules/grizzle-star-imports.ts), over a box of modules: grizzle's root and two
  * of its entries, and a module of another package, each reached in every shape: a namespace under the entry's name,
  * type-only or not; a namespace under another name; named imports, type-only, mixed, or split over two imports; a
- * default import; an import of the module alone; a re-export by name, type-only, of everything, or as a namespace; and
- * named imports whose namespace name is taken, shadowed by a parameter, exported again or read as JSX. Every case
+ * default import; an import of the module alone; a re-export by name, type-only, of everything, or as a namespace; named
+ * imports whose namespace name a local, a parameter or nested parameters take (renamed apart to the first free name,
+ * the next one where the first is taken too), or an undeclared global reads; an import beside another entry's, both
+ * fixed in one run; and named imports exported again or read as JSX. Every case
  * carries what the contract gives it: an entry's one form draws nothing, every other shape of an entry's one report per
  * import naming the one form, with the text its fix leaves where the rule can fix it, and a module of another package
  * nothing in any shape. oxlint's RuleTester, run in the case, must find exactly that.
@@ -69,10 +71,23 @@ export const grizzleStarImports = property.exhaust(finite(importCases), {
 		},
 		{
 			file: "packages/devtools/src/oxlint/rules/grizzle-star-imports.ts",
-			original: "\t\t\tonSome: (variable) =>\n\t\t\t\tArr.every(variable.defs, (definition) =>\n",
+			original:
+				"\treturn Arr.map([...byStart.values()], (identifier) => renameEditOf(identifier, name, fresh))\n",
+			replacement: "\treturn []\n",
+			why: "The fix skips a binding that shadows the entry's name: under a parameter `g`, `x` becomes `g.x`, which reads the parameter, and the module is left reading the wrong value."
+		},
+		{
+			file: "packages/devtools/src/oxlint/rules/grizzle-star-imports.ts",
+			original: "\t\t\tscope.set.has(name) ||\n",
+			replacement: "\t\t\tfalse ||\n",
+			why: "A name a binding of the module holds reads as free: a shadowing binding is renamed to `g1` where a `g1` stands beside it, and the two bindings collide."
+		},
+		{
+			file: "packages/devtools/src/oxlint/rules/grizzle-star-imports.ts",
+			original: "\t\t\t\tconst edits = Arr.flatMap(imports, ({ entry, declarations }) =>\n",
 			replacement:
-				"\t\t\tonSome: (variable) =>\n\t\t\t\ttrue || Arr.every(variable.defs, (definition) =>\n",
-			why: "The fix ignores a binding of the entry's name: under a parameter `g`, `x` becomes `g.x`, which reads the parameter."
+				"\t\t\t\tconst edits = Arr.flatMap(Arr.take(imports, 1), ({ entry, declarations }) =>\n",
+			why: "A run fixes one entry of a module, so a module importing two entries is left refused after a run of oxlint --fix, which converges only by being run again."
 		},
 		{
 			file: "packages/devtools/src/oxlint/rules/grizzle-star-imports.ts",

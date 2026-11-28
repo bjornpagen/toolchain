@@ -21,8 +21,11 @@ dev tools' core rule `devtools/grizzle-star-imports` (every file) admits one for
 entry's own name, `import * as g from "@bjornpagen/grizzle"`, `import * as gRuntime from "@bjornpagen/grizzle/runtime"`,
 `g` and the entry capitalized for every entry, or `import type * as …` where only its types are read, which loads
 nothing. It refuses a named import, type-only or not, a default import, an import of the module alone, a namespace under
-another name, and every re-export of an entry. Its fix rewrites a module's imports of an entry to the one form and every
-use of an imported name to `gX.name`, where the name `gX` is free in the module. Before you move `vendor/toolchain` past
+another name, and every re-export of an entry. Its fix rewrites a module's imports of every entry to the one form and
+every use of an imported name to `gX.name` in one run of `oxlint --fix`; a binding of an entry's name that is no import
+of the entry, a parameter `g` or a local `gRuntime`, is renamed apart first to the first `g1`, `g2`, … the module names
+nowhere. Only a re-export, a default import, a name exported again or read as JSX, or a module reading an undeclared
+global of the name is left reported. Before you move `vendor/toolchain` past
 this section, run grizzle's migration at its repin (`scripts/starcut.ts` in grizzle), which applies this fix with
 grizzle's renames; a re-export it reports alone is yours to replace with an import where it is read.
 

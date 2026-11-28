@@ -1,4 +1,4 @@
-import { Array as Arr, Option, Record, String as Str } from "effect"
+import { Array as Arr, Option, Order, Record, String as Str } from "effect"
 import type { AnyNode, Context, CreateRule, NodeOf } from "#oxlint/rule.ts"
 
 /** grizzle's package, whose root and every entry beneath it the rule reads. */
@@ -36,7 +36,7 @@ export const entryOf = (source: string): Option.Option<Entry> => {
 
 /** The refusal of every other way to reach an entry, naming the one way. */
 export const messageOf = (entry: Entry): string =>
-	`grizzle's entries are imported whole, each as one namespace under its own name, and read through it (${entry.alias}.name): \`import * as ${entry.alias} from "${entry.source}"\`, or \`import type * as ${entry.alias} from "${entry.source}"\` where only its types are read. No name is imported from it, no default and not the module alone, under no other name, and nothing is re-exported from it. oxlint --fix rewrites an import and its uses where the name ${entry.alias} is free.`
+	`grizzle's entries are imported whole, each as one namespace under its own name, and read through it (${entry.alias}.name): \`import * as ${entry.alias} from "${entry.source}"\`, or \`import type * as ${entry.alias} from "${entry.source}"\` where only its types are read. No name is imported from it, no default and not the module alone, under no other name, and nothing is re-exported from it. oxlint --fix rewrites an import and its uses, renaming any other binding of ${entry.alias} apart.`
 
 /** Whether an import is the entry's one form: a namespace under the entry's name, alone. */
 const isAdmitted = (declaration: Import, entry: Entry): boolean =>
@@ -92,21 +92,95 @@ const readsTypesAlone = ({ declaration, specifier }: Imported): boolean =>
 	declaration.importKind === "type" ||
 	(specifier.type === "ImportSpecifier" && specifier.importKind === "type")
 
-/**
- * Whether the entry's name is free in the module: no binding of any scope is named so but the entry's own namespace
- * import, and no undeclared global of the name is read. Only then does every use the fix writes read the namespace.
- */
-const isFree = (context: Context, entry: Entry, own: ReadonlyArray<Specifier>): boolean =>
-	Arr.every(context.sourceCode.scopeManager.scopes, (scope) =>
+type Variable = ReturnType<Context["sourceCode"]["getDeclaredVariables"]>[number]
+
+/** Every binding of the entry's name in the module that is no namespace import of the entry: each the fix renames. */
+const shadowsOf = (
+	context: Context,
+	entry: Entry,
+	own: ReadonlyArray<Specifier>
+): ReadonlyArray<Variable> =>
+	Arr.flatMap(context.sourceCode.scopeManager.scopes, (scope) =>
 		Option.match(Option.fromUndefinedOr(scope.set.get(entry.alias)), {
-			onNone: () =>
-				!Arr.some(scope.through, (reference) => reference.identifier.name === entry.alias),
+			onNone: () => [],
 			onSome: (variable) =>
 				Arr.every(variable.defs, (definition) =>
 					Arr.some(own, (specifier) => specifier === definition.node)
 				)
+					? []
+					: [variable]
 		})
 	)
+
+/** Whether the module names `name` at all: a binding of it in any scope, or a read of it no binding resolves. */
+const namesAnywhere = (context: Context, name: string): boolean =>
+	Arr.some(
+		context.sourceCode.scopeManager.scopes,
+		(scope) =>
+			scope.set.has(name) ||
+			Arr.some(scope.references, (reference) => reference.identifier.name === name)
+	)
+
+/** Whether the module reads an undeclared global of `name`, which no rename can move apart from the namespace. */
+const readsGlobal = (context: Context, name: string): boolean =>
+	Arr.some(context.sourceCode.scopeManager.scopes, (scope) =>
+		Arr.some(
+			scope.references,
+			(reference) => reference.resolved === null && reference.identifier.name === name
+		)
+	)
+
+/** The first of `<name>1`, `<name>2`, … the module names nowhere: a name a shadowing binding is renamed to, free in
+ * every scope, so each of its reads still reads it and none reads anything else. */
+const freshNameOf = (context: Context, name: string): string => {
+	for (let n = 1; ; n += 1) {
+		if (!namesAnywhere(context, `${name}${n}`)) {
+			return `${name}${n}`
+		}
+	}
+}
+
+/**
+ * The edit that renames one identifier of a binding from `name` to `fresh`: a shorthand property given its key (`{ g }`
+ * is `{ g: g1 }`, `{ g = 1 }` is `{ g: g1 = 1 }`), an import or an export by the binding's own name given an alias
+ * (`import { g }` is `import { g as g1 }`, `export { g }` is `export { g1 as g }`), and any other the new name alone.
+ * The edit spans the name alone: a binding's node spans its type annotation too (`g: number`).
+ */
+const renameEditOf = (
+	identifier: Variable["identifiers"][number],
+	name: string,
+	fresh: string
+): Edit => {
+	const { parent } = identifier
+	const at = { start: identifier.start, end: identifier.start + name.length }
+	if (
+		parent.type === "Property" &&
+		parent.shorthand &&
+		(parent.value === identifier ||
+			(parent.value.type === "AssignmentPattern" && parent.value.left === identifier))
+	) {
+		return { ...at, text: `${name}: ${fresh}` }
+	}
+	if (parent.type === "ImportSpecifier" && parent.imported.start === parent.local.start) {
+		return { ...at, text: `${name} as ${fresh}` }
+	}
+	if (parent.type === "ExportSpecifier" && parent.exported.start === parent.local.start) {
+		return { ...at, text: `${fresh} as ${name}` }
+	}
+	return { ...at, text: fresh }
+}
+
+/** The edits that rename a binding apart from the entry's name: its declaration and every read of it, each once. */
+const renamedApart = (variable: Variable, name: string, fresh: string): ReadonlyArray<Edit> => {
+	const byStart = new Map<number, Variable["identifiers"][number]>()
+	for (const identifier of variable.identifiers) {
+		byStart.set(identifier.start, identifier)
+	}
+	for (const reference of variable.references) {
+		byStart.set(reference.identifier.start, reference.identifier)
+	}
+	return Arr.map([...byStart.values()], (identifier) => renameEditOf(identifier, name, fresh))
+}
 
 /** The edit that removes an import: the declaration and the line break that ends it. */
 const removalOf = (text: string, declaration: Import): Edit => ({
@@ -118,8 +192,9 @@ const removalOf = (text: string, declaration: Import): Edit => ({
 /**
  * The edits that bring a module's imports of one entry to its one form, where they can: the first import becomes the
  * namespace import, `import type` where every name the imports bind is read as a type alone, the others go, and every
- * use of a name a refused import binds reads it off the namespace. None where an import can't be read off the namespace
- * (a default import, an import of the module alone, a name exported again or read as JSX) or the entry's name is taken.
+ * use of a name a refused import binds reads it off the namespace, every binding of the entry's name renamed apart
+ * first (shadowsOf, renamedApart). None where an import can't be read off the namespace (a default import, an import of
+ * the module alone, a name exported again or read as JSX) or the module reads an undeclared global of the entry's name.
  */
 const editsOf = (
 	context: Context,
@@ -133,16 +208,18 @@ const editsOf = (
 	const admitted = Arr.filter(imported, ({ declaration }) => isAdmitted(declaration, entry))
 	const refused = Arr.filter(imported, ({ declaration }) => !isAdmitted(declaration, entry))
 	const alone = Arr.some(declarations, (declaration) => declaration.specifiers.length === 0)
-	if (
-		alone ||
-		!isFree(
+	if (alone || readsGlobal(context, entry.alias)) {
+		return Option.none()
+	}
+	const fresh = freshNameOf(context, entry.alias)
+	const apart = Arr.flatMap(
+		shadowsOf(
 			context,
 			entry,
 			Arr.map(admitted, ({ specifier }) => specifier)
-		)
-	) {
-		return Option.none()
-	}
+		),
+		(variable) => renamedApart(variable, entry.alias, fresh)
+	)
 	const uses = Option.all(
 		Arr.flatMap(refused, ({ specifier }) =>
 			Option.match(readOf(context, entry, specifier), {
@@ -164,7 +241,8 @@ const editsOf = (
 	return Option.map(uses, (edits) => [
 		namespace,
 		...Arr.map(rest, (declaration) => removalOf(text, declaration)),
-		...edits
+		...edits,
+		...apart
 	])
 }
 
@@ -194,10 +272,13 @@ const entryImportsOf = (program: NodeOf<"Program">): ReadonlyArray<EntryImports>
  * "@bjornpagen/grizzle"`, `import * as gRuntime from "@bjornpagen/grizzle/runtime"`, or `import type * as …` where only
  * its types are read, which loads nothing. A named import, type-only or not, a default import, an import of the module
  * alone, a namespace under another name, and a re-export of the entry (`export { x } from`, `export * from`,
- * `export * as`, `import x = require`) are each reported. Its fix, on a module's first refused import of an entry,
- * brings all of the module's imports of the entry to the one form and reads every use of an imported name off the
- * namespace, where the entry's name is free in the module and every use can be so read; a re-export it reports alone,
- * since what replaces it is its readers' to choose.
+ * `export * as`, `import x = require`) are each reported. Its fix, one for the whole module on its first refused
+ * import, brings every entry's imports to the one form and reads every use of an imported name off its namespace, so
+ * one run of oxlint --fix leaves nothing it could fix: a binding of an entry's name in any scope that is no namespace
+ * import of the entry, a parameter `g` or a local `gRuntime`, is renamed apart first, its declaration and every read of
+ * it, to the first `<name>1`, `<name>2`, … the module names nowhere. An entry is left reported alone where a use can't
+ * be read off the namespace (a name exported again or read as JSX, a default import, an import of the module alone) or
+ * the module reads an undeclared global of its name; a re-export too, since what replaces it is its readers' to choose.
  */
 export const grizzleStarImports: CreateRule = {
 	meta: { type: "problem", fixable: "code" },
@@ -209,27 +290,37 @@ export const grizzleStarImports: CreateRule = {
 		}
 		return {
 			Program: (program) => {
-				for (const { entry, declarations } of entryImportsOf(program)) {
-					const refused = Arr.filter(declarations, (declaration) => !isAdmitted(declaration, entry))
-					const edits = editsOf(context, entry, declarations)
-					for (const [index, node] of refused.entries()) {
-						const message = messageOf(entry)
-						const fixed = index === 0 ? edits : Option.none()
-						context.report(
-							Option.match(fixed, {
-								onNone: () => ({ node, message }),
-								onSome: (all) => ({
-									node,
-									message,
-									fix: (fixer) =>
-										Arr.map(all, (edit) =>
-											fixer.replaceTextRange([edit.start, edit.end], edit.text)
-										)
-								})
-							})
-						)
-					}
+				const imports = entryImportsOf(program)
+				const refused = Arr.flatMap(imports, ({ entry, declarations }) =>
+					Arr.map(
+						Arr.filter(declarations, (declaration) => !isAdmitted(declaration, entry)),
+						(node) => ({ node, message: messageOf(entry) })
+					)
+				)
+				const edits = Arr.flatMap(imports, ({ entry, declarations }) =>
+					Option.getOrElse(editsOf(context, entry, declarations), () => [])
+				)
+				const [first, ...rest] = Arr.sort(
+					refused,
+					Order.mapInput(Order.Number, ({ node }: { readonly node: Import }) => node.start)
+				)
+				for (const report of rest) {
+					context.report(report)
 				}
+				if (first === undefined) {
+					return
+				}
+				context.report(
+					Arr.isReadonlyArrayNonEmpty(edits)
+						? {
+								...first,
+								fix: (fixer) =>
+									Arr.map(edits, (edit) =>
+										fixer.replaceTextRange([edit.start, edit.end], edit.text)
+									)
+							}
+						: first
+				)
 			},
 			ExportNamedDeclaration: (node) => {
 				if (node.source !== null) {

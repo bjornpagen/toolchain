@@ -31,6 +31,10 @@ export type Shape =
 	| "a namespace re-export"
 	| "an import whose name is taken"
 	| "an import whose name a parameter shadows"
+	| "an import whose name nested scopes shadow"
+	| "an import whose name and next free name are taken"
+	| "an import whose name is read as an undeclared global"
+	| "an import beside another entry's"
 	| "a name exported again"
 	| "a name read as JSX"
 
@@ -63,6 +67,10 @@ const SHAPES = [
 	"a namespace re-export",
 	"an import whose name is taken",
 	"an import whose name a parameter shadows",
+	"an import whose name nested scopes shadow",
+	"an import whose name and next free name are taken",
+	"an import whose name is read as an undeclared global",
+	"an import beside another entry's",
 	"a name exported again",
 	"a name read as JSX"
 ] as const satisfies ReadonlyArray<Shape>
@@ -152,14 +160,65 @@ const writtenOf = (shape: Shape, s: string, a: string): Written => {
 		case "a namespace re-export":
 			return unfixed(`export * as ${a} from "${s}"\n`)
 		case "an import whose name is taken":
-			return unfixed(`import { x } from "${s}"\nconst ${a} = 1\nexport const v = [x, ${a}]\n`)
+			return refused(
+				`import { x } from "${s}"\nconst ${a} = 1\nexport const v = [x, ${a}, { ${a} }]\n`,
+				1,
+				`import * as ${a} from "${s}"\nconst ${a}1 = 1\nexport const v = [${a}.x, ${a}1, { ${a}: ${a}1 }]\n`
+			)
 		case "an import whose name a parameter shadows":
-			return unfixed(`import { x } from "${s}"\nexport const f = (${a}: number) => x + ${a}\n`)
+			return refused(
+				`import { x } from "${s}"\nexport const f = (${a}: number) => x + ${a}\n`,
+				1,
+				`import * as ${a} from "${s}"\nexport const f = (${a}1: number) => ${a}.x + ${a}1\n`
+			)
+		case "an import whose name nested scopes shadow":
+			return refused(
+				`import { x } from "${s}"\nexport const f = (${a}: number) => [${a}, (${a}: string) => [${a}, x]]\n`,
+				1,
+				`import * as ${a} from "${s}"\nexport const f = (${a}1: number) => [${a}1, (${a}1: string) => [${a}1, ${a}.x]]\n`
+			)
+		case "an import whose name and next free name are taken":
+			return refused(
+				`import { x } from "${s}"\nconst ${a} = 1\nexport const h = (${a}1: number) => [x, ${a}]\n`,
+				1,
+				`import * as ${a} from "${s}"\nconst ${a}2 = 1\nexport const h = (${a}1: number) => [${a}.x, ${a}2]\n`
+			)
+		case "an import whose name is read as an undeclared global":
+			return unfixed(`import { x } from "${s}"\nexport const v = [x, ${a}]\n`)
+		case "an import beside another entry's":
+			return refused(
+				`import { x } from "${s}"\nimport { Db } from "@bjornpagen/grizzle/compile"\nexport const v = [x, Db]\n`,
+				2,
+				`import * as ${a} from "${s}"\nimport * as gCompile from "@bjornpagen/grizzle/compile"\nexport const v = [${a}.x, gCompile.Db]\n`
+			)
 		case "a name exported again":
 			return unfixed(`import { x } from "${s}"\nexport { x }\n`)
 		case "a name read as JSX":
 			return unfixed(`import { X } from "${s}"\nexport const e = <X />\n`)
 	}
+}
+
+/** The module of another package the box holds beside grizzle's entries. */
+const OTHER_PACKAGE = "@bjornpagen/grizzle-text/base/result"
+
+/**
+ * What the contract gives a case: an entry's shape as writtenOf states it; at the other package's module nothing in any
+ * shape but the one beside an entry, whose entry's import alone is refused and fixed.
+ */
+const expectedOf = (c: ImportCase): Written => {
+	const written = writtenOf(c.shape, c.module, ALIASES[c.module])
+	if (c.module !== OTHER_PACKAGE) {
+		return written
+	}
+	return c.shape === "an import beside another entry's"
+		? {
+				code: written.code,
+				reports: 1,
+				fixed: Option.some(
+					`import { x } from "${c.module}"\nimport * as gCompile from "@bjornpagen/grizzle/compile"\nexport const v = [x, gCompile.Db]\n`
+				)
+			}
+		: { code: written.code, reports: 0, fixed: Option.none() }
 }
 
 /** The situations a case reaches. */
@@ -192,10 +251,18 @@ const LANGUAGE = { sourceType: "module", parserOptions: { lang: "tsx" } } as con
  */
 export const judged = (c: ImportCase): Option.Option<string> => {
 	const alias = ALIASES[c.module]
-	const written = writtenOf(c.shape, c.module, alias)
-	const grizzle = c.module !== "@bjornpagen/grizzle-text/base/result"
-	const reports = grizzle ? written.reports : 0
-	const message = messageOf({ source: c.module, alias })
+	const written = expectedOf(c)
+	const reports = written.reports
+	const compile = {
+		message: messageOf({ source: "@bjornpagen/grizzle/compile", alias: "gCompile" })
+	}
+	const own = { message: messageOf({ source: c.module, alias }) }
+	const errors =
+		c.shape === "an import beside another entry's"
+			? c.module === OTHER_PACKAGE
+				? [compile]
+				: [own, compile]
+			: Array.from({ length: reports }, () => own)
 	const filename = "/repository/module.tsx"
 	const ran = Result.try(() =>
 		new RuleTester({ languageOptions: LANGUAGE }).run(
@@ -209,7 +276,7 @@ export const judged = (c: ImportCase): Option.Option<string> => {
 							{
 								code: written.code,
 								filename,
-								errors: Array.from({ length: reports }, () => ({ message })),
+								errors,
 								output: Option.getOrNull(written.fixed)
 							}
 						]
