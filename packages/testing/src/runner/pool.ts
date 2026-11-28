@@ -74,6 +74,7 @@ import {
 	type Bound,
 	boundOver,
 	deadlineBound,
+	helpersKnown,
 	type Overrun,
 	overrunText,
 	type TreeWork
@@ -1047,7 +1048,7 @@ export const poolOf = (spec: PoolSpec): Effect.Effect<Pool, PoolFailed, Scope.Sc
 								starts.cpu += received.cpu
 								worker.ready = true
 								yield* startJudged(worker)
-								send(worker, { kind: "runs", values: spec.runs })
+								send(worker, { kind: "runs", values: spec.runs, helpers: helpersKnown() })
 								feedAll()
 								return
 							case "failed":

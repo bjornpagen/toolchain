@@ -1830,8 +1830,8 @@ export const carriedFromItsNaming = property.exhaust(finite(int(1, 2)), {
 		{
 			file: "packages/testing/src/runner/work.ts",
 			original:
-				"\t\t},\n\t\trefresh: Effect.andThen(\n\t\t\trefreshBackends(tree),\n\t\t\tEffect.sync(() => {\n\t\t\t\tbackends(tree())\n\t\t\t})\n\t\t)\n",
-			replacement: "\t\t},\n\t\trefresh: refreshBackends(tree)\n",
+				"\t\t},\n\t\trefresh: Effect.andThen(\n\t\t\trefreshBackends(() => [...tree(), ...helpers()]),\n\t\t\tEffect.sync(() => {\n\t\t\t\tbackends(tree())\n\t\t\t\thelping(helpers())\n\t\t\t})\n\t\t)\n",
+			replacement: "\t\t},\n\t\trefresh: refreshBackends(() => [...tree(), ...helpers()])\n",
 			why: "A carrier counts only from the first reading that sees it, so a carried wait shows no progress in the window its carrier is first named in, and a case whose statement waits behind a working holder just after a reading is judged stalled; the property fails."
 		}
 	]

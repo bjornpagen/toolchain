@@ -51,7 +51,7 @@ import { runValuesOf } from "#runner/runs.ts"
 import { ModuleClosure, RunValues, WorkerIndex } from "#runner/services.ts"
 import { runOfLabel } from "#runner/stack.ts"
 import { childrenCpuNow, childrenSince } from "#runner/usage.ts"
-import { ownCpu, reportWaitsTo, sessionsSpent } from "#runner/work.ts"
+import { helpersStated, ownCpu, reportWaitsTo, sessionsSpent } from "#runner/work.ts"
 import { startProcessCoverage } from "#sense.ts"
 
 /**
@@ -162,6 +162,7 @@ const main = Effect.gen(function* () {
 			switch (order.kind) {
 				case "runs":
 					runs = runValuesOf(order.values)
+					helpersStated(order.helpers)
 					break
 				case "evaluate":
 					for (const unit of order.units) {

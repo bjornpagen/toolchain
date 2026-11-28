@@ -113,6 +113,77 @@ const descendantsOf = (pid: string, since: number): ReadonlyArray<string> => {
 }
 
 /**
+ * The helpers a worker's needs left running as a work of it began (the pool's watch of a worker, processWork): its live
+ * children started before `since` (ms since the machine booted), each with every live descendant of its own whenever it
+ * started, the observers left out: a stage's server, its browser, a fake's process. A worker runs one unit at a time
+ * (runner/worker.ts), so a helper its needs left running serves no other case, and a case waiting on it waits on its work.
+ */
+const helpersOf = (pid: string, since: number): ReadonlyArray<string> => {
+	const observers = observerPids()
+	const children: ReadonlyArray<string> = Arr.filter(
+		childrenOf(pid),
+		(child) => !observers.has(child)
+	)
+	return Arr.flatMap(children, (child): ReadonlyArray<string> =>
+		Option.match(statOf(child), {
+			onNone: () => [],
+			onSome: (field) =>
+				field(PROC.started) + TICK_MILLIS < since ? [child, ...descendantsOf(child, 0)] : []
+		})
+	)
+}
+
+/** A helper a need's open left running: its pid and its start (ms since the machine booted), so a pid reused is not it. */
+export type Helper = Readonly<{ pid: string; started: number }>
+
+declare global {
+	var bjornpagenTestingHelpers: ReadonlyArray<Helper> | undefined
+}
+
+/**
+ * Where an open begins, to name what it leaves running (helpersSince): the boot clock now (bootMillisNow), none without
+ * /proc.
+ */
+export const helpersMark = (): Option.Option<number> => bootMillisNow()
+
+/**
+ * The live descendants of this process started since `mark` (helpersMark), the observers left out: what an open begun
+ * there left running once it opened, every open's of a group begun at once among them, each a need's helper.
+ */
+export const helpersSince = (mark: Option.Option<number>): ReadonlyArray<Helper> =>
+	Option.match(mark, {
+		onNone: () => [],
+		onSome: (at) =>
+			Arr.map(descendantsOf("self", at), (pid) => ({ pid, started: startedMillis(pid) }))
+	})
+
+/**
+ * This process's needs' helpers gain `helpers`: what an open of its own left running (runner/opening.ts judgedGroup), or
+ * the run needs' helpers its runner sent it (runner/protocol.ts ToWorker `runs`), so a worker knows the servers every
+ * case of the run may wait on.
+ */
+export const helpersStated = (helpers: ReadonlyArray<Helper>): void => {
+	globalThis.bjornpagenTestingHelpers = Arr.dedupeWith(
+		[...(globalThis.bjornpagenTestingHelpers ?? []), ...helpers],
+		(one, other) => one.pid === other.pid && one.started === other.started
+	)
+}
+
+/** This process's needs' helpers as they were stated (helpersStated), every one: what its runner sends a worker it forks. */
+export const helpersKnown = (): ReadonlyArray<Helper> => globalThis.bjornpagenTestingHelpers ?? []
+
+/**
+ * This process's needs' helpers that live (helpersKnown: a pid whose start is still the one stated), each with every live
+ * descendant of its own whenever it started.
+ */
+const helpersLive = (): ReadonlyArray<string> =>
+	Arr.flatMap(helpersKnown(), (helper): ReadonlyArray<string> =>
+		startedMillis(helper.pid) === helper.started
+			? [helper.pid, ...descendantsOf(helper.pid, 0)]
+			: []
+	)
+
+/**
  * What a process tree has done that a guard counts beside its CPU: `queued`, the milliseconds its processes waited on a
  * runqueue while runnable, the machine's delay of work that wants to run; and `stored`, its storage work, the bytes it
  * read from and wrote to storage and the pages it faulted in, a process blocked on storage or swap doing its work. Both
@@ -306,6 +377,37 @@ const keptBackends = (since: Option.Option<number>): ((tree: ReadonlyArray<strin
 		)
 		return { cpu: own.cpu, stir: own.stir, carried: carrying.cpu }
 	}
+}
+
+/**
+ * What the helpers a work waits on add to its effort (helpersLive, helpersOf): their CPU and their backends', all of it
+ * `carried`, which moves the work and spends none of its budget, and their stir, so a helper the machine keeps from
+ * running takes that time out of the work's windows as a process of its tree does (standingOf), each counted from the
+ * reading or the refresh that first sees it. A helper's work is counted once where it lives, in its worker's readying and reaped children or the runner's
+ * run part, so a run on more workers, each of whose servers warms up on its first case, spends no more of any budget;
+ * and a case whose only progress is a server working for it under load is never judged idle.
+ */
+const keptHelpers = (): ((helpers: ReadonlyArray<string>) => Effort) => {
+	const own = keptServed(Option.none())
+	const served = keptBackends(Option.none())
+	return (helpers) => {
+		const theirs = own(Arr.map(helpers, (pid) => ({ pid, started: startedMillis(pid) })))
+		const backends = served(helpers)
+		return {
+			cpu: 0,
+			stir: stirPlus(theirs.stir, backends.stir),
+			carried: theirs.cpu + backends.cpu + backends.carried
+		}
+	}
+}
+
+/** `helpers` but the members of the work's own tree, whose CPU is its own already, so none is counted twice. */
+const helpersApart = (
+	helpers: ReadonlyArray<string>,
+	tree: ReadonlyArray<string>
+): ReadonlyArray<string> => {
+	const own = new Set(tree)
+	return Arr.filter(helpers, (pid) => !own.has(pid))
 }
 
 /** When a process started, in ms since the machine booted; 0 for a process gone. */
@@ -535,7 +637,7 @@ const ownWaited = (wall: number): number => waitedBy(processWaits().waits, wall)
  * wall milliseconds it has spent in declared waits on work by a moment on the live clock (Waits), and what the declared
  * waits holding it now wait on (`holding`: a process's own, waitsHolding; another's reach its pool unnamed, so none).
  * Its live descendants count only when started since it began; a descendant started earlier (a helper a need left
- * running) is no part of this work.
+ * running) and the run's helpers are no part of its budget, and their work, carried, moves it (keptHelpers).
  */
 export type TreeWork = Readonly<{
 	began: Reading
@@ -562,9 +664,9 @@ export const readingOf = (work: TreeWork, wall: number): Reading => {
  * This process's work, begun at `wall` on the live clock with `own` CPU (ownCpu, read before the work started), as its
  * guards read it, the case's guard and its watchdog alike (live.ts watchedCase), one work set for both: its own CPU,
  * every thread's, its waited-for children's (a synchronous spawn reaps them, the only reaping a held main thread does),
- * and its live descendants'; and the stir of the process itself beside its descendants', so a main thread the machine
- * keeps from running, held or between cases, takes that time out of its windows (standingOf) and is never stalled for
- * it, while one that waits by its own choice is. Read when a guard first needs it, once the work has yielded, so work
+ * and its live descendants'; the work of the helpers its needs and the run's left running, carried (keptHelpers); and
+ * the stir of the process itself beside its descendants', so a main thread the machine keeps from running, held or
+ * between cases, takes that time out of its windows (standingOf) and is never stalled for it, while one that waits by its own choice is. Read when a guard first needs it, once the work has yielded, so work
  * that runs to its end synchronously reads no file; it reads /proc/self/stat and /proc/uptime once to begin, and no descendant, since
  * none the work started is counted until its first reading, all of whose CPU is the work's. Without /proc its own CPU
  * counts alone.
@@ -577,10 +679,12 @@ export const ownWork = (wall: number, own: number): TreeWork => {
 		Option.match(stat, { onNone: () => 0, onSome: reapedOf })
 	const kept = keptEffort()
 	const backends = keptBackends(since)
+	const helping = keptHelpers()
 	const tree = (): ReadonlyArray<string> => [
 		"self",
 		...Option.match(since, { onNone: () => [], onSome: (at) => descendantsOf("self", at) })
 	]
+	const helpers = helpersLive
 	return {
 		began: {
 			wall,
@@ -598,17 +702,26 @@ export const ownWork = (wall: number, own: number): TreeWork => {
 			const members = tree()
 			const descendants = kept(Arr.drop(members, 1))
 			const served = backends(members)
-			const stir = stirPlus(stirPlus(stirOwn(), descendants.stir), served.stir)
+			const helped = helping(helpersApart(helpers(), members))
+			const stir = stirPlus(
+				stirPlus(stirPlus(stirOwn(), descendants.stir), served.stir),
+				helped.stir
+			)
 			const spent = process.threadCpuUsage(reading)
 			Option.map(Option.fromUndefinedOr(globalThis.bjornpagenTestingWatchdog), (watchdog) =>
 				watchdog.observing(spent.user + spent.system)
 			)
-			return { cpu: cpu + descendants.cpu + served.cpu, stir, carried: served.carried }
+			return {
+				cpu: cpu + descendants.cpu + served.cpu,
+				stir,
+				carried: served.carried + helped.carried
+			}
 		},
 		refresh: Effect.andThen(
-			refreshBackends(tree),
+			refreshBackends(() => [...tree(), ...helpers()]),
 			Effect.sync(() => {
 				backends(tree())
+				helping(helpers())
 			})
 		)
 	}
@@ -616,8 +729,9 @@ export const ownWork = (wall: number, own: number): TreeWork => {
 
 /**
  * Another process's work, begun at `wall` on the live clock (the pool's watch of a worker): its own CPU, its waited-for
- * children's, and its live descendants' started since, the wall time `waited` says it spent in declared waits on work,
- * and the stir of the worker itself beside its descendants', the work set its own guards read (ownWork). A process this one
+ * children's, and its live descendants' started since, the work of the helpers its needs and the run's left running,
+ * carried (keptHelpers), the wall time `waited` says it spent in declared waits on work, and the stir of the worker
+ * itself beside its descendants', the work set its own guards read (ownWork). A process this one
  * cannot read (none started, gone, or no /proc) reads as spending nothing, so its work never moves and a guard ends it
  * after one deadline of wall time outside its waits, as the live clock did.
  */
@@ -637,6 +751,7 @@ export const processWork = (
 		)
 	const kept = keptEffort()
 	const backends = keptBackends(since)
+	const helping = keptHelpers()
 	const descendants = (): ReadonlyArray<string> =>
 		Option.getOrElse(
 			Option.zipWith(pid, since, (id, at) => descendantsOf(String(id), at)),
@@ -646,17 +761,26 @@ export const processWork = (
 		...Option.toArray(Option.map(pid, String)),
 		...descendants()
 	]
+	const helpers = (): ReadonlyArray<string> => [
+		...Option.getOrElse(
+			Option.zipWith(pid, since, (id, at) => helpersOf(String(id), at)),
+			(): ReadonlyArray<string> => []
+		),
+		...helpersLive()
+	]
 	const effort = (): Effort => {
-		const theirs = kept(descendants())
-		const served = backends(tree())
+		const members = tree()
+		const theirs = kept(Arr.drop(members, Option.isSome(pid) ? 1 : 0))
+		const served = backends(members)
+		const helped = helping(helpersApart(helpers(), members))
 		const its = Option.match(pid, {
 			onNone: () => noStir,
 			onSome: (id) => effortOfProcess(String(id)).stir
 		})
 		return {
 			cpu: own() + theirs.cpu + served.cpu,
-			stir: stirPlus(stirPlus(its, theirs.stir), served.stir),
-			carried: served.carried
+			stir: stirPlus(stirPlus(stirPlus(its, theirs.stir), served.stir), helped.stir),
+			carried: served.carried + helped.carried
 		}
 	}
 	const began = effort()
@@ -673,9 +797,10 @@ export const processWork = (
 		holding: () => [],
 		effort,
 		refresh: Effect.andThen(
-			refreshBackends(tree),
+			refreshBackends(() => [...tree(), ...helpers()]),
 			Effect.sync(() => {
 				backends(tree())
+				helping(helpers())
 			})
 		)
 	}

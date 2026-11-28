@@ -36,10 +36,15 @@ import {
 	dyingProperty,
 	ended,
 	exitOf,
+	HELPER_BURN,
+	HELPER_SOCKET,
+	helperCaseOf,
+	helperRuns,
 	leavings,
 	loopingProperty,
 	plantedCase,
 	RUNAWAY,
+	runHelperStarted,
 	SLOW_START_PROPERTY,
 	SLOW_WORKER_DEADLINE,
 	shortCase,
@@ -1067,3 +1072,85 @@ export const kindsShareTheWidth = property.explore(
 		]
 	}
 )
+
+/**
+ * A helper a need left running moves the case that waits on it, its work carried, whoever started it: a pool of one
+ * worker evaluates a planted case that blocks over a socket on a helper burning two and a half or four of the case's
+ * one-second deadlines of CPU, and the case passes. The helper is the run's, started and stated in the pool's process as
+ * a run need's open in the runner's process states it (pool.fixtures.ts runHelperStarted) and sent to the worker
+ * (runner/protocol.ts ToWorker `runs`); or a worker need's, started by the planted property's need in the worker,
+ * whose open's judge states it (runner/opening.ts judgedGroup). The case's guard in the worker reads either as the
+ * case's, under the worker's own watchdog. Oracle: the specification, over the case's outcome as the pool gives it back.
+ */
+export const aHelperMovesTheCaseWaitingOnIt = property.exhaust(finite(helperRuns), {
+	box: "a helper the run's process or a worker's need started, burning two and a half or four of a case's deadlines of CPU for a planted case on a pool of one worker",
+	needs: { checkout: Checkout.dir, directory: Scratch.dir },
+	situations: [],
+	check:
+		({ checkout, directory }) =>
+		(run) =>
+			Effect.scoped(
+				Effect.gen(function* () {
+					const root = yield* checkout
+					const scratch = yield* directory
+					const socket = `${scratch}/helper.sock`
+					if (run.home === "the run's") {
+						yield* runHelperStarted(socket, run.burn)
+					}
+					const pool = yield* poolOf({
+						entry: WORKER_ENTRY,
+						root,
+						cwd: root,
+						env: {
+							...workerEnvironmentOf([], process.env),
+							[HELPER_SOCKET]: socket,
+							[HELPER_BURN]: String(run.burn)
+						},
+						compile: sharedStore,
+						places: placesOf(widthOf(1)),
+						execArgv: process.execArgv,
+						served: Option.none(),
+						guide: "notes",
+						runs: [],
+						stall: needStallMillis,
+						bounding: "summed"
+					})
+					const results = yield* pool.evaluator.evaluate([helperCaseOf(run.home)], () => true)
+					assert.deepEqual(
+						Arr.map(Arr.flatten(results), (result) => result.outcome.kind),
+						["passed"]
+					)
+				})
+			),
+	oracle: {
+		kind: "specification",
+		name: "a need's helper, the run's or a worker need's, moves every case that waits on it, its work carried"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/runner/pool.ts",
+			original: 'send(worker, { kind: "runs", values: spec.runs, helpers: helpersKnown() })',
+			replacement: 'send(worker, { kind: "runs", values: spec.runs, helpers: [] })',
+			why: "A worker told none of its run's helpers reads none of their work, so a case blocked on a server a run need left running is judged stalled; the property fails."
+		},
+		{
+			file: "packages/testing/src/runner/worker.ts",
+			original: "\t\t\t\t\thelpersStated(order.helpers)\n",
+			replacement: "",
+			why: "A worker that drops the helpers its runner sent reads none of their work, so a case blocked on its run's server is judged stalled; the property fails."
+		},
+		{
+			file: "packages/testing/src/runner/opening.ts",
+			original: "\t\t\t\t\thelpersNamed(open),\n",
+			replacement: "\t\t\t\t\topen,\n",
+			why: "An open that states nothing it left running leaves its helpers unknown, so a case blocked on its worker need's server is judged stalled; the property fails."
+		},
+		{
+			file: "packages/testing/src/runner/work.ts",
+			original: "\t\t\t\tstir,\n\t\t\t\tcarried: served.carried + helped.carried\n",
+			replacement: "\t\t\t\tstir,\n\t\t\t\tcarried: served.carried\n",
+			why: "A case's guard reads none of its needs' helpers' work, so a case blocked on a stage's server working for it is judged stalled; the property fails."
+		}
+	]
+})

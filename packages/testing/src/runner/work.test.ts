@@ -43,6 +43,8 @@ import { searchedAt, verdictKind } from "#runner/search.fixtures.ts"
 import {
 	childBurns,
 	childStir,
+	helperBurns,
+	helperSeen,
 	holdingOf,
 	storedSizes,
 	childSeen,
@@ -129,9 +131,8 @@ export const childWorkCounts = property.exhaust(finite(childBurns), {
 	kills: [
 		{
 			file: "packages/testing/src/runner/work.ts",
-			original:
-				"\t\t\treturn { cpu: cpu + descendants.cpu + served.cpu, stir, carried: served.carried }\n",
-			replacement: "\t\t\treturn { cpu: cpu + served.cpu, stir, carried: served.carried }\n",
+			original: "\t\t\t\tcpu: cpu + descendants.cpu + served.cpu,\n\t\t\t\tstir,\n",
+			replacement: "\t\t\t\tcpu: cpu + served.cpu,\n\t\t\t\tstir,\n",
 			why: "A live child's CPU is left out until the child is reaped, so a case that waits on a working child spends nothing of its own and is stalled after a window; the child-work property fails."
 		}
 	]
@@ -579,6 +580,52 @@ export const boundedOutsideACase = property.exhaust(finite(outsides), {
 				"Effect.map(Effect.withTracer(effect, spans.tracer), (outcome) => Result.succeed(outcome))",
 			replacement: "Effect.map(effect, (outcome) => Result.succeed(outcome))",
 			why: "Work its guard ended is reported without the step it stood in, so a kill trial hung on a page that never comes says only that its tree spent its budget, not which step waited (a clean refresh journey hung over five minutes at seed 17 on 2026-11-22, its step unknown); this property fails."
+		}
+	]
+})
+
+/**
+ * A worker whose case blocks on the helper its need left running is never judged stalled by its pool's watch, and the
+ * helper's work spends none of the worker's budget: a helper the worker started before the watch began (a stage's
+ * server, its browser) burns two and a half or four one-second stall windows of CPU once the worker asks it, while the
+ * worker spends nothing of its own. The pool's watch reads the worker's children started before it began as its helpers
+ * (runner/work.ts processWork, helpersOf): the helper answers before the watch judges the worker stalled, and the
+ * work's CPU, its budget's measure, moves by less than half the burn. The case's own guard in a worker reads its needs'
+ * helpers as their opens stated them (pool.test.ts aHelperMovesTheCaseWaitingOnIt). Oracle: the specification, over
+ * the watch's verdict and the work's own reading.
+ */
+export const aWorkersHelperMovesItsWatch = property.exhaust(finite(helperBurns), {
+	box: "a helper a worker started before its pool's watch began, burning two and a half or four stall windows of CPU while the worker blocks on it",
+	needs: {},
+	situations: [],
+	check: () => (burnMillis) =>
+		Effect.gen(function* () {
+			const seen = yield* helperSeen(burnMillis)
+			assert.deepEqual(
+				{
+					verdict: seen.verdict,
+					spent: seen.spent < burnMillis / 2 ? "none of its budget" : `${String(seen.spent)} ms`
+				},
+				{ verdict: "answered", spent: "none of its budget" }
+			)
+		}),
+	oracle: {
+		kind: "specification",
+		name: "a worker's helper's work, carried, moves the pool's watch of it and spends none of its budget, so a worker blocked on a server working under load is never judged silent"
+	},
+	kept: [],
+	kills: [
+		{
+			file: "packages/testing/src/runner/work.ts",
+			original: "served.stir), helped.stir),\n\t\t\tcarried: served.carried + helped.carried\n",
+			replacement: "served.stir), helped.stir),\n\t\t\tcarried: served.carried\n",
+			why: "The pool's watch of a worker reads none of its needs' helpers' work, so it ends a worker whose case waits on its stage's server as silent; the property fails."
+		},
+		{
+			file: "packages/testing/src/runner/work.ts",
+			original: "\t\t\tcarried: theirs.cpu + backends.cpu + backends.carried\n",
+			replacement: "\t\t\tcarried: backends.cpu + backends.carried\n",
+			why: "A helper's own CPU counted as none of its work, its backends' alone, is no progress while it computes for the case, so the worker is judged stalled; the property fails."
 		}
 	]
 })

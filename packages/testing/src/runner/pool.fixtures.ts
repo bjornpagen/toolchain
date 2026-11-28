@@ -1,5 +1,5 @@
 import { Array as Arr, Config, Duration, Effect, FileSystem } from "effect"
-import { boolean, finite, type Gen, int, map } from "#gen.ts"
+import { boolean, element, finite, type Gen, int, map } from "#gen.ts"
 import { HUNG_CLEANUP_GRACE, liveSleep, waitingOn, watchdogGraceMillis } from "#live.ts"
 import { plantedBudget } from "#planted.fixtures.ts"
 import { type Need, property } from "#property.ts"
@@ -8,7 +8,7 @@ import { UNRUN_BUDGET } from "#runner/budgets.fixtures.ts"
 import { unwatched } from "#runner/observe.ts"
 import type { Batch } from "#runner/protocol.ts"
 import { WorkerIndex } from "#runner/services.ts"
-import { ownCpu } from "#runner/work.ts"
+import { helpersMark, helpersSince, helpersStated, ownCpu } from "#runner/work.ts"
 
 /**
  * The pool's teardown property (pool.test.ts) runs a planted property on a pool of its own: this module is that
@@ -752,6 +752,168 @@ export const placedCase = (index: number, workers: number, deadline: number): Ba
 		keep: "nothing",
 		sense: { kind: "notes" },
 		deadline,
+		print: "failing"
+	}
+]
+
+/**
+ * The variable of a worker's environment naming the socket of the helper the planted cases ask: the run's, which the
+ * pool's process started, or the one a worker's need starts there.
+ */
+export const HELPER_SOCKET = "TOOLCHAIN_TEST_HELPER_SOCKET"
+
+/** The variable of a worker's environment naming the CPU (ms) the helper a worker's need starts burns for each ask. */
+export const HELPER_BURN = "TOOLCHAIN_TEST_HELPER_BURN"
+
+/**
+ * The stall window the planted cases run under, their deadline (ms): a second, so a case whose helper's work its guard
+ * does not read is judged stalled before the helper answers, and the worker's idle process, at most 0.012 % of a CPU
+ * (runner/limits.ts stalledShareOfCpu's evidence), spends about a tenth of the millisecond that shows progress in one.
+ */
+export const HELPER_DEADLINE = 1000
+
+/** Where a planted case's helper was started: in the pool's process, as a run need's, or by a worker's need. */
+export type HelperHome = "the run's" | "a worker need's"
+
+/** A planted case's helper: where it was started, and the CPU (ms) it burns for the case. */
+export type HelperRun = Readonly<{ home: HelperHome; burn: number }>
+
+/** Each home, and a burn of two and a half or four of the case's deadlines. */
+export const helperRuns: Gen<HelperRun> = (source) => ({
+	home: source.draw(element(["the run's", "a worker need's"] as const)),
+	burn: source.draw(element([2.5 * HELPER_DEADLINE, 4 * HELPER_DEADLINE]))
+})
+
+/**
+ * The helper's program: it listens on the socket at its first argument and, for each line a client sends, burns the
+ * CPU (ms) its second argument names and answers `done`, then says on its stdout that it is ready: a server a need left
+ * running, which a case may wait on.
+ */
+const helperProgram = `const net = await import("node:net")
+const [socket, burn] = process.argv.slice(1)
+const cpu = () => { const used = process.cpuUsage(); return (used.user + used.system) / 1000 }
+net.createServer((client) => {
+	client.once("data", () => {
+		const until = cpu() + Number(burn)
+		while (cpu() < until) {}
+		client.end("done\\n")
+	})
+}).listen(socket, () => process.stdout.write("ready\\n"))`
+
+/** The helper started at `socket`, burning `burn` ms for each ask, once it says it is ready; it ends with the scope. */
+const helperStarted = (socket: string, burn: number) =>
+	Effect.gen(function* () {
+		const helper = yield* Effect.acquireRelease(
+			Effect.sync(() =>
+				childProcesses.spawn(
+					process.execPath,
+					["--input-type=module", "-e", helperProgram, socket, String(burn)],
+					{ stdio: ["ignore", "pipe", "ignore"] }
+				)
+			),
+			(started) =>
+				Effect.sync(() => {
+					started.kill("SIGKILL")
+				})
+		)
+		yield* Effect.callback<void>((resume) => {
+			helper.stdout.once("data", () => resume(Effect.void))
+		})
+	})
+
+/**
+ * The run's helper started in this process at `socket`, burning `burn` ms for each ask, and stated as this process's
+ * needs' helpers once it is ready, as a run need's open in the runner's process states what it left running
+ * (runner/opening.ts judgedGroup), so a pool this process forks sends it to its workers; it ends with the scope.
+ */
+export const runHelperStarted = (socket: string, burn: number) =>
+	Effect.gen(function* () {
+		const mark = helpersMark()
+		yield* helperStarted(socket, burn)
+		mark.pipe(helpersSince, helpersStated)
+	})
+
+/**
+ * A worker's need that starts the helper at the socket HELPER_SOCKET names, burning what HELPER_BURN names for each
+ * ask, and leaves it running for the worker's life: a stage's server, its open judged as a worker's needs are
+ * (runner/case.ts, runner/opening.ts judgedGroup), which states the helper it left running.
+ */
+const needsHelper: Need<string> = {
+	key: "pool.fixtures.ts a need's helper",
+	budget: plantedBudget,
+	runNeeds: [],
+	open: Effect.gen(function* () {
+		const socket = yield* Config.String(HELPER_SOCKET)
+		const burn = yield* Config.Number(HELPER_BURN)
+		yield* helperStarted(socket, burn)
+		return socket
+	}).pipe(
+		Effect.orDie,
+		Effect.map((socket) => Effect.succeed(socket))
+	)
+}
+
+/** A case's ask of the helper at `socket`: it spends nothing until the helper answers. */
+const askedOf = (socket: string): Effect.Effect<void> =>
+	Effect.callback<void>((resume) => {
+		const client = process.getBuiltinModule("node:net").connect(socket, () => {
+			client.write("go\n")
+		})
+		client.once("data", () => {
+			client.end()
+			resume(Effect.void)
+		})
+	})
+
+/** The identity of the planted property whose case blocks on the run's helper. */
+export const WAITS_ON_THE_RUNS_HELPER = "src/runner/pool.fixtures.ts#waitsOnTheRunsHelper"
+
+/**
+ * A property planted to block on the run's helper: its case asks the helper at the socket HELPER_SOCKET names and spends
+ * nothing until it answers, so its guard reads the case's progress in the helper's work alone.
+ */
+export const waitsOnTheRunsHelper = property.exhaust(finite(int(0, 1)), {
+	box: "two values",
+	needs: {},
+	situations: [],
+	check: () => () => Effect.flatMap(Effect.orDie(Config.String(HELPER_SOCKET)), askedOf),
+	oracle: { kind: "specification", name: "a property planted to block on its run's helper" },
+	kept: [],
+	kills: []
+})
+
+/** The identity of the planted property whose case blocks on its worker need's helper. */
+export const WAITS_ON_ITS_NEEDS_HELPER = "src/runner/pool.fixtures.ts#waitsOnItsNeedsHelper"
+
+/**
+ * A property planted to block on the helper its worker's need started (needsHelper): its case asks it and spends nothing
+ * until it answers, so its guard reads the case's progress in the helper's work alone.
+ */
+export const waitsOnItsNeedsHelper = property.exhaust(finite(int(0, 1)), {
+	box: "two values",
+	needs: { helper: needsHelper },
+	situations: [],
+	check:
+		({ helper }) =>
+		() =>
+			Effect.flatMap(helper, askedOf),
+	oracle: {
+		kind: "specification",
+		name: "a property planted to block on its worker need's helper"
+	},
+	kept: [],
+	kills: []
+})
+
+/** The planted case that blocks on a helper `home` started, under HELPER_DEADLINE. */
+export const helperCaseOf = (home: HelperHome): Batch => [
+	{
+		property: home === "the run's" ? WAITS_ON_THE_RUNS_HELPER : WAITS_ON_ITS_NEEDS_HELPER,
+		chooser: { kind: "forced", values: Float64Array.of(0) },
+		drawn: { kind: "unsteered" },
+		keep: "nothing",
+		sense: { kind: "notes" },
+		deadline: HELPER_DEADLINE,
 		print: "failing"
 	}
 ]

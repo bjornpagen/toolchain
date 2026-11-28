@@ -653,13 +653,17 @@ const RunValue = Schema.Union([
 export type RunValue = typeof RunValue.Type
 
 /**
- * A message from the parent to a worker: its run's run need values, the first message a worker is sent once it is
- * ready, before any unit; evaluate these units, each a batch under its id; give back these unstarted units; the
+ * A message from the parent to a worker: its run's run need values and the helpers those needs left running in the
+ * parent (runner/work.ts helpersKnown), the first message a worker is sent once it is ready, before any unit; evaluate these units, each a batch under its id; give back these unstarted units; the
  * closure hash of a module it asked for (runner/closure-requests.ts); or a property retired, its search ended, so no
  * unit of it comes after the ones already sent.
  */
 export const ToWorker = Schema.Union([
-	Schema.Struct({ kind: Schema.Literal("runs"), values: Schema.Array(RunValue) }),
+	Schema.Struct({
+		kind: Schema.Literal("runs"),
+		values: Schema.Array(RunValue),
+		helpers: Schema.Array(Schema.Struct({ pid: Schema.String, started: Schema.Finite }))
+	}),
 	Schema.Struct({
 		kind: Schema.Literal("evaluate"),
 		units: Schema.NonEmptyArray(Schema.Struct({ unit: Schema.Finite, work: Work }))

@@ -1,7 +1,15 @@
 import { Array as Arr, Duration, Effect, Fiber } from "effect"
 import { overrun, ownWorkNow } from "#live.ts"
 import { NeedFailed } from "#runner/services.ts"
-import { type Bound, boundOver, type Overrun, overrunText } from "#runner/work.ts"
+import {
+	type Bound,
+	boundOver,
+	helpersMark,
+	helpersSince,
+	helpersStated,
+	type Overrun,
+	overrunText
+} from "#runner/work.ts"
 
 /**
  * How a process judges the opens it begins at once (runner/case.ts NeedCache, runner/runs.ts): as one piece of work,
@@ -52,6 +60,19 @@ const overranText = (
 }
 
 /**
+ * `open`, whatever it leaves running once it has opened stated as its need's helpers (runner/work.ts helpersStated: this
+ * process's live descendants started since it began), so the work of every case that may wait on them moves while they
+ * work for it (runner/work.ts keptHelpers): a stage's server, its browser, a fake's process.
+ */
+const helpersNamed = <A, R>(
+	open: Effect.Effect<A, NeedFailed, R>
+): Effect.Effect<A, NeedFailed, R> =>
+	Effect.suspend(() => {
+		const mark = helpersMark()
+		return Effect.tap(open, () => Effect.sync(() => mark.pipe(helpersSince, helpersStated)))
+	})
+
+/**
  * Begins judging `members`, opened at once on this process from now, under their budgets summed (budgetOf) and `stall`,
  * the stall window (runner/limits.ts needStallMillis, or a test's own): over this process's work (live.ts overrun),
  * which counts every open of the group and nothing a declared wait waits on.
@@ -69,7 +90,7 @@ export const judgedGroup = (
 		return {
 			within: (key, open) =>
 				Effect.raceFirst(
-					open,
+					helpersNamed(open),
 					Effect.flatMap(Fiber.join(judge), (ran) =>
 						Effect.fail(
 							NeedFailed.make({ need: key, message: overranText(members, key, bound, ran) })

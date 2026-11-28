@@ -1,6 +1,6 @@
 import { Array as Arr, Config, Duration, Effect, FileSystem, Option, String as Str } from "effect"
 import { array, element, finite, type Gen, int, map } from "#gen.ts"
-import { liveSleep, ownWorkNow, waitingOn } from "#live.ts"
+import { boundOver, liveSleep, overrun, ownWorkNow, processWorkNow, waitingOn } from "#live.ts"
 import { type Property, property } from "#property.ts"
 import { type Limits, runnerLimits } from "#runner/limits.ts"
 import { fullRun, type InnerRun } from "#runner/search.fixtures.ts"
@@ -716,3 +716,108 @@ export const pollOfWaits = (on: string) =>
 
 /** A case's hold of what it took, `millis` on the live clock: a sibling's concurrency, the subject a guard reads. */
 export const heldFor = (millis: number) => liveSleep(Duration.millis(millis))
+
+/**
+ * The stall window a worker's helper's case is judged under by its pool's watch (ms): a second, so the worker's idle
+ * process, at most 0.012 % of a CPU (runner/limits.ts stalledShareOfCpu's evidence), spends about a tenth of the
+ * millisecond that shows progress in one.
+ */
+export const HELPER_STALL_MILLIS = 1000
+
+/**
+ * The CPU (ms) a worker's helper burns for its case: two and a half or four stall windows, longer than a window, so a
+ * watch that reads none of the helper's work judges the worker stalled before the helper answers.
+ */
+export const helperBurns: Gen<number> = element([
+	2.5 * HELPER_STALL_MILLIS,
+	4 * HELPER_STALL_MILLIS
+])
+
+/**
+ * What a watch of a worker that waited on its helper came to: whether the helper answered before the watch judged the
+ * worker (`answered`), or the watch judged it stalled first (`hung`), and the CPU (ms) the watch counted against its
+ * budget meanwhile.
+ */
+export type HelperSeen = Readonly<{ verdict: "answered" | "hung"; spent: number }>
+
+/**
+ * A helper's program: it says it is ready, then burns `burnMillis` ms of its own CPU once a line comes on its stdin, and
+ * says it is done: a stage's server, working for a case that blocks on it.
+ */
+const helperProgram = (burnMillis: number): string =>
+	`const cpu = () => { const used = process.cpuUsage(); return (used.user + used.system) / 1000 }
+process.stdin.once("data", () => {
+	const until = cpu() + ${String(burnMillis)}
+	while (cpu() < until) {}
+	process.stdout.write("done\\n")
+})
+process.stdout.write("ready\\n")`
+
+/**
+ * The program of a worker whose pool watches it (processWork): it starts its helper, says it is ready once the helper
+ * is, and on a line of its own stdin asks the helper and says it is done once the helper answers, spending nothing of
+ * its own meanwhile.
+ */
+const watchedProgram = (burnMillis: number): string =>
+	`const { spawn } = await import("node:child_process")
+const helper = spawn(process.execPath, ["-e", ${literal(helperProgram(burnMillis))}], { stdio: ["pipe", "pipe", "ignore"] })
+helper.stdout.once("data", () => {
+	process.stdout.write("ready\\n")
+	process.stdin.once("data", () => {
+		helper.stdout.once("data", () => process.stdout.write("done\\n"))
+		helper.stdin.write("go\\n")
+	})
+})`
+
+/** A child's stdout as waits on its lines: each answers once the line `word` has come, or at once if it has. */
+const linesOf = (stream: NodeJS.ReadableStream) => {
+	let said = ""
+	const waiting: Array<Readonly<{ word: string; resume: () => void }>> = []
+	stream.on("data", (chunk: Buffer) => {
+		said += chunk.toString("utf8")
+		for (const each of Arr.filter(waiting, (one) => Str.includes(`${one.word}\n`)(said))) {
+			each.resume()
+		}
+	})
+	return (word: string): Effect.Effect<void> =>
+		Effect.callback<void>((resume) => {
+			if (Str.includes(`${word}\n`)(said)) {
+				resume(Effect.void)
+				return
+			}
+			waiting.push({ word, resume: () => resume(Effect.void) })
+		})
+}
+
+/**
+ * What a pool's watch of a worker came to while the worker's case blocked on the helper its need left running and the
+ * helper burned `burnMillis` ms of CPU (HelperSeen): this process watching a worker (watchedProgram) that started the
+ * helper before the watch began (live.ts processWorkNow). The worker ends at the scope's end, and its helper with its
+ * stdin.
+ */
+export const helperSeen = (burnMillis: number): Effect.Effect<HelperSeen> =>
+	Effect.scoped(
+		Effect.gen(function* () {
+			const { spawn } = process.getBuiltinModule("node:child_process")
+			const child = yield* Effect.acquireRelease(
+				Effect.sync(() =>
+					spawn(process.execPath, ["--input-type=module", "-e", watchedProgram(burnMillis)], {
+						stdio: ["pipe", "pipe", "ignore"]
+					})
+				),
+				(started) =>
+					Effect.sync(() => {
+						started.kill("SIGKILL")
+					})
+			)
+			const line = linesOf(child.stdout)
+			yield* line("ready")
+			const work = yield* processWorkNow(Option.fromUndefinedOr(child.pid), () => 0)
+			child.stdin.write("go\n")
+			const verdict = yield* Effect.raceFirst(
+				Effect.as(line("done"), "answered" as const),
+				Effect.as(overrun(work, boundOver(60_000, HELPER_STALL_MILLIS)), "hung" as const)
+			)
+			return { verdict, spent: work.effort().cpu - work.began.cpu }
+		})
+	)
