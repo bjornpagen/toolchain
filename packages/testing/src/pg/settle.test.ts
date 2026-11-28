@@ -209,7 +209,7 @@ export const settledAsItsSpec = property.exhaust(finite(shapes), {
 		{
 			file: "packages/testing/src/pg/settle.ts",
 			original:
-				'\t\t\t\t\treturn actual === value ? [] : [{ kind: "held", name, expected: value, actual }]\n',
+				'\t\t\t\t\treturn actual === text ? [] : [{ kind: "held", name, expected: text, actual }]\n',
 			replacement: "\t\t\t\t\treturn []\n",
 			why: "A run reads a member whatever its settings, so one a person changed behind the spec's back serves the run as if it held its spec; the property fails, the changed member read."
 		},
