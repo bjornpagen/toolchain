@@ -28,7 +28,14 @@ export const coreConfigurations = finite((source) => source.draw(element(CONFIGU
 export const fileOf = (configuration: CoreConfiguration): string =>
 	`src/workspace/fixtures/core-lint/${configuration}.config.ts`
 
-/** The core rules a configuration holds at error, by its text: none, two, two, every one but no-variadic-callback, all. */
+/** The core rules the toolchain added after the hand-wired configuration was written, which it therefore lacks. */
+const ADDED_SINCE_HAND_WIRING: ReadonlyArray<string> = [
+	"devtools/no-variadic-callback",
+	"devtools/grizzle-star-imports"
+]
+
+/** The core rules a configuration holds at error, by its text: none, two, two, every one but those added since the
+ * hand-wired one was written, all. */
 const heldOf = (configuration: CoreConfiguration): ReadonlyArray<string> => {
 	switch (configuration) {
 		case "bare":
@@ -38,7 +45,7 @@ const heldOf = (configuration: CoreConfiguration): ReadonlyArray<string> => {
 		case "silent":
 			return ["devtools/no-comment", "devtools/no-raw-regexp"]
 		case "hand-wired":
-			return Arr.filter(CORE_RULES, (rule) => rule !== "devtools/no-variadic-callback")
+			return Arr.filter(CORE_RULES, (rule) => !Arr.contains(ADDED_SINCE_HAND_WIRING, rule))
 		case "preset":
 			return CORE_RULES
 	}

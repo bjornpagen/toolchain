@@ -14,6 +14,18 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: grizzle's entries are imported as namespaces (2026-11-27)
+
+A module reached grizzle's names in as many ways as it chose: named imports, type-only ones, aliases, re-exports. The
+dev tools' core rule `devtools/grizzle-star-imports` (every file) admits one form per entry: a namespace under the
+entry's own name, `import * as g from "@bjornpagen/grizzle"`, `import * as gRuntime from "@bjornpagen/grizzle/runtime"`,
+`g` and the entry capitalized for every entry, or `import type * as …` where only its types are read, which loads
+nothing. It refuses a named import, type-only or not, a default import, an import of the module alone, a namespace under
+another name, and every re-export of an entry. Its fix rewrites a module's imports of an entry to the one form and every
+use of an imported name to `gX.name`, where the name `gX` is free in the module. Before you move `vendor/toolchain` past
+this section, run grizzle's migration at its repin (`scripts/starcut.ts` in grizzle), which applies this fix with
+grizzle's renames; a re-export it reports alone is yours to replace with an import where it is read.
+
 ## Consumer migration: the jsdoc and promise plugins load, and no named rule is silent (2026-11-27)
 
 The preset loaded neither oxlint's jsdoc plugin nor its promise plugin, and oxlint runs a built-in plugin's rules only

@@ -23,6 +23,7 @@ export const FIXTURE_RULES: FixtureRules<
 		]
 	},
 	"effect-free-imports": null,
+	"grizzle-star-imports": null,
 	"import-doors": {
 		doors: [
 			{

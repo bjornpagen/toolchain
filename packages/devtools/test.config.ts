@@ -60,6 +60,7 @@ export default defineRunner({
 		"src/oxlint/rules/side-effect-free.test.ts",
 		"src/oxlint/rules/no-case-list.test.ts",
 		"src/oxlint/rules/no-variadic-callback.test.ts",
+		"src/oxlint/rules/grizzle-star-imports.test.ts",
 		"src/oxlint/rules/no-plant.test.ts",
 		"src/oxlint/rules/single-permit-owners.test.ts",
 		"src/shared/git.test.ts",

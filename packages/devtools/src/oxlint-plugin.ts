@@ -2,6 +2,7 @@ import type { Rule } from "#oxlint/rule.ts"
 import { bearerOwners } from "#oxlint/rules/bearer-owners.ts"
 import { brandsSoleMint } from "#oxlint/rules/brands-sole-mint.ts"
 import { effectFreeImports } from "#oxlint/rules/effect-free-imports.ts"
+import { grizzleStarImports } from "#oxlint/rules/grizzle-star-imports.ts"
 import { importDoors } from "#oxlint/rules/import-doors.ts"
 import { markup } from "#oxlint/rules/markup.ts"
 import { noBareMaterializedViewJoins } from "#oxlint/rules/no-bare-materialized-view-joins.ts"
@@ -54,6 +55,7 @@ const PLUGIN_RULES = {
 	"bearer-owners": bearerOwners,
 	"brands-sole-mint": brandsSoleMint,
 	"effect-free-imports": effectFreeImports,
+	"grizzle-star-imports": grizzleStarImports,
 	"import-doors": importDoors,
 	markup,
 	"no-bare-materialized-view-joins": noBareMaterializedViewJoins,

@@ -540,6 +540,7 @@ const PLACES = {
 	"bearer-owners": { part: "core", scope: "every file" },
 	"brands-sole-mint": { part: "core", scope: "every file" },
 	"effect-free-imports": { part: "core", scope: "effect-free code" },
+	"grizzle-star-imports": { part: "core", scope: "every file" },
 	"import-doors": { part: "core", scope: "every file" },
 	markup: { part: "web", scope: "tailwind apps" },
 	"no-bare-materialized-view-joins": { part: "drizzle", scope: "every file" },
