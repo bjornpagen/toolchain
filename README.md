@@ -14,6 +14,30 @@ A repository takes the toolchain as the submodule `vendor/toolchain`, pinned at 
 `vendor/toolchain/packages/devtools` and `vendor/toolchain/packages/testing`, so both run from source, and it keeps its own decisions in
 `toolchain.config.ts`. How the checks run is in CONTRIBUTING.md.
 
+## Consumer migration: the jsdoc and promise plugins load, and no named rule is silent (2026-11-27)
+
+The preset loaded neither oxlint's jsdoc plugin nor its promise plugin, and oxlint runs a built-in plugin's rules only
+where a configuration's `plugins` list it, drops the rest from its resolution and says nothing. So
+`jsdoc/check-tag-names` and `promise/prefer-await-to-then`, named in a consumer's configuration, never ran (edullm-bd).
+Now the preset's core part loads both:
+
+- **jsdoc**, with `jsdoc/check-tag-names` at error over JSDoc's tags and the ones a limit's evidence is written in
+  (preset.ts LIMIT_TAGS: the indefensible-numbers skill's `@limitKind` and every kind's tags, `@formatConstant`, and
+  the Effect language service's `@stability`). Its other correctness rules run too: a documented generator states
+  `@yields`.
+- **promise**, its correctness rules but `promise/valid-params`, which reads Effect's `Effect.catch(self, f)` as
+  Promise.catch's. `promise/prefer-await-to-then` runs nowhere: its one remedy is an async function, which the Effect
+  language service's asyncFunction refuses.
+
+The workspace gate's core-lint refuses a configuration that turns on a rule oxlint's resolution holds in none of its
+scopes, at its top, in an override or in a configuration it extends: a rule of a built-in plugin it does not load.
+Before you move `vendor/toolchain` past this section:
+
+1. **Fix what the jsdoc plugin finds**: a tag JSDoc does not define and no limit uses (state it as prose), a line of a
+   tag's text that opens with `@`, and a documented generator with no `@yields`. grizzle had five, fixed at f1e2b4bd.
+2. **Load every plugin whose rules your configuration names**, or delete the names: `pnpm workspace-gate` lists each
+   silent rule.
+
 ## Consumer migration: a program is checked by one checker (2026-11-27)
 
 `toolchain-typecheck` handed tsrs a type checker for each thread of its task's share (`--checkers <share>`): 64 for a

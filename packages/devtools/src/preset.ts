@@ -68,10 +68,47 @@ const PLUGINS = [
 	{ name: "jsx-a11y", part: "web" },
 	{ name: "nextjs", part: "web" },
 	{ name: "node", part: "core" },
-	{ name: "import", part: "core" }
+	{ name: "import", part: "core" },
+	{ name: "jsdoc", part: "core" },
+	{ name: "promise", part: "core" }
 ] as const satisfies ReadonlyArray<
 	Readonly<{ name: NonNullable<OxlintConfig["plugins"]>[number]; part: Part }>
 >
+
+/**
+ * The JSDoc tags a limit's evidence is written in, beside the tags JSDoc defines: the indefensible-numbers skill's
+ * (packages/devtools/skills/indefensible-numbers), each kind's tags (`@limitKind`, `@owner`, `@unit`, `@scope`; a
+ * published limit's `@constraint`, `@source`, `@quote`, `@verified`; a measured one's `@evidence`, `@observed`,
+ * `@environment`, `@workload`, `@result`, `@decision`, `@revalidate`; a derived one's `@derivation`, `@from`; a
+ * provisional one's `@guards`, `@measure`, `@origin`, `@recorded`), and `@formatConstant`, which marks a format's own
+ * numbers as no limit; and `@stability`, the Effect language service's mark of an unstable API, which its
+ * unstableApiUsage diagnostic reads. jsdoc/check-tag-names refuses any other tag.
+ */
+const LIMIT_TAGS = [
+	"limitKind",
+	"owner",
+	"unit",
+	"scope",
+	"constraint",
+	"source",
+	"quote",
+	"verified",
+	"evidence",
+	"observed",
+	"environment",
+	"workload",
+	"result",
+	"decision",
+	"revalidate",
+	"derivation",
+	"from",
+	"guards",
+	"measure",
+	"origin",
+	"recorded",
+	"formatConstant",
+	"stability"
+] as const
 
 /** The built-in rules the preset turns on everywhere, with their generic options, by the part that runs them: the
  * correctness category's reviewed additions. Lists that name a repository's own modules or files come from the
@@ -126,12 +163,20 @@ export const GENERIC_RULES = {
 		"eslint/prefer-template": "error",
 		"eslint/radix": "error",
 		"import/extensions": ["error", "always", { ignorePackages: true, checkTypeImports: true }],
+		"jsdoc/check-tag-names": ["error", { definedTags: [...LIMIT_TAGS] }],
 		"node/no-exports-assign": "error",
 		"oxc/approx-constant": "error",
 		"oxc/misrefactored-assign-op": "error",
 		"oxc/no-accumulating-spread": "error",
 		"oxc/no-barrel-file": ["error", { threshold: 0 }],
 		"oxc/no-this-in-exported-function": "error",
+		/**
+		 * The promise plugin's correctness rules run but this one, which reads every call of a member named `catch` as
+		 * Promise.catch's: Effect's own `Effect.catch(self, f)`, two arguments, is no promise. prefer-await-to-then runs
+		 * nowhere either: its one remedy is an async function, which the Effect language service's asyncFunction refuses
+		 * in every repository, and it reads `Effect.catch` as a promise's too.
+		 */
+		"promise/valid-params": "off",
 		"typescript/adjacent-overload-signatures": "error",
 		"typescript/ban-ts-comment": [
 			"error",
